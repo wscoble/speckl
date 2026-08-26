@@ -1,0 +1,155 @@
+speck TigerBeetleLedger {
+    // State machine primitives for a naive TigerBeetle
+    // TigerBeetle is a distributed financial transaction database
+    // with co-designed consensus protocol + storage engine.
+
+    state {
+        // Accounts: id -> { balance, debits_pending, credits_pending, flags }
+        accounts: Map(Nat, Account)
+
+        // Transfers: id -> { from, to, amount, pending, posted, voided }
+        transfers: Map(Nat, Transfer)
+
+        // Pending two-phase transfers awaiting commit/void
+        pending: Set(Nat)
+
+        // Replica state for consensus
+        replicaState: Map(Nat, Replica)
+
+        // Cluster log
+        log: List(LogEntry)
+
+        // Highest committed log index
+        commitIndex: Nat
+
+        // Current leader replica id
+        leader: Nat
+    }
+
+    init {
+        accounts == emptyMap
+        transfers == emptyMap
+        pending == emptySet
+        replicaState == mapKeys(replicas, { role: "follower", logIndex: 0, votedFor: null })
+        log == emptyList
+        commitIndex == 0
+        leader == 0
+    }
+
+    invariant AccountBalanceInvariant {
+        forall a in accounts.values:
+            a.balance == a.credits_posted - a.debits_posted
+        forall a in accounts.values:
+            a.debits_pending >= 0
+            a.credits_pending >= 0
+    }
+
+    invariant TransferStateConsistency {
+        forall t in transfers.values:
+            t.pending implies t.posted == false && t.voided == false
+        forall t in transfers.values:
+            t.posted implies t.voided == false
+        forall t in transfers.values:
+            t.voided implies t.posted == false
+    }
+
+    invariant NoOverdraft {
+        forall a in accounts.values:
+            a.balance >= 0 or a.flags.allows_overdraft
+    }
+
+    // Two-phase transfer: reserve funds
+    action CreateTransfer(t: Transfer) {
+        precondition: t.id notIn transfers.keys
+        precondition: t.from in accounts.keys
+        precondition: t.to in accounts.keys
+        precondition: t.from != t.to
+        precondition: accounts[t.from].balance >= t.amount
+            or accounts[t.from].flags.allows_overdraft
+
+        postcondition: transfers[t.id] == t
+        postcondition: pending == pending union {t.id}
+        postcondition: accounts[t.from].debits_pending == old(accounts[t.from].debits_pending) + t.amount
+        postcondition: accounts[t.to].credits_pending == old(accounts[t.to].credits_pending) + t.amount
+    }
+
+    // Commit a pending two-phase transfer
+    action CommitTransfer(id: Nat) {
+        precondition: id in pending
+        precondition: id in transfers.keys
+        precondition: transfers[id].pending == true
+
+        postcondition: pending == pending \\ {id}
+        postcondition: transfers[id].pending == false
+        postcondition: transfers[id].posted == true
+        postcondition: accounts[transfers[id].from].debits_posted ==
+            old(accounts[transfers[id].from].debits_posted) + transfers[id].amount
+        postcondition: accounts[transfers[id].to].credits_posted ==
+            old(accounts[transfers[id].to].credits_posted) + transfers[id].amount
+        postcondition: accounts[transfers[id].from].debits_pending ==
+            old(accounts[transfers[id].from].debits_pending) - transfers[id].amount
+        postcondition: accounts[transfers[id].to].credits_pending ==
+            old(accounts[transfers[id].to].credits_pending) - transfers[id].amount
+    }
+
+    // Void a pending transfer
+    action VoidTransfer(id: Nat) {
+        precondition: id in pending
+        precondition: id in transfers.keys
+        precondition: transfers[id].pending == true
+
+        postcondition: pending == pending \\ {id}
+        postcondition: transfers[id].pending == false
+        postcondition: transfers[id].voided == true
+        postcondition: accounts[transfers[id].from].debits_pending ==
+            old(accounts[transfers[id].from].debits_pending) - transfers[id].amount
+        postcondition: accounts[transfers[id].to].credits_pending ==
+            old(accounts[transfers[id].to].credits_pending) - transfers[id].amount
+    }
+
+    // Single-phase transfer: no pending state
+    action PostTransfer(t: Transfer) {
+        precondition: t.id notIn transfers.keys
+        precondition: t.from in accounts.keys
+        precondition: t.to in accounts.keys
+        precondition: t.from != t.to
+        precondition: accounts[t.from].balance >= t.amount
+            or accounts[t.from].flags.allows_overdraft
+
+        postcondition: transfers[t.id] == { ...t, pending: false, posted: true, voided: false }
+        postcondition: accounts[t.from].debits_posted == old(accounts[t.from].debits_posted) + t.amount
+        postcondition: accounts[t.to].credits_posted == old(accounts[t.to].credits_posted) + t.amount
+    }
+
+    // Consensus: replica becomes leader
+    action BecomeLeader(replica: Nat, term: Nat) {
+        precondition: replica in replicaState.keys
+        precondition: replicaState[replica].role == "candidate"
+        precondition: replicaState[replica].currentTerm < term
+
+        postcondition: leader == replica
+        postcondition: replicaState[replica].role == "leader"
+        postcondition: replicaState[replica].currentTerm == term
+    }
+
+    // Consensus: append entry to log
+    action AppendEntry(entry: LogEntry, term: Nat) {
+        precondition: entry.index == length(log) + 1
+        precondition: term >= commitIndex
+
+        postcondition: log == append(log, entry)
+        postcondition: commitIndex == entry.index
+    }
+
+    next:
+        CreateTransfer
+        | CommitTransfer
+        | VoidTransfer
+        | PostTransfer
+        | BecomeLeader
+        | AppendEntry
+
+    verify: Always(AccountBalanceInvariant)
+    verify: Always(NoOverdraft)
+    verify: Eventually(TransferStateConsistency)
+}

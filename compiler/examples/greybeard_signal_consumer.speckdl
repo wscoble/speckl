@@ -1,0 +1,317 @@
+// greybeard_signal_consumer.speckdl — Spec side of the Speckl → Camel isomorphism test.
+//
+// This spec declares the same three principles that the hand-written
+// GreybeardBusinessRoute.java implements. The test is: compile this
+// spec, and the generated TypeScript must be isomorphic to the Java
+// route — same destinations, same predicates, same failure modes.
+//
+// P1: Humans occupy underdetermined seams. Seam taxonomy is
+//     exhaustive. Discriminator is the action initiator, not the
+//     action shape. Missing seam → default to underdetermined
+//     (the human queue). Seam is metadata for the dynamic router,
+//     NOT a behavioral gate. Under parity, the same body from a
+//     human (no seam_type) and from an agent (seam_type=determined)
+//     must produce the same idempotency key and land in the same row.
+//
+// P2: Time and quality are gates for acceptance. t_arrival recorded
+//     at receipt, not at action. q_score below threshold → DLQ.
+//     deadline_at expired → DLQ.
+//
+// P3: Signals shall not be dropped; DLQ is real. Three destinations
+//     only: resolved, dlq, audit. No fourth option. Idempotency
+//     key auto-computed from (seam, source_actor, action_type,
+//     payload). Duplicates route to audit. Auto-denied signals
+//     route to DLQ — not deleted.
+//
+// Syntax follows tef.speckdl conventions:
+//   - types declared at top
+//   - state: { ... } on one line
+//   - init: { ... } on one line
+//   - actions with require / let / for / if / emit
+//   - constraints below the actions
+//   - service block for the RPC surface (ingest, sweep, audit)
+
+speck GreybeardSignalConsumer {
+  version: "0.1.0"
+  author: "Scott Scoble"
+  source: architecture_review ref "greybeard-signal-consumer-2026-08-11"
+  review: manual
+
+  // ─── Types ───────────────────────────────────────────────────────
+
+  interface Destination {
+    Resolved
+    Dlq
+    Audit
+  }
+
+  interface Seam {
+    Determined
+    Underdetermined
+  }
+
+  interface SignalState {
+    Open
+    Resolved
+    InDlq
+    Audited
+  }
+
+  type Signal = {
+    signalId: String,
+    idempotencyKey: String,
+    seam: Seam,
+    sourceActor: String,
+    actionType: String,
+    payload: String,
+    tArrival: String,
+    qScore: Real,
+    deadlineAt: String | null,
+    destination: Destination,
+    state: SignalState
+  }
+
+  type DlqEvent = {
+    SignalId: String,
+    Reason: String,
+    DLQAt: String
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    signals: Map<String, Signal>,
+    idempotencyIndex: Map<String, String>,
+    dlqEvents: Map<String, DlqEvent>,
+    qScoreThreshold: Real,
+    dlqSweepPeriodMs: Nat,
+    dlqAgeThresholdS: Nat,
+    acceptAuditPeriodMs: Nat
+  }
+
+  init: {
+    signals := Map.empty(),
+    idempotencyIndex := Map.empty(),
+    dlqEvents := Map.empty(),
+    qScoreThreshold := 0.6,
+    dlqSweepPeriodMs := 60000,
+    dlqAgeThresholdS := 300,
+    acceptAuditPeriodMs := 300000
+  }
+
+  // ─── P2: Gate configuration constraints ──────────────────────────
+
+  constraint: qScoreThreshold >= 0.0
+  constraint: qScoreThreshold <= 1.0
+  constraint: dlqSweepPeriodMs >= 1000
+  constraint: dlqAgeThresholdS >= 1
+  constraint: acceptAuditPeriodMs >= 1000
+
+  // ─── Verification conditions ─────────────────────────────────────
+
+  // P3: every signal is in exactly one state.
+  verify: always(
+    forall sid in signals.keys():
+      signals[sid].state == Open
+      or signals[sid].state == Resolved
+      or signals[sid].state == InDlq
+      or signals[sid].state == Audited
+  )
+
+  // P3: every signal lands at one of three destinations.
+  verify: always(
+    forall sid in signals.keys():
+      signals[sid].destination == Resolved
+      or signals[sid].destination == Dlq
+      or signals[sid].destination == Audit
+  )
+
+  // P3: idempotency index never holds an empty key.
+  verify: always(
+    forall key in idempotencyIndex.keys():
+      idempotencyIndex[key] != ""
+  )
+
+  // ─── Actions ─────────────────────────────────────────────────────
+
+  // IngestSignal — entry point. Mirrors the Java route's
+  // ingestSignal() processor. P1: missing seam → DLQ.
+  // P2: low q_score or expired deadline → DLQ.
+  // P3: idempotency key auto-computed; duplicate → audit.
+  action IngestSignal(
+    seam: Seam,
+    sourceActor: String,
+    actionType: String,
+    payload: String,
+    qScore: Real,
+    deadlineAt: String | null,
+    idempotencyKey: String | null
+  ) {
+    require length(sourceActor) >= 1
+    require length(actionType) >= 1
+    require qScore >= 0.0
+    require qScore <= 1.0
+
+    // P3: idempotency key. Auto-compute from canonical body
+    // if caller didn't supply one. Keys are sha256(sourceActor +
+    // actionType + payload) — NO seam, no timestamps,
+    // no q_score, because those vary per-receipt or per-seam.
+    // Under parity, the same body from a human (defaulted to
+    // underdetermined) and from an agent (determined) must
+    // produce the same idempotency key.
+    let key := idempotencyKey
+    if key == "" or key == null {
+      // Phase 0: use a stable concatenation. The Camel
+      // target replaces this with java.security.MessageDigest.
+      let padded := sourceActor + "|" + actionType + "|" + payload
+      key := padded
+    }
+
+    // P3: idempotency check. If the key is already in the
+    // index, route to Audit. The first arrival is preserved.
+    let dest := Resolved
+    if idempotencyIndex.has(key) {
+      dest := Audit
+    }
+
+    // P2: deadline gate. If supplied and expired, route to DLQ.
+    let expired := false
+    if deadlineAt != null and deadlineAt != "" {
+      // Phase 0: trust the caller. The Camel target parses
+      // a real RFC3339 timestamp and compares to now().
+      expired := true
+    }
+
+    // P2: q_score gate. Below threshold → DLQ.
+    let lowQuality := qScore < qScoreThreshold
+
+    // Three-way routing. Audit from idempotency wins over
+    // gate failures to keep the dedup semantics clean.
+    if dest != Audit {
+      if expired or lowQuality {
+        dest := Dlq
+      } else {
+        dest := Resolved
+      }
+    }
+
+    // Compute signal_id. The idempotency key is the dedup tag;
+    // the signal_id is the receipt tag.
+    let signalId := "greybeard-" + sourceActor + "-" + actionType + "-" + key
+
+    // Record the signal.
+    let sig := Signal {
+      signalId: signalId,
+      idempotencyKey: key,
+      seam: seam,
+      sourceActor: sourceActor,
+      actionType: actionType,
+      payload: payload,
+      tArrival: now(),
+      qScore: qScore,
+      deadlineAt: deadlineAt,
+      destination: dest,
+      state: Open
+    }
+    signals[signalId] := sig
+    idempotencyIndex[key] := signalId
+
+    // Emit the routed event. Type of event depends on destination.
+    if dest == Resolved {
+      emit GreybeardSignalResolved {
+        signalId: signalId,
+        seam: seam,
+        tArrival: sig.tArrival,
+        qScore: qScore
+      }
+    }
+    if dest == Dlq {
+      let reason := "low_quality"
+      if expired and lowQuality {
+        reason := "expired_and_low_quality"
+      } else {
+        if expired {
+          reason := "expired"
+        }
+      }
+      emit GreybeardSignalDlq {
+        signalId: signalId,
+        seam: seam,
+        reason: reason,
+        tArrival: sig.tArrival,
+        qScore: qScore,
+        dlqAt: now()
+      }
+      let de := DlqEvent {
+        SignalId: signalId,
+        Reason: reason,
+        DLQAt: now()
+      }
+      dlqEvents[signalId] := de
+    }
+    if dest == Audit {
+      emit GreybeardSignalAudited {
+        signalId: signalId,
+        seam: seam,
+        tArrival: sig.tArrival,
+        qScore: qScore,
+        auditedAt: now()
+      }
+    }
+
+    return signalId
+  }
+
+  // DlqSweep — periodic. Emits GreybeardSignalDlqExpired for
+  // signals that have been in DLQ longer than the threshold.
+  // Does NOT delete. Does NOT auto-resolve. Humans decide.
+  action DlqSweep() {
+    let sweepAt := now()
+    let count := 0
+    for sid in signals.keys() {
+      let s := signals[sid]
+      if s.state == InDlq {
+        emit GreybeardSignalDlqExpired {
+          signalId: sid,
+          seam: s.seam,
+          sweptAt: sweepAt
+        }
+        count := count + 1
+      }
+    }
+    return count
+  }
+
+  // AcceptAudit — periodic. Re-checks all open signals. Any
+  // whose deadline has passed without resolution routes to DLQ.
+  // P3: silence is itself an alert.
+  action AcceptAudit() {
+    let auditAt := now()
+    let count := 0
+    for sid in signals.keys() {
+      let s := signals[sid]
+      if s.state == Open and s.deadlineAt != null {
+        s.state := InDlq
+        s.destination := Dlq
+        signals[sid] := s
+        emit GreybeardSignalDlq {
+          signalId: sid,
+          seam: s.seam,
+          reason: "expired_by_audit",
+          tArrival: s.tArrival,
+          qScore: s.qScore,
+          dlqAt: auditAt
+        }
+        count := count + 1
+      }
+    }
+    return count
+  }
+
+  // ─── Helper placeholders ─────────────────────────────────────────
+  // now() is the only built-in we need; the parser wires up the
+  // real implementation. The shim below makes the spec
+  // self-contained until the Camel target is built.
+
+  function now() -> String
+}

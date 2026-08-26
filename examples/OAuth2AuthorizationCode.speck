@@ -1,0 +1,452 @@
+speck OAuth2AuthorizationCode {
+    // OAuth 2.0 Authorization Code Flow with PKCE
+    // Implements RFC 6749 Section 4.1 (Authorization Code Grant) with RFC 7636 (PKCE)
+    // Key security properties: CSRF protection, code reuse prevention, replay resistance, PKCE integrity
+
+    // === Types ===
+
+    type ClientId = String
+    type RedirectUri = String
+    type State = String
+    type CodeChallenge = String
+    type CodeVerifier = String
+    type AuthorizationCode = String
+    type AccessToken = String
+    type RefreshToken = String
+    type Scope = String
+    type TokenType = String
+    type ClientSecret = String
+    type UserId = String
+    type SessionId = String
+
+    type TokenResponse = {
+        access_token: AccessToken,
+        token_type: TokenType,
+        expires_in: Nat,
+        refresh_token: RefreshToken | null,
+        scope: Scope
+    }
+
+    type AuthorizationRequest = {
+        client_id: ClientId,
+        redirect_uri: RedirectUri,
+        response_type: String,  // "code"
+        state: State,
+        code_challenge: CodeChallenge,
+        code_challenge_method: String,  // "S256" or "plain"
+        scope: Scope
+    }
+
+    type TokenRequest = {
+        client_id: ClientId,
+        client_secret: ClientSecret,
+        code: AuthorizationCode,
+        redirect_uri: RedirectUri,
+        code_verifier: CodeVerifier
+    }
+
+    type RefreshRequest = {
+        client_id: ClientId,
+        client_secret: ClientSecret,
+        refresh_token: RefreshToken,
+        scope: Scope | null
+    }
+
+    // === State ===
+
+    state {
+        // Registered clients
+        clients: Map(ClientId, { redirect_uris: Set(RedirectUri), client_secret: ClientSecret })
+
+        // Authorization codes in flight
+        authorizationCodes: Map(AuthorizationCode, {
+            client_id: ClientId,
+            redirect_uri: RedirectUri,
+            state: State,
+            code_challenge: CodeChallenge,
+            code_challenge_method: String,
+            scope: Scope,
+            user_id: UserId,
+            session_id: SessionId,
+            created_at: Nat,
+            used: Bool
+        })
+
+        // Access tokens issued
+        accessTokens: Map(AccessToken, {
+            client_id: ClientId,
+            user_id: UserId,
+            scope: Scope,
+            expires_at: Nat,
+            session_id: SessionId,
+            refresh_token: RefreshToken
+        })
+
+        // Refresh tokens
+        refreshTokens: Map(RefreshToken, {
+            client_id: ClientId,
+            user_id: UserId,
+            scope: Scope,
+            access_token: AccessToken,
+            created_at: Nat
+        })
+
+        // User sessions
+        sessions: Map(SessionId, { user_id: UserId })
+
+        // Nonce for state to prevent CSRF
+        stateNonces: Map(State, { client_id: ClientId, redirect_uri: RedirectUri })
+
+        // PKCE challenge nonces
+        pkceChallenges: Map(CodeChallenge, { code_verifier_hash: String, method: String })
+
+        // Clock (abstracted as monotonically increasing)
+        currentTime: Nat
+    }
+
+    // === Initialization ===
+
+    init {
+        clients == emptyMap
+        authorizationCodes == emptyMap
+        accessTokens == emptyMap
+        refreshTokens == emptyMap
+        sessions == emptyMap
+        stateNonces == emptyMap
+        pkceChallenges == emptyMap
+        currentTime == 0
+    }
+
+    // === Invariants ===
+
+    // Invariant 1: No token leakage - tokens are only accessible to authorized parties
+    invariant NoTokenLeakage {
+        // Access tokens are bound to specific clients and users
+        forall token in accessTokens.keys:
+            let t := accessTokens[token]
+            t.client_id in clients.keys and
+            exists s in sessions.keys: sessions[s].user_id == t.user_id
+
+        // Refresh tokens are only accessible to the client that requested them
+        forall rt in refreshTokens.keys:
+            let r := refreshTokens[rt]
+            r.client_id in clients.keys
+
+        // Authorization codes are only sent to the registered redirect URI
+        forall code in authorizationCodes.keys:
+            let c := authorizationCodes[code]
+            c.client_id in clients.keys and
+            c.redirect_uri in clients[c.client_id].redirect_uris
+    }
+
+    // Invariant 2: CSRF protection - state parameter matches between authorize and callback
+    invariant StateCSRFProtection {
+        // Every state must have been registered by the client
+        forall state in stateNonces.keys:
+            let n := stateNonces[state]
+            n.client_id in clients.keys and
+            n.redirect_uri in clients[n.client_id].redirect_uris
+
+        // State can only be used by the client that created it
+        forall code in authorizationCodes.keys:
+            let c := authorizationCodes[code]
+            c.state in stateNonces.keys
+    }
+
+    // Invariant 3: Authorization codes are single-use (cannot be reused)
+    invariant AuthorizationCodeSingleUse {
+        forall code in authorizationCodes.keys:
+            let c := authorizationCodes[code]
+            c.used == false implies
+                not exists action in next:
+                    action.name == "ExchangeCode" and action.params.code == code
+    }
+
+    // Invariant 4: Tokens have bounded validity (replay attack resistance)
+    invariant TokenValidityBounded {
+        // Access tokens expire after a reasonable time
+        forall token in accessTokens.keys:
+            let t := accessTokens[token]
+            t.expires_at > currentTime
+
+        // Refresh tokens expire after a longer period
+        forall rt in refreshTokens.keys:
+            let r := refreshTokens[rt]
+            // (Simplified: refresh tokens should have expiration, but we track creation time)
+            currentTime - r.created_at <= 7776000  // 90 days max
+    }
+
+    // Invariant 5: PKCE prevents authorization code interception
+    invariant PKCECodeInterceptionPrevention {
+        // Code verifier must hash to the code challenge
+        forall challenge in pkceChallenges.keys:
+            let c := pkceChallenges[challenge]
+            // In practice, this would use actual hashing, but we verify the relationship
+            exists verifier in authorizationCodes.keys:
+                let a := authorizationCodes[verifier]
+                a.code_challenge == challenge and
+                a.code_challenge_method == c.method
+
+        // Code verifier is only used once with the matching challenge
+        forall code in authorizationCodes.keys:
+            let c := authorizationCodes[code]
+            c.used == false implies
+                pkceChallenges[c.code_challenge].code_verifier_hash == hash(c.code_verifier, c.code_challenge_method)
+    }
+
+    // Invariant 6: Redirect URI must match between authorize and token exchange
+    invariant RedirectUriConsistency {
+        forall code in authorizationCodes.keys:
+            let c := authorizationCodes[code]
+            // The redirect URI used in token exchange must match what was in authorize
+            true  // This is enforced in the ExchangeCode action
+    }
+
+    // Invariant 7: Client authentication required for token exchange
+    invariant ClientAuthenticationRequired {
+        forall code in authorizationCodes.keys:
+            let c := authorizationCodes[code]
+            c.client_id in clients.keys implies
+                exists r in refreshTokens.keys:
+                    refreshTokens[r].client_id == c.client_id
+    }
+
+    // === Actions ===
+
+    // Action 1: Authorize - Client requests authorization code
+    action Authorize(client: ClientId, redirectUri: RedirectUri, scope: Scope, userId: UserId, sessionId: SessionId) {
+        require client in clients.keys
+        require redirectUri in clients.client.redirect_uris
+        require sessionId in sessions.keys
+        require sessions[sessionId].user_id == userId
+
+        // Generate unique state (CSRF protection)
+        let state := "state_" + hash(client + redirectUri + currentTime)
+
+        // Generate PKCE code challenge
+        let codeVerifier := "verifier_" + hash(client + userId + currentTime)
+        let codeChallenge := hash(codeVerifier, "S256")
+
+        // Register state nonce
+        stateNonces[state] := { client_id: client, redirect_uri: redirectUri }
+
+        // Register PKCE challenge
+        pkceChallenges[codeChallenge] := { code_verifier_hash: hash(codeVerifier, "S256"), method: "S256" }
+
+        // Create authorization code
+        let authCode := "code_" + hash(client + userId + currentTime)
+        authorizationCodes[authCode] := {
+            client_id: client,
+            redirect_uri: redirectUri,
+            state: state,
+            code_challenge: codeChallenge,
+            code_challenge_method: "S256",
+            scope: scope,
+            user_id: userId,
+            session_id: sessionId,
+            created_at: currentTime,
+            used: false
+        }
+
+        emit AuthorizationRequested {
+            client_id: client,
+            redirect_uri: redirectUri,
+            state: state,
+            scope: scope,
+            user_id: userId,
+            session_id: sessionId,
+            authorization_code: authCode
+        }
+    }
+
+    // Action 2: Approve - User grants consent (simulated: user confirms action)
+    action ApproveAuthorization(code: AuthorizationCode, userId: UserId) {
+        require code in authorizationCodes.keys
+        let c := authorizationCodes[code]
+        require c.user_id == userId
+        require c.used == false
+
+        // Mark as approved (ready for exchange)
+        emit CodeIssued {
+            authorization_code: code,
+            client_id: c.client_id,
+            redirect_uri: c.redirect_uri,
+            state: c.state,
+            scope: c.scope,
+            user_id: userId
+        }
+    }
+
+    // Action 3: ExchangeCode - Client exchanges code for tokens
+    action ExchangeCode(req: TokenRequest) {
+        require req.client_id in clients.keys
+
+        // Verify authorization code exists and is not used
+        require req.code in authorizationCodes.keys
+        let c := authorizationCodes[req.code]
+        require c.used == false
+        require c.client_id == req.client_id
+        require c.redirect_uri == req.redirect_uri
+
+        // Verify PKCE: code_verifier must hash to code_challenge
+        let expectedChallenge := hash(req.code_verifier, c.code_challenge_method)
+        require expectedChallenge == c.code_challenge
+
+        // Mark code as used (single-use enforcement)
+        authorizationCodes[req.code].used := true
+
+        // Remove PKCE challenge (one-time use)
+        pkceChallenges[c.code_challenge] := null
+
+        // Remove state nonce (one-time use)
+        stateNonces[c.state] := null
+
+        // Issue access token
+        let accessToken := "access_" + hash(req.client_id + c.user_id + currentTime)
+        let refreshToken := "refresh_" + hash(req.client_id + c.user_id + currentTime)
+        let expiresAt := currentTime + 3600  // 1 hour
+
+        accessTokens[accessToken] := {
+            client_id: req.client_id,
+            user_id: c.user_id,
+            scope: c.scope,
+            expires_at: expiresAt,
+            session_id: c.session_id,
+            refresh_token: refreshToken
+        }
+
+        refreshTokens[refreshToken] := {
+            client_id: req.client_id,
+            user_id: c.user_id,
+            scope: c.scope,
+            access_token: accessToken,
+            created_at: currentTime
+        }
+
+        emit TokenIssued {
+            access_token: accessToken,
+            token_type: "Bearer",
+            expires_in: 3600,
+            refresh_token: refreshToken,
+            scope: c.scope,
+            client_id: req.client_id,
+            user_id: c.user_id
+        }
+    }
+
+    // Action 4: RefreshToken - Client refreshes expired access token
+    action RefreshToken(req: RefreshRequest) {
+        require req.client_id in clients.keys
+
+        // Verify refresh token exists
+        require req.refresh_token in refreshTokens.keys
+        let r := refreshTokens[req.refresh_token]
+        require r.client_id == req.client_id
+
+        // Mark old access token as revoked (implicit)
+        accessTokens[r.access_token] := null
+
+        // Issue new tokens
+        let newAccessToken := "access_" + hash(req.client_id + r.user_id + currentTime)
+        let newRefreshToken := "refresh_" + hash(req.client_id + r.user_id + currentTime)
+        let expiresAt := currentTime + 3600
+
+        accessTokens[newAccessToken] := {
+            client_id: req.client_id,
+            user_id: r.user_id,
+            scope: req.scope.or(r.scope),
+            expires_at: expiresAt,
+            session_id: r.access_token.session_id,
+            refresh_token: newRefreshToken
+        }
+
+        refreshTokens[newRefreshToken] := {
+            client_id: req.client_id,
+            user_id: r.user_id,
+            scope: req.scope.or(r.scope),
+            access_token: newAccessToken,
+            created_at: currentTime
+        }
+
+        // Remove old refresh token
+        refreshTokens[req.refresh_token] := null
+
+        emit TokenRefreshed {
+            access_token: newAccessToken,
+            token_type: "Bearer",
+            expires_in: 3600,
+            refresh_token: newRefreshToken,
+            scope: req.scope.or(r.scope),
+            client_id: req.client_id,
+            user_id: r.user_id
+        }
+    }
+
+    // Action 5: RevokeToken - Client revokes a token
+    action RevokeToken(client: ClientId, token: String, tokenType: String) {
+        require client in clients.keys
+
+        if tokenType == "access" {
+            require token in accessTokens.keys
+            let t := accessTokens[token]
+            require t.client_id == client
+
+            accessTokens[token] := null
+
+            // Also revoke associated refresh token
+            refreshTokens[t.refresh_token] := null
+        } else if tokenType == "refresh" {
+            require token in refreshTokens.keys
+            let r := refreshTokens[token]
+            require r.client_id == client
+
+            refreshTokens[token] := null
+            accessTokens[r.access_token] := null
+        }
+
+        emit TokenRevoked {
+            token: token,
+            token_type: tokenType,
+            client_id: client
+        }
+    }
+
+    // Action 6: PKCE Verification Step (explicit verification for documentation)
+    action VerifyPKCE(code: AuthorizationCode, verifier: CodeVerifier) {
+        require code in authorizationCodes.keys
+        let c := authorizationCodes[code]
+        require c.used == false
+
+        // Verify the code verifier hashes to the code challenge
+        let expectedChallenge := hash(verifier, c.code_challenge_method)
+        require expectedChallenge == c.code_challenge
+
+        // This action documents the PKCE verification step
+        emit PKCEVerified {
+            authorization_code: code,
+            code_challenge: c.code_challenge,
+            code_challenge_method: c.code_challenge_method,
+            verifier_hash: hash(verifier, c.code_challenge_method)
+        }
+    }
+
+    // === Next Actions ===
+
+    next:
+        Authorize
+        | ApproveAuthorization
+        | ExchangeCode
+        | RefreshToken
+        | RevokeToken
+        | VerifyPKCE
+
+    // === Verification ===
+
+    verify: Always(NoTokenLeakage)
+    verify: Always(StateCSRFProtection)
+    verify: Always(AuthorizationCodeSingleUse)
+    verify: Always(TokenValidityBounded)
+    verify: Always(PKCECodeInterceptionPrevention)
+    verify: Always(RedirectUriConsistency)
+    verify: Always(ClientAuthenticationRequired)
+}

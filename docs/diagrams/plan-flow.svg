@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 420">
+  <defs>
+    <marker id="arr-b" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" fill="#3b82f6">
+      <polygon points="0 0, 10 3.5, 0 7"/>
+    </marker>
+    <marker id="arr-g" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" fill="#10b981">
+      <polygon points="0 0, 10 3.5, 0 7"/>
+    </marker>
+  </defs>
+
+  <!-- PHASE A -->
+  <rect x="100" y="10" width="400" height="90" rx="8" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2.5"/>
+  <text x="300" y="38" text-anchor="middle" fill="#3b82f6" font-family="system-ui, sans-serif" font-size="16" font-weight="bold">PHASE A</text>
+  <text x="300" y="58" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="14" font-weight="bold">Open Standard + Foundation</text>
+  <text x="300" y="78" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">SpeckDL · Dark Provenance · Reference agents · Certification</text>
+
+  <!-- A → B arrow -->
+  <line x1="220" y1="100" x2="220" y2="148" stroke="#3b82f6" stroke-width="2" marker-end="url(#arr-b)"/>
+  <!-- A → C arrow -->
+  <line x1="420" y1="100" x2="420" y2="148" stroke="#3b82f6" stroke-width="2" marker-end="url(#arr-b)"/>
+
+  <!-- PHASE B -->
+  <rect x="50" y="155" width="280" height="80" rx="8" fill="#1e3a5f" stroke="#f59e0b" stroke-width="2"/>
+  <text x="190" y="181" text-anchor="middle" fill="#f59e0b" font-family="system-ui, sans-serif" font-size="15" font-weight="bold">PHASE B</text>
+  <text x="190" y="201" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">Consulting + Services</text>
+  <text x="190" y="219" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">Validates · Funds early · Builds case studies</text>
+
+  <!-- PHASE C -->
+  <rect x="360" y="155" width="200" height="80" rx="8" fill="#1e3a5f" stroke="#10b981" stroke-width="2"/>
+  <text x="460" y="181" text-anchor="middle" fill="#10b981" font-family="system-ui, sans-serif" font-size="15" font-weight="bold">PHASE C</text>
+  <text x="460" y="201" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">Developer Tool (SaaS)</text>
+  <text x="460" y="219" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">Self-serve PLG · Provenance data</text>
+
+  <!-- B feeds C arrow -->
+  <line x1="330" y1="195" x2="355" y2="195" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr-b)"/>
+
+  <!-- C → D arrow -->
+  <line x1="460" y1="235" x2="460" y2="283" stroke="#10b981" stroke-width="2" marker-end="url(#arr-g)"/>
+
+  <!-- PHASE D -->
+  <rect x="175" y="290" width="250" height="80" rx="8" fill="#1e3a5f" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="300" y="316" text-anchor="middle" fill="#8b5cf6" font-family="system-ui, sans-serif" font-size="15" font-weight="bold">PHASE D</text>
+  <text x="300" y="336" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">Compliance Infra (API)</text>
+  <text x="300" y="354" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">Feeds on SaaS data · Highest margin · Enterprise sticky</text>
+
+  <!-- Flow label -->
+  <text x="300" y="400" text-anchor="middle" fill="#64748b" font-family="system-ui, sans-serif" font-size="12" font-style="italic">A → B → C → D: Standard builds credibility, consulting validates, SaaS scales, compliance monetizes</text>
+</svg>

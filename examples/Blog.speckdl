@@ -1,0 +1,252 @@
+// Blog.speckdl — A canonical blog platform, specified in Speckl.
+//
+// The "specify anything with provenance" demo for a content app. Forces:
+//   - typed_schema: 4 records (Post, Comment, Author, Tag) + 2 enums
+//   - behavior: full CRUD across 4 resources, with state-machine-ish lifecycles
+//   - resource_lifecycle: posts have a real lifecycle (draft/published/archived)
+//   - validation: slugs, post lengths, email formats
+//   - service: REST surface
+//   - provenance: explicit author, source (this spec is original to Speckl)
+//
+// The blog is a real "specify anything" test: it's not a state machine,
+// it's not a protocol, it's a content app with CRUD. If Speckl can
+// express this, the "general purpose" claim holds for the content class.
+
+speck Blog {
+  author: "sscoble"
+  source: document ref "blog-platform-canonical-spec"
+  review: manual
+
+  // ─── State ────────────────────────────────────────────────
+  // The persistent store: posts, comments, authors, tags.
+
+  state: {
+    posts: Map<String, Post>,
+    comments: Map<String, Comment>,
+    authors: Map<String, Author>,
+    tags: Map<String, Tag>,
+    nextPostId: Nat := 1,
+    nextCommentId: Nat := 1
+  }
+
+  init: {
+    posts := Map.empty(),
+    comments := Map.empty(),
+    authors := Map.empty(),
+    tags := Map.empty(),
+    nextPostId := 1,
+    nextCommentId := 1
+  }
+
+  // ─── Types ────────────────────────────────────────────────
+
+  type Post = {
+    id: String,
+    slug: String,
+    title: String,
+    body: String,
+    kind: PostKind,
+    authorId: String,
+    tagIds: List<String>,
+    status: PostStatus,
+    publishedAt: Date | null,
+    commentIds: List<String>,
+    createdAt: Date,
+    updatedAt: Date
+  }
+
+  type Comment = {
+    id: String,
+    postId: String,
+    authorId: String,
+    body: String,
+    status: CommentStatus,
+    parentCommentId: String | null,
+    createdAt: Date
+  }
+
+  type Author = {
+    id: String,
+    name: String,
+    email: String,
+    bio: String | null
+  }
+
+  type Tag = {
+    id: String,
+    name: String,
+    slug: String
+  }
+
+  interface PostStatus {
+    Draft
+    Published
+    Archived
+  }
+
+  interface CommentStatus {
+    Visible
+    Hidden
+    Deleted
+  }
+
+  interface PostKind {
+    Text
+    Link
+    Image
+  }
+
+  // ─── Post operations ─────────────────────────────────────
+  // Each post goes Draft → Published → Archived. The state is held
+  // in the Post.status field; transitions are explicit actions.
+
+  action CreatePost(slug: String, title: String, body: String, kind: PostKind, authorId: String) {
+    require length(slug) >= 3
+    require length(slug) <= 100
+    require length(title) >= 1
+    require length(title) <= 200
+    require length(body) >= 1
+    require authors.has(authorId)
+    let newId := nextPostId
+    nextPostId := nextPostId + 1
+    let now := Date.now()
+    let post := Post {
+      id: String(newId),
+      slug: slug,
+      title: title,
+      body: body,
+      kind: kind,
+      authorId: authorId,
+      tagIds: List.empty(),
+      status: Draft,
+      publishedAt: null,
+      commentIds: List.empty(),
+      createdAt: now,
+      updatedAt: now
+    }
+    posts[String(newId)] := post
+  }
+
+  action PublishPost(id: String) {
+    require posts.has(id)
+    let post := posts[id]
+    post.status := Published
+    post.publishedAt := Date.now()
+    post.updatedAt := Date.now()
+    posts[id] := post
+  }
+
+  action ArchivePost(id: String) {
+    require posts.has(id)
+    let post := posts[id]
+    post.status := Archived
+    post.updatedAt := Date.now()
+    posts[id] := post
+  }
+
+  action AddTagToPost(postId: String, tagId: String) {
+    require posts.has(postId)
+    require tags.has(tagId)
+    let post := posts[postId]
+    post.tagIds := post.tagIds.append(tagId)
+    post.updatedAt := Date.now()
+    posts[postId] := post
+  }
+
+  // ─── Comment operations ──────────────────────────────────
+  // Comments can be nested (parentCommentId). Status is visible/hidden/deleted.
+
+  action CreateComment(postId: String, authorId: String, body: String) {
+    require posts.has(postId)
+    require authors.has(authorId)
+    require length(body) >= 1
+    require length(body) <= 5000
+    let newId := nextCommentId
+    nextCommentId := nextCommentId + 1
+    let comment := Comment {
+      id: String(newId),
+      postId: postId,
+      authorId: authorId,
+      body: body,
+      status: Visible,
+      parentCommentId: null,
+      createdAt: Date.now()
+    }
+    comments[String(newId)] := comment
+    let post := posts[postId]
+    post.commentIds := post.commentIds.append(String(newId))
+    posts[postId] := post
+  }
+
+  action HideComment(id: String) {
+    require comments.has(id)
+    let c := comments[id]
+    c.status := Hidden
+    comments[id] := c
+  }
+
+  // ─── Author operations ───────────────────────────────────
+
+  action CreateAuthor(name: String, email: String) {
+    require length(name) >= 1
+    require length(name) <= 100
+    require length(email) >= 3
+    require length(email) <= 200
+    let id := name
+    let author := Author {
+      id: id,
+      name: name,
+      email: email,
+      bio: null
+    }
+    authors[id] := author
+  }
+
+  // ─── Tag operations ──────────────────────────────────────
+
+  action CreateTag(name: String, slug: String) {
+    require length(name) >= 1
+    require length(slug) >= 1
+    require length(slug) <= 50
+    let id := slug
+    let tag := Tag { id: id, name: name, slug: slug }
+    tags[id] := tag
+  }
+
+  // ─── Service definition ──────────────────────────────────
+  // The REST surface. Each method is an RPC.
+
+  service BlogService {
+    rpc CreatePost (CreatePostRequest) returns (Post);
+    rpc PublishPost (PublishPostRequest) returns (Post);
+    rpc ArchivePost (ArchivePostRequest) returns (Post);
+    rpc CreateComment (CreateCommentRequest) returns (Comment);
+    rpc HideComment (HideCommentRequest) returns (Comment);
+    rpc CreateAuthor (CreateAuthorRequest) returns (Author);
+    rpc CreateTag (CreateTagRequest) returns (Tag);
+  }
+
+  // ─── Wire format ──────────────────────────────────────────
+
+  proto_package: "blog.v1"
+  go_package: "github.com/sscoble/blog/proto/blog/v1;blogv1"
+  event_suffix: "Request"
+
+  // ─── Provenance ──────────────────────────────────────────
+  // The spec is original to this Speckl demonstration. The author and
+  // source make the lineage explicit.
+
+  provenance {
+    design_decision "single-author posts, no multi-author" :: "matches the canonical blog post model"
+    design_decision "comments are flat-list with parent_id" :: "single-level threading, not infinite nesting"
+    parent_spec "TodoApp.speckdl"
+  }
+
+  // ─── BOM metadata ─────────────────────────────────────────
+
+  bom {
+    compiler { name: "speckl", version: "0.3.0" }
+    runtime { name: "node", version: "20" }
+    license: "MIT"
+  }
+}

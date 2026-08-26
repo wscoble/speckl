@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speckl — A Judgement Transport Utility for AI-Generated Specifications</title>
+  <meta name="description" content="Speckl bridges the gap between what you specify and what gets built. State machine specs compile to auditable code — TypeScript, Z3 verification, and provenance artifacts. NIST SA-11 human-in-the-loop for AI-generated outputs.">
+  <meta name="author" content="Scott Scoble">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="canonical" href="https://speckl.scoble.me/">
+  <meta property="og:title" content="Speckl — Judgement Transport for AI Specifications">
+  <meta property="og:description" content="State machine specs → auditable code. Compile SpeckDL to TypeScript + Z3 SMT + provenance artifacts. Open source (MIT). Created by Scott Scoble.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://speckl.scoble.me/">
+  <meta property="og:site_name" content="Speckl by Scott Scoble">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "Speckl",
+    "description": "A judgement transport utility for AI-generated specifications. Compiles SpeckDL state machine specs to TypeScript, Z3 verification, and provenance artifacts.",
+    "author": {
+      "@type": "Person",
+      "name": "Scott Scoble",
+      "url": "https://scott.scoble.me",
+      "sameAs": ["https://github.com/wscoble", "https://linkedin.com/in/scottscoble"]
+    },
+    "codeRepository": "https://github.com/wscoble/speckl",
+    "license": "https://opensource.org/licenses/MIT",
+    "programmingLanguage": "TypeScript",
+    "keywords": ["speckl", "speckdl", "formal-specification", "state-machines", "provenance", "compliance", "scott-scoble"]
+  }
+  </script>
+  <style>
+    :root {
+      --bg: #0a0f0a;
+      --bg-elevated: #121a12;
+      --bg-card: #1a241a;
+      --text: #e4e8e4;
+      --text-muted: #8a958a;
+      --accent: #4ae64a;
+      --accent-glow: rgba(74, 230, 74, 0.25);
+      --accent2: #8be9fd;
+      --border: #2a352a;
+      --code-bg: #0d120d;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .hero {
+      padding: 6rem 1.5rem 4rem;
+      text-align: center;
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg-elevated) 100%);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%; left: -50%; width: 200%; height: 200%;
+      background: radial-gradient(circle at 30% 30%, var(--accent-glow) 0%, transparent 50%),
+                  radial-gradient(circle at 70% 70%, rgba(74,230,180,0.08) 0%, transparent 40%);
+      pointer-events: none;
+    }
+
+    .hero-content { position: relative; max-width: 800px; margin: 0 auto; }
+
+    .hero h1 {
+      font-size: clamp(2.5rem, 8vw, 4rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    .hero-tagline {
+      font-size: clamp(1rem, 2.5vw, 1.25rem);
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+      font-weight: 300;
+      max-width: 600px;
+      margin-left: auto; margin-right: auto;
+    }
+
+    .hero-subtitle {
+      font-size: 0.95rem;
+      color: var(--accent);
+      margin-bottom: 2.5rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    .hero-cta { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.75rem 1.5rem; border-radius: 0.5rem;
+      font-size: 0.95rem; font-weight: 500; text-decoration: none;
+      transition: all 0.2s ease; border: none; cursor: pointer;
+    }
+
+    .btn-primary { background: var(--accent); color: #0a0f0a; }
+    .btn-primary:hover { background: #3dd63d; transform: translateY(-1px); }
+
+    .btn-secondary { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+
+    section { padding: 4rem 1.5rem; max-width: 1000px; margin: 0 auto; }
+    section + section { border-top: 1px solid var(--border); }
+
+    h2 { font-size: 1.75rem; font-weight: 600; margin-bottom: 1rem; color: var(--text); }
+    h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent); }
+    p, li { color: var(--text-muted); margin-bottom: 0.75rem; }
+
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+
+    .pipeline-step {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.25rem 1rem;
+      text-align: center;
+    }
+
+    .pipeline-step .icon {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .pipeline-step h4 {
+      color: var(--accent2);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.25rem;
+    }
+
+    .pipeline-step p {
+      font-size: 0.85rem;
+      margin: 0;
+    }
+
+    .code-block {
+      background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 0.75rem; padding: 1.25rem; margin: 1.5rem 0;
+      overflow-x: auto;
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+      font-size: 0.85rem; line-height: 1.7;
+    }
+
+    .code-block pre {
+      margin: 0; padding: 0; background: transparent;
+      font-family: inherit; font-size: inherit; line-height: inherit;
+      white-space: pre; overflow-x: auto;
+    }
+
+    .kw { color: #ff79c6; }
+    .ty { color: #8be9fd; }
+    .st { color: #f1fa8c; }
+    .cm { color: #6272a4; }
+    .fn { color: #50fa7b; }
+    .op { color: #ff79c6; }
+
+    .examples-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+      margin-top: 2rem;
+    }
+
+    .example-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      transition: border-color 0.2s;
+    }
+
+    .example-card:hover { border-color: var(--accent); }
+
+    .example-card h4 { color: var(--accent2); margin-bottom: 0.35rem; }
+    .example-card .meta {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .strategy-ladder {
+      display: flex;
+      gap: 1rem;
+      margin-top: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .strategy-step {
+      flex: 1 1 200px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.25rem;
+      text-align: center;
+    }
+
+    .strategy-step .phase { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
+    .strategy-step .label { font-weight: 600; margin-top: 0.25rem; }
+    .strategy-step .status { font-size: 0.8rem; color: var(--accent); margin-top: 0.25rem; }
+
+    .check-list {
+      list-style: none;
+      margin: 1.5rem 0;
+    }
+
+    .check-list li {
+      padding: 0.35rem 0;
+      padding-left: 1.5rem;
+      position: relative;
+    }
+
+    .check-list li::before {
+      content: '✓';
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+      font-weight: bold;
+    }
+
+    footer {
+      text-align: center; padding: 3rem 1.5rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted); font-size: 0.85rem;
+    }
+
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    @media (max-width: 768px) {
+      .hero { padding: 4rem 1rem 2.5rem; }
+      .hero h1 { font-size: 2rem; }
+      .pipeline-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 480px) {
+      .pipeline-grid { grid-template-columns: 1fr; }
+      section { padding: 3rem 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-content">
+    <h1>Speckl</h1>
+    <p class="hero-subtitle">A Judgement Transport Utility by Scott Scoble</p>
+    <p class="hero-tagline">
+      Your specification is the source of truth. Speckl ensures what gets built — by humans or AI — stays faithful to what you specified. Compile state machine specs into auditable code with embedded provenance.
+    </p>
+    <div class="hero-cta">
+      <a href="/demo/" class="btn btn-primary">Live Demo →</a>
+      <a href="https://github.com/wscoble/speckl" class="btn btn-secondary">Source</a>
+      <a href="https://github.com/wscoble/speckl/blob/main/docs/whitepaper-v2.md" class="btn btn-secondary">Whitepaper v2</a>
+      <a href="https://github.com/wscoble/speckl/blob/main/docs/speckl-by-example.md" class="btn btn-secondary">Tutorial</a>
+    </div>
+  </div>
+</header>
+
+<section id="what">
+  <h2>What Speckl Does</h2>
+  <p>Speckl is a <strong>compiler for state machine specifications</strong>. You write what your system should do in SpeckDL — a typed specification language with states, actions, invariants, and guard conditions. The compiler produces <strong>five auditable artifacts</strong> from a single spec:</p>
+
+  <div class="pipeline-grid">
+    <div class="pipeline-step">
+      <div class="icon">📜</div>
+      <h4>PROV-O</h4>
+      <p>W3C audit trail — who said what, when</p>
+    </div>
+    <div class="pipeline-step">
+      <div class="icon">📦</div>
+      <h4>CycloneDX</h4>
+      <p>Software Bill of Materials</p>
+    </div>
+    <div class="pipeline-step">
+      <div class="icon">📋</div>
+      <h4>SPDX</h4>
+      <p>License & compliance metadata</p>
+    </div>
+    <div class="pipeline-step">
+      <div class="icon">⚡</div>
+      <h4>TypeScript</h4>
+      <p>Runnable state machine class</p>
+    </div>
+    <div class="pipeline-step">
+      <div class="icon">🔍</div>
+      <h4>Z3 Verification</h4>
+      <p>SMT-LIB2 output from --target=z3</p>
+    </div>
+  </div>
+
+  <p><strong>Fulfills NIST SA-11</strong> (human-in-the-loop for automated outputs) — every AI-generated or hand-written spec is compiled through a deterministic pipeline. No LLMs in the compiler. Same input, same output, every time.</p>
+
+  <ul class="check-list">
+    <li>Provenance is <strong>embedded by construction</strong> — not bolted on after the fact</li>
+    <li>41 tests passing, < 2 seconds to run the full suite</li>
+    <li>14 example specks: ToggleSwitch → TwoPhaseCommit → Kafka KRaft → Paxos → Raft</li>
+    <li>Dual-target: TypeScript state machine classes + Z3 SMT verification from the same spec</li>
+    <li>Zero external services — everything runs locally</li>
+  </ul>
+</section>
+
+<section id="speckdl">
+  <h2>SpeckDL by Example</h2>
+  <p>SpeckDL is a typed specification language for state machines. Define your states, actions, preconditions, and mutations — the compiler handles the rest.</p>
+
+  <div class="code-block"><pre><span class="cm">// A simple toggle switch — compiles to TypeScript + 3 provenance artifacts</span>
+<span class="kw">spec</span> <span class="ty">ToggleSwitch</span> {
+  <span class="kw">type</span> <span class="ty">Status</span> = <span class="ty">enum</span> { <span class="st">On</span>, <span class="st">Off</span> }
+
+  <span class="kw">state</span> {
+    <span class="fn">status</span>: <span class="ty">Status</span> = <span class="ty">Status</span>.<span class="st">Off</span>
+  }
+
+  <span class="kw">init</span> <span class="fn">Start</span>() {
+    <span class="kw">set</span> status = <span class="ty">Status</span>.<span class="st">On</span>
+  }
+
+  <span class="kw">action</span> <span class="fn">Flip</span>() {
+    <span class="kw">require</span> status == <span class="ty">Status</span>.<span class="st">On</span>
+    <span class="kw">set</span> status = <span class="ty">Status</span>.<span class="st">Off</span>
+    <span class="kw">emit</span> <span class="st">"TurnedOff"</span>
+  }
+
+  <span class="kw">action</span> <span class="fn">FlipBack</span>() {
+    <span class="kw">require</span> status == <span class="ty">Status</span>.<span class="st">Off</span>
+    <span class="kw">set</span> status = <span class="ty">Status</span>.<span class="st">On</span>
+    <span class="kw">emit</span> <span class="st">"TurnedOn"</span>
+  }
+
+  <span class="kw">invariant</span> <span class="st">"At most one pending action"</span> {
+    <span class="op">!</span>(status == <span class="ty">Status</span>.<span class="st">Flip</span> &amp;&amp; <span class="op">!</span>(status == <span class="ty">Status</span>.<span class="st">FlipBack</span>))
+  }
+}</pre></div>
+
+  <p style="text-align:center; margin-top:1rem;">
+    <strong>Type system:</strong> Int · Float · Bool · String · Enum · Struct · List&lt;T&gt; · Set&lt;T&gt; · Map&lt;K,V&gt; &nbsp;|&nbsp;
+    <strong>Keywords:</strong> spec · type · state · init · action · require · set · emit · invariant
+  </p>
+</section>
+
+<section id="examples">
+  <h2>Real Examples</h2>
+
+  <div class="examples-grid">
+    <div class="example-card">
+      <h4>Two-Phase Commit</h4>
+      <div class="meta">45 lines · 5 actions</div>
+      <p>Classic distributed transaction coordinator. Voting phase, commit phase, abort path — fully specified with guard conditions.</p>
+    </div>
+    <div class="example-card">
+      <h4>Kafka KRaft</h4>
+      <div class="meta">141 lines · 6 safety invariants · BMC verify blocks</div>
+      <p>Flagship example: leader election, log replication, and safety properties verified with Z3 SMT. Don't replace Kafka. Prove it.</p>
+    </div>
+    <div class="example-card">
+      <h4>Paxos</h4>
+      <div class="meta">120 lines · 3 safety invariants</div>
+      <p>Consensus for unreliable networks. Prepare, promise, accept, commit — with "only one value chosen" invariant.</p>
+    </div>
+    <div class="example-card">
+      <h4>Raft</h4>
+      <div class="meta">230 lines · 8 actions · 3 invariants</div>
+      <p>Leader election, log replication, safety. The largest SpeckDL spec — demonstrates composition at scale.</p>
+    </div>
+    <div class="example-card">
+      <h4>Forgejo Issue Workflow</h4>
+      <div class="meta">9 actions · 8 guard conditions</div>
+      <p>Real-world state machine: create → assign → review → merge → close. 5 temporal verification conditions.</p>
+    </div>
+    <div class="example-card">
+      <h4>Access Control</h4>
+      <div class="meta">RBAC system · clean TS output</div>
+      <p>Role-based access with role addition, removal, and permission checks. One of 5 examples with zero TypeScript errors.</p>
+    </div>
+    <div class="example-card">
+      <h4>+ 8 more</h4>
+      <div class="meta">OAuth2AuthorizationCode · DrugDosageCalculator · PaymentService · RetryHandler · TemperatureMonitor · AccountLedger · TigerBeetle · PreconditionTest</div>
+      <p><a href="https://github.com/wscoble/speckl/tree/main/examples">Browse all 14 examples →</a></p>
+    </div>
+  </div>
+</section>
+
+<section id="status">
+  <h2>Status &amp; Roadmap</h2>
+
+  <ul class="check-list">
+    <li><strong>TypeScript codegen:</strong> Complete — state machine classes with full type coverage</li>
+    <li><strong>Z3 verification backend:</strong> Live — <code>--target=z3</code> emits SMT-LIB2 that Z3 accepts</li>
+    <li><strong>OAuth 2.0 spec:</strong> Exists — <code>examples/OAuth2AuthorizationCode.speck</code></li>
+    <li><strong>Rust codegen:</strong> In progress (M2.1)</li>
+    <li><strong>WASM via wasm-pack:</strong> Pending Rust codegen completion</li>
+  </ul>
+
+  <p>The WAT/WASM generator was removed in favor of a proper IR → Rust → wasm-pack pipeline. No hand-rolled WASM text format; no magic.</p>
+</section>
+
+<section id="strategy">
+  <h2>Strategy Ladder</h2>
+  <p>Speckl follows a four-step strategy — each step validates the market before building the next:</p>
+
+  <div class="strategy-ladder">
+    <div class="strategy-step">
+      <div class="phase">Plan A</div>
+      <div class="label">Open Standard</div>
+      <div class="status">✅ Complete</div>
+      <p style="font-size:0.8rem;">MIT license. SpeckDL language + compiler + whitepaper — all public.</p>
+    </div>
+    <div class="strategy-step">
+      <div class="phase">Plan B</div>
+      <div class="label">Consulting</div>
+      <div class="status">🔄 Drafted</div>
+      <p style="font-size:0.8rem;">Help regulated teams adopt spec-first workflows. One-pager ready.</p>
+    </div>
+    <div class="strategy-step">
+      <div class="phase">Plan C</div>
+      <div class="label">Developer Tool / SaaS</div>
+      <div class="status">🔮 Future</div>
+      <p style="font-size:0.8rem;">Self-serve spec validation, CI/CD integration, team collaboration.</p>
+    </div>
+    <div class="strategy-step">
+      <div class="phase">Plan D</div>
+      <div class="label">Compliance API</div>
+      <div class="status">🔮 Future</div>
+      <p style="font-size:0.8rem;">Automated audit reports, traceability matrices, regulatory filings.</p>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <h2>Try It</h2>
+
+  <div class="code-block"><pre><span class="cm"># Clone the repo</span>
+git clone https://github.com/wscoble/speckl.git
+<span class="kw">cd</span> speckl/compiler
+
+<span class="cm"># Build and run tests (41 tests, ~2s)</span>
+npm install
+npm test
+
+<span class="cm"># Compile a spec to TypeScript + provenance artifacts</span>
+node dist/index.js ../examples/TwoPhaseCommit.speck -o out/twophase
+
+<span class="cm"># Compile to Z3 SMT-LIB2 for verification</span>
+node dist/index.js ../examples/KafkaKRaft.speck --target=z3 -o out/kraft
+
+<span class="cm"># Check TypeScript validity</span>
+npx tsc --noEmit -p out/twophase</pre></div>
+</section>
+
+<footer>
+  <p>Speckl is open source under the <a href="https://github.com/wscoble/speckl/blob/main/LICENSE">MIT License</a>.</p>
+  <p>
+    <a href="https://github.com/wscoble/speckl">GitHub</a> ·
+    <a href="https://codeberg.org/sscoble/speckl">Codeberg</a> ·
+    <a href="https://github.com/wscoble/speckl/blob/main/docs/whitepaper-v2.md">Whitepaper v2</a> ·
+    <a href="https://github.com/wscoble/speckl/blob/main/docs/speckl-by-example.md">Tutorial</a> ·
+    <a href="https://github.com/wscoble/speckl/blob/main/docs/distribution-strategy.md">Distribution Strategy</a>
+  </p>
+  <p>Built by Scott Scoble · Greybeard Holdings</p>
+</footer>
+
+</body>
+</html>

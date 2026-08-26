@@ -1,0 +1,97 @@
+speck TwoPhaseCommit {
+    // TLA+ classic: Two-Phase Commit protocol ported to SpeckDL v0.3
+    // Demonstrates Map types, Set operations, and complex action bodies
+    // Adapted from https://lamport.azurewebsites.net/tla/two-phase.html
+
+    state {
+        // Resource Manager state: RM id → "working" | "prepared" | "committed" | "aborted"
+        rmState: Map(String, String)
+
+        // Transaction Manager state
+        tmState: String
+
+        // Set of RMs that have sent Prepared
+        tmPrepared: Set(String)
+
+        // Messages in transit
+        msgs: Set(Message)
+
+        // Set of all RM ids
+        rms: Set(String)
+    }
+
+    init {
+        let allRms := {"rm1", "rm2", "rm3"}
+
+        rms == allRms
+        rmState == mapKeys(allRms, "working")
+        tmState == "init"
+        tmPrepared == emptySet
+        msgs == emptySet
+    }
+
+    invariant TPTypeOK {
+        rmState.values subsetOf {"working", "prepared", "committed", "aborted"}
+        tmState in {"init", "committed", "aborted"}
+        tmPrepared subsetOf rms
+    }
+
+    invariant TPConsistency {
+        tmState == "committed" implies forall rm in rms: rmState[rm] == "committed"
+        tmState == "aborted" implies forall rm in rms: rmState[rm] == "aborted"
+        forall rm in rms:
+            rmState[rm] == "committed" implies tmState != "aborted"
+        forall rm in rms:
+            rmState[rm] == "prepared" implies tmState in {"init", "committed"}
+    }
+
+    action RMPrepare(rm: String) {
+        require rm in rms
+        require rmState[rm] == "working"
+
+        rmState[rm] := "prepared"
+        msgs := msgs union {{ type: "Prepared", rm: rm }}
+        emit Prepared { rm: rm }
+    }
+
+    action TMRcvPrepared(rm: String) {
+        require tmState == "init"
+        require { type: "Prepared", rm: rm } in msgs
+        require rm in rms
+
+        tmPrepared := tmPrepared union {rm}
+    }
+
+    action TMCommit {
+        require tmState == "init"
+        require tmPrepared == rms
+
+        tmState := "committed"
+        msgs := msgs union {{ type: "Commit" }}
+        forall rm in rms:
+            rmState[rm] := "committed"
+        emit AllCommitted {}
+    }
+
+    action TMAbort {
+        require tmState == "init"
+
+        tmState := "aborted"
+        msgs := msgs union {{ type: "Abort" }}
+        forall rm in rms:
+            if rmState[rm] != "committed":
+                rmState[rm] := "aborted"
+        emit Aborted {}
+    }
+
+    action RMChooseToAbort(rm: String) {
+        require rm in rms
+        require rmState[rm] == "working"
+        require tmState == "init"
+
+        rmState[rm] := "aborted"
+        emit RMAborted { rm: rm }
+    }
+
+    next: RMPrepare | TMRcvPrepared | TMCommit | TMAbort | RMChooseToAbort
+}

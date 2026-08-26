@@ -1,0 +1,272 @@
+// forgejo-issue-workflow.speckdl
+// Formal specification: A Forgejo issue is a prompt wrapped in a state machine.
+//
+// Purpose: Make the informal prompt → formal. Track who can do what, when, and
+// what evidence is required to move forward. Every transition is a decision.
+
+speck IssueWorkflow {
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: conversation ref "discord-2026-05-03"
+  review: hybrid
+
+  // ─── Provenance ───────────────────────────────────────────
+  provenance {
+    design_decision: "Issues as prompts + state machines"
+    parent_spec: "AGENTS.md Invariants"
+    external_doc: "https://os.scoble.me/forgejo/marcus"
+  }
+
+  // ─── Derivation & Satisfaction ────────────────────────────
+  derives from AGENTS-INVARIANTS via "formalization of operational rules"
+  satisfies AGENTS-REQ-01 clause "1.1"
+  satisfies AGENTS-REQ-02 clause "1.3"
+  satisfies AGENTS-REQ-03 clause "1.4"
+  satisfies AGENTS-REQ-04 clause "1.5"
+  satisfies AGENTS-REQ-05 clause "1.6"
+
+  // ─── Types ────────────────────────────────────────────────
+  interface IssueState {
+    Open, Grooming, Groomed, Assigned, InProgress, InReview, Merged, Blocked, Closed
+  }
+
+  // ─── Events ───────────────────────────────────────────────
+  event StateTransition {
+    from: IssueState,
+    to: IssueState,
+    actor: String,
+    reason: String,
+    evidence: String,
+    at: String
+  }
+
+  event EvidenceItem {
+    kind: String,
+    ref: String,
+    verifiedBy: String
+  }
+
+  // ─── Input / Output ────────────────────────────────────────
+  input: {
+    prompt: String,
+    creator: String,
+    repo: String,
+    labels: [String],
+    assignee: String,
+    createdAt: String
+  }
+
+  output: {
+    state: IssueState,
+    stateAt: String,
+    decisionLog: [StateTransition],
+    blockedBy: [String],
+    evidence: [EvidenceItem]
+  }
+
+  // ─── State Variables ──────────────────────────────────────
+  state: {
+    status: IssueState,
+    assignee: String,
+    repo: String,
+    decisionCount: Nat,
+    lastActionBy: String
+  }
+
+  init: {
+    status := Open,
+    assignee := "",
+    repo := "",
+    decisionCount := 0,
+    lastActionBy := ""
+  }
+
+  // ─── Actions (State Transitions) ──────────────────────────
+  action create(creator: String, prompt: String, repo: String, labels: [String]) {
+    require status == Open
+    assign status = Open
+    assign decisionCount = 0
+    assign lastActionBy = creator
+    emit StateTransition {
+      from: Open,
+      to: Open,
+      actor: creator,
+      reason: prompt,
+      evidence: repo,
+      at: now()
+    }
+  }
+
+  action groom(assignee: String, refinedPrompt: String, acceptanceCriteria: [String]) {
+    require status == Open || status == Grooming
+    require len(acceptanceCriteria) > 0
+    assign status = Groomed
+    assign lastActionBy = assignee
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: status,
+      to: Groomed,
+      actor: assignee,
+      reason: refinedPrompt,
+      evidence: join(acceptanceCriteria, ";"),
+      at: now()
+    }
+  }
+
+  action assign(assignee: String, agent: String) {
+    require status == Groomed || status == Open
+    require assignee == "sscoble"
+    require repo != "marcus/coach"
+    assign status = Assigned
+    assign lastActionBy = agent
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: status,
+      to: Assigned,
+      actor: agent,
+      reason: "delegated to " + agent,
+      evidence: "",
+      at: now()
+    }
+  }
+
+  action startWork(agent: String) {
+    require status == Assigned
+    assign status = InProgress
+    assign lastActionBy = agent
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: Assigned,
+      to: InProgress,
+      actor: agent,
+      reason: "beginning implementation",
+      evidence: "",
+      at: now()
+    }
+  }
+
+  action submitPR(agent: String, prNumber: Nat, commitHash: String) {
+    require status == InProgress
+    assign status = InReview
+    assign lastActionBy = agent
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: InProgress,
+      to: InReview,
+      actor: agent,
+      reason: "PR submitted",
+      evidence: commitHash,
+      at: now()
+    }
+    emit EvidenceItem {
+      kind: "pr",
+      ref: prNumber,
+      verifiedBy: agent
+    }
+  }
+
+  action merge(prNumber: Nat, merger: String, commitHash: String) {
+    require status == InReview
+    assign status = Merged
+    assign lastActionBy = merger
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: InReview,
+      to: Merged,
+      actor: merger,
+      reason: "PR merged",
+      evidence: commitHash,
+      at: now()
+    }
+    emit EvidenceItem {
+      kind: "commit",
+      ref: commitHash,
+      verifiedBy: merger
+    }
+  }
+
+  action close(closer: String, resolution: String) {
+    require status == Merged || status == Open || status == Groomed
+    require closer == assignee || (closer == "sscoble" && assignee == "")
+    assign status = Closed
+    assign lastActionBy = closer
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: status,
+      to: Closed,
+      actor: closer,
+      reason: resolution,
+      evidence: "",
+      at: now()
+    }
+  }
+
+  action reopen(opener: String, reason: String) {
+    require status == Closed || status == Blocked
+    assign status = Open
+    assign lastActionBy = opener
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: status,
+      to: Open,
+      actor: opener,
+      reason: reason,
+      evidence: "",
+      at: now()
+    }
+  }
+
+  action block(agent: String, blocker: String) {
+    require status != Blocked && status != Closed
+    assign status = Blocked
+    assign lastActionBy = agent
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: status,
+      to: Blocked,
+      actor: agent,
+      reason: "blocked by: " + blocker,
+      evidence: "",
+      at: now()
+    }
+  }
+
+  action unblock(agent: String, resolution: String) {
+    require status == Blocked
+    assign status = Open
+    assign lastActionBy = agent
+    assign decisionCount = decisionCount + 1
+    emit StateTransition {
+      from: Blocked,
+      to: Open,
+      actor: agent,
+      reason: resolution,
+      evidence: "",
+      at: now()
+    }
+  }
+
+  // ─── Constraints ──────────────────────────────────────────
+  constraint: len(labels) > 0
+  constraint: forall l in labels: l in {"bug", "feature", "improvement", "question", "blocked"}
+  constraint: implies(now() - lastIssueCreatedAt(agent) < 3600, issuesCreatedInLastHour(agent) <= 3)
+  constraint: implies(now() - lastCommentAt(agent) < 30, false)
+  constraint: implies(repo in {"marcus/engineering", "marcus/market", "marcus/content", "marcus/trust"}, assignee == "sscoble")
+  constraint: implies(creator == agent, repo != agentRepo(agent))
+  constraint: decisionCount == len(decisionLog)
+  constraint: implies(status == Closed, len(evidence) > 0 || lastStateBeforeClosed() in {Merged, Blocked})
+
+  // ─── Verification ─────────────────────────────────────────
+  verify: always(implies(status == InProgress, eventually(status == Merged || status == Closed)))
+  verify: always(implies(status == Blocked, eventually(status != Blocked)))
+  verify: always(implies(lastActionBy != "sscoble", status != Assigned))
+  verify: always(implies(decisionCount > 0, forall t in decisionLog: len(t.reason) > 0))
+  verify: always(implies(status == Groomed || status == Assigned || status == InProgress, len(acceptanceCriteria) > 0))
+
+  // ─── BOM ──────────────────────────────────────────────────
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    solver: "z3" version "4.12.5"
+    runtime: "OpenClaw" version "2.1.0"
+    license: "MIT"
+  }
+}

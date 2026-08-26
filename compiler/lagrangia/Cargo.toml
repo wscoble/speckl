@@ -1,0 +1,13 @@
+[package]
+name = "lagrangia"
+version = "0.1.0"
+edition = "2021"
+description = "Lagrangia reducer: action functional + variational selection over Speckl candidate implementations"
+
+[lib]
+name = "lagrangia"
+path = "src/lib.rs"
+
+[[test]]
+name = "toggle_switch"
+path = "tests/toggle_switch.rs"

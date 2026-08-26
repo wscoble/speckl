@@ -1,0 +1,80 @@
+speck AccountLedger {
+    // Naive TigerBeetle account ledger — single-account balance tracking
+    // Demonstrates Set and Map types with v0.3 imperative syntax
+
+    state {
+        // Account ID → current balance (allows overdraft via negative balance)
+        balances: Map(Nat, Int)
+
+        // Set of account IDs that exist
+        accounts: Set(Nat)
+
+        // Pending transfers: transfer ID → { from, to, amount }
+        pendingTransfers: Map(Nat, PendingTransfer)
+
+        // Set of transfer IDs currently in-flight
+        inFlight: Set(Nat)
+    }
+
+    init {
+        balances == emptyMap
+        accounts == emptySet
+        pendingTransfers == emptyMap
+        inFlight == emptySet
+    }
+
+    invariant NoNegativeBalancesWithoutOverdraft {
+        forall id in accounts:
+            balances[id] >= 0
+    }
+
+    invariant PendingConsistent {
+        forall tid in inFlight:
+            tid in pendingTransfers.keys
+    }
+
+    action OpenAccount(acctId: Nat) {
+        require acctId notIn accounts
+        accounts := accounts union {acctId}
+        balances[acctId] := 0
+        emit AccountOpened { id: acctId }
+    }
+
+    action CreateTransfer(tid: Nat, from: Nat, to: Nat, amount: Nat) {
+        require tid notIn inFlight
+        require from in accounts
+        require to in accounts
+        require from != to
+        require balances[from] >= amount
+
+        let pt := { from: from, to: to, amount: amount }
+        pendingTransfers[tid] := pt
+        inFlight := inFlight union {tid}
+        balances[from] := balances[from] - amount
+        emit TransferCreated { id: tid, from: from, to: to, amount: amount }
+    }
+
+    action CommitTransfer(tid: Nat) {
+        require tid in inFlight
+        require tid in pendingTransfers.keys
+
+        let pt := pendingTransfers[tid]
+        balances[pt.to] := balances[pt.to] + pt.amount
+        pendingTransfers := pendingTransfers \ {tid}
+        inFlight := inFlight \ {tid}
+        emit TransferCommitted { id: tid, from: pt.from, to: pt.to, amount: pt.amount }
+    }
+
+    action VoidTransfer(tid: Nat) {
+        require tid in inFlight
+        require tid in pendingTransfers.keys
+
+        let pt := pendingTransfers[tid]
+        balances[pt.from] := balances[pt.from] + pt.amount
+        pendingTransfers := pendingTransfers \ {tid}
+        inFlight := inFlight \ {tid}
+        emit TransferVoided { id: tid, from: pt.from, to: pt.to, amount: pt.amount }
+    }
+
+    next: OpenAccount | CreateTransfer | CommitTransfer | VoidTransfer
+}

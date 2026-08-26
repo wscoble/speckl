@@ -1,0 +1,30 @@
+speck ToggleSwitch {
+    // Simplest possible state machine: on/off toggle
+    // Demonstrates the v0.3 imperative action body syntax
+
+    state {
+        isOn: Bool
+    }
+
+    init {
+        isOn == false
+    }
+
+    invariant SwitchConsistent {
+        isOn in {true, false}
+    }
+
+    action TurnOn {
+        require not isOn
+        isOn := true
+        return isOn
+    }
+
+    action TurnOff {
+        require isOn
+        isOn := false
+        return isOn
+    }
+
+    next: TurnOn | TurnOff
+}

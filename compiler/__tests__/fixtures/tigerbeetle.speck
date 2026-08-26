@@ -1,0 +1,91 @@
+speck TigerBeetle {
+  author: "Speckl Compiler v0.3"
+  source: architecture_review ref "TigerBeetle-Core-Port"
+  review: hybrid
+
+  state: {
+    nextId: Nat := 1
+    accounts: Map<Nat, Account>
+    transfers: Set<Transfer>
+    ledgerOpen: Bool := true
+  }
+
+  init: {
+    nextId := 1
+    accounts := Map.empty()
+    transfers := Set.empty()
+    ledgerOpen := true
+  }
+
+  event AccountCreated {
+    accountId: Nat,
+    initialBalance: Real
+  }
+
+  event TransferCompleted {
+    from: Nat,
+    to: Nat,
+    amount: Real,
+    transferId: Nat
+  }
+
+  event AccountClosed {
+    accountId: Nat
+  }
+
+  action CreateAccount(initialDeposit: Real) {
+    require initialDeposit >= 0
+    require ledgerOpen == true
+
+    let newId := nextId
+    nextId := nextId + 1
+    accounts[newId] := Account { id: newId, balance: initialDeposit, open: true }
+
+    emit AccountCreated { accountId: newId, initialBalance: initialDeposit }
+    return newId
+  }
+
+  action Transfer(from: Nat, to: Nat, amount: Real) {
+    require from in accounts
+    require to in accounts
+    require from != to
+    require amount > 0
+    require accounts[from].balance >= amount
+    require accounts[from].open == true
+    require accounts[to].open == true
+    require ledgerOpen == true
+
+    accounts[from].balance := accounts[from].balance - amount
+    accounts[to].balance := accounts[to].balance + amount
+
+    let tx := Transfer { from, to, amount, id: nextId }
+    nextId := nextId + 1
+    transfers.add(tx)
+
+    emit TransferCompleted { from, to, amount, transferId: tx.id }
+  }
+
+  action CloseAccount(id: Nat) {
+    require id in accounts
+    require accounts[id].balance == 0
+    require accounts[id].open == true
+
+    accounts[id].open := false
+
+    emit AccountClosed { accountId: id }
+  }
+
+  action CloseLedger() {
+    require forall(id in accounts.keys(), accounts[id].open == false)
+
+    ledgerOpen := false
+  }
+
+  constraint: forall(id in accounts.keys(), implies(accounts[id].open, accounts[id].balance >= 0))
+  constraint: ledgerOpen in [true, false]
+
+  verify: always(implies(not ledgerOpen,
+    forall(id in accounts.keys(), accounts[id].open == false)))
+  verify: always(implies(transfers.size() > 0,
+    exists(tx in transfers, tx.amount > 0)))
+}
