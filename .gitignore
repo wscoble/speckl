@@ -37,3 +37,9 @@ Thumbs.db
 # Tmp
 *.bak
 compiler/test-output-rust/
+
+# Internal / non-public
+reference-agent/
+.forgejo/
+bench-rust.mjs
+bench-rust.sh

@@ -98,6 +98,6 @@ If you want to follow the work or contribute, the repo is open and the issues ar
 
 ---
 
-*This post is part of the Speckl proof catalog: formally verifying the software the world depends on. Read the [Kafka proof](/blog/prove-kafka) or explore the [Speckl compiler](https://os.scoble.me/forgejo/sscoble/speckl).*
+*This post is part of the Speckl proof catalog: formally verifying the software the world depends on. Read the [Kafka proof](/blog/prove-kafka) or explore the [Speckl compiler](https://github.com/wscoble/speckl).*
 
 *Speckl is MIT-licensed and open source. The specifications, the compiler, and the findings are all public.*

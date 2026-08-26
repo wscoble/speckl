@@ -94,6 +94,6 @@ That's what a provenance-first approach to specifications enables. It's not just
 
 ---
 
-*This is part of a series on Speckl, a specification language that compiles to runnable software with embedded provenance. Read the [full whitepaper](https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/whitepaper-v2.md), explore [Speckl by Example](https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/speckl-by-example.md), or check out the [compiler](https://os.scoble.me/forgejo/sscoble/speckl).*
+*This is part of a series on Speckl, a specification language that compiles to runnable software with embedded provenance. Read the [full whitepaper](https://github.com/wscoble/speckl/blob/main/docs/whitepaper-v2.md), explore [Speckl by Example](https://github.com/wscoble/speckl/blob/main/docs/speckl-by-example.md), or check out the [compiler](https://github.com/wscoble/speckl).*
 
 *Speckl is MIT-licensed and open source. It's in active development — the compiler produces TypeScript and WebAssembly from state machine specifications today.*

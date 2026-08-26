@@ -13,7 +13,7 @@ speck IssueWorkflow {
   provenance {
     design_decision: "Issues as prompts + state machines"
     parent_spec: "AGENTS.md Invariants"
-    external_doc: "https://os.scoble.me/forgejo/marcus"
+    external_doc: "https://github.com/wscoble/speckl"
   }
 
   // ─── Derivation & Satisfaction ────────────────────────────

@@ -2,7 +2,7 @@
 
 > The specification-first language for auditable software.
 > **This version adds Dark Provenance primitives (`provenance`, `review`, `derives`, `satisfies`, `author`, `source`), SpeckBOM (`bom` + import pinning), and dual-output BOM format (CycloneDX v1.6 + SPDX 3.0.1).**
-> Part of the [Speckl](https://os.scoble.me/forgejo/sscoble/speckl) project. MIT License.
+> Part of the [Speckl](https://github.com/wscoble/speckl) project. MIT License.
 
 ---
 
@@ -404,7 +404,7 @@ The provenance graph is serialized as JSON-LD and stored alongside the compiled 
 {
   "@context": {
     "prov": "http://www.w3.org/ns/prov#",
-    "speckl": "https://os.scoble.me/speckl/ns#",
+    "speckl": "https://wscoble.github.io/speckl/ns#",
     "rdfs": "http://www.w3.org/2000/01/rdf-schema#"
   },
   "@id": "speck:RetryHandler",
@@ -598,7 +598,7 @@ The compiler also emits a valid SPDX 3.0.1 JSON-LD document using the SPDX `Sbom
   "@context": [
     "https://spdx.github.io/spdx-spec/v3.0.1/context.jsonld",
     {
-      "speckl": "https://os.scoble.me/speckl/ns#"
+      "speckl": "https://wscoble.github.io/speckl/ns#"
     }
   ],
   "@id": "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
@@ -1108,4 +1108,4 @@ Together they form the complete audit trail: **intent** (PROV-O) + **composition
 
 ---
 
-*This is a v0.2-DP specification. Dark Provenance and SpeckBOM primitives are optional but recommended for safety-critical and regulated systems. SpeckBOM compilation output supports both CycloneDX v1.6 (OWASP/ECMA-424) and SPDX 3.0.1 (ISO 5962:2023). Feedback welcome via the [Speckl repository](https://os.scoble.me/forgejo/sscoble/speckl).*
+*This is a v0.2-DP specification. Dark Provenance and SpeckBOM primitives are optional but recommended for safety-critical and regulated systems. SpeckBOM compilation output supports both CycloneDX v1.6 (OWASP/ECMA-424) and SPDX 3.0.1 (ISO 5962:2023). Feedback welcome via the [Speckl repository](https://github.com/wscoble/speckl).*

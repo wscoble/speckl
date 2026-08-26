@@ -1408,6 +1408,6 @@ If you build systems that matter — systems where a bug means a compliance fine
 
 **Start at:** [speckl.scoble.me](https://speckl.scoble.me)
 
-**Source code:** [os.scoble.me/forgejo/sscoble/speckl](https://os.scoble.me/forgejo/sscoble/speckl)
+**Source code:** [github.com/wscoble/speckl](https://github.com/wscoble/speckl)
 
 **Whitepaper v2 complete. All 8 sections shipped. May 7, 2026.**

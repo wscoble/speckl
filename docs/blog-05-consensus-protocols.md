@@ -180,7 +180,7 @@ The TigerBeetle spec compiles to TypeScript with 3 remaining type errors (all `T
 
 ## Where We Are
 
-The compiler is open source ([os.scoble.me/forgejo/sscoble/speckl](https://os.scoble.me/forgejo/sscoble/speckl), MIT), at v0.3.1 with:
+The compiler is open source ([github.com/wscoble/speckl](https://github.com/wscoble/speckl), MIT), at v0.3.1 with:
 - 41 tests passing (100%)
 - 11 example specs (5 producing zero TypeScript errors)
 - All three consensus protocols compiling to the full 5-artifact output
