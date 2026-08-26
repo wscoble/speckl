@@ -5,15 +5,15 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
 ## What It Does
 
 ```
-.speckdl spec ──→ TypeScript          ← typed, importable state machine classes
-              ├── Z3 SMT-LIB2         ← formal verification (bounded model checking)
-              ├── Rust                ← state machine structs and enums
-              ├── Protobuf            ← message definitions
-              ├── K8s CRDs            ← Kubernetes custom resources
-              ├── OpenAPI 3.1         ← REST API surface
-              ├── PROV-O (RDF)         ← W3C provenance standard
-              ├── CycloneDX SBOM       ← OWASP software bill of materials
-              └── SPDX SBOM            ← Linux Foundation SBOM standard
+.speckdl spec ──→ TypeScript          ← typed, importable state machine classes  ✓ tested
+              ├── Z3 SMT-LIB2         ← formal verification (bounded model checking)  ✓ tested
+              ├── Rust                ← state machine structs and enums  ⚠ untested
+              ├── Protobuf            ← message definitions  ✓ tested
+              ├── K8s CRDs            ← Kubernetes custom resources  ✓ tested
+              ├── OpenAPI 3.1         ← REST API surface  ✓ tested
+              ├── PROV-O (RDF)         ← W3C provenance standard  ✓ tested
+              ├── CycloneDX SBOM       ← OWASP software bill of materials  ✓ tested
+              └── SPDX SBOM            ← Linux Foundation SBOM standard  ✓ tested
 ```
 
 No LLMs in the compilation path. Same spec, same output, every time.
@@ -60,8 +60,9 @@ Browse all in [examples/](examples/).
 ## Status
 
 - 122 tests passing, CI green
-- Tested backends: TypeScript, Z3, Rust, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O
-- TLA+ ports: Two-Phase Commit, Paxos, Raft
+- Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O
+- Untested backends: Rust (generator exists, no test coverage yet)
+- TLA+ models: Two-Phase Commit, Paxos, and Raft are ported as `.speckdl` specs (inspired by the original TLA+ models, not TLA+ output)
 
 ## License
 
