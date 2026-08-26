@@ -8,11 +8,14 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import path, { join } from 'path';
 import { parseSpeckFile } from '../../parser.js';
 import { lower } from '../lower.js';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const REPO = '__dirname/../..';
+
+const REPO = path.resolve(__dirname, '..', '..', '..', '..');
 
 function lowerFixture(name: string) {
   const filePath = join(REPO, 'compiler', '__tests__', 'fixtures', name);

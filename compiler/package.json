@@ -16,6 +16,8 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "js-yaml": "^5.4.0",
     "yargs": "^17.7.2"
   },
   "devDependencies": {

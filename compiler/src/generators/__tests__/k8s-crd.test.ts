@@ -13,7 +13,9 @@
 //   - Be handled by the openapi generator (as `type: ['T', 'null']`)
 
 import { describe, it, expect } from 'vitest';
-import { join } from 'path';
+import path, { join } from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { parseSpeckFile } from '../../parser.js';
@@ -21,7 +23,7 @@ import { lower } from '../../ir/lower.js';
 import { generateK8sCRD } from '../k8s-crd.js';
 import { OpenAPITarget } from '../openapi.js';
 
-const REPO = '__dirname/../..';
+const REPO = path.resolve(__dirname, '..', '..', '..', '..');
 
 function compileCRDs(name: string): string {
   const filePath = join(REPO, 'examples', name);

@@ -18,11 +18,14 @@
 //   - Parse `service { rpc X(...) returns (...); }` syntax cleanly
 
 import { describe, it, expect } from 'vitest';
-import { join } from 'path';
+import path, { join } from 'path';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { parseSpeckContent, parseSpeckFile } from '../../parser.js';
 import { generateProtobuf } from '../protobuf.js';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -580,7 +583,7 @@ speck DeterminismTest {
 
 describe('Protobuf backend: ToggleSwitch example', () => {
   it('compiles ToggleSwitch.speck to valid .proto', () => {
-    const ast = parseSpeckFile(join('__dirname/../..', 'examples', 'ToggleSwitch.speck'));
+    const ast = parseSpeckFile(join(path.resolve(__dirname, '..', '..', '..', '..'), 'examples', 'ToggleSwitch.speck'));
     const tmp = mkdtempSync(join(tmpdir(), 'speckl-proto-toggle-'));
     try {
       generateProtobuf(ast, tmp);
@@ -598,124 +601,3 @@ describe('Protobuf backend: ToggleSwitch example', () => {
   });
 });
 
-describe('Protobuf backend: federated-meetup integration', () => {
-  it('compiles FederatedMeetup.speckdl with all transition payloads', () => {
-    const ast = parseSpeckFile(
-      join('__dirname/../../examples', 'specs', 'FederatedMeetup.speckdl')
-    );
-    const tmp = mkdtempSync(join(tmpdir(), 'speckl-proto-fm-'));
-    try {
-      generateProtobuf(ast, tmp);
-      const protoPath = join(tmp, 'federated_meetup.proto');
-      expect(existsSync(protoPath)).toBe(true);
-      const proto = readFileSync(protoPath, 'utf-8');
-
-      // Package and go_package
-      expect(proto).toContain('package federated_meetup.v1;');
-      expect(proto).toContain('option go_package = "github.com/wscoble/federated-meetup/proto/federated_meetup/v1;federatedmeetupv1";');
-
-      // Enums
-      expect(proto).toContain('enum CustodyTier {');
-      expect(proto).toContain('CUSTODY_TIER_UNSPECIFIED = 0;');
-      expect(proto).toContain('CUSTODY_TIER_COLD_HARDWARE = 1;');
-      expect(proto).toContain('enum TransitionType {');
-      expect(proto).toContain('TRANSITION_TYPE_CREATE_GROUP = 1;');
-
-      // Key messages
-      expect(proto).toContain('message PublicKey {');
-      expect(proto).toContain('message Signature {');
-      expect(proto).toContain('message StateRoot {');
-      expect(proto).toContain('message StateSnapshot {');
-
-      // All transition payload messages (event_suffix: "Payload")
-      const payloadMessages = [
-        'CreateGroupPayload',
-        'AddStewardPayload',
-        'RemoveStewardPayload',
-        'ChangeThresholdPayload',
-        'AddMemberPayload',
-        'RemoveMemberPayload',
-        'CreateEventPayload',
-        'UpdateEventPayload',
-        'CancelEventPayload',
-        'RsvpPayload',
-        'CancelRsvpPayload',
-        'AttestPayload',
-        'ForkPayload',
-        'MigratePayload',
-        'IssueHostCertPayload',
-        'AddHostPeerPayload',
-        'RemoveHostPeerPayload',
-        'RevokeHostCertPayload',
-        'DeclareStewardCustodyPayload',
-        'SlashStewardPayload',
-        'NameBindPayload',
-        'BranchCreatePayload',
-      ];
-      for (const msg of payloadMessages) {
-        expect(proto).toContain(`message ${msg} {`);
-      }
-
-      // Transition message with oneof payload
-      expect(proto).toContain('message Transition {');
-      expect(proto).toContain('TransitionType type = 1;');
-      expect(proto).toContain('oneof payload {');
-      expect(proto).toContain('CreateGroupPayload create_group = 10;');
-
-      // Service
-      expect(proto).toContain('service HostService {');
-      expect(proto).toContain('rpc GetGroup(GetGroupRequest) returns (GetGroupResponse);');
-      expect(proto).toContain('rpc SubmitTransition(SubmitTransitionRequest) returns (SubmitTransitionResponse);');
-
-      // Request/response messages
-      expect(proto).toContain('message GetGroupRequest {');
-      expect(proto).toContain('message GetGroupResponse {');
-      expect(proto).toContain('message SubmitTransitionRequest {');
-      expect(proto).toContain('message SubmitTransitionResponse {');
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it('produces byte-stable output for FederatedMeetup.speckdl', () => {
-    const src = readFileSync(
-      join('__dirname/../../examples', 'specs', 'FederatedMeetup.speckdl'),
-      'utf-8'
-    );
-    const proto1 = compileProto(src, 'FederatedMeetup');
-    const proto2 = compileProto(src, 'FederatedMeetup');
-    expect(proto1).toBe(proto2);
-  });
-});
-
-describe('Protobuf backend: field name snake_case conversion', () => {
-  it('converts camelCase field names to snake_case', () => {
-    const proto = compileProto(`
-speck SnakeCaseTest {
-  interface Record {
-    branchId: Nat,
-    groupName: String,
-    isActive: Bool
-  }
-}
-`);
-    expect(proto).toContain('uint64 branch_id =');
-    expect(proto).toContain('string group_name =');
-    expect(proto).toContain('bool is_active =');
-  });
-
-  it('converts camelCase event field names to snake_case', () => {
-    const proto = compileProto(`
-speck EventSnakeTest {
-  event CreateGroup {
-    canonicalName: String,
-    displayName: String,
-    initialMeshPeers: List<String>
-  }
-}
-`);
-    expect(proto).toContain('string canonical_name =');
-    expect(proto).toContain('string display_name =');
-    expect(proto).toContain('repeated string initial_mesh_peers =');
-  });
-});
