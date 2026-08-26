@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -13,12 +13,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: compiler/package-lock.json
 
       - name: Install dependencies
         working-directory: compiler
