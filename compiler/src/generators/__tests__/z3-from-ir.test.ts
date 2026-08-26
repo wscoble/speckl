@@ -11,13 +11,16 @@
 //   - Emit check-sat and get-model at the end
 
 import { describe, it, expect } from 'vitest';
-import { join } from 'path';
+import path, { join } from 'path';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { writeFileSync } from 'fs';
 import { parseSpeckFile } from '../../parser.js';
 import { lower } from '../../ir/lower.js';
 import { generateZ3FromIR } from '../z3-from-ir.js';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 
 function lowerFromContent(src: string) {
   const filePath = '/tmp/speckl-z3-test.speckdl';
@@ -182,8 +185,8 @@ speck BMCTest {
 
   it('produces valid SMT for TEF (real spec)', () => {
     // TEF has 8 constraints. The IR-driven Z3 should emit all 8 as assert statements.
-    const ast = parseSpeckFile(join('__dirname/../..', 'examples', 'tef.speckdl'));
-    const ir = lower(ast, { filePath: join('__dirname/../..', 'examples', 'tef.speckdl'), resolveImports: false });
+    const ast = parseSpeckFile(join(path.resolve(__dirname, '..', '..', '..', '..'), 'examples', 'tef.speckdl'));
+    const ir = lower(ast, { filePath: join(path.resolve(__dirname, '..', '..', '..', '..'), 'examples', 'tef.speckdl'), resolveImports: false });
     const smt = runZ3(ir);
 
     // Should have the standard SMT-LIB2 footer

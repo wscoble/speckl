@@ -6,11 +6,14 @@
 // claim holds for the content class.
 
 import { describe, it, expect } from 'vitest';
-import { join } from 'path';
+import path, { join } from 'path';
 import { parseSpeckFile } from '../../src/parser.js';
 import { lower } from '../../src/ir/lower.js';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const REPO = '__dirname/../..';
+
+const REPO = path.resolve(__dirname, '..', '..', '..');
 
 describe('Blog IR', () => {
   const fp = join(REPO, 'examples', 'Blog.speckdl');

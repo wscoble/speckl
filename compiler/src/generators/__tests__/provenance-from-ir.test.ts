@@ -15,15 +15,18 @@
 // AST-based one which depends on the source declaring everything.
 
 import { describe, it, expect } from 'vitest';
-import { join } from 'path';
+import path, { join } from 'path';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { parseSpeckFile } from '../../parser.js';
 import { lower } from '../../ir/lower.js';
 import { generateProvenanceFromIR } from '../provenance-from-ir.js';
 import { writeFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const REPO = '__dirname/../..';
+
+const REPO = path.resolve(__dirname, '..', '..', '..', '..');
 
 function lowerFromContent(src: string) {
   const filePath = '/tmp/speckl-prov-test.speckdl';

@@ -5,15 +5,18 @@
 // for any spec. If they diverge, the IR is missing something.
 
 import { describe, it, expect } from 'vitest';
-import { join } from 'path';
+import path, { join } from 'path';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { parseSpeckFile } from '../../parser.js';
 import { lower } from '../../ir/lower.js';
 import { generateTypeScriptStateMachine } from '../typescript-state-machine.js';
 import { generateTypeScriptFromIR } from '../typescript-from-ir.js';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const REPO = '__dirname/../..';
+
+const REPO = path.resolve(__dirname, '..', '..', '..', '..');
 
 function compileBoth(name: string): { ast: string; ir: string } {
   const filePath = join(REPO, 'compiler', '__tests__', 'fixtures', name);
