@@ -1,6 +1,6 @@
 # Designing SpeckDL: What a Spec Language Needs in 2026
 
-> Blog Post #2/5 in the Speckl technical series. Extract from [Speckl Whitepaper v2](https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/whitepaper-v2.md), Section 2.
+> Blog Post #2/5 in the Speckl technical series. Extract from [Speckl Whitepaper v2](https://github.com/wscoble/speckl/blob/main/docs/whitepaper-v2.md), Section 2.
 
 ---
 
@@ -137,9 +137,9 @@ The third lesson: **provenance changes the conversation.** When you can show an 
 
 **Next in this series:** Blog Post #3 — "How Speckl's Compiler Works: From Spec to Five Auditable Artifacts" — diving into the compiler architecture: parser, type checker, provenance injector, and multi-target code generation.
 
-**Read the full whitepaper:** [Speckl Whitepaper v2](https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/whitepaper-v2.md)
+**Read the full whitepaper:** [Speckl Whitepaper v2](https://github.com/wscoble/speckl/blob/main/docs/whitepaper-v2.md)
 
-**Previous post:** [Spec-Code Drift Is a Provenance Problem](https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/blog-01-spec-code-gap.md)
+**Previous post:** [Spec-Code Drift Is a Provenance Problem](https://github.com/wscoble/speckl/blob/main/docs/blog-01-spec-code-gap.md)
 
 ---
 

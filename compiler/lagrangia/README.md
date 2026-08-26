@@ -59,7 +59,7 @@ Requires `z3` on `PATH` (v1.1). Install via `nix profile install nixpkgs#z3` or 
 
 ## Spec
 
-See `~/.hermes/plans/2026-07-18-lagrangia-reducer-spec.md` for the full design and falsification protocol.
+The variational claim: the spec-as-Lagrangian produces a well-defined minimum that Z3 can verify.
 
 ## Falsification conditions
 

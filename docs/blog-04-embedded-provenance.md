@@ -117,7 +117,7 @@ This is post 4 of 5 in our series covering the Speckl compiler and methodology:
 
 The final post in this series will cover the hardest programs to get right: consensus protocols. We'll walk through Two-Phase Commit, Paxos, and Raft — all specified in SpeckDL, all compiling to the full five-artifact output, with WASM that validates through the WebAssembly reference interpreter.
 
-In the meantime: the Speckl compiler is open source at [os.scoble.me/forgejo/sscoble/speckl](https://os.scoble.me/forgejo/sscoble/speckl) (MIT licensed). The v2 whitepaper is in the repo under `docs/whitepaper-v2.md`. And if you want to see provenance in action, clone the repo and run `speckl compile examples/ToggleSwitch.speck` — you'll have all five artifacts in under two seconds.
+In the meantime: the Speckl compiler is open source at [github.com/wscoble/speckl](https://github.com/wscoble/speckl) (MIT licensed). The v2 whitepaper is in the repo under `docs/whitepaper-v2.md`. And if you want to see provenance in action, clone the repo and run `speckl compile examples/ToggleSwitch.speck` — you'll have all five artifacts in under two seconds.
 
 ---
 

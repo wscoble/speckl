@@ -67,7 +67,7 @@ The compiler has been validated against:
 ## Getting Started
 
 ```bash
-git clone https://os.scoble.me/forgejo/sscoble/speckl
+git clone https://github.com/wscoble/speckl.git
 cd speckl/compiler
 npm install
 
@@ -105,7 +105,7 @@ ls out/switch/
 
 ## Known Issues
 
-The `rewriteExpr` function in the TypeScript generator applies spurious `this.state.` prefixes to function parameters in guard expressions. Tracked in [marcus/engineering#9](https://os.scoble.me/forgejo/marcus/engineering/issues/9). Parser also drops `precondition:`/`postcondition:` blocks on some action bodies.
+The `rewriteExpr` function in the TypeScript generator applies spurious `this.state.` prefixes to function parameters in guard expressions. Tracked in [marcus/engineering#9](https://github.com/wscoble/speckl/issues). Parser also drops `precondition:`/`postcondition:` blocks on some action bodies.
 
 ## Contributing
 
@@ -123,7 +123,4 @@ Open an issue or submit a pull request.
 
 MIT © Scott Scoble / Greybeard Holdings, LLC
 
-## Mirrors
-
-- **Primary:** https://os.scoble.me/forgejo/sscoble/speckl
-- **Mirror:** https://codeberg.org/sscoble/speckl
+- **Mirror:** https://github.com/wscoble/speckl

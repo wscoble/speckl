@@ -1,7 +1,7 @@
 # SpeckDL Language Specification v0.2
 
 > The specification-first language for auditable software.
-> Part of the [Speckl](https://os.scoble.me/forgejo/sscoble/speckl) project. MIT License.
+> Part of the [Speckl](https://github.com/wscoble/speckl) project. MIT License.
 
 ---
 
@@ -768,4 +768,4 @@ speckl-compile <file.speck> --output-dir <dir> --bom-format <cdx|spdx|both>
 
 ---
 
-*This is a v0.2 specification. Dark Provenance and SpeckBOM primitives are optional but recommended for safety-critical and regulated systems. Feedback and contributions are welcome via the [Speckl repository](https://os.scoble.me/forgejo/sscoble/speckl).*
+*This is a v0.2 specification. Dark Provenance and SpeckBOM primitives are optional but recommended for safety-critical and regulated systems. Feedback and contributions are welcome via the [Speckl repository](https://github.com/wscoble/speckl).*

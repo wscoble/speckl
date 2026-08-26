@@ -326,4 +326,4 @@ TLA+ proved that formal methods work at scale. SpeckDL makes them deployable.
 
 ---
 
-*Speckl is an open standard (MIT). Contribute at os.scoble.me/forgejo/sscoble/speckl*
+*Speckl is an open standard (MIT). Contribute at github.com/wscoble/speckl*

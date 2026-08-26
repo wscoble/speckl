@@ -151,4 +151,4 @@ In the next post, we'll look at Speckl's embedded provenance system — how the 
 
 *Read Part 1: [Spec-Code Drift Is a Provenance Problem](./blog-01-spec-code-gap.md)*  
 *Read Part 2: [Designing SpeckDL: What a Spec Language Needs in 2026](./blog-02-designing-speckdl.md)*  
-*Speckl repo: [os.scoble.me/forgejo/sscoble/speckl](https://os.scoble.me/forgejo/sscoble/speckl)*
+*Speckl repo: [github.com/wscoble/speckl](https://github.com/wscoble/speckl)*

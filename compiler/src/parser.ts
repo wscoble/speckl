@@ -201,7 +201,7 @@ export interface StateNode {
   // expected binding name (e.g. StateSnapshot instead of
   // FederatedMeetupState), so the Speckl-generated proto is a drop-in
   // for the handwritten one. See:
-  //   .hermes/skills/spec-compiler-dogfood/references/
+  //   docs/
   //     speckl-federated-meetup-protobuf-migration.md
   messageName?: string;
 }
