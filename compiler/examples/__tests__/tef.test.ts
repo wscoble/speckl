@@ -124,8 +124,8 @@ describe('TEF Engine Speckl spec', () => {
     // `parent-spec:speckl-ir-speckdl`.
     expect(prov).toMatch(/parent-spec:speckl-ir-speckdl/);
     // Author as prov:Agent — the IR's authors[] is what feeds the agent entity.
-    // The TEF spec's author is "sscoble" so we expect a foaf:name match.
-    expect(prov).toMatch(/foaf:name":\s*"sscoble"/);
+    // The TEF spec's author is "wscoble" so we expect a foaf:name match.
+    expect(prov).toMatch(/foaf:name":\s*"wscoble"/);
     // Sources as entities with their kind
     expect(prov).toContain('speckl:sourceKind');
     // Design decisions carried over from the spec

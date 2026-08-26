@@ -1323,7 +1323,7 @@ The registry would be a static site (Speckl packages are plain text) hosted on S
 
 #### CI/CD Integration
 
-The long-term vision is a `speckl-validate` GitHub Action / Forgejo Action that:
+The long-term vision is a `speckl-validate` GitHub Action that:
 - Runs on every PR
 - Recompiles all `.speckdl` files
 - Checks that generated artifacts match committed versions (no drift)
@@ -1331,56 +1331,6 @@ The long-term vision is a `speckl-validate` GitHub Action / Forgejo Action that:
 - Fails the build if a spec compiles to code with TypeScript errors or WASM validation failures
 
 This turns "specs as documentation" into "specs as build gate."
-
-### 8.4 Strategic Roadmap
-
-Speckl's development follows a strategy ladder — not a single product, but a sequence of products that build on the same core technology.
-
-#### Phase 1: Open Standard (Now — Summer 2026)
-
-**Goal:** Establish credibility, attract early adopters, build a community of specification authors.
-
-- Complete compiler (record types, action bodies, `in` operator, Map ops)
-- Publish whitepaper v2 (this document)
-- Submit to academic venues (workshops on formal methods, software engineering, supply chain security)
-- Release "Speckl by Example" tutorial and consensus protocol specs as reference implementations
-- Publish on Show HN, Lobsters, and relevant subreddits
-- Seek 3-5 design partners (companies with compliance requirements willing to pilot Speckl)
-
-**Success metric:** 100+ GitHub/Codeberg stars, 3 design partners, 1 conference talk accepted.
-
-#### Phase 2: Consulting (Summer — Fall 2026)
-
-**Goal:** Generate revenue while refining the product through real client use.
-
-- Offer "Speckl adoption consulting" — help teams write their first specs, integrate the compiler into their CI pipeline, and train engineers on the language
-- Pricing: $5,000–$15,000 per engagement (2-4 weeks of part-time work)
-- Use consulting engagements to discover the most painful gaps in the toolchain
-- Publish case studies (with client permission) as proof of production use
-
-**Success metric:** 3 consulting engagements, $15,000+ revenue, 2 published case studies.
-
-#### Phase 3: Developer Tool / SaaS (Fall 2026 — 2027)
-
-**Goal:** Productize the consulting learnings into a self-serve tool.
-
-- Web-based IDE (or VS Code extension with cloud backend)
-- Hosted compiler API (upload `.speckdl`, receive all 5 artifacts)
-- Team collaboration features (shared specs, review workflow, versioned provenance)
-- Freemium pricing: free for open-source specs, paid for private specs and CI integration
-
-**Success metric:** 50+ paying teams, $2,000+ MRR.
-
-#### Phase 4: Compliance API (2027+)
-
-**Goal:** Deep integration into enterprise compliance and audit workflows.
-
-- SOC 2 / ISO 27001 / NIST 800-53 mapping (each control mapped to SpeckDL specs that demonstrate compliance)
-- API for audit tools (read provenance, verify signatures, generate audit reports)
-- Integration with SBOM platforms (Syft, Anchore, SLSA attestations)
-- Enterprise pricing: $500+/month per team
-
-**Success metric:** 5+ enterprise customers, $10,000+ MRR.
 
 ### 8.5 What Will Not Change
 
@@ -1390,7 +1340,7 @@ The roadmap is ambitious, but several core decisions are fixed:
 
 2. **Provenance is not optional.** Every compiler version, every spec, every generated artifact will always have a verifiable provenance chain. This is not a premium feature; it is the foundation.
 
-3. **Open source, MIT license.** The compiler, the language specification, and the reference implementations will remain open source. Revenue comes from tooling, consulting, and hosted services — not from license fees.
+3. **Open source, MIT license.** The compiler, the language specification, and the reference implementations will remain open source. 
 
 4. **Evidence over proof.** SpeckDL will not become a theorem prover. It will remain the language for teams that need *evidence* of correctness (runtime guards, provenance chains, audit trails) rather than *proof* of correctness (formal verification, model checking). Teams that need proofs should use TLA+, Coq, or Dafny — and they can import SpeckDL specs into those tools where overlap exists.
 

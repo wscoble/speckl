@@ -13,7 +13,7 @@
 // express this, the "general purpose" claim holds for the content class.
 
 speck Blog {
-  author: "sscoble"
+  author: "wscoble"
   source: document ref "blog-platform-canonical-spec"
   review: manual
 
@@ -229,7 +229,7 @@ speck Blog {
   // ─── Wire format ──────────────────────────────────────────
 
   proto_package: "blog.v1"
-  go_package: "github.com/sscoble/blog/proto/blog/v1;blogv1"
+  go_package: "github.com/wscoble/blog/proto/blog/v1;blogv1"
   event_suffix: "Request"
 
   // ─── Provenance ──────────────────────────────────────────

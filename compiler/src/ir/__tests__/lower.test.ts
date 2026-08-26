@@ -12,7 +12,7 @@ import { join } from 'path';
 import { parseSpeckFile } from '../../parser.js';
 import { lower } from '../lower.js';
 
-const REPO = '/home/sscoble/speckl';
+const REPO = '__dirname/../..';
 
 function lowerFixture(name: string) {
   const filePath = join(REPO, 'compiler', '__tests__', 'fixtures', name);

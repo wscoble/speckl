@@ -104,9 +104,9 @@ describe('Compiler E2E', () => {
 //   - multiple verify blocks all emitted (memberKey dedup fix) (TS + Rust)
 // ---------------------------------------------------------------------------
 
-const SPEC_PATH = '/home/sscoble/projects/federated-meetup/specs/FederatedMeetupProduct.speckdl';
+const SPEC_PATH = '__dirname/../../examples/specs/FederatedMeetupProduct.speckdl';
 const OUT_DIR = './out';  // CLI writes to ./out relative to compiler cwd
-const COMPILER_DIR = '/home/sscoble/speckl/compiler';
+const COMPILER_DIR = '__dirname/../../compiler';
 
 describe('Z3 / TS / Rust expression translation regressions', () => {
   let z3Output: string;

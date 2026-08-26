@@ -23,7 +23,7 @@ import { lower } from '../../ir/lower.js';
 import { generateProvenanceFromIR } from '../provenance-from-ir.js';
 import { writeFileSync } from 'fs';
 
-const REPO = '/home/sscoble/speckl';
+const REPO = '__dirname/../..';
 
 function lowerFromContent(src: string) {
   const filePath = '/tmp/speckl-prov-test.speckdl';

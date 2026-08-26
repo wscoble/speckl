@@ -10,7 +10,7 @@
 // IR for future use but not declared in the source yet.
 
 speck TodoApp {
-  author: "sscoble"
+  author: "wscoble"
   source: document ref "eloquent-javascript-chapter-4"
   review: manual
 
@@ -98,7 +98,7 @@ speck TodoApp {
   // Protobuf-specific overrides.
 
   proto_package: "todo.v1"
-  go_package: "github.com/sscoble/todo-app/proto/todo/v1;todov1"
+  go_package: "github.com/wscoble/todo-app/proto/todo/v1;todov1"
   event_suffix: "Request"
 
   // ─── Resource lifecycle (K8s CRD target) ─────────────────

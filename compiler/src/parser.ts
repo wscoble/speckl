@@ -13,7 +13,7 @@ export interface SpeckNode {
   license?: string;
   // Protobuf-specific overrides. If unset, generator uses sensible defaults.
   // proto_package: e.g. "federated_meetup.v1"
-  // go_package: e.g. "github.com/sscoble/federated-meetup/proto/federated_meetup/v1;federatedmeetupv1"
+  // go_package: e.g. "github.com/wscoble/federated-meetup/proto/federated_meetup/v1;federatedmeetupv1"
   protoPackage?: string;
   goPackage?: string;
   // Cycle 61: optional event-name suffix. When set, the .proto generator

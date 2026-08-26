@@ -182,8 +182,8 @@ speck BMCTest {
 
   it('produces valid SMT for TEF (real spec)', () => {
     // TEF has 8 constraints. The IR-driven Z3 should emit all 8 as assert statements.
-    const ast = parseSpeckFile(join('/home/sscoble/speckl', 'examples', 'tef.speckdl'));
-    const ir = lower(ast, { filePath: join('/home/sscoble/speckl', 'examples', 'tef.speckdl'), resolveImports: false });
+    const ast = parseSpeckFile(join('__dirname/../..', 'examples', 'tef.speckdl'));
+    const ir = lower(ast, { filePath: join('__dirname/../..', 'examples', 'tef.speckdl'), resolveImports: false });
     const smt = runZ3(ir);
 
     // Should have the standard SMT-LIB2 footer

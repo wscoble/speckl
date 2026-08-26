@@ -10,7 +10,7 @@ import { join } from 'path';
 import { parseSpeckFile } from '../../src/parser.js';
 import { lower } from '../../src/ir/lower.js';
 
-const REPO = '/home/sscoble/speckl';
+const REPO = '__dirname/../..';
 
 describe('Blog IR', () => {
   const fp = join(REPO, 'examples', 'Blog.speckdl');
@@ -69,17 +69,17 @@ describe('Blog IR', () => {
   it('wire_format has proto_package', () => {
     const wf = ir.specks[0].facets.wire_format;
     expect(wf.protoPackage).toBe('blog.v1');
-    expect(wf.goPackage).toBe('github.com/sscoble/blog/proto/blog/v1;blogv1');
+    expect(wf.goPackage).toBe('github.com/wscoble/blog/proto/blog/v1;blogv1');
   });
 
   it('provenance has author and design decisions', () => {
     const p = ir.specks[0].facets.provenance;
     expect(p.authors.length).toBeGreaterThan(0);
-    expect(p.authors[0].name).toBe('sscoble');
+    expect(p.authors[0].name).toBe('wscoble');
   });
 
   it('metadata has author', () => {
     const m = ir.specks[0].facets.metadata;
-    expect(m.author).toBe('sscoble');
+    expect(m.author).toBe('wscoble');
   });
 });

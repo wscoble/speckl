@@ -191,7 +191,7 @@ function emitSpeck(speck: SpeckNode, packageName?: string): string {
 
   const pkg = (speck as any).protoPackage || packageName || `speckl.${snakeCase(speck.name)}.v1`;
   const goPkg = (speck as any).goPackage
-    || `github.com/sscoble/${snakeCase(speck.name)}/proto/${snakeCase(speck.name)}/v1;${snakeCase(speck.name)}v1`;
+    || `github.com/wscoble/${snakeCase(speck.name)}/proto/${snakeCase(speck.name)}/v1;${snakeCase(speck.name)}v1`;
 
   const lines: string[] = [];
 

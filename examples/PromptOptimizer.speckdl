@@ -4,7 +4,7 @@
 
 speck PromptOptimizer {
   version: "0.1.0"
-  author:  "sscoble"
+  author:  "wscoble"
   license: "MIT"
 
   // ─── State ────────────────────────────────────────────────

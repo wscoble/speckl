@@ -13,7 +13,7 @@ import { lower } from '../../ir/lower.js';
 import { generateTypeScriptStateMachine } from '../typescript-state-machine.js';
 import { generateTypeScriptFromIR } from '../typescript-from-ir.js';
 
-const REPO = '/home/sscoble/speckl';
+const REPO = '__dirname/../..';
 
 function compileBoth(name: string): { ast: string; ir: string } {
   const filePath = join(REPO, 'compiler', '__tests__', 'fixtures', name);

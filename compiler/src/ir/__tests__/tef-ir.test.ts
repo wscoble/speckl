@@ -94,13 +94,13 @@ describe('TEF IR lowering', () => {
     expect(externalDocs.length).toBeGreaterThanOrEqual(4);
     expect(parentSpecs.length).toBeGreaterThanOrEqual(1);
     expect(designDecisions.length).toBeGreaterThanOrEqual(3);
-    expect(prov.authors.map((a: any) => a.name)).toContain('sscoble');
+    expect(prov.authors.map((a: any) => a.name)).toContain('wscoble');
   });
 
   it('captures the metadata facet', () => {
     const meta = ir.specks[0].facets.metadata;
     expect(meta.version).toBe('0.1.2');
-    expect(meta.author).toBe('sscoble');
+    expect(meta.author).toBe('wscoble');
   });
 
   it('captures the service definition with 11 RPCs', () => {
