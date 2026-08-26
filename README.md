@@ -33,34 +33,35 @@ ls out/switch/
 
 ## Examples
 
-31 specs from a toggle switch through Raft consensus:
+Formal methods specs from a toggle switch through Raft consensus:
 
 | Example | What it demonstrates |
 |---------|----------------------|
 | ToggleSwitch | Basic states, actions, invariants |
+| AccountLedger | Banking ledger with debit/credit |
 | TwoPhaseCommit | Distributed transaction coordinator |
 | Paxos | Consensus with 3 safety invariants |
 | Raft | Leader election, log replication |
 | KafkaKRaft | KRaft consensus with Z3 verification |
-| TigerBeetleLedger | Financial ledger with debit/credit |
+| TigerBeetleLedger | Financial ledger (ports TigerBeetle core) |
 | OAuth2AuthorizationCode | OAuth 2.0 flow with PKCE |
+| RetryHandler | Error handling with backoff |
 | SQLitePager | SQLite page cache state machine |
-| Marketplace | Two-sided marketplace with payments |
+| SQLiteWAL | SQLite write-ahead log |
+| tef | Complex product spec with K8s CRDs |
 
-Browse all 31 in [examples/](examples/).
+Browse all in [examples/](examples/).
 
 ## Documentation
 
-- [Whitepaper](docs/whitepaper-v2.md) — language design, compiler architecture, provenance model
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
 - [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
-- [Kafka KRaft Reference](docs/kraft-protocol-reference.md) — protocol reference for the KRaft example
 
 ## Status
 
-- 163 tests passing, CI green
+- 122 tests passing, CI green
 - Tested backends: TypeScript, Z3, Rust, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O
-- 31 example specs including TLA+ ports (Two-Phase Commit, Paxos, Raft)
+- TLA+ ports: Two-Phase Commit, Paxos, Raft
 
 ## License
 
