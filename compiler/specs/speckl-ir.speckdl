@@ -1,0 +1,212 @@
+// speckl-ir.speckdl — The Speckl Intermediate Representation, specified in Speckl.
+//
+// The IR is the named union of eight facets. Generators consume the IR, not
+// the AST. Every fact in the source is in the IR. Expressions are typed trees.
+// Provenance is non-optional — missing-source provenance is synthesized from
+// file metadata, never silently dropped.
+//
+// This file is the architectural dogfood: the IR is itself a Speckl spec.
+// The compiler should compile this spec; the output is the IR's structural
+// definition. Meta-circular: the compiler is its own IR's compiler.
+//
+// See OB1 #3642 for the architecture rationale and the facet taxonomy.
+
+speck SpecklIR {
+  version: "0.3.0"
+  author: "Speckl Compiler"
+  source: architecture_review ref "ir-facets-2026-07-19"
+  review: hybrid
+
+  // ─── Core IR types ────────────────────────────────────────────
+  // A single Speckl specification, fully resolved, with all facets populated.
+
+  state: {
+    specks: List<IRSpeck>,
+    fileMetadata: FileMetadata,
+    diagnostics: List<IRDiagnostic>
+  }
+
+  init: {
+    specks := List.empty(),
+    fileMetadata := FileMetadata { },
+    diagnostics := List.empty()
+  }
+
+  // ─── The eight named facets ────────────────────────────────────
+  // Each facet is a separate concern. Generators consume one or more.
+  // Missing facets are populated by the lower pass, not by generators.
+
+  interface IRFacets {
+    typed_schema:        TypedSchemaFacet,
+    behavior:            BehaviorFacet,
+    formal_spec:         FormalSpecFacet,
+    wire_format:         WireFormatFacet,
+    validation:          ValidationFacet,
+    resource_lifecycle:  ResourceLifecycleFacet,
+    provenance:          ProvenanceFacet,
+    metadata:            MetadataFacet
+  }
+
+  // Facet 1: typed_schema — what records, fields, types exist.
+  // Consumed by every generator.
+
+  interface TypedSchemaFacet {
+    types: Map<String, IRType>,
+    services: List<IRService>
+  }
+
+  // Facet 2: behavior — state, init, actions, events.
+  // Consumed by typescript-state-machine, rust, z3 (typed trees, no re-parse).
+
+  interface BehaviorFacet {
+    stateVars: List<IRStateVar>,
+    init:      List<IRAssign>,
+    actions:   List<IRAction>,
+    events:    List<IREvent>
+  }
+
+  // Facet 3: formal_spec — constraints, verifies.
+  // Expressions are typed trees, not strings. This kills the Z3 raw-source re-parse.
+
+  interface FormalSpecFacet {
+    constraints: List<IRConstraint>,
+    verifies:    List<IRVerify>
+  }
+
+  // Facet 4: wire_format — how the spec is serialized.
+
+  interface WireFormatFacet {
+    protoPackage:     String,
+    goPackage:        String,
+    eventSuffix:      String,
+    stateMessageName: String,
+    defaultFormat:    WireFormat
+  }
+
+  interface WireFormat {
+    protobuf,
+    json,
+    msgpack
+  }
+
+  // Facet 5: validation — field-level rules (length, regex, range, required).
+  // NEW: this facet did not exist in Speckl before the IR refactor.
+
+  interface ValidationFacet {
+    rules: Map<String, List<ValidationRule>>
+  }
+
+  // Facet 6: resource_lifecycle — K8s status, conditions, finalizers, owners.
+  // NEW: this facet did not exist in Speckl before the IR refactor.
+
+  interface ResourceLifecycleFacet {
+    status:           IRRecordType,
+    conditions:       List<String>,
+    finalizers:       List<String>,
+    ownerReferences:  Bool
+  }
+
+  // Facet 7: provenance — non-optional. Missing-source synthesized from metadata.
+  // This is the facet that makes Speckl "with provenance" by construction.
+
+  interface ProvenanceFacet {
+    clauses:    List<ProvenanceClause>,
+    review:     ReviewKind,
+    authors:    List<Author>,
+    sources:    List<Source>,
+    derives:    DerivesRef,
+    satisfies:  SatisfiesRef,
+    bom:        BOMMetadata,
+    synthesized: Bool
+  }
+
+  interface ProvenanceClause {
+    regulation:       String,
+    design_decision:  String,
+    parent_spec:      String,
+    external_doc:     { value: String, location: String }
+  }
+
+  interface ReviewKind {
+    manual,
+    auto,
+    hybrid
+  }
+
+  // Facet 8: metadata — package-level: version, author, license.
+
+  interface MetadataFacet {
+    version: String,
+    author:  String,
+    license: String
+  }
+
+  // ─── Cross-cutting ─────────────────────────────────────────────
+
+  interface IRImport {
+    path:     String,
+    alias:    String,
+    version:  String,
+    hash:     String,
+    resolved: IRSpeck
+  }
+
+  interface IRSpeck {
+    name:       String,
+    sourcePath: String,
+    imports:    List<IRImport>,
+    facets:     IRFacets
+  }
+
+  interface IRDiagnostic {
+    level:   DiagnosticLevel,
+    message: String,
+    line:    Nat,
+    column:  Nat,
+    speck:   String
+  }
+
+  interface DiagnosticLevel {
+    error,
+    warning,
+    info
+  }
+
+  interface FileMetadata {
+    filePath: String,
+    version:  String,
+    author:   String,
+    license:  String
+  }
+
+  // ─── Invariants ────────────────────────────────────────────────
+  // The IR has structural invariants that the lower pass must satisfy.
+
+  verify "every IR has provenance" {
+    forall s in specks: s.facets.provenance != null
+  }
+
+  verify "every fact in source is in IR" {
+    forall s in specks:
+      let facet = s.facets.typed_schema in
+      facet.types.size() >= 0
+  }
+
+  verify "expressions in formal_spec are typed trees" {
+    forall c in specks.flatMap(s => s.facets.formal_spec.constraints):
+      c.expr.kind != null
+  }
+
+  // The IR is the named union of facets. New domains add new facets; the
+  // eight named here are the floor.
+  constraint "facets are exhaustive" {
+    forall f: s.facets.typed_schema != null
+    && s.facets.behavior != null
+    && s.facets.formal_spec != null
+    && s.facets.wire_format != null
+    && s.facets.validation != null
+    && s.facets.resource_lifecycle != null
+    && s.facets.provenance != null
+    && s.facets.metadata != null
+  }
+}

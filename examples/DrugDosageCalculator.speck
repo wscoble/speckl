@@ -1,0 +1,119 @@
+// DrugDosageCalculator.speck
+// Medical device showing provenance + SpeckBOM annotations
+//
+// Provenance: This is a safety-critical medical device component.
+// Every calculation must be traceable to regulatory requirements,
+// design decisions, and clinical evidence.
+//
+// SpeckBOM: Full bill of materials including compiler, solver,
+// runtime, and full provenance graph with regulatory traceability.
+//
+// Author: Dr. Sarah Chen <s.chen@meddevice.example>
+// Source: IEC 62304 Class C medical device standard
+
+speck DrugDosageCalculator {
+  // SpeckBOM - critical for medical device compliance
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+    hash: "sha256: DrugDosageCalculator-base-v1"
+  }
+
+  // Intent provenance - regulatory and design context
+  provenance {
+    regulation: "FDA 21 CFR 820.30"          // Quality system regulation
+    regulation: "IEC 62304 Class C"          // Medical device software lifecycle
+    regulation: "ISO 14971"                  // Risk management
+    design_decision: "ADR-0023 Infusion Safety Architecture"
+    external_doc: "AAMI TIR32" at "https://www.aami.org/tir32"
+    parent_spec: "InfusionPumpBase"          // Decomposition
+  }
+
+  // Traceability to system requirements and regulatory clauses
+  satisfies SYS-REQ-042
+  satisfies SYS-REQ-043 clause "5.2.1"
+  satisfies FDA-820-30 clause "d"
+  satisfies IEC-62304-Annex-3
+
+  // Authorship and origin
+  author: "Dr. Sarah Chen" <"s.chen@meddevice.example">
+  source: architecture_review ref "AR-2024-0315"
+  source: meeting ref "zoom://2024-03-10/medical-device-wg"
+
+  // Verification boundary - MANUAL REVIEW REQUIRED before deployment
+  review: manual
+
+  // Parent spec relationship - decomposed from broader controller
+  derives from InfusionPumpController via "decomposition of dosing logic"
+
+  // Input parameters for dosage calculation
+  input: {
+    patientWeight: Real,          // Patient weight in kg
+    drugConcentration: Real,      // Drug concentration (mg/mL)
+    prescribedDose: Real,         // Prescribed dose (mg)
+    minDose: Real,                // Minimum therapeutic dose (mg)
+    maxDose: Real,                // Maximum safe dose (mg)
+    frequency: Nat,               // Administration frequency (times/day)
+    vtbi: Real                    // Volume to be infused (mL)
+  }
+
+  // Output: calculated dosage and safety flags
+  output: {
+    volume: Real,                 // Calculated volume (mL)
+    safe: Bool,                   // Safety flag
+    concentrationCheck: Bool,     // Concentration within limits
+    weightBasedCheck: Bool,       // Weight-based calculation validated
+    maxRateCheck: Bool            // Rate within safe limits
+  }
+
+  // Safety constraints - ALL must hold for valid dosage
+  constraint: patientWeight > 0
+  constraint: patientWeight <= 200  // Max realistic patient weight
+  constraint: drugConcentration > 0
+  constraint: drugConcentration <= 100  // Realistic concentration range
+  constraint: minDose > 0
+  constraint: maxDose > minDose
+  constraint: frequency >= 1
+  constraint: frequency <= 6  // Reasonable frequency limits
+  constraint: vtbi > 0
+  constraint: vtbi <= 1000  // Typical IV bag sizes
+
+  // Therapeutic constraints - dose must be clinically appropriate
+  constraint: implies(safe, volume >= minDose / drugConcentration)
+  constraint: implies(safe, volume <= maxDose / drugConcentration)
+  constraint: implies(not safe, volume == 0)  // No dose if unsafe
+
+  // Safety verification - critical properties that must be proven
+  verify: always(implies(
+    prescribedDose >= minDose and prescribedDose <= maxDose,
+    safe
+  ))
+
+  verify: always(implies(
+    patientWeight <= 0 or drugConcentration <= 0,
+    not safe
+  ))
+
+  verify: always(implies(not safe, volume == 0))
+
+  // Events for clinical traceability and audit
+  event DoseCalculated {
+    volume: Real
+    safe: Bool
+    timestamp: Nat
+  }
+
+  event DoseRejected {
+    reason: String
+    timestamp: Nat
+  }
+
+  event CriticalLimitExceeded {
+    parameter: String
+    value: Real
+    limit: Real
+    timestamp: Nat
+  }
+}

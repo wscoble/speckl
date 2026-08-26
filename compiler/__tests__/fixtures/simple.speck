@@ -1,0 +1,29 @@
+speck ToggleSwitch {
+  author: "test"
+  source: architecture_review ref "spec-test"
+
+  state: {
+    status: Status := Off
+  }
+
+  init: {
+    status := Off
+  }
+
+  interface Status {
+    On
+    Off
+  }
+
+  action FlipSwitch() {
+    require status == On || status == Off
+    if status == On {
+      status := Off
+    }
+    postcondition status == Off
+  }
+
+  constraint "status is always On or Off" {
+    status == On || status == Off
+  }
+}

@@ -1,0 +1,267 @@
+speck SQLiteWAL {
+    // SQLite WAL mode concurrency model
+    // Specifies the Write-Ahead Log protocol: concurrent readers + single writer,
+    // checkpoint lifecycle, and snapshot consistency.
+    //
+    // Uses only built-in types (Nat, Bool, Map) for Z3 compatibility.
+    // Compound types (Frame, ReaderState, WalIndexHeader) are modeled
+    // as parallel maps per field.
+
+    // --- Type aliases (Nat-based, Z3-compatible) ---
+    // FrameSeq: sequence number for WAL frames
+    // ReaderId: integer index for reader slots (0..4)
+    // LockType: 0=READER, 1=WRITER, 2=CHECKPOINTER, 3=NONE
+    // CheckpointMode: 0=PASSIVE, 1=FULL, 2=RESTART, 3=TRUNCATE
+    // PageId: database page identifier
+
+    state {
+        // WAL frame storage: frame sequence → data per frame
+        walFrames: Map(Nat, Nat)        // frameId → pageId (0 = empty slot)
+        walFrameSeq: Map(Nat, Nat)      // frameId → seq number
+        nFrames: Nat                    // number of frames in WAL
+        maxFrames: Nat                  // maximum frames before checkpoint needed
+
+        // Reader management (max 5 concurrent readers)
+        readerEndMark: Map(Nat, Nat)    // readerId → end mark, 0 = inactive
+        nReaders: Nat                   // number of active readers
+
+        // Writer state
+        writerActive: Bool              // is writer in progress?
+        writerFrames: Map(Nat, Nat)     // writer's pending frame pages (0 = empty)
+        writerFrameCommit: Bool         // is commit frame written?
+        
+        // Checkpoint state
+        checkpointActive: Bool          // is checkpoint in progress?
+        checkpointSeq: Nat              // last checkpoint sequence number
+        checkpointAttempted: Nat        // number of frames attempted to checkpoint
+        checkpointMode: Nat             // 0=PASSIVE, 1=FULL, 2=RESTART, 3=TRUNCATE
+        
+        // WAL reset
+        walResetNeeded: Bool            // WAL file needs reset?
+        
+        // Database state
+        dbContents: Map(Nat, Nat)       // pageId → content (0 = uninitialized)
+        
+        // Error recovery
+        errorState: Bool
+        errorCode: Nat
+    }
+
+    init {
+        walFrames == {0: 0}
+        walFrameSeq == {0: 0}
+        nFrames == 0
+        maxFrames == 100
+        readerEndMark == {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+        nReaders == 0
+        writerActive == false
+        writerFrames == {0: 0}
+        writerFrameCommit == false
+        checkpointActive == false
+        checkpointSeq == 0
+        checkpointAttempted == 0
+        checkpointMode == 0
+        walResetNeeded == false
+        dbContents == {0: 0}
+        errorState == false
+        errorCode == 0
+    }
+
+    // ============================================================
+    // Actions
+    // ============================================================
+
+    action BeginRead(readerId: Nat) {
+        require readerId >= 0 and readerId < 5  // valid slot
+        require nReaders < 5                      // room for reader
+        require readerEndMark[readerId] == 0      // not already active
+        require not errorState
+
+        readerEndMark[readerId] := nFrames
+        nReaders := nReaders + 1
+    }
+
+    action ReadFrame(readerId: Nat, frameId: Nat) {
+        require readerEndMark[readerId] > 0       // reader is active
+        require frameId >= 1 and frameId <= nFrames  // frame exists
+        require frameId <= readerEndMark[readerId]   // frame is within reader's snapshot
+
+        // Reading is nondestructive — no state change
+    }
+
+    action EndRead(readerId: Nat) {
+        require readerEndMark[readerId] > 0   // reader is active
+        require not errorState
+
+        readerEndMark[readerId] := 0
+        nReaders := nReaders - 1
+    }
+
+    action BeginWrite() {
+        require not writerActive
+        require not checkpointActive
+        require not errorState
+        require nFrames < maxFrames  // room for at least one frame
+
+        writerActive := true
+        writerFrameCommit := false
+    }
+
+    action AppendFrame(frameId: Nat, pageId: Nat) {
+        require writerActive                    // writer must be active
+        require not writerFrameCommit           // no commit yet
+        require frameId < maxFrames             // valid frame slot
+        require nFrames < maxFrames
+
+        nFrames := nFrames + 1
+        walFrames[nFrames] := pageId
+        walFrameSeq[nFrames] := nFrames
+        writerFrames[nFrames] := pageId
+    }
+
+    action CommitWrite() {
+        require writerActive
+        require not writerFrameCommit
+        require not errorState
+
+        writerFrameCommit := true
+        writerActive := false
+    }
+
+    action BeginCheckpoint(mode: Nat) {
+        require not checkpointActive
+        require not errorState
+        require mode >= 0 and mode <= 3  // valid mode
+
+        checkpointActive := true
+        checkpointMode := mode
+        checkpointAttempted := 0
+    }
+
+    action MoveFrame(frameId: Nat) {
+        require checkpointActive
+        require frameId >= 1 and frameId <= nFrames
+        require frameId > checkpointSeq  // not already checkpointed
+        
+        // Safety: don't checkpoint frames visible to active readers
+        require forall r in [0..4]:
+            (readerEndMark[r] == 0) or (frameId <= readerEndMark[r])
+
+        // Move frame to database
+        dbContents[walFrames[frameId]] := nFrames
+        checkpointAttempted := checkpointAttempted + 1
+    }
+
+    action FinishCheckpoint() {
+        require checkpointActive
+        require not errorState
+
+        checkpointSeq := nFrames  // all frames checkpointed
+        checkpointActive := false
+        walResetNeeded := true
+    }
+
+    action ResetWAL() {
+        require walResetNeeded
+        require nReaders == 0              // no active readers
+        require not checkpointActive
+        require not writerActive
+        require not errorState
+
+        nFrames := 0
+        walFrames := {0: 0}
+        walFrameSeq := {0: 0}
+        checkpointSeq := 0
+        checkpointAttempted := 0
+        walResetNeeded := false
+    }
+
+    action InjectError(err: Nat) {
+        require not errorState
+        errorState := true
+        errorCode := err
+    }
+
+    action RecoverFromError() {
+        require errorState
+        errorState := false
+        errorCode := 0
+        // Reset to safe state
+        writerActive := false
+        checkpointActive := false
+        writerFrameCommit := false
+    }
+
+    // ============================================================
+    // Invariants
+    // ============================================================
+
+    // I1: Read consistency — a reader's end mark stays valid during its read
+    // A reader sees frames 1..endMark; endMark ≤ nFrames always
+    constraint ReadConsistency: forall r in [0..4]:
+        (readerEndMark[r] == 0) or (readerEndMark[r] <= nFrames)
+
+    // I2: Write serialization — at most one writer at a time
+    // No concurrent writer and checkpoint
+    constraint WriteSerialization:
+        (not writerActive) or (not checkpointActive)
+
+    // I3: Checkpoint safety — checkpoint doesn't remove frames needed by readers
+    // Checkpoint never advances past the oldest active reader's end mark
+    constraint CheckpointSafety:
+        forall r in [0..4]:
+            (readerEndMark[r] == 0) or (checkpointSeq <= readerEndMark[r])
+
+    // I4: Frame ordering — frame sequence numbers are monotonic
+    // All frames have unique increasing seq numbers
+    constraint FrameOrdering:
+        nFrames <= maxFrames
+
+    // I5: Snapshot integrity — WAL reset only happens when no readers
+    constraint WalResetCondition:
+        walResetNeeded implies (nReaders == 0)
+
+    // I6: Writer commit integrity — commit implies at least one frame appended
+    constraint CommitIntegrity:
+        writerFrameCommit implies (nFrames > 0)
+
+    // I7: No deadlock — writer and checkpointer exclude each other
+    constraint LockDeadlockFree:
+        (not (writerActive and checkpointActive))
+
+    // I8: Commit durability — committed frames are checkpointed or still in WAL
+    constraint CommitDurability:
+        checkpointSeq <= nFrames
+
+    // I9: Backfill bound — checkpoint doesn't exceed total frames
+    constraint BackfillBound:
+        checkpointAttempted <= nFrames
+
+    // I10: Error recovery — after error, all operations blocked
+    constraint ErrorBlocked:
+        not (errorState and (writerActive or checkpointActive))
+
+    // ============================================================
+    // Transition relation
+    // ============================================================
+
+    next: {
+        // Allow any action to fire, constrained by its require guards
+        // The checker unrolls this to N steps, checking invariants at each step
+    }
+
+    // ============================================================
+    // Verify
+    // ============================================================
+
+    verify Always(ReadConsistency) { depth 10 }
+    verify Always(WriteSerialization) { depth 5 }
+    verify Always(CheckpointSafety) { depth 10 }
+    verify Always(FrameOrdering) { depth 5 }
+    verify Always(WalResetCondition) { depth 5 }
+    verify Always(CommitIntegrity) { depth 10 }
+    verify Always(LockDeadlockFree) { depth 5 }
+    verify Always(CommitDurability) { depth 10 }
+    verify Always(BackfillBound) { depth 5 }
+    verify Always(ErrorBlocked) { depth 5 }
+}

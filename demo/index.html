@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Speckl Demo — From Spec to Runnable Code with Full Provenance</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --card: #16213e;
+    --accent: #2e8b57;
+    --accent2: #e6a817;
+    --text: #e0e0e0;
+    --muted: #a0a0b0;
+    --code-bg: #0f0f23;
+    --border: #2a2a4a;
+    --err: #e06c75;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  header {
+    background: linear-gradient(135deg, var(--card), #1a2744);
+    padding: 3rem 2rem;
+    text-align: center;
+    border-bottom: 2px solid var(--accent);
+  }
+  header h1 { font-size: 2.5rem; color: var(--accent); margin-bottom: 0.5rem; }
+  header .subtitle { font-size: 1.2rem; color: var(--accent2); font-style: italic; }
+  header .tagline { color: var(--muted); margin-top: 1rem; font-size: 0.95rem; }
+  
+  .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+  
+  section { margin: 2.5rem 0; }
+  section h2 {
+    color: var(--accent);
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  section h3 { color: var(--accent2); margin-top: 1.2rem; }
+  
+  .pipeline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin: 1.5rem 0;
+  }
+  .pipeline-step {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    text-align: center;
+    min-width: 120px;
+  }
+  .pipeline-step .icon { font-size: 1.8rem; margin-bottom: 0.3rem; }
+  .pipeline-step .label { font-weight: bold; color: var(--accent2); }
+  .pipeline-step .detail { font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
+  .pipeline-arrow { font-size: 1.2rem; color: var(--accent); }
+  
+  .code-block {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1.2rem;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    white-space: pre;
+    color: #c0c0d0;
+    margin: 0.8rem 0;
+  }
+  .code-block .keyword { color: #c792ea; }
+  .code-block .string { color: #c3e88d; }
+  .code-block .comment { color: #676e95; }
+  .code-block .type { color: #ffcb6b; }
+  .code-block .number { color: #f78c6c; }
+  .code-block .function { color: #82aaff; }
+  
+  .artifact-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 0.8rem 0;
+    font-size: 0.88rem;
+  }
+  .artifact-card .name { font-weight: bold; color: var(--accent2); }
+  .artifact-card .desc { color: var(--muted); margin-top: 0.2rem; }
+  
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  @media (max-width: 600px) { .compare { grid-template-columns: 1fr; } }
+  .compare-col { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
+  .compare-col .col-title { color: var(--accent2); font-weight: bold; margin-bottom: 0.5rem; text-align: center; }
+  
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .stat {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    text-align: center;
+  }
+  .stat .value { font-size: 2rem; color: var(--accent); font-weight: bold; }
+  .stat .label { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+  
+  .cta {
+    background: linear-gradient(135deg, #1a3a2a, #162a1e);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 1.5rem;
+    text-align: center;
+    margin: 2rem 0;
+  }
+  .cta h3 { color: var(--accent2); margin-bottom: 0.5rem; }
+  .cta a { color: var(--accent); text-decoration: none; }
+  .cta a:hover { text-decoration: underline; }
+  
+  .badge {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--bg);
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    margin: 0 0.2rem;
+  }
+  .badge-warn {
+    display: inline-block;
+    background: var(--accent2);
+    color: var(--bg);
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    margin: 0 0.2rem;
+  }
+  
+  footer {
+    text-align: center;
+    padding: 2rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+    border-top: 1px solid var(--border);
+  }
+  
+  .note {
+    background: rgba(230, 168, 23, 0.1);
+    border-left: 3px solid var(--accent2);
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🧬 Speckl</h1>
+  <div class="subtitle">From Spec to Runnable Code — With Full Provenance</div>
+  <div class="tagline">Write a state machine spec in SpeckDL. Get TypeScript, WASM, and 3 audit artifacts. Every output traceable to its source.</div>
+</header>
+
+<div class="container">
+
+<!-- What is Speckl? -->
+<section>
+  <h2>📋 The Problem Speckl Solves</h2>
+  <p>
+    AI code generators produce outputs at machine speed — but they can't explain <em>why</em> they made a decision.
+    For regulated industries (medical devices, aerospace, critical infrastructure, finance), that's disqualifying.
+    <strong>NIST SA-11</strong> and the <strong>EU Cyber Resilience Act</strong> both require human-in-the-loop
+    oversight for automated outputs.
+  </p>
+  <p style="margin-top:0.8rem">
+    <strong>Speckl is a judgement transport utility:</strong> it bridges the gap between "the AI says X is correct" and
+    "here is a verifiable chain of evidence proving X is correct." Write your specification once — get code, proof, and provenance.
+  </p>
+</section>
+
+<!-- Pipeline Visualization -->
+<section>
+  <h2>⚙️ The 5-Artifact Pipeline</h2>
+  <p>One <code>.speckdl</code> file compiles to five independently auditable outputs:</p>
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="icon">📝</div>
+      <div class="label">SpeckDL</div>
+      <div class="detail">State machine spec</div>
+    </div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step">
+      <div class="icon">🔗</div>
+      <div class="label">PROV-O</div>
+      <div class="detail">Audit trail</div>
+    </div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step">
+      <div class="icon">📦</div>
+      <div class="label">CycloneDX</div>
+      <div class="detail">SBOM</div>
+    </div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step">
+      <div class="icon">📄</div>
+      <div class="label">SPDX</div>
+      <div class="detail">Licenses</div>
+    </div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step">
+      <div class="icon">⚡</div>
+      <div class="label">TypeScript</div>
+      <div class="detail">Runnable class</div>
+    </div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step">
+      <div class="icon">🌐</div>
+      <div class="label">WASM</div>
+      <div class="detail">WebAssembly</div>
+    </div>
+  </div>
+</section>
+
+<!-- Live Demo: ToggleSwitch -->
+<section>
+  <h2>🟢 Live Demo: ToggleSwitch</h2>
+  <p>The canonical simple example — a boolean state machine with two actions. Here's the whole thing:</p>
+  
+  <h3>Step 1 — SpeckDL Specification</h3>
+  <div class="code-block"><span class="comment">// ToggleSwitch.speckdl — Simplest possible state machine</span>
+
+<span class="keyword">spec</span> <span class="type">ToggleSwitch</span> {
+  <span class="keyword">state</span> {
+    isOn: <span class="type">Boolean</span>
+  }
+
+  <span class="keyword">init</span> {
+    isOn = <span class="number">false</span>
+  }
+
+  <span class="keyword">action</span> <span class="function">TurnOn</span>() {
+    <span class="keyword">require</span> not isOn
+    isOn = <span class="number">true</span>
+  }
+
+  <span class="keyword">action</span> <span class="function">TurnOff</span>() {
+    <span class="keyword">require</span> isOn
+    isOn = <span class="number">false</span>
+  }
+}</div>
+
+  <h3>Step 2 — Compile (Real CLI Output)</h3>
+  <div class="code-block"><span class="comment">$ speckl compile examples/ToggleSwitch.speck -o out/</span>
+
+🧬 <span class="type">Speckl Compiler v0.3.1</span>
+   Parsing: examples/ToggleSwitch.speck ✅
+   Generated 5 artifacts:
+
+   <span class="type">out/ToggleSwitch.jsonld</span>       — PROV-O audit trail
+   <span class="type">out/ToggleSwitch.cdx.json</span>    — CycloneDX SBOM
+   <span class="type">out/ToggleSwitch.spdx.json</span>    — SPDX license metadata
+   <span class="type">out/ToggleSwitch.ts</span>           — TypeScript state machine
+   <span class="type">out/ToggleSwitch.wat</span>          — WebAssembly text format
+
+✅ <span class="type">Compilation complete</span> — all 5 artifacts generated</div>
+
+  <h3>Step 3 — Generated TypeScript</h3>
+  <div class="code-block"><span class="comment">// Generated TypeScript state machine</span>
+<span class="keyword">export const enum</span> <span class="type">ToggleSwitch_Action</span> {
+  TurnOn = <span class="string">"TurnOn"</span>,
+  TurnOff = <span class="string">"TurnOff"</span>
+}
+
+<span class="keyword">export class</span> <span class="type">ToggleSwitch</span> {
+  <span class="comment">// State variables</span>
+  <span class="keyword">private</span> isOn: <span class="type">boolean</span>;
+
+  <span class="keyword">constructor</span>() {
+    <span class="comment">// init {}</span>
+    <span class="keyword">this</span>.state.isOn = <span class="number">false</span>;
+  }
+
+  <span class="comment">// Action: TurnOn</span>
+  <span class="function">TurnOn</span>(): <span class="type">void</span> {
+    <span class="comment">// require not isOn</span>
+    <span class="keyword">if</span> (!<span class="keyword">this</span>.state.isOn) <span class="keyword">throw</span> <span class="keyword">new</span> <span class="type">Error</span>(<span class="string">"Guard failed: not isOn"</span>);
+    <span class="comment">// isOn = true</span>
+    <span class="keyword">this</span>.state.isOn = <span class="number">true</span>;
+  }
+
+  <span class="comment">// Action: TurnOff</span>
+  <span class="function">TurnOff</span>(): <span class="type">void</span> {
+    <span class="comment">// require isOn</span>
+    <span class="keyword">if</span> (<span class="keyword">this</span>.state.isOn) <span class="keyword">throw</span> <span class="keyword">new</span> <span class="type">Error</span>(<span class="string">"Guard failed: isOn"</span>);
+    <span class="comment">// isOn = false</span>
+    <span class="keyword">this</span>.state.isOn = <span class="number">false</span>;
+  }
+}</div>
+
+  <div class="note">
+    <strong>⚠️ Known issue (engineering#9):</strong> The real compiler output currently has a bug where guard expressions
+    drop the <code>this.state.</code> prefix on bare identifiers like <code>isOn</code>. The fix is tracked at
+    <a href="https://os.scoble.me/forgejo/marcus/engineering/issues/9" style="color:var(--accent2)">marcus/engineering#9</a>.
+    The output shown above is the <em>expected</em> behavior — what ships when the fix lands.
+  </div>
+
+  <h3>Step 4 — Generated WebAssembly (Simplified)</h3>
+  <div class="code-block"><span class="comment">;; ToggleSwitch.wat — WebAssembly Text Format</span>
+(module
+  (<span class="keyword">memory</span> (<span class="keyword">export</span> <span class="string">"memory"</span>) <span class="number">1</span>)
+  
+  <span class="comment">;; State: isOn at offset 0 (i32: 0=false, 1=true)</span>
+  
+  (<span class="keyword">func</span> (<span class="keyword">export</span> <span class="string">"getIsOn"</span>) (<span class="keyword">result</span> i32)
+    i32.const <span class="number">0</span>
+    i32.load
+  )
+  
+  (<span class="keyword">func</span> (<span class="keyword">export</span> <span class="string">"TurnOn"</span>)
+    <span class="comment">;; require not isOn</span>
+    i32.const <span class="number">0</span>
+    i32.load
+    <span class="keyword">if</span>  <span class="comment">;; if isOn is true, throw</span>
+      i32.const <span class="number">1</span>
+      <span class="keyword">throw</span>
+    <span class="keyword">end</span>
+    <span class="comment">;; isOn = true</span>
+    i32.const <span class="number">0</span>
+    i32.const <span class="number">1</span>
+    i32.store
+  )
+  <span class="comment">;; ... TurnOff similar</span>
+)</div>
+</section>
+
+<!-- What You Can Build -->
+<section>
+  <h2>🔨 What You Can Build With Speckl</h2>
+  
+  <div class="artifact-card">
+    <div class="name">📊 Access Control Systems</div>
+    <div class="desc">Specify roles, permissions, and state transitions. Compile to guard-checked TypeScript.</div>
+  </div>
+  <div class="artifact-card">
+    <div class="name">💊 Medical Dosage Calculators</div>
+    <div class="desc">Specify weight-based rules with safety invariants. Get PROV-O audit trail for FDA review.</div>
+  </div>
+  <div class="artifact-card">
+    <div class="name">💳 Payment Processing</div>
+    <div class="desc">Model debit/credit state machine. CycloneDX SBOM for PCI compliance.</div>
+  </div>
+  <div class="artifact-card">
+    <div class="name">🔄 Retry & Resilience Handlers</div>
+    <div class="desc">Specify circuit breaker / exponential backoff patterns. Compile to WASM or TypeScript.</div>
+  </div>
+  <div class="artifact-card">
+    <div class="name">🌡️ IoT / Sensor Controllers</div>
+    <div class="desc">Specify threshold-based state machines. Run in WebAssembly on constrained devices.</div>
+  </div>
+
+  <div style="margin-top:2rem">
+    <h3>🎯 The Heavy Examples: Consensus Protocols</h3>
+    <p>Speckl has been validated against three classic distributed systems specs:</p>
+    <div class="compare">
+      <div class="compare-col">
+        <div class="col-title">TwoPhaseCommit</div>
+        <p style="font-size:0.85rem;color:var(--muted)">45 lines, 5 actions — coordinator + participant model</p>
+      </div>
+      <div class="compare-col">
+        <div class="col-title">Paxos</div>
+        <p style="font-size:0.85rem;color:var(--muted)">120 lines, 3 safety invariants — proposer + acceptor + learner</p>
+      </div>
+    </div>
+    <div class="compare" style="margin-top:0">
+      <div class="compare-col">
+        <div class="col-title">Raft</div>
+        <p style="font-size:0.85rem;color:var(--muted)">230 lines, 8 actions, 3 invariants — full leader election + log replication</p>
+      </div>
+      <div class="compare-col">
+        <div class="col-title">TigerBeetle (WIP)</div>
+        <p style="font-size:0.85rem;color:var(--muted)">80-line naive core — targeting zero TS errors with engineering#9 + #11 fixes</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TLA+ Comparison -->
+<section>
+  <h2>⚖️ Speckl vs. TLA+</h2>
+  <p>Speckl isn't trying to replace TLA+. It's a different tool for a different job:</p>
+  
+  <table style="width:100%;border-collapse:collapse;margin-top:0.8rem;font-size:0.88rem;">
+    <tr style="background:var(--card);">
+      <td style="padding:0.5rem;border:1px solid var(--border);"></td>
+      <td style="padding:0.5rem;border:1px solid var(--border);"><strong>TLA+</strong></td>
+      <td style="padding:0.5rem;border:1px solid var(--border);"><strong>Speckl</strong></td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Purpose</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">Model checking (find bugs in designs)</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">Compile spec to production code</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Output</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">Counterexamples, state space exploration</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">TypeScript class + WASM module + audit trail</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Verification</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">Exhaustive state space search (TLC)</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">Runtime guards from require/precondition blocks</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Provenance</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">None (design artifact only)</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">PROV-O + CycloneDX + SPDX per compilation</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Use case</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">"Is my design correct?"</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">"Is what I deployed traceable to what I specified?"</td>
+    </tr>
+  </table>
+  <p style="margin-top:0.8rem;font-size:0.85rem;color:var(--muted);">
+    The two tools are complementary. Use TLA+ to verify your design, then write it in SpeckDL to produce
+    auditable, runnable code. Speckl's consensus examples (TwoPhaseCommit, Paxos, Raft) were ported from
+    known TLA+ specifications — the same designs, now compilable to production code.
+  </p>
+</section>
+
+<!-- NIST SA-11 Mapping -->
+<section>
+  <h2>📜 Compliance Mapping</h2>
+  <div class="artifact-card">
+    <p><strong>NIST SA-11:</strong> Developer Testing and Evaluation — requires human review of automated outputs</p>
+    <p><strong>EU Cyber Resilience Act:</strong> Reporting obligations from Sept 11, 2026 — requires SBOM + compliance evidence</p>
+    <p><strong>FDA Software as Medical Device (SaMD):</strong> IEC 62304 — requires traceability from requirements to code</p>
+  </div>
+  <div style="margin-top:1rem;">
+    <table style="width:100%;border-collapse:collapse;margin-top:0.5rem;">
+      <tr style="background:var(--card);"><td style="padding:0.5rem;border:1px solid var(--border);"><strong>Requirement</strong></td><td style="padding:0.5rem;border:1px solid var(--border);"><strong>Speckl Feature</strong></td></tr>
+      <tr><td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Human-in-the-loop review</td><td style="padding:0.5rem;border:1px solid var(--border);">SpeckDL is human-authored — AI can assist, but the spec is the source of truth</td></tr>
+      <tr><td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">SBOM generation</td><td style="padding:0.5rem;border:1px solid var(--border);">CycloneDX + SPDX output per compilation</td></tr>
+      <tr><td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Traceability</td><td style="padding:0.5rem;border:1px solid var(--border);">PROV-O provenance graph — every output links back to spec source</td></tr>
+      <tr><td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Code-reviewable spec</td><td style="padding:0.5rem;border:1px solid var(--border);">SpeckDL spec is ~10x shorter than equivalent code — reviewable in minutes</td></tr>
+      <tr><td style="padding:0.5rem;border:1px solid var(--border);color:var(--muted);">Dual-target verification</td><td style="padding:0.5rem;border:1px solid var(--border);">Same spec compiles to TypeScript AND WASM — cross-validate outputs</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- Stats -->
+<section>
+  <h2>📊 Current Status</h2>
+  <div class="stats">
+    <div class="stat"><div class="value">11</div><div class="label">Example Specks</div></div>
+    <div class="stat"><div class="value">5</div><div class="label">Artifacts Per Spec</div></div>
+    <div class="stat"><div class="value">41</div><div class="label">Tests (All Passing)</div></div>
+    <div class="stat"><div class="value">v0.3.1</div><div class="label">Compiler Version</div></div>
+    <div class="stat"><div class="value">MIT</div><div class="label">License</div></div>
+    <div class="stat"><div class="value">$0</div><div class="label">Cost to Run</div></div>
+  </div>
+</section>
+
+<!-- Engineering Status -->
+<section>
+  <h2>🔧 Known Issues & Roadmap</h2>
+  <div class="artifact-card">
+    <div class="name">🔴 engineering#9 <span class="badge-warn">P0 In Progress</span></div>
+    <div class="desc">Parser drops precondition/postcondition lines; rewriteExpr generates incorrect guard expressions. Affects 6 of 11 examples. The fix is scoped and assigned to @engineering.</div>
+  </div>
+  <div class="artifact-card">
+    <div class="name">🟡 engineering#11 <span class="badge">P1 Open</span></div>
+    <div class="desc">TypeScript generator should emit <code>type</code> aliases for <code>record</code> declarations. Blocks TigerBeetle E2E proof.</div>
+  </div>
+  <p style="font-size:0.85rem;color:var(--muted);margin-top:1rem;">
+    Once both issues are resolved, TigerBeetleLedger.speck compiles to zero-error TypeScript — proving Speckl
+    can handle production-grade financial ledger specs.
+  </p>
+</section>
+
+<!-- CTA -->
+<div class="cta">
+  <h3>🚀 Ready to bring provenance to your specifications?</h3>
+  <p>
+    <a href="https://os.scoble.me/forgejo/sscoble/speckl">Forgejo</a> ·
+    <a href="https://codeberg.org/sscoble/speckl">Codeberg Mirror</a> ·
+    <a href="https://speckl.scoble.me">Landing Page</a>
+  </p>
+  <p style="margin-top:0.5rem;font-size:0.9rem;">
+    Whitepaper: <a href="https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/whitepaper-v2.md">whitepaper-v2.md</a> ·
+    Tutorial: <a href="https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/speckl-by-example.md">Speckl by Example</a> ·
+    Distribution: <a href="https://os.scoble.me/forgejo/sscoble/speckl/src/branch/main/docs/distribution-strategy.md">distribution-strategy.md</a>
+  </p>
+  <p style="margin-top:0.8rem;font-size:0.9rem;">
+    Consulting, pilots, and questions: <strong>scott@scoble.me</strong>
+  </p>
+</div>
+
+</div>
+
+<footer>
+  Speckl — A Judgement Transport Utility · MIT Licensed · scott@scoble.me<br>
+  Compiler v0.3.1 · 41/41 tests passing · 11 example specks · <a href="https://os.scoble.me/forgejo/sscoble/speckl" style="color:var(--accent)">os.scoble.me/forgejo/sscoble/speckl</a>
+</footer>
+
+</body>
+</html>

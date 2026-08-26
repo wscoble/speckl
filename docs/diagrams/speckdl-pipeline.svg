@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 100">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" fill="#3b82f6">
+      <polygon points="0 0, 10 3.5, 0 7"/>
+    </marker>
+  </defs>
+
+  <!-- Boxes -->
+  <rect x="0" y="10" width="130" height="45" rx="6" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2"/>
+  <text x="65" y="30" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">SpeckDL</text>
+  <text x="65" y="46" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">specification</text>
+
+  <rect x="195" y="10" width="150" height="45" rx="6" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2"/>
+  <text x="270" y="30" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">Z3 (SMT Solver)</text>
+  <text x="270" y="46" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">verify constraints</text>
+
+  <rect x="410" y="10" width="150" height="45" rx="6" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2"/>
+  <text x="485" y="30" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">DST</text>
+  <text x="485" y="46" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">decision structures</text>
+
+  <rect x="625" y="10" width="130" height="45" rx="6" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2"/>
+  <text x="690" y="30" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">WASM</text>
+  <text x="690" y="46" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">verified artifacts</text>
+
+  <!-- Arrows between boxes -->
+  <line x1="130" y1="32" x2="192" y2="32" stroke="#3b82f6" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="345" y1="32" x2="407" y2="32" stroke="#3b82f6" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="560" y1="32" x2="622" y2="32" stroke="#3b82f6" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- Provenance bar -->
+  <rect x="0" y="70" width="755" height="28" rx="4" fill="none" stroke="#6b7280" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="377" y="88" text-anchor="middle" fill="#6b7280" font-family="system-ui, sans-serif" font-size="11">Provenance graph grows automatically at each stage</text>
+</svg>

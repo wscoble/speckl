@@ -1,0 +1,29 @@
+{
+  "name": "speckl-compile",
+  "version": "0.3.1",
+  "description": "SpeckDL compiler + reference validator - SpeckDL → Z3 → DST → WASM with provenance and BOM",
+  "type": "module",
+  "bin": {
+    "speckl-compile": "./dist/index.js",
+    "speckl-validate": "./dist/validator.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/yargs": "^17.0.33",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8",
+    "wabt": "^1.0.39"
+  }
+}

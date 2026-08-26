@@ -1,0 +1,216 @@
+// speckl-compile.speckdl — The Speckl compiler, specified in SpeckDL
+// This is the ultimate dogfood: the compiler compiles itself.
+
+speck SpecklCompiler {
+  version: "0.4.0"
+  author:  "sscoble"
+  license: "MIT"
+
+  // ─── Purpose ──────────────────────────────────────────────
+  // Transform a .speckdl specification into provenance, BOMs,
+  // and runnable artifacts (TypeScript, WebAssembly).
+
+  // ─── State ────────────────────────────────────────────────
+  state: {
+    phase:        CompilerPhase,
+    sourcePath:   String,
+    outputDir:    String,
+    ast:          AST,
+    errors:       String[],
+    artifacts:    ArtifactMap
+  }
+
+  init: {
+    phase := Idle,
+    sourcePath := "",
+    outputDir := "./out",
+    ast := {},
+    errors := [],
+    artifacts := {}
+  }
+
+  // ─── Events ───────────────────────────────────────────────
+  event CompilationStarted {
+    source: String,
+    output: String,
+    at: String
+  }
+
+  event PhaseCompleted {
+    phase: CompilerPhase,
+    durationMs: Nat,
+    at: String
+  }
+
+  event ArtifactGenerated {
+    kind: ArtifactKind,
+    path: String,
+    bytes: Nat,
+    at: String
+  }
+
+  event ErrorEmitted {
+    phase: CompilerPhase,
+    message: String,
+    line: Nat,
+    col: Nat,
+    at: String
+  }
+
+  // ─── Actions ──────────────────────────────────────────────
+  action compile(sourcePath: String, outputDir: String) {
+    require phase === Idle
+    require len(sourcePath) > 0
+
+    this.phase := Parsing
+    this.sourcePath := sourcePath
+    this.outputDir := outputDir
+    this.errors := []
+
+    emit CompilationStarted { source: sourcePath, output: outputDir, at: now() }
+  }
+
+  action parse() {
+    require phase === Parsing
+    require len(sourcePath) > 0
+
+    // Lexical analysis: tokenize .speckdl source
+    // Syntactic analysis: build AST (SpeckNode, MemberNode hierarchy)
+    // Semantic validation: type check, name resolution
+
+    this.phase := Parsed
+    this.ast := parseSpeckFile(sourcePath)
+
+    emit PhaseCompleted { phase: Parsing, durationMs: 0, at: now() }
+  }
+
+  action generateProvenance() {
+    require phase === Parsed || phase === TypeScriptGenerated || phase === WASMGenerated
+
+    // Emit PROV-O JSON-LD provenance graph
+    // Tracks: compiler version, source file, generation time, generator used
+
+    this.phase := ProvenanceGenerated
+
+    emit ArtifactGenerated { kind: Provenance, path: join(outputDir, ".prov.jsonld"), bytes: 0, at: now() }
+  }
+
+  action generateBOMs() {
+    require phase === ProvenanceGenerated || phase === Parsed
+
+    // Emit CycloneDX SBOM (software bill of materials)
+    // Emit SPDX BOM (license and provenance)
+
+    this.phase := BOMsGenerated
+
+    emit ArtifactGenerated { kind: CycloneDX, path: join(outputDir, ".specbom.cdx.json"), bytes: 0, at: now() }
+    emit ArtifactGenerated { kind: SPDX, path: join(outputDir, ".specbom.spdx.json"), bytes: 0, at: now() }
+  }
+
+  action generateTypeScript() {
+    require phase === BOMsGenerated || phase === Parsed
+
+    // Transform AST → TypeScript state machine class
+    // Actions become methods, guards become if-throws,
+    // state vars become properties, init becomes constructor
+
+    this.phase := TypeScriptGenerated
+
+    emit ArtifactGenerated { kind: TypeScript, path: join(outputDir, ".ts"), bytes: 0, at: now() }
+  }
+
+  action generateWASM() {
+    require phase === TypeScriptGenerated || phase === BOMsGenerated || phase === Parsed
+
+    // Transform AST → WebAssembly Text (WAT)
+    // Scalar state → WASM globals, Map/Set → host imports
+    // Actions become exports with parameter mapping
+
+    this.phase := WASMGenerated
+
+    emit ArtifactGenerated { kind: WebAssembly, path: join(outputDir, ".wat"), bytes: 0, at: now() }
+  }
+
+  action report() {
+    require phase === ProvenanceGenerated || phase === BOMsGenerated || phase === TypeScriptGenerated || phase === WASMGenerated
+
+    // Print summary: phases completed, artifacts emitted, errors found
+    // Return exit code 0 if no errors, 1 otherwise
+
+    this.phase := Done
+
+    emit PhaseCompleted { phase: Done, durationMs: 0, at: now() }
+  }
+
+  action reset() {
+    // Return to Idle for next compilation
+    this.phase := Idle
+    this.sourcePath := ""
+    this.outputDir := "./out"
+    this.ast := {}
+    this.errors := []
+    this.artifacts := {}
+  }
+
+  // ─── Constraints ──────────────────────────────────────────
+  constraint C1: len(errors) === 0 || phase === Done
+  // If there are errors, compilation must reach Done (with non-zero exit)
+
+  constraint C2: forall a in artifacts: a.bytes > 0
+  // Every generated artifact must have content
+
+  constraint C3: phase === Idle || len(sourcePath) > 0
+  // Non-idle phases require a source file
+
+  constraint C4: artifacts[TypeScript] exists → phase >= TypeScriptGenerated
+  // TypeScript artifact implies the phase was reached
+
+  constraint C5: artifacts[WebAssembly] exists → phase >= WASMGenerated
+  // WASM artifact implies the phase was reached
+
+  // ─── Temporal Verifications ───────────────────────────────
+  verify V1: always(implies(phase === Parsing, eventually(phase === Parsed || len(errors) > 0)))
+  // Parsing must complete or produce errors
+
+  verify V2: always(implies(phase === Parsed, eventually(phase === Done)))
+  // Parsed must eventually reach Done
+
+  verify V3: always(implies(phase === Done, forall a in artifacts: a.bytes > 0 || a.kind === ErrorLog))
+  // Done implies all non-error artifacts have content
+
+  // ─── Provenance ───────────────────────────────────────────
+  provenance {
+    wasGeneratedBy(speckl-compile, SpecklCompiler, "2026-05-03T19:00:00Z")
+    used(SpecklCompiler, speckdl-v0.4, "grammar")
+    used(SpecklCompiler, typescript-5.4, "codegen")
+    used(SpecklCompiler, wasm-spec-2.0, "codegen")
+  }
+
+  // ─── BOM ──────────────────────────────────────────────────
+  bom {
+    compiler: "speckl-compile@0.4.0"
+    solver:   "z3@4.13.0"
+    runtime:  "node@22.0.0"
+  }
+
+  // ─── Supporting Types ───────────────────────────────────────
+  // These would be defined in a standard library eventually
+
+  interface CompilerPhase {
+    Idle, Parsing, Parsed, ProvenanceGenerated, BOMsGenerated,
+    TypeScriptGenerated, WASMGenerated, Done
+  }
+
+  interface ArtifactKind {
+    Provenance, CycloneDX, SPDX, TypeScript, WebAssembly, ErrorLog
+  }
+
+  interface AST {
+    // Abstract syntax tree — opaque in this spec
+    // Actual structure defined by parser implementation
+  }
+
+  interface ArtifactMap {
+    // Map from ArtifactKind to generated file metadata
+  }
+}

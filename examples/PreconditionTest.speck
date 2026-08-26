@@ -1,0 +1,22 @@
+speck PreconditionTest {
+
+state: {
+  balance: Integer
+  active: Boolean
+}
+
+action SetBalance(newBalance: Integer) {
+  precondition: newBalance >= 0
+  postcondition: this.balance == newBalance
+  require newBalance >= 0
+  this.balance := newBalance
+}
+
+action Deactivate() {
+  precondition: this.balance == 0
+  or this.active == false
+  postcondition: this.active == false
+  this.active := false
+}
+
+}

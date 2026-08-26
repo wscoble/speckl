@@ -1,0 +1,131 @@
+speck Paxos {
+    // Classic Paxos consensus protocol ported from TLA+ to SpeckDL v0.3
+    // Demonstrates multi-role state machines, ballot numbers, quorums,
+    // and safety invariants (at most one value chosen per slot).
+    // Adapted from Lamport's "The Part-Time Parliament" and TLA+ Paxos spec.
+
+    state {
+        // Ballot number → (value, proposer) — for each slot
+        ballots: Map(Ballot, Proposal)
+
+        // Acceptor state: which ballot each acceptor has promised for each slot
+        promises: Map(AcceptorSlot, Ballot)
+
+        // Acceptor state: last vote cast (if any) for each slot
+        lastVote: Map(AcceptorSlot, Ballot)
+
+        // Value voted for (if any) for each slot
+        votedValue: Map(AcceptorSlot, String)
+
+        // Set of acceptors
+        acceptors: Set(String)
+
+        // Quorum size (simple majority)
+        quorum: Map(String, Set(String))
+
+        // Chosen values: ballot → value (finalized)
+        chosen: Map(Ballot, String)
+    }
+
+    init {
+        let q := {"a1", "a2", "a3"}
+
+        acceptors == q
+        ballots == emptyMap
+        promises == emptyMap
+        lastVote == emptyMap
+        votedValue == emptyMap
+        chosen == emptyMap
+        quorum == emptyMap
+    }
+
+    invariant BallotUniqueness {
+        forall b in ballots.keys:
+            forall b2 in ballots.keys \ {b}:
+                b.number != b2.number
+    }
+
+    // Safety: at most one value per ballot
+    invariant SingleValuePerBallot {
+        forall b in ballots.keys:
+            forall b2 in ballots.keys:
+                b.number == b2.number implies ballots[b].value == ballots[b2].value
+    }
+
+    // Safety: if a value is chosen, no other value for that ballot
+    invariant PaxosSafety {
+        forall b in chosen.keys:
+            forall b2 in ballots.keys:
+                b2.number == b.number implies ballots[b2].value == chosen[b]
+    }
+
+    // Phase 1a: Proposer sends Prepare with ballot number
+    action ProposerPrepare(prop: String, bnum: Nat) {
+        require bnum > 0
+
+        let b := { number: bnum, value: null, proposer: prop }
+        ballots[b] := { number: bnum, value: null, proposer: prop }
+        emit PrepareSent { ballot: bnum, proposer: prop }
+    }
+
+    // Phase 1b: Acceptor receives Prepare, promises if ballot > last promised
+    action AcceptorPromise(acc: String, ballot: Nat) {
+        require acc in acceptors
+
+        let acSlot := { acceptor: acc, slot: 1 }
+        let curPromise := if acSlot in promises.keys: promises[acSlot].number else 0
+
+        require ballot > curPromise
+
+        promises[acSlot] := { number: ballot, value: null, proposer: null }
+
+        let prevVote := if acSlot in lastVote.keys: lastVote[acSlot] else { number: 0, value: null, proposer: null }
+        emit PromiseSent {
+            acceptor: acc,
+            ballot: ballot,
+            lastVoteBallot: prevVote.number,
+            lastVoteValue: if prevVote.number > 0: votedValue[acSlot] else null
+        }
+    }
+
+    // Phase 2a: Proposer collects quorum of promises, proposes value
+    action ProposerPropose(prop: String, ballot: Nat, value: String) {
+        require ballots[{ number: ballot, value: null, proposer: prop }] != null
+        require ballots[{ number: ballot, value: null, proposer: prop }].proposer == prop
+
+        ballots[{ number: ballot, value: null, proposer: prop }] :=
+            { number: ballot, value: value, proposer: prop }
+        emit ProposalSent { ballot: ballot, value: value, proposer: prop }
+    }
+
+    // Phase 2b: Acceptor votes for proposal if ballot >= last promised
+    action AcceptorVote(acc: String, ballot: Nat, value: String) {
+        require acc in acceptors
+
+        let acSlot := { acceptor: acc, slot: 1 }
+        require acSlot in promises.keys
+        require promises[acSlot].number == ballot
+
+        let prevVote := if acSlot in lastVote.keys: lastVote[acSlot].number else 0
+        require ballot >= prevVote
+
+        lastVote[acSlot] := { number: ballot, value: value, proposer: null }
+        votedValue[acSlot] := value
+        emit VotedSent { acceptor: acc, ballot: ballot, value: value }
+    }
+
+    // Learn: value is chosen when a quorum of acceptors has voted
+    action LearnerDecide(ballot: Nat, value: String) {
+        require { number: ballot, value: value, proposer: null } notIn chosen.keys
+
+        chosen[{ number: ballot, value: value, proposer: null }] := value
+        emit Chosen { ballot: ballot, value: value }
+    }
+
+    next:
+        ProposerPrepare
+        | AcceptorPromise
+        | ProposerPropose
+        | AcceptorVote
+        | LearnerDecide
+}

@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out-tef/
+test-output/
+.last-build
+
+# Debug scripts
+dump-ir.mjs
+test-ast.mjs
+test-parser.mjs
+
+# Rust build artifacts
+lagrangia/target/
+
+# Editor
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

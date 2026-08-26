@@ -1,0 +1,272 @@
+speck Raft {
+    // Raft consensus protocol ported to SpeckDL v0.3
+    // Demonstrates leader election, log replication, commitment, and safety.
+    // Based on Ongaro & Ousterhout's "In Search of an Understandable Consensus Algorithm" (2014).
+    // Natural bridge from Paxos (academic) → TigerBeetle (production replicated state machine).
+
+    type LogIndex = Nat
+    type Term = Nat
+    type ServerId = String
+
+    type LogEntry = {
+        term: Term,
+        index: LogIndex,
+        command: String
+    }
+
+    type ServerState = {
+        role: String,        // "follower", "candidate", "leader"
+        currentTerm: Term,
+        votedFor: String | null,
+        log: List(LogEntry),
+        commitIndex: LogIndex,
+        lastApplied: LogIndex
+    }
+
+    type AppendEntriesReq = {
+        term: Term,
+        leaderId: ServerId,
+        prevLogIndex: LogIndex,
+        prevLogTerm: Term,
+        entries: List(LogEntry),
+        leaderCommit: LogIndex
+    }
+
+    type RequestVoteReq = {
+        term: Term,
+        candidateId: ServerId,
+        lastLogIndex: LogIndex,
+        lastLogTerm: Term
+    }
+
+    state {
+        servers: Set(ServerId)
+        serverState: Map(ServerId, ServerState)
+
+        // Leader-specific: for each server, track nextIndex and matchIndex
+        nextIndex: Map(Map(ServerId, ServerId), LogIndex)
+        matchIndex: Map(Map(ServerId, ServerId), LogIndex)
+
+        // Election timer (abstracted as random timeout)
+        electionTimeout: Map(ServerId, Nat)
+    }
+
+    init {
+        servers == {"s1", "s2", "s3", "s4", "s5"}
+
+        // All servers start as followers in term 0
+        forall s in servers:
+            serverState[s] == {
+                role: "follower",
+                currentTerm: 0,
+                votedFor: null,
+                log: List.empty,
+                commitIndex: 0,
+                lastApplied: 0
+            }
+
+        nextIndex == emptyMap
+        matchIndex == emptyMap
+        electionTimeout == emptyMap
+    }
+
+    // Safety: Election Safety — at most one leader per term
+    invariant SingleLeaderPerTerm {
+        forall s1 in servers:
+            forall s2 in servers:
+                serverState[s1].role == "leader" and
+                serverState[s2].role == "leader" and
+                s1 != s2 implies
+                    serverState[s1].currentTerm != serverState[s2].currentTerm
+    }
+
+    // Safety: Leader Completeness — committed entries survive elections
+    invariant LeaderCompleteness {
+        forall s in servers:
+            serverState[s].role == "leader" implies
+                forall entry in serverState[s].log:
+                    entry.index <= serverState[s].commitIndex implies
+                        entry.term <= serverState[s].currentTerm
+    }
+
+    // Safety: Log Matching — if two logs have same term at same index, entries match
+    invariant LogMatching {
+        forall s1 in servers:
+            forall s2 in servers:
+                forall i in [1 .. length(serverState[s1].log)]:
+                    i <= length(serverState[s2].log) and
+                    serverState[s1].log[i].term == serverState[s2].log[i].term implies
+                        serverState[s1].log[i].command == serverState[s2].log[i].command
+    }
+
+    // Start election: follower times out, becomes candidate
+    action StartElection(server: ServerId) {
+        require server in servers
+        require serverState[server].role == "follower"
+
+        let newTerm := serverState[server].currentTerm + 1
+
+        // Increment term, vote for self
+        serverState[server].currentTerm := newTerm
+        serverState[server].role := "candidate"
+        serverState[server].votedFor := server
+
+        emit ElectionStarted { server: server, term: newTerm }
+    }
+
+    // Grant vote: follower votes for candidate if candidate's log is at least as up-to-date
+    action GrantVote(voter: ServerId, req: RequestVoteReq) {
+        require voter in servers
+        require serverState[voter].role == "follower" or
+                serverState[voter].role == "candidate"
+
+        // Only vote if candidate's term >= our term
+        require req.term >= serverState[voter].currentTerm
+
+        // If candidate's term > ours, step down
+        if req.term > serverState[voter].currentTerm {
+            serverState[voter].currentTerm := req.term
+            serverState[voter].role := "follower"
+            serverState[voter].votedFor := null
+        }
+
+        // Check not already voted in this term
+        require serverState[voter].votedFor == null or
+                serverState[voter].votedFor == req.candidateId
+
+        // Candidate log must be at least as complete as ours
+        let voterLog := serverState[voter].log
+        let voterLastIndex := length(voterLog)
+        let voterLastTerm := if voterLastIndex > 0: voterLog[voterLastIndex].term else 0
+
+        require req.lastLogTerm > voterLastTerm or
+                (req.lastLogTerm == voterLastTerm and req.lastLogIndex >= voterLastIndex)
+
+        serverState[voter].votedFor := req.candidateId
+        emit VoteGranted { voter: voter, candidate: req.candidateId, term: req.term }
+    }
+
+    // Become leader: candidate receives majority of votes
+    action BecomeLeader(server: ServerId) {
+        require server in servers
+        require serverState[server].role == "candidate"
+
+        // Count votes received (simplified: assumes quorum reached via external counting)
+        serverState[server].role := "leader"
+
+        // Initialize nextIndex/matchIndex for all other servers
+        forall s in servers \ {server}:
+            let lastLogIndex := length(serverState[server].log)
+            nextIndex[{ leader: server, follower: s }] := lastLogIndex + 1
+            matchIndex[{ leader: server, follower: s }] := 0
+
+        emit LeaderElected { leader: server, term: serverState[server].currentTerm }
+
+        // Send initial empty AppendEntries (heartbeat) to assert leadership
+        emit HeartbeatSent { leader: server, term: serverState[server].currentTerm }
+    }
+
+    // Append entries: leader replicates log entry to followers
+    action AppendEntries(leader: ServerId, follower: ServerId, req: AppendEntriesReq) {
+        require leader in servers
+        require follower in servers
+        require leader != follower
+        require serverState[leader].role == "leader"
+
+        // Verify term consistency
+        let followerTerm := serverState[follower].currentTerm
+        require req.term >= followerTerm
+
+        // If leader's term is stale, step down
+        if req.term > serverState[leader].currentTerm {
+            serverState[leader].currentTerm := req.term
+            serverState[leader].role := "follower"
+            serverState[leader].votedFor := null
+            return
+        }
+
+        // Update follower's term if behind
+        if req.term > followerTerm {
+            serverState[follower].currentTerm := req.term
+            serverState[follower].role := "follower"
+            serverState[follower].votedFor := null
+        }
+
+        // Check log consistency at prevLogIndex
+        let fLog := serverState[follower].log
+        require req.prevLogIndex == 0 or
+                (req.prevLogIndex <= length(fLog) and
+                 fLog[req.prevLogIndex].term == req.prevLogTerm)
+
+        // Delete conflicting entries, append new ones
+        let truncated := if req.prevLogIndex < length(fLog):
+                            take(fLog, req.prevLogIndex)
+                        else fLog
+
+        serverState[follower].log := concat(truncated, req.entries)
+
+        // Update commit index
+        if req.leaderCommit > serverState[follower].commitIndex {
+            let lastNewEntry := req.prevLogIndex + length(req.entries)
+            serverState[follower].commitIndex :=
+                if req.leaderCommit < lastNewEntry: req.leaderCommit else lastNewEntry
+        }
+
+        emit EntriesReplicated {
+            leader: leader,
+            follower: follower,
+            entries: length(req.entries)
+        }
+    }
+
+    // Advance commit index: leader commits when majority replicated
+    action AdvanceCommit(leader: ServerId) {
+        require leader in servers
+        require serverState[leader].role == "leader"
+
+        let currentCommit := serverState[leader].commitIndex
+        let logLen := length(serverState[leader].log)
+
+        // Find highest index that has been replicated to a majority
+        for i from currentCommit + 1 to logLen:
+            let replicated := 1  // leader counts itself
+            forall s in servers \ {leader}:
+                if matchIndex[{ leader: leader, follower: s }] >= i:
+                    replicated := replicated + 1
+
+            if replicated * 2 > size(servers) and
+               serverState[leader].log[i].term == serverState[leader].currentTerm {
+                serverState[leader].commitIndex := i
+            }
+
+        emit CommitAdvanced {
+            leader: leader,
+            commitIndex: serverState[leader].commitIndex
+        }
+    }
+
+    // Apply committed entries to state machine
+    action ApplyEntries(server: ServerId) {
+        require server in servers
+
+        let s := serverState[server]
+        let commitIdx := s.commitIndex
+
+        for i from s.lastApplied + 1 to commitIdx:
+            emit CommandApplied {
+                server: server,
+                index: i,
+                command: s.log[i].command
+            }
+
+        serverState[server].lastApplied := commitIdx
+    }
+
+    next:
+        StartElection
+        | GrantVote
+        | BecomeLeader
+        | AppendEntries
+        | AdvanceCommit
+        | ApplyEntries
+}

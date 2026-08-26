@@ -1,0 +1,91 @@
+// RetryHandler.speck
+// Simple retry with backoff constraints
+//
+// Provenance: This spec defines a standard retry mechanism used across
+// multiple services. It's a foundational component for resilience patterns.
+//
+// BOM: This spec is version-pinned and hash-verified for reproducibility.
+//
+// Author: Scott Scoble <scott@scoble.me>
+// Source: Architecture review ADR-0021 - Resilience Patterns
+
+speck RetryHandler {
+  // SpeckBOM - declare toolchain dependencies and integrity
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+    hash: "sha256: RetryHandler-base-v1"
+  }
+
+  // Intent provenance - where did this spec come from?
+  provenance {
+    design_decision: "ADR-0021 Resilience Patterns"
+    external_doc: "AWS Retry Best Practices" at "https://aws.amazon.com/architecture/retry/"
+  }
+
+  // Traceability - derives from base fault handler, satisfies resiliency requirements
+  derives from FaultHandler via "specialization for retry logic"
+  satisfies RESILIENCE-REQ-01 clause "3.1.2"
+  satisfies RESILIENCE-REQ-02
+
+  // Who wrote this and why
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "AR-2024-0215"
+
+  // Verification boundary - this needs manual review
+  review: manual
+
+  // Input: operation to retry, max retries allowed
+  input: {
+    operation: Operation,
+    maxRetries: Nat,
+    initialDelay: Real,
+    maxDelay: Real
+  }
+
+  // Output: result of operation (success or final failure)
+  output: {
+    success: Bool,
+    finalResult: String,
+    attemptCount: Nat,
+    totalDelay: Real
+  }
+
+  // Constraints - invariants that must hold
+  constraint: maxRetries <= 10
+  constraint: maxRetries >= 0
+  constraint: initialDelay > 0
+  constraint: maxDelay >= initialDelay
+  constraint: totalDelay == sum(delays)
+  constraint: totalDelay <= 30s
+
+  // Backoff constraint - delay grows exponentially
+  constraint: backoff(delay(n)) == delay(n-1) * 2
+  constraint: delay(n) <= maxDelay
+
+  // Verify: if retry attempt > 1, delay must be positive
+  verify: always(implies(attempt > 1, delay > 0))
+
+  // Verify: if all retries exhausted, operation must have failed
+  verify: always(implies(attemptCount == maxRetries + 1, not success))
+
+  // Events for observability and provenance tracking
+  event RetryAttempted {
+    attemptNumber: Nat
+    delay: Real
+    remainingRetries: Nat
+  }
+
+  event OperationSucceeded {
+    attemptCount: Nat
+    totalDelay: Real
+  }
+
+  event OperationFailed {
+    attemptCount: Nat
+    totalDelay: Real
+    finalError: String
+  }
+}
