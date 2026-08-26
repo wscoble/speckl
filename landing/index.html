@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Speckl — A Judgement Transport Utility for AI-Generated Specifications</title>
-  <meta name="description" content="Speckl bridges the gap between what you specify and what gets built. State machine specs compile to auditable code — TypeScript, Z3 verification, and provenance artifacts. NIST SA-11 human-in-the-loop for AI-generated outputs.">
+  <title>Speckl — A Compiler for SpeckDL State Machine Specifications</title>
+  <meta name="description" content="A compiler for SpeckDL, a specification language for state machines. Write specs, get TypeScript, Z3 verification, and provenance artifacts from a single source.">
   <meta name="author" content="Scott Scoble">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="canonical" href="https://speckl.scoble.me/">
-  <meta property="og:title" content="Speckl — Judgement Transport for AI Specifications">
+  <meta property="og:title" content="Speckl — A Compiler for SpeckDL">
   <meta property="og:description" content="State machine specs → auditable code. Compile SpeckDL to TypeScript + Z3 SMT + provenance artifacts. Open source (MIT). Created by Scott Scoble.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://speckl.scoble.me/">
@@ -18,7 +18,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareSourceCode",
     "name": "Speckl",
-    "description": "A judgement transport utility for AI-generated specifications. Compiles SpeckDL state machine specs to TypeScript, Z3 verification, and provenance artifacts.",
+    "description": "A compiler for SpeckDL, a specification language for state machines. Compiles to TypeScript, Z3, Rust, and provenance artifacts.",
     "author": {
       "@type": "Person",
       "name": "Scott Scoble",
@@ -255,7 +255,7 @@
 <header class="hero">
   <div class="hero-content">
     <h1>Speckl</h1>
-    <p class="hero-subtitle">A Judgement Transport Utility by Scott Scoble</p>
+    <p class="hero-subtitle">A compiler for state machine specifications by Scott Scoble</p>
     <p class="hero-tagline">
       Your specification is the source of truth. Speckl ensures what gets built — by humans or AI — stays faithful to what you specified. Compile state machine specs into auditable code with embedded provenance.
     </p>
@@ -300,7 +300,7 @@
     </div>
   </div>
 
-  <p><strong>Fulfills NIST SA-11</strong> (human-in-the-loop for automated outputs) — every AI-generated or hand-written spec is compiled through a deterministic pipeline. No LLMs in the compiler. Same input, same output, every time.</p>
+  <p>No LLMs in the compiler. Same spec, same output, every time. Every compilation embeds provenance — PROV-O traces, CycloneDX and SPDX SBOMs — so auditors can trace any generated code back to its specification.</p>
 
   <ul class="check-list">
     <li>Provenance is <strong>embedded by construction</strong> — not bolted on after the fact</li>
@@ -398,7 +398,7 @@
   <ul class="check-list">
     <li><strong>TypeScript codegen:</strong> Complete — state machine classes with full type coverage</li>
     <li><strong>Z3 verification backend:</strong> Live — <code>--target=z3</code> emits SMT-LIB2 that Z3 accepts</li>
-    <li><strong>OAuth 2.0 spec:</strong> Exists — <code>examples/OAuth2AuthorizationCode.speck</code></li>
+    <li><strong>OAuth 2.0 spec:</strong> Exists — <code>examples/OAuth2AuthorizationCode.speckdl</code></li>
     <li><strong>Rust codegen:</strong> In progress (M2.1)</li>
     <li><strong>WASM via wasm-pack:</strong> Pending Rust codegen completion</li>
   </ul>
@@ -419,10 +419,10 @@ npm install
 npm test
 
 <span class="cm"># Compile a spec to TypeScript + provenance artifacts</span>
-node dist/index.js ../examples/TwoPhaseCommit.speck -o out/twophase
+node dist/index.js ../examples/TwoPhaseCommit.speckdl -o out/twophase
 
 <span class="cm"># Compile to Z3 SMT-LIB2 for verification</span>
-node dist/index.js ../examples/KafkaKRaft.speck --target=z3 -o out/kraft
+node dist/index.js ../examples/KafkaKRaft.speckdl --target=z3 -o out/kraft
 
 <span class="cm"># Check TypeScript validity</span>
 npx tsc --noEmit -p out/twophase</pre></div>

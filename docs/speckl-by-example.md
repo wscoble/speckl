@@ -18,7 +18,7 @@ Every speck carries **embedded provenance**: where it came from, what regulation
 
 ## 1. ToggleSwitch — Your First State Machine
 
-**File:** `examples/ToggleSwitch.speck`
+**File:** `examples/ToggleSwitch.speckdl`
 
 ```speck
 speck ToggleSwitch {
@@ -73,7 +73,7 @@ ToggleSwitch generates a TypeScript class with typed `turnOn()` and `turnOff()` 
 
 ## 2. AccountLedger — Collections and Financial Safety
 
-**File:** `examples/AccountLedger.speck`
+**File:** `examples/AccountLedger.speckdl`
 
 ```speck
 speck AccountLedger {
@@ -138,7 +138,7 @@ Financial systems live and die by invariants. SpeckDL lets you state "transfers 
 
 ## 3. TwoPhaseCommit — Distributed Transactions
 
-**File:** `examples/TwoPhaseCommit.speck`
+**File:** `examples/TwoPhaseCommit.speckdl`
 
 This is a direct port of Lamport's TLA+ Two-Phase Commit spec.
 
@@ -193,7 +193,7 @@ This spec is structurally identical to the TLA+ version used to teach distribute
 
 ## 4. Raft — Production Consensus
 
-**File:** `examples/Raft.speck`
+**File:** `examples/Raft.speckdl`
 
 Raft is the consensus algorithm behind etcd, Consul, and TiKV. This is a complete SpeckDL port with leader election, log replication, and safety invariants.
 
@@ -320,9 +320,9 @@ TLA+ proved that formal methods work at scale. SpeckDL makes them deployable.
 ## Next Steps
 
 1. **Read the spec:** `SPEC.md` — full language reference
-2. **Run the examples:** `cd compiler && npm run build && node dist/cli.js compile ../examples/ToggleSwitch.speck`
+2. **Run the examples:** `cd compiler && npm run build && node dist/cli.js compile ../examples/ToggleSwitch.speckdl`
 3. **Write your own:** Start with a toggle switch, add state variables, write invariants
-4. **Target production:** See `examples/TigerBeetleLedger.speck` for a real financial system spec
+4. **Target production:** See `examples/TigerBeetleLedger.speckdl` for a real financial system spec
 
 ---
 

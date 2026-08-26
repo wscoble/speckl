@@ -1,4 +1,4 @@
-// RetryHandler.speck
+// RetryHandler.speckdl
 // Simple retry with backoff constraints
 //
 // Provenance: This spec defines a standard retry mechanism used across

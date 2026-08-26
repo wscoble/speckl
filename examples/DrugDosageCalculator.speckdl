@@ -1,4 +1,4 @@
-// DrugDosageCalculator.speck
+// DrugDosageCalculator.speckdl
 // Medical device showing provenance + SpeckBOM annotations
 //
 // Provenance: This is a safety-critical medical device component.

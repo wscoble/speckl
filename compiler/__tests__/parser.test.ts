@@ -537,7 +537,7 @@ speck Second {
     });
 
     it('should parse full TigerBeetle speck from file', () => {
-      const ast = parseSpeckFile(path.join(__dirname, 'tigerbeetle.speck'));
+      const ast = parseSpeckFile(path.join(__dirname, 'tigerbeetle.speckdl'));
       expect(ast.specks).toHaveLength(1);
 
       const speck = ast.specks[0];

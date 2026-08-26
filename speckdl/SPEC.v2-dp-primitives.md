@@ -306,7 +306,7 @@ speck DrugDosageCalculator {
     hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   }
 
-  import "retry-handler.speck" as retry
+  import "retry-handler.speckdl" as retry
 
   // ... constraints, verify, provenance, etc.
 }
@@ -319,7 +319,7 @@ The `bom` block is **declarative** — it says what the spec *expects* from its 
 The existing `import` statement includes a file path but no version or content hash. For SpeckBOM completeness, imports are extended to support version pinning:
 
 ```
-import "retry-handler.speck" as retry
+import "retry-handler.speckdl" as retry
   hash: "sha256:a1b2c3..."
   version: "1.2.0"
 ```
@@ -688,7 +688,7 @@ The compiler also emits a valid SPDX 3.0.1 JSON-LD document using the SPDX `Sbom
 The `speckl-compile` tool produces both formats by default:
 
 ```
-$ speckl compile drug-dosage.speck --output-dir out/
+$ speckl compile drug-dosage.speckdl --output-dir out/
 
   out/
   ├── drug-dosage.prov.jsonld      # Provenance graph (PROV-O / JSON-LD)
@@ -788,9 +788,9 @@ speck SpeckValidator {
 
 ```
 speck PaymentService {
-  import "rate-limiter.speck" as limiter
+  import "rate-limiter.speckdl" as limiter
     hash: "sha256:f7a1..." version: "2.1.0"
-  import "retry-handler.speck" as retry
+  import "retry-handler.speckdl" as retry
     hash: "sha256:b3c9..." version: "1.4.0"
 
   input: { payment: Payment, apiKey: String }

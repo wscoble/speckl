@@ -25,7 +25,7 @@ function lowerFixture(name: string) {
 
 describe('IR lower pass', () => {
   it('lowers a simple speck with provenance', () => {
-    const ir = lowerFixture('simple.speck');
+    const ir = lowerFixture('simple.speckdl');
     expect(ir.specks).toHaveLength(1);
     const speck = ir.specks[0];
     expect(speck.name).toBe('ToggleSwitch');
@@ -34,7 +34,7 @@ describe('IR lower pass', () => {
   });
 
   it('lowered IR has 8 named facets', () => {
-    const ir = lowerFixture('simple.speck');
+    const ir = lowerFixture('simple.speckdl');
     const speck = ir.specks[0];
     expect(speck.facets).toHaveProperty('typed_schema');
     expect(speck.facets).toHaveProperty('behavior');
@@ -47,25 +47,25 @@ describe('IR lower pass', () => {
   });
 
   it('typed_schema facet contains records and enums from interfaces', () => {
-    const ir = lowerFixture('simple.speck');
+    const ir = lowerFixture('simple.speckdl');
     const types = ir.specks[0].facets.typed_schema.types;
-    // The simple.speck has a Status enum interface
+    // The simple.speckdl has a Status enum interface
     expect(types.has('Status')).toBe(true);
     const status = types.get('Status')!;
     expect(status.kind).toBe('enum');
   });
 
   it('behavior facet contains state, init, actions, events', () => {
-    const ir = lowerFixture('simple.speck');
+    const ir = lowerFixture('simple.speckdl');
     const behavior = ir.specks[0].facets.behavior;
     expect(behavior.stateVars.length).toBeGreaterThanOrEqual(1);
     expect(behavior.actions.length).toBeGreaterThanOrEqual(1);
   });
 
   it('constraint expressions are typed trees, not strings', () => {
-    const ir = lowerFixture('simple.speck');
+    const ir = lowerFixture('simple.speckdl');
     const constraints = ir.specks[0].facets.formal_spec.constraints;
-    // The simple.speck has a constraint. The expression should be a tree node.
+    // The simple.speckdl has a constraint. The expression should be a tree node.
     if (constraints.length > 0) {
       const c = constraints[0];
       expect(c.expr).toBeDefined();
@@ -74,7 +74,7 @@ describe('IR lower pass', () => {
   });
 
   it('lowered IR is lossless: every fact in source is in IR', () => {
-    const ir = lowerFixture('tigerbeetle.speck');
+    const ir = lowerFixture('tigerbeetle.speckdl');
     const speck = ir.specks[0];
     // TigerBeetle has 3 events, 4 actions
     expect(speck.facets.behavior.events.length).toBe(3);
