@@ -23,8 +23,8 @@ describe('Compiler E2E', () => {
     }
   });
 
-  it('should parse RetryHandler.speck', () => {
-    const specPath = path.join(__dirname, '..', '..', '..', 'examples', 'RetryHandler.speck');
+  it('should parse RetryHandler.speckdl', () => {
+    const specPath = path.join(__dirname, '..', '..', '..', 'examples', 'RetryHandler.speckdl');
     ast = parseSpeckFile(specPath);
 
     expect(ast).toBeDefined();

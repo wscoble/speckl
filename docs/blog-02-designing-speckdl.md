@@ -14,7 +14,7 @@ Here's how we designed it, and what we learned along the way.
 
 SpeckDL is built on four design principles that distinguish it from both formal methods languages and general-purpose programming languages:
 
-**1. Spec as source of truth.** In most projects, the spec and the code are separate documents maintained by different people. They drift. When they conflict, nobody knows which one is right. In SpeckDL, the `.speck` file IS the authoritative description. Generated code is derived, not co-equal. If the spec and the code disagree, the spec wins — and the compiler tells you they disagree.
+**1. Spec as source of truth.** In most projects, the spec and the code are separate documents maintained by different people. They drift. When they conflict, nobody knows which one is right. In SpeckDL, the `.speckdl` file IS the authoritative description. Generated code is derived, not co-equal. If the spec and the code disagree, the spec wins — and the compiler tells you they disagree.
 
 **2. State machines, not procedures.** Every SpeckDL specification models a state machine: typed state variables, guarded transitions (actions), and invariants that must hold across every transition. This is the same mental model as TLA+. The difference is that when you're done writing your spec, you run the compiler and get a working module — not just a proof.
 

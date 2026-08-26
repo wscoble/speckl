@@ -1,6 +1,6 @@
 # Kafka KRaft Protocol Reference
 
-> Source material for writing `examples/KafkaKRaft.speck` (Kafka KRaft example reference)
+> Source material for writing `examples/KafkaKRaft.speckdl` (Kafka KRaft example reference)
 
 ## Scope
 

@@ -1,11 +1,10 @@
 {
   "name": "speckl-compile",
   "version": "0.3.1",
-  "description": "SpeckDL compiler + reference validator - SpeckDL → Z3 → DST → WASM with provenance and BOM",
+  "description": "SpeckDL compiler — compiles state machine specs to TypeScript, Rust, Z3, Protobuf, K8s CRDs, and SBOM artifacts with embedded provenance",
   "type": "module",
   "bin": {
-    "speckl-compile": "./dist/index.js",
-    "speckl-validate": "./dist/validator.js"
+    "speckl-compile": "./dist/index.js"
   },
   "files": [
     "dist/"
@@ -16,16 +15,15 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@types/js-yaml": "^4.0.9",
     "js-yaml": "^5.4.0",
     "yargs": "^17.7.2"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.5",
     "@types/yargs": "^17.0.33",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
-    "vitest": "^2.1.8",
-    "wabt": "^1.0.39"
+    "vitest": "^2.1.8"
   }
 }

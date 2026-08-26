@@ -43,13 +43,13 @@ function compileBoth(name: string): { ast: string; ir: string } {
 
 describe('IR-driven TypeScript generator', () => {
   it('produces output for a simple spec', () => {
-    const { ir } = compileBoth('simple.speck');
+    const { ir } = compileBoth('simple.speckdl');
     expect(ir).toContain('export const enum ToggleSwitchState');
     expect(ir).toContain('export class ToggleSwitch');
   });
 
   it('produces output for tigerbeetle (real spec)', () => {
-    const { ir } = compileBoth('tigerbeetle.speck');
+    const { ir } = compileBoth('tigerbeetle.speckdl');
     expect(ir).toContain('export class TigerBeetle');
     expect(ir).toContain('CreateAccount');
     expect(ir).toContain('Transfer');
@@ -58,14 +58,14 @@ describe('IR-driven TypeScript generator', () => {
   });
 
   it('IR output has provenance comment', () => {
-    const { ir } = compileBoth('simple.speck');
+    const { ir } = compileBoth('simple.speckdl');
     // The IR-driven output includes a comment about provenance.
     // The AST-driven output does not. This is the visible difference.
     expect(ir).toContain('Provenance:');
   });
 
   it('AST and IR outputs share the same shape (class, actions)', () => {
-    const { ast, ir } = compileBoth('simple.speck');
+    const { ast, ir } = compileBoth('simple.speckdl');
     // Both should reference the action.
     expect(ast).toContain('FlipSwitch');
     expect(ir).toContain('FlipSwitch');

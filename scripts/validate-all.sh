@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # validate-all.sh — Batch compile all Speckl examples and validate outputs
 # Usage: ./scripts/validate-all.sh [--quick] [--verbose]
-#   --quick: only parse + TypeScript check (skip WASM/WAT)
+#   --quick: only parse + TypeScript check
 #   --verbose: show all errors
 set -uo pipefail
 
@@ -31,7 +31,6 @@ cd "$COMPILER_DIR"
 if ! npx tsc --noEmit 2>&1; then
   echo -e "${RED}FAIL: Compiler has TypeScript errors${NC}"
   exit 1
-fi
 
 # Run unit tests
 echo "Running unit tests..."
@@ -42,7 +41,6 @@ if [ "$FAIL_COUNT" != "0" ] && [ "$FAIL_COUNT" != "" ]; then
   echo -e "${RED}FAIL: $FAIL_COUNT test(s) failing${NC}"
 else
   echo -e "${GREEN}PASS: $TEST_COUNT tests passing${NC}"
-fi
 
 # Prepare output directory
 rm -rf "$OUT_DIR"
@@ -61,7 +59,7 @@ FAIL=0
 PARSE_FAIL=0
 TS_CLEAN=0
 TS_ERRORS=0
-WAT_OK=0
+
 
 declare -A RESULTS
 declare -A TS_ERROR_COUNTS
@@ -69,15 +67,13 @@ declare -A TS_ERROR_COUNTS
 NODE_BIN="$COMPILER_DIR/dist/index.js"
 if [ ! -f "$NODE_BIN" ]; then
   echo -e "${RED}FATAL: Compiler dist not found at $NODE_BIN${NC}"
-  echo "Run 'cd compiler && npx tsc' first"
   exit 1
-fi
 
 shopt -s nullglob
-SPECS=( "$EXAMPLES_DIR"/*.speck )
+SPECS=( "$EXAMPLES_DIR"/*.speckdl )
 
 for spec in "${SPECS[@]}"; do
-  NAME=$(basename "$spec" .speck)
+  NAME=$(basename "$spec" .speckdl)
   EXAMPLE_OUT="$OUT_DIR/$NAME"
   mkdir -p "$EXAMPLE_OUT"
   
@@ -87,15 +83,12 @@ for spec in "${SPECS[@]}"; do
   PARSE_OUT=$(node "$NODE_BIN" "$spec" -o "$EXAMPLE_OUT" 2>&1) || true
   if echo "$PARSE_OUT" | grep -q "Error\|error:"; then
     echo -e "${RED}PARSE FAIL${NC}"
-    if $VERBOSE; then echo "$PARSE_OUT"; fi
     RESULTS[$NAME]="PARSE_FAIL"
     PARSE_FAIL=$((PARSE_FAIL + 1))
     FAIL=$((FAIL + 1))
     continue
-  fi
   
   # Step 2: Count artifacts generated
-  ARTIFACT_COUNT=$(find "$EXAMPLE_OUT" -maxdepth 1 -type f \( -name "*.json" -o -name "*.jsonld" -o -name "*.ts" -o -name "*.wat" \) 2>/dev/null | wc -l)
   
   # Step 3: TypeScript check
   TS_FILE="$EXAMPLE_OUT/$NAME.ts"
@@ -111,21 +104,12 @@ for spec in "${SPECS[@]}"; do
       TS_ERRORS=$((TS_ERRORS + 1))
       # Save error log
       echo "$TS_CHECK_OUT" > "$EXAMPLE_OUT/ts-errors.txt"
-    fi
   else
     echo -e "${RED}NO TS OUTPUT${NC}"
     RESULTS[$NAME]="NO_TS"
     FAIL=$((FAIL + 1))
     continue
-  fi
   
-  # Step 4: WASM/WAT validation
-  WAT_FILE="$EXAMPLE_OUT/$NAME.wat"
-  if [ "$QUICK" = false ] && [ -f "$WAT_FILE" ]; then
-    if command -v wat2wasm &>/dev/null; then
-      wat2wasm "$WAT_FILE" -o "$EXAMPLE_OUT/$NAME.wasm" 2>/dev/null && WAT_OK=$((WAT_OK + 1)) || true
-    fi
-  fi
   
   # Final status
   if [ "$TS_OK" = true ]; then
@@ -139,8 +123,6 @@ for spec in "${SPECS[@]}"; do
     FAIL=$((FAIL + 1))
     if $VERBOSE && [ -f "$EXAMPLE_OUT/ts-errors.txt" ]; then
       head -20 "$EXAMPLE_OUT/ts-errors.txt"
-    fi
-  fi
 done
 
 echo ""
@@ -155,15 +137,13 @@ echo "  TS clean:          $TS_CLEAN"
 echo "  TS with errors:    $TS_ERRORS"
 echo "  Overall pass:      $PASS / $TOTAL"
 if [ "$QUICK" = false ]; then
-  echo "  WAT valid:         $WAT_OK"
-fi
 echo ""
 
 # Detailed table
 printf "  %-30s %s\n" "EXAMPLE" "STATUS"
 printf "  %-30s %s\n" "-------" "------"
 for spec in "${SPECS[@]}"; do
-  NAME=$(basename "$spec" .speck)
+  NAME=$(basename "$spec" .speckdl)
   STATUS="${RESULTS[$NAME]:-UNKNOWN}"
   case $STATUS in
     PASS)       COLOR="$GREEN" ;;
@@ -174,7 +154,6 @@ for spec in "${SPECS[@]}"; do
   EXTRA=""
   if [ "$STATUS" = "TS_ERRORS" ]; then
     EXTRA=" (${TS_ERROR_COUNTS[$NAME]:-?} errors)"
-  fi
   printf "  ${COLOR}%-30s %-12s${NC}%s\n" "$NAME" "$STATUS" "$EXTRA"
 done
 
@@ -186,5 +165,4 @@ echo ""
 # Exit code
 if [ $FAIL -gt 0 ] || [ $PARSE_FAIL -gt 0 ]; then
   exit 1
-fi
 exit 0

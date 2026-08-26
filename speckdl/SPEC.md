@@ -303,7 +303,7 @@ speck DrugDosageCalculator {
     hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   }
 
-  import "retry-handler.speck" as retry
+  import "retry-handler.speckdl" as retry
   ...
 }
 ```
@@ -313,7 +313,7 @@ speck DrugDosageCalculator {
 The `import` statement supports optional `version` and `hash` fields for reproducible builds:
 
 ```
-import "retry-handler.speck" as retry
+import "retry-handler.speckdl" as retry
   version "1.2.0"
   hash "sha256:abcdef1234567890..."
 ```
@@ -605,10 +605,10 @@ speck SpeckValidator {
 
 ```
 speck PaymentService {
-  import "rate-limiter.speck" as limiter
+  import "rate-limiter.speckdl" as limiter
     version "1.0.0"
     hash "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-  import "retry-handler.speck" as retry
+  import "retry-handler.speckdl" as retry
     version "2.1.0"
     hash "sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
 
@@ -664,7 +664,7 @@ The reference compiler (`speckl-compile`) is a Node.js/TypeScript application th
 ### CLI
 
 ```
-speckl-compile <file.speck> --output-dir <dir> --bom-format <cdx|spdx|both>
+speckl-compile <file.speckdl> --output-dir <dir> --bom-format <cdx|spdx|both>
 ```
 
 - `--output-dir`: Directory for output artifacts (default: `./out`)

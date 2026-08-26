@@ -79,7 +79,7 @@ SpeckDL is a domain-specific language for defining state machines with types, in
 
 SpeckDL follows four principles:
 
-1. **Spec as source of truth.** The `.speck` file is the authoritative description of system behavior. Generated code is derived, not co-equal. If the spec and the code disagree, the spec wins — and the compiler tells you they disagree.
+1. **Spec as source of truth.** The `.speckdl` file is the authoritative description of system behavior. Generated code is derived, not co-equal. If the spec and the code disagree, the spec wins — and the compiler tells you they disagree.
 
 2. **State machines, not procedures.** Every SpeckDL specification models a state machine: typed state variables, guarded transitions (actions), and invariants that must hold across every transition. This is the same mental model as TLA+, but with a concrete compilation target.
 
@@ -427,14 +427,14 @@ These omissions are the point. SpeckDL constrains the spec author to describe wh
 
 ## 3. Compiler Architecture
 
-The Speckl compiler is a single-pass, multi-target compiler written in TypeScript. It takes a `.speck` file as input and produces five output artifacts through five independent generators. The compiler is designed to be deterministic, auditable, and self-contained — zero external services, zero API calls, zero runtime dependencies beyond Node.js and a WebAssembly toolchain (wabt) for binary WASM generation.
+The Speckl compiler is a single-pass, multi-target compiler written in TypeScript. It takes a `.speckdl` file as input and produces five output artifacts through five independent generators. The compiler is designed to be deterministic, auditable, and self-contained — zero external services, zero API calls, zero runtime dependencies beyond Node.js and a WebAssembly toolchain (wabt) for binary WASM generation.
 
 ### 3.1 Compilation Pipeline
 
 The compiler follows a classic front-end / back-end architecture:
 
 ```
-.speck file
+.speckdl file
     │
     ▼
 ┌──────────┐
@@ -458,7 +458,7 @@ provenance  sbom.cdx  sbom.spdx  output.ts  output.wat
  .ttl       .json      .json                → output.wasm
 ```
 
-The compiler processes a single `.speck` file in one pass. The parser produces a unified AST, and each generator walks that AST independently to produce its target format. Generators do not communicate with each other — they share only the AST, ensuring that every output artifact is a faithful representation of the specification.
+The compiler processes a single `.speckdl` file in one pass. The parser produces a unified AST, and each generator walks that AST independently to produce its target format. Generators do not communicate with each other — they share only the AST, ensuring that every output artifact is a faithful representation of the specification.
 
 ### 3.2 Parser
 
@@ -505,7 +505,7 @@ Each generator is an independent module (~200-400 lines) that walks the AST and 
 
 Emits a W3C PROV-O provenance graph in Turtle (`.ttl`) format. The graph captures:
 
-- **Entities:** The `.speck` file itself (the specification as a document), each generated output file (TypeScript, WAT, SBOM, SPDX)
+- **Entities:** The `.speckdl` file itself (the specification as a document), each generated output file (TypeScript, WAT, SBOM, SPDX)
 - **Activities:** The compilation process as a whole, plus each generator invocation as a sub-activity
 - **Agents:** The Speckl compiler (identified by version and commit hash), the human author (from git config), and any AI agent that contributed to the spec
 - **Relations:** `wasGeneratedBy` (artifact → generator), `wasDerivedFrom` (code → spec block), `wasAttributedTo` (spec → author), `used` (generator → spec)
@@ -518,7 +518,7 @@ Emits a CycloneDX Software Bill of Materials in JSON format (v1.4). The SBOM dec
 
 - The generated module as a software component with name, version, and SHA-256 hash
 - The Speckl compiler as a tool used in the build process
-- The source `.speck` file as a component dependency
+- The source `.speckdl` file as a component dependency
 - License information for both the generated code and the compiler
 
 CycloneDX SBOMs are a de facto industry standard and are consumed by tools like Dependency-Track, OWASP scanners, and compliance platforms (SOC 2, FedRAMP).
@@ -600,7 +600,7 @@ The compiler has 41 tests across 3 test files, using Node.js's built-in test run
 
 - **Parser tests:** Verify correct parsing of all language constructs — state declarations, type expressions, action bodies with require/let/if/emit/return/forall, invariants, quantified expressions, record types, nested generics, operator precedence
 - **Generator tests:** Verify output format correctness — PROV-O graph structure, CycloneDX schema compliance, SPDX field completeness, TypeScript type correctness (`tsc --noEmit`), WAT validity (wabt `wat2wasm`)
-- **End-to-end tests:** Full pipeline — `.speck` file → parse → generate all 5 artifacts → validate TypeScript compiles → validate WAT assembles → instantiate WASM → run actions → verify state changes and guard enforcement
+- **End-to-end tests:** Full pipeline — `.speckdl` file → parse → generate all 5 artifacts → validate TypeScript compiles → validate WAT assembles → instantiate WASM → run actions → verify state changes and guard enforcement
 
 All tests run in under 2 seconds on commodity hardware. The test suite is designed to make the compiler safe to refactor — any change that breaks spec semantics is caught by the test suite before it reaches users.
 
@@ -618,7 +618,7 @@ The compiler architecture reflects several deliberate choices:
 
 **DIST DESYNC guard.** A `check-dist.sh` script + Makefile guard ensures compiled JavaScript (`dist/`) is never stale relative to TypeScript source (`src/`). This prevents the common bug where tests pass because they're running old compiled code. The compiler refuses to run if the dist is out of date.
 
-**CLI-first, library-second.** The compiler is invoked as `speckl compile file.speck` with CLI flags for output directory, format selection, and verbosity. The internal API is stable but the primary interface is the command line, making it easy to integrate into CI/CD pipelines, Makefiles, and build scripts.
+**CLI-first, library-second.** The compiler is invoked as `speckl compile file.speckdl` with CLI flags for output directory, format selection, and verbosity. The internal API is stable but the primary interface is the command line, making it easy to integrate into CI/CD pipelines, Makefiles, and build scripts.
 
 ## 4. Embedded Provenance
 
@@ -636,7 +636,7 @@ Regulations like Executive Order 14028, NIST SP 800-218 (SSDF), and the EU Cyber
 
 ### 4.2 Provenance by Construction
 
-Speckl inverts this model. Because the compiler operates on a single, unambiguous source (the `.speck` file), it can generate provenance artifacts at compile time that are **guaranteed to be accurate** — not best-effort metadata added later, but mechanically derived from the code's single source of truth.
+Speckl inverts this model. Because the compiler operates on a single, unambiguous source (the `.speckdl` file), it can generate provenance artifacts at compile time that are **guaranteed to be accurate** — not best-effort metadata added later, but mechanically derived from the code's single source of truth.
 
 Every `speckl compile` invocation produces three provenance artifacts:
 
@@ -994,7 +994,7 @@ Here is a concrete compliance workflow:
 
 **Step 3: Evidence is self-consistent.** All three provenance artifacts derive from the same parse tree. They can't disagree with each other — consistency is guaranteed by construction. An auditor can trace any SBOM entry back to a specific line in the spec.
 
-**Step 4: Evidence is verifiable.** The PROV-O graph records a chain of derivation: `source.speck → parse → AST → artifact`. The WASM module can be validated through wabt's `wat2wasm`. The TypeScript can be checked with `tsc --noEmit`. Each artifact has an independent verification path.
+**Step 4: Evidence is verifiable.** The PROV-O graph records a chain of derivation: `source.speckdl → parse → AST → artifact`. The WASM module can be validated through wabt's `wat2wasm`. The TypeScript can be checked with `tsc --noEmit`. Each artifact has an independent verification path.
 
 **Step 5: Evidence is cumulative.** Each commit in version control carries its own set of generated artifacts. An auditor can trace how the system evolved — and verify that at no point was a spec change made without corresponding artifact regeneration.
 

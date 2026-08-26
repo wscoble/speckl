@@ -582,8 +582,8 @@ speck DeterminismTest {
 });
 
 describe('Protobuf backend: ToggleSwitch example', () => {
-  it('compiles ToggleSwitch.speck to valid .proto', () => {
-    const ast = parseSpeckFile(join(path.resolve(__dirname, '..', '..', '..', '..'), 'examples', 'ToggleSwitch.speck'));
+  it('compiles ToggleSwitch.speckdl to valid .proto', () => {
+    const ast = parseSpeckFile(join(path.resolve(__dirname, '..', '..', '..', '..'), 'examples', 'ToggleSwitch.speckdl'));
     const tmp = mkdtempSync(join(tmpdir(), 'speckl-proto-toggle-'));
     try {
       generateProtobuf(ast, tmp);

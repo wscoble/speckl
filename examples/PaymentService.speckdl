@@ -1,4 +1,4 @@
-// PaymentService.speck
+// PaymentService.speckdl
 // Import pinning with hash verification
 //
 // Provenance: Payment processing system component requiring strict
@@ -51,15 +51,15 @@ speck PaymentService {
 
   // Import statements with version pinning and hash verification
   // These imports must match exactly - hash checked at compile time
-  import "rate-limiter.speck" as limiter
+  import "rate-limiter.speckdl" as limiter
     hash: "sha256:f7a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
     version: "2.1.0"
 
-  import "retry-handler.speck" as retry
+  import "retry-handler.speckdl" as retry
     hash: "sha256:b3c9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
     version: "1.4.0"
 
-  import "fraud-scanner.speck" as fraud
+  import "fraud-scanner.speckdl" as fraud
     hash: "sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
     version: "3.0.0"
 

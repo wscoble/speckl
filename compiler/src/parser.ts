@@ -276,7 +276,7 @@ export interface AST {
 }
 
 /**
- * Parse a .speck file and return the AST
+ * Parse a .speckdl file and return the AST
  */
 export function parseSpeckFile(filePath: string): AST {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -645,7 +645,7 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
   if (firstLine.startsWith('bom ')) {
     // Parse the bom block body. The body has a mix of:
     //   `compiler { name: "x", version: "y" }`  (braced form)
-    //   `compiler: "x" version "y"`              (colon-quote form, used by RetryHandler.speck)
+    //   `compiler: "x" version "y"`              (colon-quote form, used by RetryHandler.speckdl)
     //   `solver { name: "x", version: "y" }`
     //   `runtime { name: "x", version: "y" }`
     //   `license: "MIT"`

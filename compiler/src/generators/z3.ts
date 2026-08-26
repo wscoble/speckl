@@ -1203,7 +1203,7 @@ function parseInvariants(speck: SpeckNode): InvariantNode[] {
 }
 
 /**
- * Parse invariants from the raw .speck source content.
+ * Parse invariants from the raw .speckdl source content.
  * This function is called with the raw file content and the speck name
  * to find and parse invariant blocks that the main parser doesn't handle yet.
  */
