@@ -1,5 +1,5 @@
-// forgejo-issue-workflow.speckdl
-// Formal specification: A Forgejo issue is a prompt wrapped in a state machine.
+// issue-workflow.speckdl
+// Formal specification: An issue is a prompt wrapped in a state machine.
 //
 // Purpose: Make the informal prompt → formal. Track who can do what, when, and
 // what evidence is required to move forward. Every transition is a decision.
@@ -114,8 +114,8 @@ speck IssueWorkflow {
 
   action assign(assignee: String, agent: String) {
     require status == Groomed || status == Open
-    require assignee == "sscoble"
-    require repo != "marcus/coach"
+    require assignee == "maintainer"
+    require repo != "internal/repo"
     assign status = Assigned
     assign lastActionBy = agent
     assign decisionCount = decisionCount + 1
@@ -186,7 +186,7 @@ speck IssueWorkflow {
 
   action close(closer: String, resolution: String) {
     require status == Merged || status == Open || status == Groomed
-    require closer == assignee || (closer == "sscoble" && assignee == "")
+    require closer == assignee || (closer == "maintainer" && assignee == "")
     assign status = Closed
     assign lastActionBy = closer
     assign decisionCount = decisionCount + 1
@@ -250,7 +250,7 @@ speck IssueWorkflow {
   constraint: forall l in labels: l in {"bug", "feature", "improvement", "question", "blocked"}
   constraint: implies(now() - lastIssueCreatedAt(agent) < 3600, issuesCreatedInLastHour(agent) <= 3)
   constraint: implies(now() - lastCommentAt(agent) < 30, false)
-  constraint: implies(repo in {"marcus/engineering", "marcus/market", "marcus/content", "marcus/trust"}, assignee == "sscoble")
+  constraint: implies(repo in {"team/engineering", "team/market", "team/content", "team/trust"}, assignee == "maintainer")
   constraint: implies(creator == agent, repo != agentRepo(agent))
   constraint: decisionCount == len(decisionLog)
   constraint: implies(status == Closed, len(evidence) > 0 || lastStateBeforeClosed() in {Merged, Blocked})
@@ -258,7 +258,7 @@ speck IssueWorkflow {
   // ─── Verification ─────────────────────────────────────────
   verify: always(implies(status == InProgress, eventually(status == Merged || status == Closed)))
   verify: always(implies(status == Blocked, eventually(status != Blocked)))
-  verify: always(implies(lastActionBy != "sscoble", status != Assigned))
+  verify: always(implies(lastActionBy != "maintainer", status != Assigned))
   verify: always(implies(decisionCount > 0, forall t in decisionLog: len(t.reason) > 0))
   verify: always(implies(status == Groomed || status == Assigned || status == InProgress, len(acceptanceCriteria) > 0))
 

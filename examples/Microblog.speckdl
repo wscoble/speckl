@@ -19,7 +19,7 @@
 // The transport difference is config, not a different spec.
 
 speck Microblog {
-  author: "sscoble"
+  author: "wscoble"
   source: document ref "federated-meetup-canonical-spec"
   review: manual
 
@@ -229,7 +229,7 @@ speck Microblog {
   // services in our own infrastructure; the spec is the same.
 
   proto_package: "microblog.v1"
-  go_package: "github.com/sscoble/microblog/proto/microblog/v1;microblogv1"
+  go_package: "github.com/wscoble/microblog/proto/microblog/v1;microblogv1"
   event_suffix: "Request"
 
   // ─── Resource lifecycle ──────────────────────────────────

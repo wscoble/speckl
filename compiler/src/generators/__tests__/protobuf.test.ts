@@ -119,8 +119,8 @@ speck SimpleSpec {
 }
 `);
     expect(proto).toContain('option go_package =');
-    // Default go_package follows the pattern github.com/sscoble/<name>/proto/<name>/v1;<name>v1
-    expect(proto).toContain('github.com/sscoble/simple_spec/proto/simple_spec/v1');
+    // Default go_package follows the pattern github.com/wscoble/<name>/proto/<name>/v1;<name>v1
+    expect(proto).toContain('github.com/wscoble/simple_spec/proto/simple_spec/v1');
   });
 });
 
@@ -580,7 +580,7 @@ speck DeterminismTest {
 
 describe('Protobuf backend: ToggleSwitch example', () => {
   it('compiles ToggleSwitch.speck to valid .proto', () => {
-    const ast = parseSpeckFile(join('/home/sscoble/speckl', 'examples', 'ToggleSwitch.speck'));
+    const ast = parseSpeckFile(join('__dirname/../..', 'examples', 'ToggleSwitch.speck'));
     const tmp = mkdtempSync(join(tmpdir(), 'speckl-proto-toggle-'));
     try {
       generateProtobuf(ast, tmp);
@@ -601,7 +601,7 @@ describe('Protobuf backend: ToggleSwitch example', () => {
 describe('Protobuf backend: federated-meetup integration', () => {
   it('compiles FederatedMeetup.speckdl with all transition payloads', () => {
     const ast = parseSpeckFile(
-      join('/home/sscoble/projects/federated-meetup', 'specs', 'FederatedMeetup.speckdl')
+      join('__dirname/../../examples', 'specs', 'FederatedMeetup.speckdl')
     );
     const tmp = mkdtempSync(join(tmpdir(), 'speckl-proto-fm-'));
     try {
@@ -612,7 +612,7 @@ describe('Protobuf backend: federated-meetup integration', () => {
 
       // Package and go_package
       expect(proto).toContain('package federated_meetup.v1;');
-      expect(proto).toContain('option go_package = "github.com/sscoble/federated-meetup/proto/federated_meetup/v1;federatedmeetupv1";');
+      expect(proto).toContain('option go_package = "github.com/wscoble/federated-meetup/proto/federated_meetup/v1;federatedmeetupv1";');
 
       // Enums
       expect(proto).toContain('enum CustodyTier {');
@@ -679,7 +679,7 @@ describe('Protobuf backend: federated-meetup integration', () => {
 
   it('produces byte-stable output for FederatedMeetup.speckdl', () => {
     const src = readFileSync(
-      join('/home/sscoble/projects/federated-meetup', 'specs', 'FederatedMeetup.speckdl'),
+      join('__dirname/../../examples', 'specs', 'FederatedMeetup.speckdl'),
       'utf-8'
     );
     const proto1 = compileProto(src, 'FederatedMeetup');

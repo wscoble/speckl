@@ -1,126 +1,74 @@
 # Speckl
 
-**A judgement transport utility for AI-generated specifications.** Fulfills NIST SA-11 (human-in-the-loop for automated outputs).
+A compile-time provenance compiler for state machine specifications. Write what your system should do in SpeckDL. Get auditable code and provenance artifacts from a single source.
 
-Speckl is a specification language (SpeckDL) with a compiler that produces runnable software — TypeScript and provenance artifacts (PROV-O, CycloneDX, SPDX) — from a single source of truth. Write what your system should do. Prove it. Ship it.
+## What It Does
 
-## The Core Insight
-
-AI generates code at machine speed. Humans own specifications. **SpeckDL is the shared space where both can work.**
-
-- **Human-judgeable** — SpeckDL is declarative enough that a person can inspect a spec and say "yes, this captures my intent." The compiled output is opaque; the spec is not.
-- **AI-writable** — SpeckDL's constrained grammar and declarative semantics are tractable for LLMs to produce and reason about. Agents draft. Humans review. Both operate on the same semantic layer.
-- **Compiled, not generated** — The SpeckDL compiler is deterministic. No LLMs in the compilation path. Same spec, same output — always.
-
-## What Speckl Does Now
-
-Speckl is a **working compiler** that turns formal specifications into multiple target representations:
+Speckl compiles SpeckDL specifications into multiple target representations:
 
 ```
-.speckdl spec ──→ TypeScript             ← typed, importable classes
+.speckdl spec ──→ TypeScript             ← typed, importable state machine classes
+              ├── Z3 SMT-LIB2            ← formal verification output
               ├── PROV-O (RDF)           ← W3C provenance standard
               ├── CycloneDX SBOM         ← OWASP software bill of materials
-              └── SPDX SBOM              ← Linux Foundation SBOM standard
+              ├── SPDX SBOM              ← Linux Foundation SBOM standard
+              ├── Rust                   ← state machine structs and enums
+              ├── TLA+                   ← formal specification output
+              ├── OpenAPI                ← REST API surface
+              ├── GraphQL                ← schema definition
+              ├── Protobuf               ← message definitions
+              ├── K8s CRDs               ← Kubernetes custom resources
+              ├── Helm                    ← chart templates
+              ├── JSON Schema            ← validation schemas
+              ├── SQL                    ← table definitions
+              └── Markdown               ← human-readable docs
 ```
 
-### State Machine Compilation (inspired by TLA+)
+No LLMs in the compilation path. Same spec, same output, every time.
 
-```speckdl
-spec ToggleSwitch {
-  state: Status = Off
-  enum Status = On | Off
-
-  init: {
-    Status = Off
-  }
-
-  action FlipSwitch {
-    require: true
-    if Status == On {
-      Status = Off
-    } else {
-      Status = On
-    }
-  }
-}
-```
-
-This compiles to a runnable TypeScript class with verified state transitions + guards.
-
-### Provenance Embedded at Compile Time
-
-Every compilation embeds a complete provenance record — PROV-O RDF traces the spec → code derivation, CycloneDX and SPDX SBOMs capture the software supply chain. When an auditor asks "where did this behavior come from?", you query the graph, not Jira.
-
-## Real-World Examples
-
-The compiler has been validated against:
-
-| Example | Source | Status |
-|---------|--------|--------|
-| **ToggleSwitch** | SpeckDL tutorial | ✅ All artifacts |
-| **AccountLedger** | Banking ledger with debit/credit | ✅ All artifacts |
-| **TwoPhaseCommit** | TLA+ port | ✅ All artifacts |
-| **Paxos** | TLA+ port | ✅ All artifacts |
-| **Raft** | TLA+ port | ✅ All artifacts |
-| **TigerBeetleLedger** | Naive TigerBeetle core | ✅ All artifacts (3 TS type errors in progress) |
-
-## Getting Started
+## Quick Start
 
 ```bash
 git clone https://github.com/wscoble/speckl.git
 cd speckl/compiler
 npm install
+npm test
 
-# Compile an example
+# Compile a spec
 node dist/index.js ../examples/ToggleSwitch.speck -o out/switch
 ls out/switch/
-# ToggleSwitch.ts  ToggleSwitch.prov-o.jsonld
-# ToggleSwitch.cyclonedx.json  ToggleSwitch.spdx.json
 ```
 
-### Key Documents
+## Examples
 
-- **[Whitepaper v2](docs/whitepaper-v2.md)** — Complete: 8 sections, ~19,000 words. Covers the spec-code gap, SpeckDL language, compiler architecture, embedded provenance, consensus protocols, compliance applications, related work, and roadmap.
-- **[Speckl by Example](docs/speckl-by-example.md)** — Guided tutorial from ToggleSwitch through Raft, with TLA+ comparison table.
-- **[Distribution Strategy](docs/distribution-strategy.md)** — Prioritized roadmap: Show HN → arXiv → blog → consulting pipeline. Conference landscape for 2026-2027.
-- **[Strategy Ladder](docs/strategy.md)** — Open standard → Consulting → Developer Tool/SaaS → Compliance API.
-- **[SpeckDL Spec](speckdl/SPEC.md)** — Language definition v0.2.
-- **[State Machine Extension](speckdl/STATE-MACHINE-SPEC.md)** — `state`/`init`/`action` keywords, Set/Map/List types.
+14 specs from ToggleSwitch through Raft:
 
-## Strategy Ladder
+| Example | Lines | What it demonstrates |
+|---------|-------|----------------------|
+| ToggleSwitch | 20 | Basic states, actions, invariants |
+| TwoPhaseCommit | 45 | Distributed transaction coordinator |
+| Paxos | 120 | Consensus with 3 safety invariants |
+| Raft | 230 | Leader election, log replication |
+| KafkaKRaft | 141 | KRaft consensus with Z3 verification |
+| TigerBeetleLedger | — | Financial ledger with debit/credit |
+| OAuth2AuthorizationCode | — | OAuth 2.0 flow with PKCE |
 
-| Phase | Focus | Status |
-|-------|-------|--------|
-| **A — Open Standard** | SpeckDL language, compiler, whitepaper, examples | ✅ **Complete** (compiler working, whitepaper done) |
-| **B — Consulting** | Hands-on engagements with regulated-industry teams | 📋 One-pager drafted, awaiting review |
-| **C — Developer Tool/SaaS** | Self-serve spec validation, provenance browser | 🔮 Future |
-| **D — Compliance API** | Enterprise audit reports, traceability matrices | 🔮 Future |
+Browse all 14 in [examples/](examples/).
 
-## Validation Status
+## Documentation
 
-- **Compiler:** 41/41 tests passing (TypeScript codegen)
-- **TypeScript:** Type-safe compilation from specs
-- **TLA+ Trilogy:** TwoPhaseCommit, Paxos, Raft all compile
-- **Compiler Self-Spec:** `speckl-compile.speckdl` defines the Speckl compiler in SpeckDL — generates all artifacts (known TypeScript errors tracked in engineering#9)
+- [Whitepaper v2](docs/whitepaper-v2.md) — language design, compiler architecture, provenance model, consensus protocol examples
+- [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
+- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
+- [Kafka KRaft Reference](docs/kraft-protocol-reference.md) — protocol reference for the KRaft example
 
-## Known Issues
+## Status
 
-The `rewriteExpr` function in the TypeScript generator applies spurious `this.state.` prefixes to function parameters in guard expressions. Tracked in [marcus/engineering#9](https://github.com/wscoble/speckl/issues). Parser also drops `precondition:`/`postcondition:` blocks on some action bodies.
-
-## Contributing
-
-Speckl is open source under the [MIT license](LICENSE). Contributions welcome:
-
-- **Language design** — refine SpeckDL syntax and semantics
-- **Compiler development** — TypeScript/Node.js, help fix open issues
-- **Formal methods** — verify the compilation pipeline, add TLA+ examples
-- **Compliance expertise** — validate regulatory models (NIST, IEC 62304, DO-178C)
-- **Documentation** — tutorials, guides, case studies
-
-Open an issue or submit a pull request.
+- TypeScript codegen: complete, type-safe state machine classes
+- Z3 verification backend: `--target=z3` emits SMT-LIB2
+- 14 example specs, 41 tests passing
+- Rust, TLA+, OpenAPI, GraphQL, Protobuf, K8s CRD, Helm, JSON Schema, SQL, Markdown generators
 
 ## License
 
-MIT © Scott Scoble / Greybeard Holdings, LLC
-
-- **Mirror:** https://github.com/wscoble/speckl
+MIT

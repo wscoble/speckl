@@ -21,7 +21,7 @@ import { lower } from '../../ir/lower.js';
 import { generateK8sCRD } from '../k8s-crd.js';
 import { OpenAPITarget } from '../openapi.js';
 
-const REPO = '/home/sscoble/speckl';
+const REPO = '__dirname/../..';
 
 function compileCRDs(name: string): string {
   const filePath = join(REPO, 'examples', name);

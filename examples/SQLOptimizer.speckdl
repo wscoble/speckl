@@ -4,7 +4,7 @@
 
 speck SQLOptimizer {
   version: "0.2.0"
-  author:  "sscoble"
+  author:  "wscoble"
   license: "MIT"
 
   // ─── State ────────────────────────────────────────────────

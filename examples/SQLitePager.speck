@@ -9,7 +9,7 @@
 // Does NOT cover: WAL mode (separate spec), VDBE, B-Tree internal structure
 
 speck SQLitePager {
-    author: "Engineering (agent-engineering) <engineering@marcus.local>"
+    author: "Engineering <eng@example.com>"
     source: architecture_review ref "SQLite-Pager-Core"
     review: hybrid
     derives from docs/db-sqlite-reference.md via "Section 1: Pager State Machine"

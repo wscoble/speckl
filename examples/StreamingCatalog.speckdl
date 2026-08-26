@@ -13,7 +13,7 @@
 //   - metadata: version, license
 
 speck StreamingCatalog {
-  author: "sscoble"
+  author: "wscoble"
   source: document ref "streaming-catalog-canonical-spec"
   review: manual
 
@@ -242,7 +242,7 @@ speck StreamingCatalog {
   // ─── Wire format ──────────────────────────────────────────
 
   proto_package: "streaming.v1"
-  go_package: "github.com/sscoble/streaming/proto/streaming/v1;streamingv1"
+  go_package: "github.com/wscoble/streaming/proto/streaming/v1;streamingv1"
   event_suffix: "Request"
 
   // ─── Resource lifecycle ──────────────────────────────────

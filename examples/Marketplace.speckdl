@@ -20,7 +20,7 @@
 // the empirical proof of the "general purpose" claim.
 
 speck Marketplace {
-  author: "sscoble"
+  author: "wscoble"
   source: document ref "marketplace-canonical-spec"
   review: manual
 
@@ -389,7 +389,7 @@ speck Marketplace {
   // ─── Wire format ──────────────────────────────────────────
 
   proto_package: "marketplace.v1"
-  go_package: "github.com/sscoble/marketplace/proto/marketplace/v1;marketplacev1"
+  go_package: "github.com/wscoble/marketplace/proto/marketplace/v1;marketplacev1"
   event_suffix: "Request"
 
   // ─── Resource lifecycle ──────────────────────────────────

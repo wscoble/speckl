@@ -3,7 +3,7 @@
 
 speck SpecklCompiler {
   version: "0.4.0"
-  author:  "sscoble"
+  author:  "wscoble"
   license: "MIT"
 
   // ─── Purpose ──────────────────────────────────────────────

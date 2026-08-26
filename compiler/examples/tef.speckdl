@@ -4,7 +4,7 @@
 // Kubernetes CRD infrastructure. All 8 TEF CRDs are defined here as a single
 // Speckl spec. The K8s CRD target (next on the list) will compile this spec
 // to actual `CustomResourceDefinition` YAML. Until then, the Go types in
-// `/home/sscoble/projects/tef-engine/api/v1alpha1/*.go` are the human-
+// `./api/v1alpha1/*.go` are the human-
 // reference for field semantics — this spec must match them field-by-field.
 //
 // The 8 CRDs in this spec:
@@ -26,7 +26,7 @@
 
 speck TEF {
   version: "0.1.2"
-  author: "sscoble"
+  author: "wscoble"
   source: architecture_review ref "tef-crd-spec-2026-07-19"
   review: hybrid
 
@@ -695,7 +695,7 @@ speck TEF {
   // ─── Wire format ────────────────────────────────────────────────
 
   proto_package: "tef.v1alpha1"
-  go_package: "github.com/sscoble/tef-engine/api/v1alpha1;v1alpha1"
+  go_package: "github.com/wscoble/tef-engine/api/v1alpha1;v1alpha1"
   event_suffix: "Request"
 
   // ─── Resource lifecycle ────────────────────────────────────────

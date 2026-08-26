@@ -9,7 +9,7 @@ import { join } from 'path';
 import { parseSpeckFile } from '../../src/parser.js';
 import { lower } from '../../src/ir/lower.js';
 
-const REPO = '/home/sscoble/speckl';
+const REPO = '__dirname/../..';
 
 describe('TodoApp IR', () => {
   const fp = join(REPO, 'examples', 'TodoApp.speckdl');
@@ -65,7 +65,7 @@ describe('TodoApp IR', () => {
   it('wire_format has proto_package and go_package', () => {
     const wf = ir.specks[0].facets.wire_format;
     expect(wf.protoPackage).toBe('todo.v1');
-    expect(wf.goPackage).toBe('github.com/sscoble/todo-app/proto/todo/v1;todov1');
+    expect(wf.goPackage).toBe('github.com/wscoble/todo-app/proto/todo/v1;todov1');
     expect(wf.eventSuffix).toBe('Request');
   });
 
@@ -95,12 +95,12 @@ describe('TodoApp IR', () => {
 
   it('metadata has author (license/version come from bom when parser reads them)', () => {
     const m = ir.specks[0].facets.metadata;
-    // The speck top declares `author: "sscoble"`. The lower pass reads
+    // The speck top declares `author: "wscoble"`. The lower pass reads
     // it from the AuthorNode member. License/version come from the bom
     // block, but the current parser doesn't yet populate the BOMNode
     // fields — the IR faithfully carries what the parser produces.
     // When the parser gap is fixed, this test will assert license/version
     // are also populated.
-    expect(m.author).toBe('sscoble');
+    expect(m.author).toBe('wscoble');
   });
 });
