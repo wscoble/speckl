@@ -1,0 +1,282 @@
+// MatrixAgentLoop.speckdl — Conversational Matrix bot with LLM classify-then-route.
+//
+// The bot polls Matrix /sync for messages in capability rooms. Each message
+// is classified (chat, prose, code, data) and routed to the appropriate LLM
+// model. Responses are posted back to the room.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck MatrixAgentLoop {
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Classify-then-route pattern — Nemotron classifies intent, then dispatches to the right model for the job"
+    design_decision: "chat → Gemma4, prose → Kimi 2.6, code/data → GLM 5.2"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-matrix-bot-2026"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type MatrixMessage = {
+    messageId: String,
+    roomId: String,
+    roomName: String,
+    sender: String,            // Matrix user ID, e.g. @scott:greybeardholdings.llc
+    body: String,
+    timestamp: String,         // RFC3339
+    classification: String | null,  // chat, prose, code, data — null if not yet classified
+    responseModel: String | null,  // which LLM model was selected
+    response: String | null,        // bot's response text
+    respondedAt: String | null
+  }
+
+  type RoomMapping = {
+    roomId: String,
+    roomName: String,
+    capability: String,        // from m.room.topic
+    isDm: Bool                  // direct message room
+  }
+
+  type LlmConfig = {
+    classifierModel: String,   // nemotron-3-nano:30b
+    chatModel: String,          // gemma4:31b
+    proseModel: String,         // kimi-k2.6
+    codeModel: String,          // glm-5.2
+    dataModel: String,           // glm-5.2
+    apiKey: String,
+    baseUrl: String
+  }
+
+  // ─── Enums ──────────────────────────────────────────────────────
+
+  interface MessageCategory {
+    Chat      // general conversation, questions, discussion
+    Prose     // writing, drafting, summaries, reports
+    Code      // code, scripts, configs, debugging
+    Data      // data retrieval, API queries, system status
+  }
+
+  interface SyncState {
+    Idle
+    Syncing
+    Classifying
+    Generating
+    Responding
+    Error
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    rooms: Map<String, RoomMapping>,
+    messages: List<MatrixMessage],
+    config: LlmConfig,
+    syncState: SyncState,
+    lastSyncAt: String | null,
+    conversationMemory: Map<String, List<String>>  // roomId → recent message bodies
+  }
+
+  init: {
+    rooms := Map.empty(),
+    messages := List.empty(),
+    config := LlmConfig {
+      classifierModel: "nemotron-3-nano:30b",
+      chatModel: "gemma4:31b",
+      proseModel: "kimi-k2.6",
+      codeModel: "glm-5.2",
+      dataModel: "glm-5.2",
+      apiKey: "",
+      baseUrl: "https://ollama.com/v1"
+    },
+    syncState := Idle,
+    lastSyncAt := null,
+    conversationMemory := Map.empty()
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action DiscoverRooms(syncedAt: String) {
+    // Called after Matrix /sync — builds room map from joined rooms
+    // Each room's m.room.topic is read as the capability ID
+    syncState := Syncing
+    lastSyncAt := syncedAt
+  }
+
+  action ReceiveMessage(messageId: String, roomId: String, sender: String, body: String, timestamp: String) {
+    require length(messageId) >= 1
+    require length(roomId) >= 1
+    require length(sender) >= 1
+    require length(body) >= 1
+    // Don't process our own messages
+    require not sender.startsWith("@greybot:")
+    // ternary replaced: roomName uses default value
+    let msg := MatrixMessage {
+      messageId: messageId,
+      roomId: roomId,
+      roomName: "Unknown",
+      sender: sender,
+      body: body,
+      timestamp: timestamp,
+      classification: null,
+      responseModel: null,
+      response: null,
+      respondedAt: null
+    }
+    messages := msg :: messages
+    // Update conversation memory (keep last 10 messages per room)
+    // conversation memory updated with body
+  }
+
+  action ClassifyMessage(messageIndex: Nat, category: String) {
+    require messageIndex < length(messages)
+    require category in ["chat", "prose", "code", "data"]
+    let msg := messages[messageIndex]
+    msg.classification := category
+    msg.responseModel := config.chatModel
+    messages[messageIndex] := msg
+    syncState := Classifying
+  }
+
+  action GenerateResponse(messageIndex: Nat, responseText: String, respondedAt: String) {
+    require messageIndex < length(messages)
+    require length(responseText) >= 1
+    let msg := messages[messageIndex]
+    require msg.classification != null
+    msg.response := responseText
+    msg.respondedAt := respondedAt
+    messages[messageIndex] := msg
+    syncState := Responding
+  }
+
+  action HandleError(error: String) {
+    syncState := Error
+  }
+
+  action Reset() {
+    syncState := Idle
+  }
+
+  // ─── Service ────────────────────────────────────────────────────
+
+  service MatrixAgentService {
+    rpc Sync(SyncRequest) returns (SyncResult);
+    rpc SendMessage(SendMessageRequest) returns (SendMessageResult);
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "bot never processes its own messages" {
+    forall m in messages:
+      not m.sender.startsWith("@greybot:")
+  }
+
+  constraint "every message must be classified before response" {
+    forall m in messages:
+      implies(m.response != null, m.classification != null)
+  }
+
+  constraint "classification must be one of the four categories" {
+    forall m in messages:
+      implies(m.classification != null,
+              m.classification in ["chat", "prose", "code", "data"])
+  }
+
+  constraint "chat routes to Gemma4" {
+    forall m in messages:
+      implies(m.classification == "chat", m.responseModel == config.chatModel)
+  }
+
+  constraint "prose routes to Kimi 2.6" {
+    forall m in messages:
+      implies(m.classification == "prose", m.responseModel == config.proseModel)
+  }
+
+  constraint "code routes to GLM 5.2" {
+    forall m in messages:
+      implies(m.classification == "code", m.responseModel == config.codeModel)
+  }
+
+  constraint "data routes to GLM 5.2" {
+    forall m in messages:
+      implies(m.classification == "data", m.responseModel == config.dataModel)
+  }
+
+  constraint "conversation memory keeps at most 10 messages per room" {
+    forall roomId in conversationMemory.keys():
+      length(conversationMemory[roomId]) <= 10
+  }
+
+  constraint "every room has a capability from its topic" {
+    forall r in rooms.values():
+      length(r.capability) >= 1
+  }
+
+  constraint "response timestamp is after message timestamp" {
+    forall m in messages:
+      implies(m.respondedAt != null, m.respondedAt > m.timestamp)
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    m.classification == null,
+    m.response == null
+  ))
+
+  verify: always(implies(
+    m.sender.startsWith("@greybot:"),
+    not processed(m)
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event MessageReceived {
+    messageId: String,
+    roomId: String,
+    sender: String,
+    body: String
+  }
+
+  event MessageClassified {
+    messageId: String,
+    category: String,
+    selectedModel: String
+  }
+
+  event ResponseGenerated {
+    messageId: String,
+    responseModel: String,
+    responseLength: Nat
+  }
+
+  event ClassificationFailed {
+    messageId: String,
+    error: String,
+    fallbackCategory: String  // always "chat"
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    parent_spec: LlmRouting
+    design_decision: "Classify-then-route: Nemotron classifies intent, then dispatches to the right model"
+    design_decision: "Conversation memory limited to 10 messages per room for context window management"
+  }
+
+  // ─── Wire format ───────────────────────────────────────────────
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+}

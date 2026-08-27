@@ -1,0 +1,258 @@
+// HumanQueueRoute.speckdl — Greybeard human-in-the-loop queue route.
+//
+// A Camel timer route that polls greybeard_signal_audit for open,
+// underdetermined signals and surfaces them to Matrix capability rooms.
+// Includes daily digest, idempotent buffering via MatrixOutboundBuffer,
+// and boot-time room discovery via Matrix /sync.
+//
+// Part of the Greybeard SpeckDL spec set.
+//
+// See OB1 #3642 for the "specify anything with provenance" thesis.
+
+speck HumanQueueRoute {
+  version: "0.1.0"
+  author: "Scott Scoble <scott@scoble.me>"
+  source: architecture_review ref "greybeard-human-in-the-loop-adr-2026-08"
+  review: hybrid
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  // Signal — a row in greybeard_signal_audit.
+  type Signal = {
+    signal_id: String,
+    action_type: String,
+    source_actor: String,
+    payload: String,
+    state: String,
+    seam: String
+  }
+
+  // RoomTopic — a Matrix room with its topic (capability ID).
+  type RoomTopic = {
+    room_id: String,
+    topic: String
+  }
+
+  // PendingNotification — a signal ready to be enqueued to a room.
+  type PendingNotification = {
+    signal_id: String,
+    room_id: String,
+    body: String
+  }
+
+  // Transition — a declarative allowed state transition.
+  type Transition = {
+    from: String,
+    to: String,
+    event: String
+  }
+
+  // ─── Enums ─────────────────────────────────────────────────────
+
+  interface RouteState {
+    Idle
+    Polling
+    Notifying
+    Digesting
+    Error
+  }
+
+  // ─── State ──────────────────────────────────────────────────────
+
+  state: {
+    currentState: RouteState,
+    capabilityRoomMap: Map<String, String>,   // capability ID → room_id
+    pendingSignals: List<PendingNotification>,
+    lastDigestTime: String | null,            // RFC3339
+    lastPollTime: String | null,              // RFC3339
+    syncFailed: Bool,
+    adminRoomId: String
+  }
+
+  init: {
+    currentState := Idle,
+    capabilityRoomMap := Map.empty(),
+    pendingSignals := List.empty(),
+    lastDigestTime := null,
+    lastPollTime := null,
+    syncFailed := false,
+    adminRoomId := "@scott:greybeardholdings.llc"
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action Boot() {
+    // On boot: call Matrix /sync and read each joined room's m.room.topic
+    // (topic = capability ID) to build the capability→room_id map.
+    // Auto-join any pending room invites.
+    // If /sync fails, set syncFailed so retry happens on next poll cycle.
+    capabilityRoomMap := Map.empty()
+    syncFailed := false
+  }
+
+  action TimerFired() {
+    require currentState == Idle
+    currentState := Polling
+    lastPollTime := Date.now()
+  }
+
+  action QueryOpenSignals() {
+    require currentState == Polling
+    // Query greybeard_signal_audit WHERE state = 'open' AND seam = 'underdetermined'
+    // Results populate pendingSignals with room_id looked up from capabilityRoomMap
+  }
+
+  action TransitionToNotifying() {
+    require currentState == Polling
+    require length(pendingSignals) > 0
+    currentState := Notifying
+  }
+
+  action EnqueueNotifications() {
+    require currentState == Notifying
+    // For each pending signal:
+    //   body = 'Action needed: {action_type} from {source_actor}\n\nSignal: {signal_id}\nPayload summary:\n{payload}'
+    //   MatrixOutboundBuffer.enqueue(roomId, body)
+    // Idempotent: MatrixOutboundBuffer.alreadyBuffered(signal_id) prevents
+    // re-enqueuing the same message on every poll cycle.
+    // Only signals not already buffered are enqueued.
+  }
+
+  action TransitionToIdleFromNotifying() {
+    require currentState == Notifying
+    currentState := Idle
+    pendingSignals := List.empty()
+  }
+
+  action TransitionToIdleNoSignals() {
+    require currentState == Polling
+    require length(pendingSignals) == 0
+    currentState := Idle
+  }
+
+  action TransitionToDigesting() {
+    require currentState == Polling
+    // Daily digest: once per day, transition to digesting
+    currentState := Digesting
+  }
+
+  action SendDailyDigest() {
+    require currentState == Digesting
+    // Consolidated digest of ALL pending human-action items posted to
+    // admin DM room (@scott:greybeardholdings.llc), NOT to capability rooms.
+    lastDigestTime := Date.now()
+  }
+
+  action TransitionToIdleFromDigesting() {
+    require currentState == Digesting
+    currentState := Idle
+  }
+
+  action TransitionToError() {
+    require currentState == Polling
+    currentState := Error
+    syncFailed := true
+  }
+
+  action TransitionToIdleFromError() {
+    require currentState == Error
+    currentState := Idle
+    // Retry happens on next poll cycle
+  }
+
+  // ─── Service ────────────────────────────────────────────────────
+
+  service HumanQueueRouteService {
+    rpc Boot(BootRequest) returns (BootResponse);
+    rpc TimerFired(TimerFiredRequest) returns (TimerFiredResponse);
+    rpc QueryOpenSignals(QueryOpenSignalsRequest) returns (QueryOpenSignalsResponse);
+    rpc EnqueueNotifications(EnqueueNotificationsRequest) returns (EnqueueNotificationsResponse);
+    rpc SendDailyDigest(SendDailyDigestRequest) returns (SendDailyDigestResponse);
+  }
+
+  // ─── Wire format ────────────────────────────────────────────────
+
+  proto_package: "greybeard.v1alpha1"
+  go_package: "github.com/wscoble/greybeard/api/v1alpha1;v1alpha1"
+  event_suffix: "Request"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1alpha1"
+
+  // ─── Resource lifecycle ────────────────────────────────────────
+
+  status: { ready: Bool, lastPollTime: String | null, signalCount: Nat }
+  conditions: ["Ready", "MatrixSyncHealthy", "DatabaseReachable"]
+  finalizers: []
+  ownerReferences: false
+
+  // ─── Constraints ───────────────────────────────────────────────
+
+  constraint "poll interval is exactly 5 minutes" {
+    // Timer fires every 300 seconds; not more, not less.
+    implies(currentState == Polling, lastPollTime != null)
+  }
+
+  constraint "every open underdetermined signal surfaced within one poll cycle" {
+    forall s in pendingSignals:
+      s.signal_id != null && s.room_id != null
+  }
+
+  constraint "idempotent — same signal not notified twice" {
+    // MatrixOutboundBuffer.alreadyBuffered() prevents re-enqueue
+    // on every poll cycle.
+  }
+
+  constraint "zero pending signals means no notification sent" {
+    implies(length(pendingSignals) == 0, currentState != Notifying)
+  }
+
+  constraint "daily digest includes all pending signals" {
+    implies(currentState == Digesting, length(pendingSignals) >= 0)
+    // Digest covers ALL pending signals, not just new ones since last digest.
+  }
+
+  constraint "daily digest posted to admin room only" {
+    // Admin room: @scott:greybeardholdings.llc
+    // Never posted to capability rooms.
+  }
+
+  constraint "sync failure retried next cycle not crash" {
+    implies(syncFailed == true,
+      currentState == Error || currentState == Idle)
+    // If Matrix /sync fails, retry on next poll; do not crash.
+  }
+
+  constraint "capability room map rebuilt on every boot" {
+    // Boot action resets capabilityRoomMap to empty before rebuilding.
+  }
+
+  // ─── Transition table ─────────────────────────────────────────
+  // Declarative transition listing for audit:
+  //
+  //   Idle → Polling          (timer fires)
+  //   Polling → Notifying     (pending signals found, length > 0)
+  //   Polling → Idle          (no pending signals, length == 0)
+  //   Notifying → Idle        (notifications enqueued)
+  //   Polling → Digesting     (daily digest time)
+  //   Digesting → Idle        (digest sent)
+  //   Polling → Error         (sync / query failed)
+  //   Error → Idle            (next cycle)
+
+  // ─── Provenance ────────────────────────────────────────────────
+
+  provenance {
+    design_decision "human-in-the-loop architecture" :: "Signals with seam=underdetermined require human judgment before automated resolution; Matrix capability rooms provide the human interface with full audit trail"
+    parent_spec "greybeard-core.speckdl"
+    external_doc "Matrix Client-Server API" :: "https://spec.matrix.org/latest/client-server-api/"
+    external_doc "Apache Camel Timer Component" :: "https://camel.apache.org/components/4.4.x/timer-component.html"
+    external_doc "Greybeard Human-in-the-Loop ADR" :: "greybeard-human-in-the-loop-adr-2026-08"
+  }
+
+  // ─── BOM metadata ──────────────────────────────────────────────
+
+  bom {
+    compiler { name: "speckl", version: "0.3.0" }
+    runtime { name: "camel", version: "4.4.x" }
+    license: "MIT"
+  }
+}

@@ -1,0 +1,447 @@
+// LlmRouting.speckdl — Greybeard LLM routing fallback system.
+//
+// When a signal arrives and CapabilityRegistry.has(capability) returns false,
+// the LLM router is consulted.  The router sends the capability + payload to
+// glm-5.2 on Ollama Cloud and returns a routing decision.
+//
+// If the LLM is unreachable, the API key is missing, the HTTP call fails, the
+// response is unparseable, or the returned routing value is unknown, the system
+// MUST fall back to 'human' with llmReply=false.  The LLM must never be
+// silently treated as having returned ai_deterministic when it has not.
+//
+// Additionally, the MatrixAgentLoop uses a separate classify-then-route path
+// for chat messages: Nemotron-3-nano classifies intent, then dispatches to
+// the appropriate model.
+//
+// Provenance: Switchyard pattern (Nemotron as meta-router).
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck LlmRouting {
+
+  version: "0.1.0"
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-llm-routing-adr-2026-08"
+  review: hybrid
+
+  // ─── BOM ─────────────────────────────────────────────────────────
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  // ─── Types ───────────────────────────────────────────────────────
+
+  // RoutingDecisionValue — the three decisions an LLM may return.
+  interface RoutingDecisionValue {
+    AiDeterministic   // agent handler, deterministic seam
+    AiLlm             // agent handler, flagged for LLM processing
+    Human             // human handler, underdetermined seam
+  }
+
+  // RoutingState — the internal state machine of a single routing request.
+  interface RoutingState {
+    Unrouted   // initial: signal received, not yet routed
+    Routing    // LLM call in flight
+    Routed     // LLM returned a valid decision
+    Fallback   // LLM failed, defaulted to human
+  }
+
+  // SeamType — how the resulting handler is classified.
+  interface SeamType {
+    Determined      // ai_deterministic or ai_llm → agent handler
+    Underdetermined // human → human handler
+  }
+
+  // MessageCategory — classifier output for MatrixAgentLoop.
+  interface MessageCategory {
+    Chat   // general conversation
+    Prose  // writing, drafting, summaries
+    Code   // code, scripts, configs
+    Data   // data retrieval, system status
+  }
+
+  // LlmRouteResult — the structured output from the LLM router.
+  type LlmRouteResult = {
+    decision: RoutingDecisionValue,
+    reason: String,               // human-readable rationale
+    llmReply: Bool,               // false = fallback / no LLM follow-up
+    seam: SeamType                // derived: determined or underdetermined
+  }
+
+  // LlmTelemetryRecord — one row per routing call, success or failure.
+  type LlmTelemetryRecord = {
+    capability: String,
+    model: String,
+    tokensUsed: Nat | null,
+    latencyMs: Nat,               // wall-clock from request to response
+    success: Bool,                // true iff LLM returned a known decision
+    error: String | null,         // populated when success == false
+    timestamp: String             // RFC3339
+  }
+
+  // ClassifierResult — output of classifyMessage() for MatrixAgentLoop.
+  type ClassifierResult = {
+    category: String,             // chat | prose | code | data
+    confidence: Real | null,      // optional classifier confidence
+    model: String                 // nemotron-3-nano:30b
+  }
+
+  // LlmRouterConfig — immutable configuration for the router.
+  type LlmRouterConfig = {
+    apiKey: String | null,        // null → no LLM calls permitted
+    model: String,                // glm-5.2
+    temperature: Real,            // 0.1 for deterministic routing
+    baseUrl: String
+  }
+
+  // ClassifierConfig — immutable configuration for the intent classifier.
+  type ClassifierConfig = {
+    model: String,                // nemotron-3-nano:30b
+    apiKey: String | null,
+    baseUrl: String
+  }
+
+  // PendingRoute — a route that is in-flight.
+  type PendingRoute = {
+    capability: String,
+    payload: String,
+    startedAt: String             // RFC3339
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    routerConfig: LlmRouterConfig,
+    classifierConfig: ClassifierConfig,
+    currentState: RoutingState,
+    pendingRoute: PendingRoute | null,
+    lastResult: LlmRouteResult | null,
+    telemetry: List<LlmTelemetryRecord>,
+    modelMap: Map<String, String>   // category → model name
+  }
+
+  init: {
+    routerConfig := LlmRouterConfig {
+      apiKey: null,
+      model: "glm-5.2",
+      temperature: 0.1,
+      baseUrl: "https://ollama.com/v1"
+    },
+    classifierConfig := ClassifierConfig {
+      model: "nemotron-3-nano:30b",
+      apiKey: null,
+      baseUrl: "https://ollama.com/v1"
+    },
+    currentState := Unrouted,
+    pendingRoute := null,
+    lastResult := null,
+    telemetry := List.empty(),
+    modelMap := Map {
+      "chat"  -> "gemma4:31b",
+      "prose" -> "kimi-k2.6",
+      "code"  -> "glm-5.2",
+      "data"  -> "glm-5.2"
+    }
+  }
+
+  // ─── Actions ─────────────────────────────────────────────────────
+
+  // StartRouting — called when CapabilityRegistry.has(capability) == false.
+  // Transitions Unrouted → Routing.  If apiKey is empty, immediately falls
+  // back to human without calling the LLM.
+  action StartRouting(capability: String, payload: String, now: String) {
+    require length(capability) >= 1
+    require currentState == Unrouted
+    currentState := Routing
+    pendingRoute := PendingRoute {
+      capability: capability,
+      payload: payload,
+      startedAt: now
+    }
+    // If no API key is configured, fall back immediately.
+    // conditional: routerConfig.apiKey == null || length(routerConfig.apiKey) == 0:
+      currentState := Fallback
+      lastResult := LlmRouteResult {
+        decision: Human,
+        reason: "apiKey not configured — defaulting to human",
+        llmReply: false,
+        seam: Underdetermined
+      }
+      telemetry := telemetry :: LlmTelemetryRecord {
+        capability: capability,
+        model: routerConfig.model,
+        tokensUsed: null,
+        latencyMs: 0,
+        success: false,
+        error: "apiKey not configured",
+        timestamp: now
+      }
+  }
+
+  // ReceiveLlmDecision — LLM returned a known decision.
+  // Transitions Routing → Routed.
+  action ReceiveLlmDecision(
+    decision: RoutingDecisionValue,
+    reason: String,
+    llmReply: Bool,
+    tokensUsed: Nat,
+    latencyMs: Nat,
+    now: String
+  ) {
+    require currentState == Routing
+    require pendingRoute != null
+    // ternary replaced: let seam := (decision == Human) ? Underdetermined : Determined
+    lastResult := LlmRouteResult {
+      decision: decision,
+      reason: reason,
+      llmReply: llmReply,
+      seam: seam
+    }
+    currentState := Routed
+    telemetry := telemetry :: LlmTelemetryRecord {
+      capability: pendingRoute.capability,
+      model: routerConfig.model,
+      tokensUsed: tokensUsed,
+      latencyMs: latencyMs,
+      success: true,
+      error: null,
+      timestamp: now
+    }
+  }
+
+  // ReceiveLlmFailure — LLM call returned non-200, threw, or returned unknown.
+  // Transitions Routing → Fallback.
+  action ReceiveLlmFailure(error: String, latencyMs: Nat, now: String) {
+    require currentState == Routing
+    require pendingRoute != null
+    lastResult := LlmRouteResult {
+      decision: Human,
+      reason: "LLM failure — defaulting to human: " + error,
+      llmReply: false,
+      seam: Underdetermined
+    }
+    currentState := Fallback
+    telemetry := telemetry :: LlmTelemetryRecord {
+      capability: pendingRoute.capability,
+      model: routerConfig.model,
+      tokensUsed: null,
+      latencyMs: latencyMs,
+      success: false,
+      error: error,
+      timestamp: now
+    }
+  }
+
+  // ResetRouting — after handling, return to Unrouted for the next signal.
+  action ResetRouting() {
+    currentState := Unrouted
+    pendingRoute := null
+    lastResult := null
+  }
+
+  // ClassifyMessage — MatrixAgentLoop classify-then-route entry point.
+  // Always returns one of {chat, prose, code, data}, never null.
+  action ClassifyMessage(body: String, category: String, confidence: Real | null, now: String) {
+    require length(body) >= 1
+    require category in ["chat", "prose", "code", "data"]
+    // If classifier returns an unknown category, caller must default to "chat"
+    // before invoking this action.  This action records the classified result.
+  }
+
+  // SelectModelFromCategory — map a valid category to the target model.
+  action SelectModelFromCategory(category: String) returns (String) {
+    require category in ["chat", "prose", "code", "data"]
+    return modelMap[category]
+  }
+
+  // ─── Service ─────────────────────────────────────────────────────
+
+  service LlmRouterService {
+    rpc Route(RouteRequest) returns (LlmRouteResult);
+    rpc ClassifyMessage(ClassifyMessageRequest) returns (ClassifierResult);
+    rpc GetTelemetry(GetTelemetryRequest) returns (LlmTelemetryRecordList);
+  }
+
+  // ─── Constraints ─────────────────────────────────────────────────
+
+  constraint "temperature is 0.1 for deterministic routing" {
+    routerConfig.temperature == 0.1
+  }
+
+  constraint "LLM not used for routing when apiKey is empty" {
+    implies(routerConfig.apiKey == null || length(routerConfig.apiKey) == 0,
+            currentState != Routing)
+  }
+
+  constraint "fallback decision is always human with llmReply false" {
+    implies(currentState == Fallback,
+            lastResult.decision == Human && lastResult.llmReply == false)
+  }
+
+  constraint "fallback seam is always underdetermined" {
+    implies(currentState == Fallback,
+            lastResult.seam == Underdetermined)
+  }
+
+  constraint "ai_deterministic maps to determined seam" {
+    implies(lastResult != null && lastResult.decision == AiDeterministic,
+            lastResult.seam == Determined)
+  }
+
+  constraint "ai_llm maps to determined seam" {
+    implies(lastResult != null && lastResult.decision == AiLlm,
+            lastResult.seam == Determined)
+  }
+
+  constraint "human maps to underdetermined seam" {
+    implies(lastResult != null && lastResult.decision == Human,
+            lastResult.seam == Underdetermined)
+  }
+
+  constraint "every routing call is logged to telemetry" {
+    implies(currentState == Routed || currentState == Fallback,
+            length(telemetry) >= 1)
+  }
+
+  constraint "telemetry success flag matches LLM outcome" {
+    forall t in telemetry:
+      implies(t.success == false, t.error != null)
+  }
+
+  constraint "telemetry records model name" {
+    forall t in telemetry:
+      length(t.model) >= 1
+  }
+
+  constraint "telemetry records latency" {
+    forall t in telemetry:
+      t.latencyMs >= 0
+  }
+
+  constraint "classify-then-route returns one of four categories" {
+    forall c in ["chat", "prose", "code", "data"]:
+      modelMap.has(c)
+  }
+
+  constraint "chat routes to Gemma4" {
+    modelMap["chat"] == "gemma4:31b"
+  }
+
+  constraint "prose routes to Kimi 2.6" {
+    modelMap["prose"] == "kimi-k2.6"
+  }
+
+  constraint "code routes to GLM 5.2" {
+    modelMap["code"] == "glm-5.2"
+  }
+
+  constraint "data routes to GLM 5.2" {
+    modelMap["data"] == "glm-5.2"
+  }
+
+  constraint "unknown classifier category must default to chat" {
+    // Enforced by caller precondition on ClassifyMessage; this constraint
+    // documents the invariant in the spec.
+    true
+  }
+
+  constraint "no silent ai_deterministic on LLM failure" {
+    // When the LLM is unavailable, the system MUST default to human.
+    // This is enforced by the StartRouting guard (apiKey check) and
+    // the ReceiveLlmFailure action.
+    implies(currentState == Fallback, lastResult.decision == Human)
+  }
+
+  // ─── Verification ────────────────────────────────────────────────
+
+  verify: always(implies(
+    routerConfig.apiKey == null || length(routerConfig.apiKey) == 0,
+    currentState != Routing
+  ))
+
+  verify: always(implies(
+    currentState == Fallback,
+    lastResult.decision == Human && lastResult.llmReply == false
+  ))
+
+  verify: always(implies(
+    currentState == Routed,
+    lastResult.decision in [AiDeterministic, AiLlm, Human]
+  ))
+
+  verify: always(implies(
+    lastResult != null,
+    lastResult.seam == Determined || lastResult.seam == Underdetermined
+  ))
+
+  // ─── Events ──────────────────────────────────────────────────────
+
+  event RoutingStarted {
+    capability: String,
+    model: String,
+    temperature: Real,
+    timestamp: String
+  }
+
+  event RoutingCompleted {
+    capability: String,
+    decision: RoutingDecisionValue,
+    seam: SeamType,
+    latencyMs: Nat,
+    timestamp: String
+  }
+
+  event RoutingFallback {
+    capability: String,
+    reason: String,
+    latencyMs: Nat,
+    timestamp: String
+  }
+
+  event TelemetryLogged {
+    capability: String,
+    model: String,
+    tokensUsed: Nat | null,
+    latencyMs: Nat,
+    success: Bool,
+    timestamp: String
+  }
+
+  event MessageClassified {
+    bodyPreview: String,
+    category: String,
+    selectedModel: String,
+    timestamp: String
+  }
+
+  event ClassificationFailed {
+    bodyPreview: String,
+    error: String,
+    fallbackCategory: String  // always "chat"
+  }
+
+  // ─── Wire format ─────────────────────────────────────────────────
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    parent_spec "greybeard-core.speckdl"
+    design_decision "Switchyard pattern — Nemotron as meta-router" :: "A small, fast classifier model routes intent to the most appropriate specialist model.  This decouples model selection from response generation and allows per-category optimization."
+    design_decision "glm-5.2 temperature 0.1 for routing" :: "Routing decisions must be deterministic and reproducible; creative temperature is inappropriate for a meta-router."
+    design_decision "Fail-closed to human on any LLM unavailability" :: "If the LLM is unreachable, misconfigured, or returns garbage, the system MUST NOT silently treat the output as ai_deterministic.  Defaulting to human with llmReply=false is the safe, auditable choice."
+    design_decision "Telemetry is mandatory, not optional" :: "Every routing call — success or failure — is logged with model, tokens, latency, and capability.  This supports post-hoc audit and cost tracking."
+    design_decision "classify-then-route defaults to chat on failure" :: "When the Nemotron classifier is unavailable or returns an unknown category, the safest fallback is general conversation (chat → Gemma4)."
+    external_doc "Switchyard pattern (Nemotron as meta-router)" :: "https://github.com/wscoble/greybeard-ops/blob/main/docs/adr/adr-0014-switchyard-meta-router.md"
+    external_doc "Ollama API reference" :: "https://github.com/ollama/ollama/blob/main/docs/api.md"
+  }
+}

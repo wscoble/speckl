@@ -1,0 +1,328 @@
+// EmailIngest.speckdl — Greybeard email ingestion pipeline
+//
+// Email arrives at *@greybeardholdings.llc via Cloudflare Email Routing.
+// A Cloudflare Email Worker parses raw MIME and POSTs JSON to the CRM
+// endpoint /api/email/ingest. The CRM stores the email in Postgres and
+// enqueues a Matrix notification to the Email Inbox room.
+//
+// Part of the Greybeard SpeckDL spec set.
+// See Greybeard CRM repo for implementation.
+
+speck EmailIngest {
+  version: "0.1.0"
+  author: "Scott Scoble <scott@scoble.me>"
+  source: architecture_review ref "greybeard-email-ingest-2026-08-27"
+  review: hybrid
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type EmailAddress = String
+
+  type EmailMessage = {
+    id: Nat,
+    fromAddress: EmailAddress,
+    toAddress: EmailAddress,
+    subject: String,
+    bodyText: String | null,
+    bodyHtml: String | null,
+    labels: List<String>,
+    receivedAt: Date,
+    forwardedFrom: String | null,
+    hasAttachments: Bool,
+    state: EmailState
+  }
+
+  type EmailAttachment = {
+    id: Nat,
+    emailId: Nat,
+    filename: String,
+    contentType: String,
+    sizeBytes: Nat
+  }
+
+  type MatrixNotification = {
+    roomId: String,
+    formattedMessage: String,
+    enqueuedAt: Date
+  }
+
+  // ─── States ─────────────────────────────────────────────────────
+
+  interface EmailState {
+    received
+    stored
+    notified
+    failed
+  }
+
+  // ─── State ─────────────────────────────────────────────────────
+
+  state: {
+    emailMessages: Map<String, EmailMessage>,
+    emailAttachments: Map<Nat, List<EmailAttachment>>,
+    pendingNotifications: Map<String, MatrixNotification>,
+    failedEmails: Map<String, EmailMessage>
+  }
+
+  init: {
+    emailMessages := Map.empty(),
+    emailAttachments := Map.empty(),
+    pendingNotifications := Map.empty(),
+    failedEmails := Map.empty()
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  // ReceiveEmail — email arrives from Cloudflare Worker.
+  // Validates format, checks idempotency, records in received state.
+  action ReceiveEmail(
+    messageId: String,
+    fromAddress: EmailAddress,
+    toAddress: EmailAddress,
+    subject: String,
+    bodyText: String | null,
+    bodyHtml: String | null,
+    labels: List<String>,
+    hasAttachments: Bool
+  ) {
+    // Email format validation
+    require length(fromAddress) >= 5
+    require length(toAddress) >= 5
+
+    // Idempotency: same Message-ID must not be processed twice
+    require not emailMessages.has(messageId) and not failedEmails.has(messageId)
+
+    // Labels must include 'inbound'
+    require labels.contains("inbound")
+
+    let receivedAt := Date.now()
+
+    let msg := EmailMessage {
+      id: emailMessages.size() + 1,
+      fromAddress: fromAddress,
+      toAddress: toAddress,
+      subject: subject,
+      bodyText: bodyText,
+      bodyHtml: bodyHtml,
+      labels: labels,
+      receivedAt: receivedAt,
+      forwardedFrom: null,
+      hasAttachments: hasAttachments,
+      state: received
+    }
+    emailMessages[messageId] := msg
+
+    emit EmailReceived {
+      messageId: messageId,
+      fromAddress: fromAddress,
+      toAddress: toAddress,
+      subject: subject,
+      receivedAt: receivedAt
+    }
+  }
+
+  // StoreEmail — transition received -> stored.
+  // Sets forwardedFrom flag, persists to Postgres.
+  action StoreEmail(messageId: String) {
+    require emailMessages.has(messageId)
+    let msg := emailMessages[messageId]
+    require msg.state == received
+
+    let fromDomain := domain(msg.fromAddress)
+    let forwardedFrom := null
+
+    msg.forwardedFrom := forwardedFrom
+    msg.state := stored
+    emailMessages[messageId] := msg
+
+    emit EmailStored {
+      messageId: messageId,
+      emailId: msg.id,
+      storedAt: msg.receivedAt
+    }
+  }
+
+  // StoreAttachments — persist attachments before notification.
+  action StoreAttachments(messageId: String, attachments: List<EmailAttachment>) {
+    require emailMessages.has(messageId)
+    let msg := emailMessages[messageId]
+    require msg.state == received or msg.state == stored
+
+    emailAttachments[msg.id] := attachments
+
+    emit AttachmentsStored {
+      messageId: messageId,
+      emailId: msg.id,
+      count: attachments.size()
+    }
+  }
+
+  // NotifyEmail — transition stored -> notified.
+  // Enqueues Matrix notification. Must happen within 10s of storage.
+  action NotifyEmail(messageId: String) {
+    require emailMessages.has(messageId)
+    let msg := emailMessages[messageId]
+    require msg.state == stored
+
+    let bodyPreview := msg.bodyText
+
+    let forwardedFlag := null
+
+    let formattedMessage := "**New Email**" + forwardedFlag + "From: " + msg.fromAddress + " To: " + msg.toAddress + " Subject: " + msg.subject + " " + bodyPreview
+
+    let notification := MatrixNotification {
+      roomId: "!email-inbox:matrix.greybeardholdings.llc",
+      formattedMessage: formattedMessage,
+      enqueuedAt: Date.now()
+    }
+
+    pendingNotifications[messageId] := notification
+    msg.state := notified
+    emailMessages[messageId] := msg
+
+    emit MatrixNotificationEnqueued {
+      messageId: messageId,
+      roomId: notification.roomId,
+      enqueuedAt: notification.enqueuedAt
+    }
+  }
+
+  // FailFromReceived — transition received -> failed (storage error).
+  action FailFromReceived(messageId: String, reason: String) {
+    require emailMessages.has(messageId)
+    let msg := emailMessages[messageId]
+    require msg.state == received
+
+    msg.state := failed
+    failedEmails[messageId] := msg
+    emailMessages[messageId] := msg
+
+    emit EmailFailed {
+      messageId: messageId,
+      state: "received",
+      reason: reason
+    }
+  }
+
+  // FailFromStored — transition stored -> failed (notification error).
+  action FailFromStored(messageId: String, reason: String) {
+    require emailMessages.has(messageId)
+    let msg := emailMessages[messageId]
+    require msg.state == stored
+
+    msg.state := failed
+    failedEmails[messageId] := msg
+    emailMessages[messageId] := msg
+
+    emit EmailFailed {
+      messageId: messageId,
+      state: "stored",
+      reason: reason
+    }
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "email stored before notification" {
+    forall msgId in pendingNotifications.keys:
+      emailMessages.has(msgId) and
+      pendingNotifications[msgId].enqueuedAt >= emailMessages[msgId].receivedAt
+  }
+
+  constraint "exactly one notification per email" {
+    forall msgId in emailMessages.keys:
+      let msg := emailMessages[msgId]
+      msg.state == notified implies pendingNotifications.has(msgId)
+  }
+
+  constraint "idempotency - no duplicate message IDs" {
+    forall msgId in emailMessages.keys:
+      not failedEmails.has(msgId)
+  }
+
+  constraint "received_at is set on storage" {
+    forall msg in emailMessages.values:
+      msg.receivedAt != null
+  }
+
+  constraint "labels include inbound" {
+    forall msg in emailMessages.values:
+      msg.labels.contains("inbound")
+  }
+
+  constraint "notification within 10 seconds of storage" {
+    forall msgId in pendingNotifications.keys:
+      let storedAt := emailMessages[msgId].receivedAt
+      let notifiedAt := pendingNotifications[msgId].enqueuedAt
+      (notifiedAt - storedAt) <= 10
+  }
+
+  constraint "attachments stored before notification" {
+    forall msgId in pendingNotifications.keys:
+      let msg := emailMessages[msgId]
+      msg.hasAttachments implies emailAttachments.has(msg.id)
+  }
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event EmailReceived {
+    messageId: String,
+    fromAddress: EmailAddress,
+    toAddress: EmailAddress,
+    subject: String,
+    receivedAt: Date
+  }
+
+  event EmailStored {
+    messageId: String,
+    emailId: Nat,
+    storedAt: Date
+  }
+
+  event AttachmentsStored {
+    messageId: String,
+    emailId: Nat,
+    count: Nat
+  }
+
+  event MatrixNotificationEnqueued {
+    messageId: String,
+    roomId: String,
+    enqueuedAt: Date
+  }
+
+  event EmailFailed {
+    messageId: String,
+    state: String,
+    reason: String
+  }
+
+  // ─── Verification ──────────────────────────────────────────────
+
+  verify: always(implies(
+    exists msgId: pendingNotifications.has(msgId),
+    emailMessages.has(msgId)
+  ))
+
+  verify: always(implies(
+    emailMessages.has(msgId),
+    eventually(pendingNotifications.has(msgId) or failedEmails.has(msgId))
+  ))
+
+  // ─── Provenance ────────────────────────────────────────────────
+
+  provenance {
+    design_decision "Bypass signal pipeline for email" :: "The LLM router kept hijacking email.inbound -> llm.analyze, causing emails to be routed to LLM analysis instead of direct CRM storage. This spec explicitly bypasses the signal pipeline and uses a dedicated Cloudflare Email Worker -> CRM POST endpoint flow."
+    external_doc "Cloudflare Email Workers" :: "https://developers.cloudflare.com/email-routing/email-workers/"
+    external_doc "Cloudflare Email Routing" :: "https://developers.cloudflare.com/email-routing/"
+    parent_spec "GreybeardCRM"
+  }
+
+  // ─── BOM ───────────────────────────────────────────────────────
+
+  bom {
+    compiler { name: "speckl", version: "0.3.0" }
+    solver { name: "z3", version: "4.12.5" }
+    license: "MIT"
+  }
+}

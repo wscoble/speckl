@@ -1,0 +1,210 @@
+// MultiTenant.speckdl — Multi-tenant isolation for Greybeard.
+//
+// Maps source_actor (agent identity) to tenant_id via contact organization.
+// Ensures signals and data are isolated per tenant.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck MultiTenant {
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Tenant resolution from source_actor via contact organization lookup"
+    design_decision: "Default tenant is 'greybeard' for internal signals"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-multi-tenant-2026"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type Contact = {
+    id: Nat,
+    name: String,
+    organization: String,
+    tailscaleIdentity: String | null,
+    email: String | null
+  }
+
+  type Tenant = {
+    tenantId: String,          // slugified organization name
+    organization: String,
+    contactCount: Nat,
+    createdAt: String
+  }
+
+  type SignalAudit = {
+    signalId: Nat,
+    capability: String,
+    sourceActor: String,
+    tenantId: String,
+    seam: String,
+    state: String,
+    tArrival: String
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    contacts: Map<Nat, Contact>,
+    tenants: Map<String, Tenant>,
+    signals: List<SignalAudit]
+  }
+
+  init: {
+    contacts := Map.empty(),
+    tenants := Map.empty()
+    // Default tenant always exists
+    tenants["greybeard"] := Tenant {
+      tenantId: "greybeard",
+      organization: "Greybeard Holdings",
+      contactCount: 0,
+      createdAt: Date.now().toString()
+    },
+    signals := List.empty()
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action RegisterContact(id: Nat, name: String, organization: String, tailscaleIdentity: String | null) {
+    require length(name) >= 1
+    require length(organization) >= 1
+    require not contacts.has(id)
+    let c := Contact {
+      id: id,
+      name: name,
+      organization: organization,
+      tailscaleIdentity: tailscaleIdentity,
+      email: null
+    }
+    contacts[id] := c
+    // Ensure tenant exists
+    let tenantId := slugify(organization)
+    if not tenants.has(tenantId):
+      tenants[tenantId] := Tenant {
+        tenantId: tenantId,
+        organization: organization,
+        contactCount: 1,
+        createdAt: Date.now().toString()
+      }
+    else:
+      let t := tenants[tenantId]
+      t.contactCount := t.contactCount + 1
+      tenants[tenantId] := t
+  }
+
+  action ResolveTenant(sourceActor: String) {
+    require length(sourceActor) >= 1
+    // Resolution logic:
+    // 1. Exact match on contact.tailscale_identity
+    // 2. Case-insensitive LIKE match on contact/org name after stripping -agent suffix
+    // 3. Default to 'greybeard' if no match
+    let tenantId := resolveByTailscaleIdentity(sourceActor)
+    if tenantId == null:
+      tenantId := resolveByOrgName(sourceActor)
+    if tenantId == null:
+      tenantId := "greybeard"
+  }
+
+  action AssignTenantToSignal(signalId: Nat, tenantId: String) {
+    require tenants.has(tenantId)
+    let sig := SignalAudit {
+      signalId: signalId,
+      capability: "",
+      sourceActor: "",
+      tenantId: tenantId,
+      seam: "",
+      state: "open",
+      tArrival: Date.now().toString()
+    }
+    signals := sig :: signals
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "every signal has a tenant_id" {
+    forall s in signals:
+      length(s.tenantId) >= 1
+  }
+
+  constraint "default tenant is greybeard" {
+    tenants.has("greybeard")
+  }
+
+  constraint "tenant_id is slugified organization name" {
+    forall t in tenants.values():
+      t.tenantId == slugify(t.organization)
+  }
+
+  constraint "every contact has a non-empty organization" {
+    forall c in contacts.values():
+      length(c.organization) >= 1
+  }
+
+  constraint "unmatched source_actor defaults to greybeard tenant" {
+    forall s in signals:
+      implies(not hasMatchingContact(s.sourceActor), s.tenantId == "greybeard")
+  }
+
+  constraint "every tenant has at least one contact (except greybeard)" {
+    forall t in tenants.values():
+      implies(t.tenantId != "greybeard", t.contactCount >= 1)
+  }
+
+  constraint "contact count matches actual contacts per tenant" {
+    forall t in tenants.values():
+      t.contactCount == count(contacts.values(), c => slugify(c.organization) == t.tenantId)
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    not hasMatchingContact(sourceActor),
+    resolveTenant(sourceActor) == "greybeard"
+  ))
+
+  verify: always(implies(
+    s.tenantId != "greybeard",
+    hasMatchingContact(s.sourceActor)
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event TenantResolved {
+    sourceActor: String,
+    tenantId: String,
+    matchMethod: String  // "tailscale_identity", "org_name", "default"
+  }
+
+  event TenantCreated {
+    tenantId: String,
+    organization: String
+  }
+
+  event ContactRegistered {
+    contactId: Nat,
+    name: String,
+    organization: String,
+    tenantId: String
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    parent_spec: SignalRouting
+    design_decision: "Tenant resolution cascades: tailscale_identity exact match, then org name LIKE match, then default to 'greybeard'"
+  }
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+}

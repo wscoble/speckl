@@ -1,0 +1,287 @@
+// OnSiteAgent.speckdl — On-site signal collection agents.
+//
+// 8 scheduled collectors run on Windows via PowerShell, pushing
+// signals to the cloud CRM over a WireGuard point-to-point tunnel.
+// Active only in onsite mode (GREYBEARD_AGENT_MODE=onsite).
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck OnSiteAgent {
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "8 collectors with seam-specific schedules — network checks are frequent (15 min), hardware/patch checks are hourly, weekly reporting is daily"
+    external_doc: "Greybeard on-site agent architecture" at "https://github.com/wscoble/greybeard-ops"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-onsite-agent-2026"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type Collector = {
+    name: String,               // e.g. "NetworkCollector"
+    capability: String,          // e.g. "it_admin.network"
+    scheduleSeconds: Nat,        // poll interval
+    lastRunAt: String | null,    // RFC3339
+    lastResult: String | null,   // JSON payload from last run
+    pushCount: Nat,              // total successful pushes
+    failureCount: Nat,           // total failed pushes
+    tunnelRequired: Bool         // requires Tailscale tunnel to be ready
+  }
+
+  type CollectionResult = {
+    collector: String,
+    capability: String,
+    payload: String,             // JSON signal payload
+    collectedAt: String,         // RFC3339
+    pushedAt: String | null,     // RFC3339 — null if not yet pushed
+    pushStatus: String            // "pending", "pushed", "failed"
+  }
+
+  type TunnelStatus = {
+    ready: Bool,
+    cloudUrl: String | null,
+    checkedAt: String
+  }
+
+  // ─── Enums ──────────────────────────────────────────────────────
+
+  interface CollectorState {
+    Idle
+    Collecting
+    Pushing
+    Succeeded
+    Failed
+    Skipped              // Tunnel not ready or cloud mode
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    collectors: Map<String, Collector>,
+    results: List<CollectionResult>,
+    tunnel: TunnelStatus
+  }
+
+  init: {
+    collectors := Map.empty(),
+    results := List.empty(),
+    tunnel := TunnelStatus { ready: false, cloudUrl: null, checkedAt: Date.now().toString() }
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action RegisterCollector(name: String, capability: String, scheduleSeconds: Nat, tunnelRequired: Bool) {
+    require length(name) >= 1
+    require length(capability) >= 1
+    require scheduleSeconds > 0
+    require not collectors.has(name)
+    let c := Collector {
+      name: name,
+      capability: capability,
+      scheduleSeconds: scheduleSeconds,
+      lastRunAt: null,
+      lastResult: null,
+      pushCount: 0,
+      failureCount: 0,
+      tunnelRequired: tunnelRequired
+    }
+    collectors[name] := c
+  }
+
+  action CheckTunnel(checkedAt: String) {
+    // Tailscale readiness check — updates tunnel status
+    let t := TunnelStatus {
+      ready: tailscaleIsReady(),
+      cloudUrl: tailscaleCloudUrl(),
+      checkedAt: checkedAt
+    }
+    tunnel := t
+  }
+
+  action RunCollection(collectorName: String, collectedAt: String) {
+    require collectors.has(collectorName)
+    let c := collectors[collectorName]
+    // Skip if tunnel required and not ready
+    require implies(c.tunnelRequired, tunnel.ready)
+    let payload := collectPowerShell(c.capability)
+    let result := CollectionResult {
+      collector: collectorName,
+      capability: c.capability,
+      payload: payload,
+      collectedAt: collectedAt,
+      pushedAt: null,
+      pushStatus: "pending"
+    }
+    results := result :: results
+    c.lastRunAt := collectedAt
+    c.lastResult := payload
+    collectors[collectorName] := c
+  }
+
+  action PushResult(resultIndex: Nat, pushedAt: String) {
+    require resultIndex < length(results)
+    let r := results[resultIndex]
+    require r.pushStatus == "pending"
+    let c := collectors[r.collector]
+    // Push via SignalPushService over Tailscale
+    let success := pushSignal(r.capability, r.payload, tunnel.cloudUrl)
+    if success:
+      r.pushedAt := pushedAt
+      r.pushStatus := "pushed"
+      c.pushCount := c.pushCount + 1
+    else:
+      r.pushStatus := "failed"
+      c.failureCount := c.failureCount + 1
+    results[resultIndex] := r
+    collectors[r.collector] := c
+  }
+
+  action SkipCollection(collectorName: String, reason: String) {
+    require collectors.has(collectorName)
+    // Called when tunnel not ready or agent mode is cloud
+    let c := collectors[collectorName]
+    // No state change — just log the skip
+    collectors[collectorName] := c
+  }
+
+  // ─── Service ────────────────────────────────────────────────────
+
+  service OnSiteAgentService {
+    rpc GetAgentStatus(StatusRequest) returns (AgentStatus);
+    rpc TriggerCollection(TriggerRequest) returns (CollectionResult);
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "every collector has a non-empty name and capability" {
+    forall c in collectors.values():
+      length(c.name) >= 1 and length(c.capability) >= 1
+  }
+
+  constraint "schedule must be positive" {
+    forall c in collectors.values():
+      c.scheduleSeconds > 0
+  }
+
+  constraint "network collector runs every 15 minutes" {
+    implies(collectors.has("NetworkCollector"),
+            collectors["NetworkCollector"].scheduleSeconds == 900)
+  }
+
+  constraint "remote office collector runs every 15 minutes" {
+    implies(collectors.has("RemoteOfficeCollector"),
+            collectors["RemoteOfficeCollector"].scheduleSeconds == 900)
+  }
+
+  constraint "domain controller collector runs every 30 minutes" {
+    implies(collectors.has("DomainControllerCollector"),
+            collectors["DomainControllerCollector"].scheduleSeconds == 1800)
+  }
+
+  constraint "hardware, patch, auth, backup, azure collectors run hourly" {
+    forall c in collectors.values():
+      implies(c.name in ["HardwareCollector", "PatchCollector", "AuthIdentityCollector",
+                         "BackupCollector", "AzureCloudCollector"],
+              c.scheduleSeconds == 3600)
+  }
+
+  constraint "weekly report collector runs daily" {
+    implies(collectors.has("WeeklyReportCollector"),
+            collectors["WeeklyReportCollector"].scheduleSeconds == 86400)
+  }
+
+  constraint "collection skipped when tunnel not ready and tunnelRequired" {
+    forall c in collectors.values():
+      implies(c.tunnelRequired and not tunnel.ready, c.lastRunAt == null or c.lastRunAt < tunnel.checkedAt)
+  }
+
+  constraint "push count plus failure count equals total collection attempts" {
+    forall c in collectors.values():
+      c.pushCount + c.failureCount <= length(filter(results, r => r.collector == c.name))
+  }
+
+  constraint "every pushed result has a non-null pushedAt timestamp" {
+    forall r in results:
+      implies(r.pushStatus == "pushed", r.pushedAt != null)
+  }
+
+  constraint "every failed result has null pushedAt" {
+    forall r in results:
+      implies(r.pushStatus == "failed", r.pushedAt == null)
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    not tunnel.ready,
+    forall c in collectors.values():
+      implies(c.tunnelRequired, not collectionRun(c.name))
+  ))
+
+  verify: always(implies(
+    r.pushStatus == "pushed",
+    r.pushedAt != null and r.pushedAt > r.collectedAt
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event CollectionStarted {
+    collector: String,
+    capability: String,
+    startedAt: String
+  }
+
+  event CollectionSucceeded {
+    collector: String,
+    capability: String,
+    payloadSize: Nat
+  }
+
+  event CollectionFailed {
+    collector: String,
+    capability: String,
+    error: String
+  }
+
+  event SignalPushed {
+    collector: String,
+    capability: String,
+    pushedAt: String
+  }
+
+  event PushFailed {
+    collector: String,
+    capability: String,
+    error: String
+  }
+
+  event TunnelStatusChanged {
+    ready: Bool,
+    cloudUrl: String | null
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    parent_spec: SignalRouting
+    design_decision: "8 collectors with PowerShell-based collection pushing over WireGuard/Tailscale to cloud CRM"
+    design_decision: "Seam-specific schedules — network 15min, hardware/patch/auth/backup/azure 1hr, weekly report daily"
+  }
+
+  // ─── Wire format ───────────────────────────────────────────────
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+}

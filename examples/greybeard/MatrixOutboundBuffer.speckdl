@@ -1,0 +1,282 @@
+// MatrixOutboundBuffer.speckdl — Greybeard Matrix outbound message buffer.
+//
+// A DB-backed FIFO message queue that buffers outbound Matrix room messages,
+// flushes them via the Matrix HTTP API on a 15-second timer, and handles
+// retries with exponential backoff on rate-limit (429) responses.
+//
+// Part of the Greybeard SpeckDL spec set.
+// See Greybeard architecture decision "DB-backed buffering for outbound Matrix messages"
+// (ADR-GB-004) for the rationale behind persisting the buffer in SQLite rather
+// than holding it in-memory.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck MatrixOutboundBuffer {
+  version: "0.1.0"
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "ADR-GB-004"
+  review: hybrid
+
+  // ─── Types ───────────────────────────────────────────────────────
+
+  // BufferState — lifecycle state of a buffered message.
+  interface BufferState {
+    Pending
+    Sent
+    Failed
+  }
+
+  // MatrixMessage — a single outbound message waiting to be sent.
+  type MatrixMessage = {
+    id: Nat,                         // Monotonic DB-assigned ID (FIFO ordering key)
+    roomId: String,                  // Target Matrix room ID
+    body: String,                    // Message body content
+    state: BufferState,              // Current lifecycle state
+    retryCount: Nat,                 // Number of failed send attempts so far
+    createdAt: String                // RFC3339 timestamp
+  }
+
+  // FlushResult — outcome of attempting to send one message.
+  type FlushResult = {
+    messageId: Nat,
+    success: Bool,
+    httpStatus: Int | null,          // HTTP status code from Matrix API, if any
+    error: String | null             // Human-readable error on failure
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+  // The buffer is backed by the `matrix_outbound_buffer` table.  This state
+  // block models the logical contents of that table in-memory for specification
+  // purposes; the actual persistence is SQLite on disk.
+
+  state: {
+    messages: Map<Nat, MatrixMessage>,  // id → message
+    pendingIds: List<Nat>,               // Ordered list of pending message IDs (oldest first)
+    lastFlushAt: String | null           // RFC3339 timestamp of last flush attempt
+  }
+
+  init: {
+    messages := Map.empty(),
+    pendingIds := List.empty(),
+    lastFlushAt := null
+  }
+
+  // ─── Actions ──────────────────────────────────────────────────────
+
+  action Enqueue(roomId: String, body: String) {
+    require length(roomId) >= 1
+    require length(body) >= 1
+    require not alreadyBuffered(roomId, body)
+
+    let nextId := 1
+    let msg := MatrixMessage {
+      id: nextId,
+      roomId: roomId,
+      body: body,
+      state: Pending,
+      retryCount: 0,
+      createdAt: Date.now()
+    }
+    messages[nextId] := msg
+    pendingIds := pendingIds.append(nextId)
+    emit MessageEnqueued { id: nextId, roomId: roomId, body: body }
+  }
+
+  action alreadyBuffered(roomId: String, body: String): Bool {
+    for m in messages.values():
+      // conditional: m.roomId == roomId && m.body == body && m.state != Sent:
+        return true
+    return false
+  }
+
+  action Flush() {
+    require pendingIds.length() > 0
+
+    lastFlushAt := Date.now()
+    let idsToProcess := pendingIds.copy()
+    pendingIds := List.empty()
+
+    for id in idsToProcess:
+      require messages.has(id)
+      let msg := messages[id]
+      // conditional: msg.state == Pending:
+        let result := sendToMatrix(msg)
+        // conditional: result.success:
+          msg.state := Sent
+          emit MessageSent { id: id, roomId: msg.roomId }
+        // else branch
+          // conditional: result.httpStatus == 429:
+            // Rate limited — retry with exponential backoff, do NOT count
+            // against the hard retry limit.
+            msg.state := Pending
+            emit RateLimitHit { id: id, roomId: msg.roomId, retryAfter: result.error }
+          // else branch
+            // Transient or hard failure — consume a retry attempt.
+            msg.retryCount := msg.retryCount + 1
+            // conditional: msg.retryCount >= 3:
+              msg.state := Failed
+              emit MessageFailed { id: id, roomId: msg.roomId, reason: result.error }
+            // else branch
+              msg.state := Pending
+              emit MessageRetryScheduled { id: id, roomId: msg.roomId, attempt: msg.retryCount }
+        messages[id] := msg
+        // conditional: msg.state == Pending:
+          pendingIds := pendingIds.append(id)
+  }
+
+  action sendToMatrix(msg: MatrixMessage): FlushResult {
+    // Placeholder for the external HTTP call.  In the implementation this
+    // POSTs to the Matrix /rooms/{roomId}/send/{eventType} endpoint.
+    // The spec models it as a non-deterministic result constrained below.
+    let status := Int.random(200, 599)
+    // conditional: status == 200:
+      return FlushResult { messageId: msg.id, success: true, httpStatus: 200, error: null }
+    // else-if: status == 429:
+      return FlushResult { messageId: msg.id, success: false, httpStatus: 429, error: "rate_limited" }
+    // else branch
+      return FlushResult { messageId: msg.id, success: false, httpStatus: status, error: "http_error_" + status.toString() }
+  }
+
+  // ─── Constraints ───────────────────────────────────────────────────
+
+  constraint "state is one of pending, sent, failed" {
+    forall m in messages.values():
+      m.state in [Pending, Sent, Failed]
+  }
+
+  constraint "sent messages are never resent" {
+    forall m in messages.values():
+      m.state != Sent || (forall p in pendingIds, p != m.id)
+  }
+
+  constraint "retry count non-decreasing" {
+    forall m in messages.values():
+      m.retryCount >= 0
+  }
+
+  constraint "failed messages have retry count exactly 3" {
+    forall m in messages.values():
+      m.state != Failed || m.retryCount == 3
+  }
+
+  constraint "pending messages have retry count < 3" {
+    forall m in messages.values():
+      m.state != Pending || m.retryCount < 3
+  }
+
+  constraint "FIFO order per room" {
+    forall room in distinctRooms():
+      forall i in 0..roomMessages(room).length()-2:
+        roomMessages(room)[i].createdAt <= roomMessages(room)[i+1].createdAt
+  }
+
+  constraint "flush interval is 15 seconds" {
+    // The timer that triggers Flush() MUST fire every 15 seconds (+/- jitter).
+    // This is a deployment-level invariant enforced by the cron / ticker config.
+    flushIntervalSeconds == 15
+  }
+
+  constraint "duplicate enqueue is rejected" {
+    forall m in messages.values():
+      forall n in messages.values():
+        m.id != n.id && (m.roomId == n.roomId && m.body == n.body)
+          implies (m.state == Sent && n.state == Sent)
+  }
+
+  constraint "DB-backed buffer survives restarts" {
+    // The messages and pendingIds are derived from the on-disk SQLite table.
+    // This constraint asserts that the logical state is a faithful projection
+    // of the persistent store.
+    persistentStoreConsistent == true
+  }
+
+  // ─── Verification ────────────────────────────────────────────────
+
+  verify: always(implies(
+    messages.has(id) && messages[id].state == Sent,
+    messages[id].retryCount <= 3
+  ))
+
+  verify: always(implies(
+    messages.has(id) && messages[id].state == Failed,
+    messages[id].retryCount == 3
+  ))
+
+  verify: always(implies(
+    messages.has(id) && messages[id].state == Pending,
+    messages[id].retryCount < 3
+  ))
+
+  verify: always(implies(
+    enqueue(roomId, body) == false,
+    alreadyBuffered(roomId, body) == true
+  ))
+
+  // ─── Events ──────────────────────────────────────────────────────
+
+  event MessageEnqueued {
+    id: Nat,
+    roomId: String,
+    body: String
+  }
+
+  event MessageSent {
+    id: Nat,
+    roomId: String
+  }
+
+  event MessageRetryScheduled {
+    id: Nat,
+    roomId: String,
+    attempt: Nat
+  }
+
+  event RateLimitHit {
+    id: Nat,
+    roomId: String,
+    retryAfter: String | null
+  }
+
+  event MessageFailed {
+    id: Nat,
+    roomId: String,
+    reason: String | null
+  }
+
+  // ─── Helper functions (spec-level only) ──────────────────────────
+
+  function distinctRooms(): List<String> {
+    let rooms := List.empty()
+    for m in messages.values():
+      if not rooms.contains(m.roomId):
+        rooms := rooms.append(m.roomId)
+    return rooms
+  }
+
+  function roomMessages(roomId: String): List<MatrixMessage> {
+    let msgs := List.empty()
+    for m in messages.values():
+      if m.roomId == roomId:
+        msgs := msgs.append(m)
+    return msgs.sortBy(m => m.createdAt)
+  }
+
+  // ─── Provenance ──────────────────────────────────────────────────
+
+  provenance {
+    design_decision "DB-backed buffering for outbound Matrix messages" :: "ADR-GB-004: Outbound messages must survive application restarts; an in-memory queue would lose messages on crash or deploy. SQLite table `matrix_outbound_buffer` is the source of truth."
+    design_decision "FIFO ordering by monotonic DB ID" :: "Per-room ordering is guaranteed by inserting rows with auto-incrementing `id` and selecting pending messages ordered by `id` ascending."
+    design_decision "Rate-limit 429 does not consume retry budget" :: "Matrix rate-limiting is a transient upstream condition, not a failure of the message itself. Exponential backoff is applied without incrementing retryCount."
+    design_decision "Max 3 retries before failed state" :: "Balances delivery reliability against noise — after 3 failures the message is quarantined in `failed` state for operator inspection."
+    parent_spec "greybeard-matrix-integration.speckdl"
+    external_doc "Matrix Client-Server API" :: "https://spec.matrix.org/latest/client-server-api/"
+  }
+
+  // ─── BOM metadata ────────────────────────────────────────────────
+
+  bom {
+    compiler { name: "speckl", version: "0.3.0" }
+    runtime { name: "go", version: "1.22" }
+    license: "MIT"
+  }
+}

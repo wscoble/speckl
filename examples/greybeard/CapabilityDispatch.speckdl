@@ -1,0 +1,302 @@
+// CapabilityDispatch.speckdl — Greybeard Capability Dispatch System
+//
+// SpeckDL specification for the Greybeard capability-typed dispatch architecture.
+// Nineteen handlers are discovered via CDI at startup and registered in the
+// CapabilityRegistry. When a signal arrives with a matching capabilityName,
+// the handler is dispatched, executed, and produces a CapabilityResult.
+//
+// Handler categories and names:
+//   Tax:        sum_deposits, compute_estimated_tax, compute_taxable_income,
+//               reasonable_compensation, safe_harbor, irs_submit_direct_pay
+//   IT Admin:   auth_identity, azure_cloud, computer_hardware,
+//               data_retention, domain_controller, network, security_patch,
+//               remote_office, weekly_reporting
+//   Finance:    mercury_list_transactions
+//   Knowledge:  ob1_capture_decision, ob1_capture_note
+//   Analysis:   llm_analysis
+//
+// State machine:
+//   registered → dispatched → executing → passed
+//                                      → failed
+//
+// See ADR-greybeard-capabilities for the capability-typed architecture decision.
+
+speck CapabilityDispatch {
+  version: "0.1.0"
+  author: "Scott Scoble <scott@scoble.me>"
+  source: architecture_review ref "greybeard-capability-typed-adr"
+  review: hybrid
+
+  // ─── Enum types ──────────────────────────────────────────────────
+
+  interface Seam {
+    determined
+    underdetermined
+  }
+
+  interface DataSource {
+    manual
+    integration
+    agent
+  }
+
+  interface DispatchState {
+    registered
+    dispatched
+    executing
+    passed
+    failed
+  }
+
+  // ─── Record types ────────────────────────────────────────────────
+
+  // FormField — a single field in a handler's schemas
+  type FormField = {
+    name: String,
+    type_: String,
+    required: Bool
+  }
+
+  // HandlerInfo — runtime representation of a registered capability handler
+  type HandlerInfo = {
+    capabilityName: String,
+    seam: Seam,
+    dataSource: DataSource,
+    schemas: List<FormField>,
+    registered: Bool
+  }
+
+  // CapabilityResult — the outcome of handler.execute()
+  type CapabilityResult = {
+    passed: Bool,
+    output: String | null,
+    gateReason: String,
+    confidence: Real,
+    summary: String
+  }
+
+  // Signal — a capability invocation request in flight
+  type Signal = {
+    id: String,
+    capabilityName: String,
+    input: String | null,
+    state: DispatchState,
+    result: CapabilityResult | null,
+    errorMessage: String | null
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    handlers: Map<String, HandlerInfo>,
+    signals: Map<String, Signal>
+  }
+
+  init: {
+    handlers := Map.empty(),
+    signals := Map.empty()
+  }
+
+  // ─── Actions ─────────────────────────────────────────────────────
+
+  // RegisterHandler — called once per handler at startup via CDI discovery
+  action RegisterHandler(capabilityName: String, seam: Seam, dataSource: DataSource, schemas: List<FormField>) {
+    require length(capabilityName) >= 1
+    require not handlers.has(capabilityName)
+    let h := HandlerInfo {
+      capabilityName: capabilityName,
+      seam: seam,
+      dataSource: dataSource,
+      schemas: schemas,
+      registered: true
+    }
+    handlers[capabilityName] := h
+  }
+
+  // CreateSignal — a new capability signal is received
+  action CreateSignal(signalId: String, capabilityName: String, input: String | null) {
+    require length(signalId) >= 1
+    require not signals.has(signalId)
+    let s := Signal {
+      id: signalId,
+      capabilityName: capabilityName,
+      input: input,
+      state: registered,
+      result: null,
+      errorMessage: null
+    }
+    signals[signalId] := s
+  }
+
+  // DispatchSignal — match a registered signal to its handler
+  action DispatchSignal(signalId: String) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == registered
+    require handlers.has(s.capabilityName)
+    s.state := dispatched
+    signals[signalId] := s
+  }
+
+  // ExecuteSignalPass — handler returned passed=true
+  action ExecuteSignalPass(signalId: String, result: CapabilityResult) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == dispatched
+    require result != null
+    require result.passed == true
+    require result.confidence >= 0.0
+    require result.confidence <= 1.0
+    require length(result.gateReason) >= 1
+
+    s.state := executing
+    signals[signalId] := s
+
+    let s2 := signals[signalId]
+    s2.state := passed
+    s2.result := result
+    signals[signalId] := s2
+  }
+
+  // ExecuteSignalFail — handler returned passed=false
+  action ExecuteSignalFail(signalId: String, result: CapabilityResult) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == dispatched
+    require result != null
+    require result.passed == false
+    require result.confidence >= 0.0
+    require result.confidence <= 1.0
+    require length(result.gateReason) >= 1
+
+    s.state := executing
+    signals[signalId] := s
+
+    let s2 := signals[signalId]
+    s2.state := failed
+    s2.result := result
+    signals[signalId] := s2
+  }
+
+  // FailSignal — handler threw an exception; fail with error message
+  action FailSignal(signalId: String, errorMessage: String) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == dispatched || s.state == executing
+    require length(errorMessage) >= 1
+    s.state := failed
+    s.errorMessage := errorMessage
+    signals[signalId] := s
+  }
+
+  // ─── Events ──────────────────────────────────────────────────────
+
+  event HandlerRegistered {
+    capabilityName: String
+  }
+
+  event SignalDispatched {
+    signalId: String,
+    capabilityName: String
+  }
+
+  event SignalExecuting {
+    signalId: String
+  }
+
+  event SignalPassed {
+    signalId: String,
+    result: CapabilityResult
+  }
+
+  event SignalFailed {
+    signalId: String,
+    reason: String
+  }
+
+  // ─── Constraints ─────────────────────────────────────────────────
+
+  constraint "handler capabilityName is non-empty" {
+    forall h in handlers.values():
+      length(h.capabilityName) >= 1
+  }
+
+  constraint "handler seam is valid" {
+    forall h in handlers.values():
+      h.seam == determined || h.seam == underdetermined
+  }
+
+  constraint "handler dataSource is valid" {
+    forall h in handlers.values():
+      h.dataSource == manual || h.dataSource == integration || h.dataSource == agent
+  }
+
+  constraint "no duplicate capabilityNames" {
+    forall h1 in handlers.values():
+      forall h2 in handlers.values():
+        h1.capabilityName == h2.capabilityName implies h1 == h2
+  }
+
+  constraint "execute returns non-null CapabilityResult" {
+    forall s in signals.values():
+      s.state == passed || s.state == failed implies s.result != null
+  }
+
+  constraint "confidence in valid range" {
+    forall s in signals.values():
+      s.result == null || (s.result.confidence >= 0.0 && s.result.confidence <= 1.0)
+  }
+
+  constraint "passed result has non-empty gateReason" {
+    forall s in signals.values():
+      s.result == null || not s.result.passed || length(s.result.gateReason) >= 1
+  }
+
+  constraint "failed result has explanatory gateReason" {
+    forall s in signals.values():
+      s.result == null || s.result.passed || length(s.result.gateReason) >= 1
+  }
+
+  constraint "underdetermined seam packages human context" {
+    forall s in signals.values():
+      forall h in handlers.values():
+        s.result == null || s.capabilityName != h.capabilityName || h.seam != underdetermined || s.state != passed || length(s.result.summary) >= 1
+  }
+
+  constraint "dispatched signal references existing handler" {
+    forall s in signals.values():
+      handlers.has(s.capabilityName)
+  }
+
+  constraint "signal in registered state has no result" {
+    forall s in signals.values():
+      s.state == registered implies s.result == null && s.errorMessage == null
+  }
+
+  constraint "signal in dispatched state has no result" {
+    forall s in signals.values():
+      s.state == dispatched implies s.result == null && s.errorMessage == null
+  }
+
+  constraint "signal in executing state has no final result" {
+    forall s in signals.values():
+      s.state == executing implies s.result == null && s.errorMessage == null
+  }
+
+  // ─── Provenance ──────────────────────────────────────────────────
+
+  provenance {
+    design_decision "capability-typed architecture" :: "ADR-greybeard-capabilities: Every business action is typed as a capability with seam (determined/underdetermined) and dataSource (manual/integration/agent); this enables automated routing and human-in-the-loop escalation for underdetermined capabilities"
+    parent_spec "greybeard-core.speckdl"
+    external_doc "CapabilityHandler Java interface" :: "greybeard-business/src/main/java/me/scoble/greybeard/business/capability/CapabilityHandler.java"
+    external_doc "CapabilityResult Java record" :: "greybeard-business/src/main/java/me/scoble/greybeard/business/capability/CapabilityResult.java"
+    external_doc "CapabilityRegistry CDI discovery" :: "greybeard-business/src/main/java/me/scoble/greybeard/business/capability/CapabilityRegistry.java"
+  }
+
+  // ─── BOM ─────────────────────────────────────────────────────────
+
+  bom {
+    compiler { name: "speckl", version: "0.3.0" }
+    license: "MIT"
+  }
+}

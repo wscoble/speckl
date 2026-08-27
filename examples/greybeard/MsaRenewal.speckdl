@@ -1,0 +1,250 @@
+// MsaRenewal.speckdl — MSA/contract renewal tracking with Matrix alerts.
+//
+// Daily check of contracts approaching expiry or past expiry.
+// Auto-renews contracts with auto-renew terms. Posts urgent alerts
+// for expired contracts without auto-renew.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck MsaRenewal {
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Daily renewal check with 30-day warning window and 7-day alert throttle"
+    external_doc: "Greybeard MSA contract terms" at "https://greybeardholdings.llc"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-contracts-2026"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type Contract = {
+    id: Nat,
+    clientId: Nat,
+    title: String,
+    status: String,           // "active", "expired"
+    effectiveDate: String,   // RFC3339 date
+    expiryDate: String,       // RFC3339 date
+    billingCycle: String,     // "monthly", "quarterly", "annual"
+    rate: Real,
+    terms: String,            // Free-form contract terms text
+    autoRenews: Bool          // Parsed from terms (e.g. "successive 12-month periods")
+  }
+
+  type RenewalAlert = {
+    contractId: Nat,
+    alertType: String,        // "warning", "auto_renewed", "urgent"
+    daysToExpiry: Int,         // Negative if past expiry
+    firedAt: String,
+    throttleDays: Nat          // 7 — minimum days between repeated alerts
+  }
+
+  // ─── Enums ──────────────────────────────────────────────────────
+
+  interface ContractStatus {
+    Active
+    Expired
+    Renewed
+    Terminated
+  }
+
+  interface AlertType {
+    Warning         // Within 30 days of expiry
+    AutoRenewed     // Past expiry, auto-renewed
+    Urgent          // Past expiry, no auto-renew
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    contracts: Map<Nat, Contract>,
+    alertHistory: List<RenewalAlert>,
+    lastAlertPerContract: Map<Nat, String>  // contractId → last alert timestamp
+  }
+
+  init: {
+    contracts := Map.empty(),
+    alertHistory := List.empty(),
+    lastAlertPerContract := Map.empty()
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action RegisterContract(id: Nat, clientId: Nat, title: String, effectiveDate: String, expiryDate: String, billingCycle: String, rate: Real, terms: String) {
+    require length(title) >= 1
+    require not contracts.has(id)
+    let autoRenews := matchesRenewalTerm(terms)
+    let c := Contract {
+      id: id,
+      clientId: clientId,
+      title: title,
+      status: "active",
+      effectiveDate: effectiveDate,
+      expiryDate: expiryDate,
+      billingCycle: billingCycle,
+      rate: rate,
+      terms: terms,
+      autoRenews: autoRenews
+    }
+    contracts[id] := c
+  }
+
+  action FireWarning(contractId: Nat, daysToExpiry: Int, firedAt: String) {
+    require contracts.has(contractId)
+    let c := contracts[contractId]
+    require daysToExpiry <= 30 and daysToExpiry >= 0
+    require canFireAlert(contractId, firedAt)
+    let alert := RenewalAlert {
+      contractId: contractId,
+      alertType: "warning",
+      daysToExpiry: daysToExpiry,
+      firedAt: firedAt,
+      throttleDays: 7
+    }
+    alertHistory := alert :: alertHistory
+    lastAlertPerContract[contractId] := firedAt
+  }
+
+  action AutoRenew(contractId: Nat, newExpiryDate: String, firedAt: String) {
+    require contracts.has(contractId)
+    let c := contracts[contractId]
+    require c.autoRenews
+    require c.expiryDate < firedAt  // Past expiry
+    c.expiryDate := newExpiryDate
+    c.status := "active"
+    contracts[contractId] := c
+    let alert := RenewalAlert {
+      contractId: contractId,
+      alertType: "auto_renewed",
+      daysToExpiry: 0,
+      firedAt: firedAt,
+      throttleDays: 7
+    }
+    alertHistory := alert :: alertHistory
+    lastAlertPerContract[contractId] := firedAt
+  }
+
+  action FireUrgent(contractId: Nat, daysToExpiry: Int, firedAt: String) {
+    require contracts.has(contractId)
+    let c := contracts[contractId]
+    require not c.autoRenews
+    require daysToExpiry < 0  // Past expiry
+    require canFireAlert(contractId, firedAt)
+    let alert := RenewalAlert {
+      contractId: contractId,
+      alertType: "urgent",
+      daysToExpiry: daysToExpiry,
+      firedAt: firedAt,
+      throttleDays: 7
+    }
+    alertHistory := alert :: alertHistory
+    lastAlertPerContract[contractId] := firedAt
+    c.status := "expired"
+    contracts[contractId] := c
+  }
+
+  // ─── Service ────────────────────────────────────────────────────
+
+  service MsaRenewalService {
+    rpc CheckRenewals(CheckRequest) returns (RenewalResult);
+    rpc RegisterContract(RegisterRequest) returns (Contract);
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "warning fires within 30 days of expiry" {
+    forall a in alertHistory:
+      implies(a.alertType == "warning", a.daysToExpiry <= 30 and a.daysToExpiry >= 0)
+  }
+
+  constraint "urgent fires only for past-expiry non-auto-renew contracts" {
+    forall a in alertHistory:
+      implies(a.alertType == "urgent", a.daysToExpiry < 0)
+  }
+
+  constraint "auto-renew only for contracts with auto-renew terms" {
+    forall a in alertHistory:
+      implies(a.alertType == "auto_renewed", contracts[a.contractId].autoRenews)
+  }
+
+  constraint "alert throttle is 7 days" {
+    forall a in alertHistory:
+      a.throttleDays == 7
+  }
+
+  constraint "every contract has a non-empty title" {
+    forall c in contracts.values():
+      length(c.title) >= 1
+  }
+
+  constraint "every contract has a valid expiry date" {
+    forall c in contracts.values():
+      length(c.expiryDate) >= 1
+  }
+
+  constraint "auto-renewed contract gets new expiry date in the future" {
+    forall a in alertHistory:
+      implies(a.alertType == "auto_renewed",
+              contracts[a.contractId].expiryDate > a.firedAt)
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    daysToExpiry > 30,
+    not warningFired
+  ))
+
+  verify: always(implies(
+    contract.autoRenews and daysToExpiry < 0,
+    autoRenewed
+  ))
+
+  verify: always(implies(
+    not contract.autoRenews and daysToExpiry < 0,
+    urgentFired
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event RenewalWarning {
+    contractId: Nat,
+    daysToExpiry: Int,
+    title: String
+  }
+
+  event ContractAutoRenewed {
+    contractId: Nat,
+    newExpiryDate: String,
+    oldExpiryDate: String
+  }
+
+  event UrgentRenewalNeeded {
+    contractId: Nat,
+    daysToExpiry: Int,
+    title: String
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    parent_spec: SignalRouting
+    design_decision: "30-day warning window with 7-day alert throttle to prevent notification spam"
+  }
+
+  // ─── Wire format ───────────────────────────────────────────────
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+}

@@ -1,0 +1,324 @@
+// SignalRouting.speckdl — Greybeard Signal Routing System
+//
+// Core specification formalizing: every inbound signal must be captured by a
+// capability handler, and if no handler captures it, the signal must be surfaced
+// as a gap to a human in Matrix.
+//
+// Wire entry point: POST /signal
+// States: open → resolved (handler succeeds)
+//         open → failed  (handler fails)
+//         open → open + underdetermined (no handler, requeued for human)
+//
+// See Greybeard architecture review for system context.
+
+speck SignalRouting {
+  version: "0.1.0"
+  author: "Scott Scoble <scott@scoble.me>"
+  source: architecture_review ref "greybeard-architecture-review-2026"
+  review: hybrid
+
+  // ─── Enums ───────────────────────────────────────────────────────
+
+  interface SignalState {
+    open
+    resolved
+    failed
+  }
+
+  interface SignalSeam {
+    determined
+    underdetermined
+  }
+
+  interface LLMRouterDecision {
+    ai_deterministic
+    ai_llm
+    human
+  }
+
+  interface MatrixRoom {
+    alerts
+    admin
+  }
+
+  // ─── Types ─────────────────────────────────────────────────────
+
+  type Signal = {
+    id: String,
+    capability: String,
+    seam: SignalSeam,
+    payload: String | null,
+    source_actor: String,
+    q_score: Real | null,
+    idempotency_key: String,
+    deadline_at: Date | null,
+    state: SignalState,
+    timestamp: Date,
+    handlerName: String | null,
+    routingDecision: LLMRouterDecision | null,
+    notificationSent: Bool
+  }
+
+  type CapabilityHandler = {
+    capabilityName: String,
+    seam: SignalSeam
+  }
+
+  type HumanNotification = {
+    id: String,
+    signalRef: String,
+    message: String,
+    room: MatrixRoom,
+    createdAt: Date
+  }
+
+  type DailyDigest = {
+    id: String,
+    pendingCount: Int,
+    sentAt: Date,
+    room: MatrixRoom
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    signals: Map<String, Signal>,
+    handlers: Map<String, CapabilityHandler>,
+    notifications: Map<String, HumanNotification>,
+    digests: Map<String, DailyDigest>,
+    processedKeys: Map<String, String>
+  }
+
+  init: {
+    signals := Map.empty(),
+    handlers := Map.empty(),
+    notifications := Map.empty(),
+    digests := Map.empty(),
+    processedKeys := Map.empty()
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  // Ingress: POST /signal. Validates, enforces idempotency, creates signal.
+  action ReceiveSignal(
+    capability: String,
+    seam: SignalSeam,
+    payload: String | null,
+    source_actor: String,
+    q_score: Real | null,
+    idempotency_key: String,
+    deadline_at: Date | null
+  ) {
+    require length(capability) >= 1
+    require length(source_actor) >= 1
+    require length(idempotency_key) >= 1
+    require not processedKeys.has(idempotency_key)
+    let sigId := "sig-" + idempotency_key + "-" + Date.now()
+    let s := Signal {
+      id: sigId,
+      capability: capability,
+      seam: seam,
+      payload: payload,
+      source_actor: source_actor,
+      q_score: q_score,
+      idempotency_key: idempotency_key,
+      deadline_at: deadline_at,
+      state: open,
+      timestamp: Date.now(),
+      handlerName: null,
+      routingDecision: null,
+      notificationSent: false
+    }
+    signals[sigId] := s
+    processedKeys[idempotency_key] := sigId
+  }
+
+  // Admin: register a capability handler.
+  action RegisterCapability(capabilityName: String, seam: SignalSeam) {
+    require length(capabilityName) >= 1
+    require not handlers.has(capabilityName)
+    let h := CapabilityHandler {
+      capabilityName: capabilityName,
+      seam: seam
+    }
+    handlers[capabilityName] := h
+  }
+
+  // Core routing: capability registry lookup, fallback to underdetermined.
+  action RouteSignal(signalId: String) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == open
+    s.handlerName := null
+    s.seam := underdetermined
+    s.notificationSent := false
+    // conditional: handlers.has(s.capability):
+      let h := handlers[s.capability]
+      s.handlerName := h.capabilityName
+      s.seam := h.seam
+      // conditional: h.seam == determined:
+        s.notificationSent := true
+    signals[signalId] := s
+  }
+
+  // LLM router fallback: refines routing when no capability handler exists.
+  action ApplyLLMRouterDecision(signalId: String, decision: LLMRouterDecision) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == open
+    require s.handlerName == null
+    s.routingDecision := decision
+    s.seam := determined
+    s.notificationSent := true
+    // conditional: decision == human:
+      s.seam := underdetermined
+      s.notificationSent := false
+    signals[signalId] := s
+  }
+
+  // Handler success: open → resolved.
+  action ResolveSignal(signalId: String) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == open
+    s.state := resolved
+    signals[signalId] := s
+  }
+
+  // Handler failure: open → failed.
+  action FailSignal(signalId: String, reason: String | null) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == open
+    s.state := failed
+    signals[signalId] := s
+  }
+
+  // Creates a Matrix notification for a single underdetermined signal.
+  action CreateHumanNotification(signalId: String) {
+    require signals.has(signalId)
+    let s := signals[signalId]
+    require s.state == open
+    require s.seam == underdetermined
+    require not s.notificationSent
+    let notifId := "notif-" + signalId + "-" + Date.now()
+    let msg := "Action needed: " + s.capability + " from " + s.source_actor
+    let n := HumanNotification {
+      id: notifId,
+      signalRef: signalId,
+      message: msg,
+      room: alerts,
+      createdAt: Date.now()
+    }
+    notifications[notifId] := n
+    s.notificationSent := true
+    signals[signalId] := s
+  }
+
+  // Timer (every 5 min): polls for open+underdetermined signals and notifies.
+  action PollHumanQueue() {
+    for s in signals.values():
+      // conditional: s.state == open && s.seam == underdetermined && not s.notificationSent:
+        createHumanNotification(s.id)
+  }
+
+  // Timer (daily): posts a digest of pending human-action items to admin room.
+  action SendDailyDigest() {
+    let pendingCount := 0
+    for s in signals.values():
+      // conditional: s.state == open && s.seam == underdetermined:
+        pendingCount := pendingCount + 1
+    // conditional: pendingCount > 0:
+      let digestId := "digest-" + Date.now()
+      let d := DailyDigest {
+        id: digestId,
+        pendingCount: pendingCount,
+        sentAt: Date.now(),
+        room: admin
+      }
+      digests[digestId] := d
+  }
+
+  // Read-only: retrieve signal by id.
+  action GetSignal(signalId: String) {
+    require signals.has(signalId)
+  }
+
+  // ─── Service ────────────────────────────────────────────────────
+
+  service SignalRoutingService {
+    rpc ReceiveSignal(ReceiveSignalRequest) returns (Signal);
+    rpc RegisterCapability(RegisterCapabilityRequest) returns (CapabilityHandler);
+    rpc ApplyLLMRouterDecision(ApplyLLMRouterDecisionRequest) returns (Signal);
+    rpc ResolveSignal(ResolveSignalRequest) returns (Signal);
+    rpc FailSignal(FailSignalRequest) returns (Signal);
+    rpc GetSignal(GetSignalRequest) returns (Signal);
+  }
+
+  // ─── Constraints ─────────────────────────────────────────────────
+
+  constraint "every signal has a non-empty capability" {
+    forall s in signals.values():
+      length(s.capability) >= 1
+  }
+
+  constraint "every signal has a valid state" {
+    forall s in signals.values():
+      s.state == open || s.state == resolved || s.state == failed
+  }
+
+  constraint "every signal has a valid seam" {
+    forall s in signals.values():
+      s.seam == determined || s.seam == underdetermined
+  }
+
+  constraint "open underdetermined signals must have a notification" {
+    forall s in signals.values():
+      (s.state == open && s.seam == underdetermined) implies s.notificationSent == true
+  }
+
+  constraint "no handler and llm returns human implies underdetermined" {
+    forall s in signals.values():
+      (s.handlerName == null && s.routingDecision == human) implies s.seam == underdetermined
+  }
+
+  constraint "no signal silently dropped" {
+    forall s in signals.values():
+      s.state != null
+  }
+
+  constraint "every signal has a source actor" {
+    forall s in signals.values():
+      length(s.source_actor) >= 1
+  }
+
+  constraint "every signal has a timestamp" {
+    forall s in signals.values():
+      s.timestamp != null
+  }
+
+  constraint "idempotency keys are unique" {
+    forall s in signals.values():
+      processedKeys.has(s.idempotency_key) && processedKeys[s.idempotency_key] == s.id
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    design_decision "capability registry is single source of truth" :: "Handlers are looked up by exact capability name match; no fuzzy matching to ensure deterministic routing"
+    design_decision "LLM router is fallback only" :: "The LLM router is consulted only when no capability handler exists; this prevents LLM non-determinism from shadowing explicitly registered handlers"
+    design_decision "human queue polled every 5 minutes" :: "Timer-based polling ensures underdetermined signals surface to humans without requiring push infrastructure"
+    design_decision "daily digest to admin room" :: "Aggregated pending-item digest reduces noise while maintaining visibility"
+    design_decision "no signal silently dropped" :: "Every signal must land in one of {open, resolved, failed}; there is no discarded or ignored state"
+    design_decision "idempotency enforced at ingress" :: "Duplicate idempotency_keys are rejected at ReceiveSignal, preventing double-processing"
+    parent_spec "greybeard-core.speckdl"
+  }
+
+  // ─── BOM metadata ──────────────────────────────────────────────
+
+  bom {
+    compiler { name: "speckl", version: "0.3.0" }
+    runtime { name: "quarkus", version: "3.15" }
+    license: "MIT"
+  }
+}

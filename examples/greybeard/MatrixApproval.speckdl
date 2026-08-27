@@ -1,0 +1,282 @@
+// MatrixApproval.speckdl — Greybeard outbound email approval via Matrix DM.
+//
+// This Speck specifies the state machine and invariants for the Greybeard
+// Matrix approval workflow. No outbound email may be sent without explicit
+// human approval from the designated approver.
+//
+// Architecture: outbound emails are drafted via /api/email/draft, inserted
+// into email_outbound_queue with status=pending. MatrixApprovalRoute polls
+// the queue timer-based and DMs Scott with the full draft content. Scott
+// replies "approve" or "reject". On approval, SmtpService sends via
+// Cloudflare SMTP. On rejection or 72h timeout, status transitions
+// accordingly and no email is sent.
+//
+// Part of the Greybeard SpeckDL spec set. See OB1 #3642.
+
+speck MatrixApproval {
+  version: "0.1.0"
+  author: "Scott Scoble <scott@scoble.me>"
+  source: architecture_review ref "greybeard-matrix-approval-2026-08-27"
+  review: hybrid
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  // EmailStatus — lifecycle states of an outbound email in the queue.
+  interface EmailStatus {
+    Pending                       // Awaiting human approval
+    Approved                      // Scott approved; ready for SMTP send
+    Rejected                      // Scott rejected; must not be sent
+    Sent                          // SMTP send succeeded
+    Failed                        // SMTP send failed after approval
+    Expired                       // No response within 72 hours
+  }
+
+  // EmailDraft — a single outbound email in the queue.
+  type EmailDraft = {
+    id: String,                   // Unique email identifier (UUID)
+    from: String,                 // Sender address
+    to: String,                   // Recipient address
+    subject: String,              // Email subject
+    body: String,                 // Email body (plain text or HTML)
+    status: EmailStatus,          // Current lifecycle state
+    createdAt: String,            // RFC3339 timestamp of insertion
+    approvedAt: String | null,    // RFC3339 timestamp of approval
+    sentAt: String | null,        // RFC3339 timestamp of SMTP success
+    rejectedAt: String | null,    // RFC3339 timestamp of rejection
+    rejectedReason: String | null,// Optional reason from Scott
+    failedAt: String | null,      // RFC3339 timestamp of SMTP failure
+    expiredAt: String | null,     // RFC3339 timestamp of expiry
+    approver: String | null       // Matrix user ID of approver (if approved)
+  }
+
+  // ApprovalDM — the message sent to Scott via Matrix.
+  type ApprovalDM = {
+    emailId: String,
+    from: String,
+    to: String,
+    subject: String,
+    body: String,
+    timestamp: String             // RFC3339
+  }
+
+  // SmtpConfig — Cloudflare SMTP endpoint configuration.
+  type SmtpConfig = {
+    host: String,                 // smtp.mx.cloudflare.net
+    port: Int,                    // 465
+    authType: String              // "api_token"
+  }
+
+  // ─── State ──────────────────────────────────────────────────────
+
+  // emailQueue — the email_outbound_queue keyed by email ID.
+  // approvalLog — record of DMs sent (for audit and FIFO verification).
+  state: {
+    emailQueue: Map<String, EmailDraft>,
+    approvalLog: Map<String, ApprovalDM>
+  }
+
+  init: {
+    emailQueue := Map.empty(),
+    approvalLog := Map.empty()
+  }
+
+  // ─── Actions ──────────────────────────────────────────────────
+
+  // DraftEmail — called by /api/email/draft. Inserts email with status=Pending.
+  action DraftEmail(id: String, from: String, to: String, subject: String, body: String) {
+    require length(id) >= 1
+    require length(from) >= 1
+    require length(to) >= 1
+    require length(subject) >= 1
+    require not emailQueue.has(id)
+    let now := Date.now()
+    let draft := EmailDraft {
+      id: id,
+      from: from,
+      to: to,
+      subject: subject,
+      body: body,
+      status: Pending,
+      createdAt: now,
+      approvedAt: null,
+      sentAt: null,
+      rejectedAt: null,
+      rejectedReason: null,
+      failedAt: null,
+      expiredAt: null,
+      approver: null
+    }
+    emailQueue[id] := draft
+  }
+
+  // SendApprovalDM — MatrixApprovalRoute sends the full draft to Scott.
+  action SendApprovalDM(emailId: String) {
+    require emailQueue.has(emailId)
+    let draft := emailQueue[emailId]
+    require draft.status == Pending
+    require not approvalLog.has(emailId)
+    let dm := ApprovalDM {
+      emailId: emailId,
+      from: draft.from,
+      to: draft.to,
+      subject: draft.subject,
+      body: draft.body,
+      timestamp: Date.now()
+    }
+    approvalLog[emailId] := dm
+  }
+
+  // ApproveEmail — Scott replies "approve". Only @scott:greybeardholdings.llc
+  // may trigger this transition.
+  action ApproveEmail(emailId: String, responder: String, timestamp: String) {
+    require emailQueue.has(emailId)
+    let draft := emailQueue[emailId]
+    require draft.status == Pending
+    require responder == "@scott:greybeardholdings.llc"
+    draft.status := Approved
+    draft.approvedAt := timestamp
+    draft.approver := responder
+    emailQueue[emailId] := draft
+  }
+
+  // RejectEmail — Scott replies "reject" (with optional reason).
+  action RejectEmail(emailId: String, reason: String | null, responder: String, timestamp: String) {
+    require emailQueue.has(emailId)
+    let draft := emailQueue[emailId]
+    require draft.status == Pending
+    require responder == "@scott:greybeardholdings.llc"
+    draft.status := Rejected
+    draft.rejectedAt := timestamp
+    draft.rejectedReason := reason
+    draft.approver := responder
+    emailQueue[emailId] := draft
+  }
+
+  // MarkSent — SmtpService confirms successful delivery.
+  action MarkSent(emailId: String, timestamp: String) {
+    require emailQueue.has(emailId)
+    let draft := emailQueue[emailId]
+    require draft.status == Approved
+    draft.status := Sent
+    draft.sentAt := timestamp
+    emailQueue[emailId] := draft
+  }
+
+  // MarkFailed — SmtpService reports error after approval. Scott is notified
+  // via Matrix DM (modeled as a separate side-effect not captured in state).
+  action MarkFailed(emailId: String, timestamp: String) {
+    require emailQueue.has(emailId)
+    let draft := emailQueue[emailId]
+    require draft.status == Approved
+    draft.status := Failed
+    draft.failedAt := timestamp
+    emailQueue[emailId] := draft
+  }
+
+  // MarkExpired — 72-hour timeout with no response.
+  action MarkExpired(emailId: String, timestamp: String) {
+    require emailQueue.has(emailId)
+    let draft := emailQueue[emailId]
+    require draft.status == Pending
+    draft.status := Expired
+    draft.expiredAt := timestamp
+    emailQueue[emailId] := draft
+  }
+
+  // ─── Service ──────────────────────────────────────────────────
+
+  service EmailApprovalService {
+    rpc DraftEmail(DraftEmailRequest) returns (EmailDraft);
+    rpc SendApprovalDM(SendApprovalDMRequest) returns (ApprovalDM);
+    rpc ApproveEmail(ApproveEmailRequest) returns (EmailDraft);
+    rpc RejectEmail(RejectEmailRequest) returns (EmailDraft);
+    rpc MarkSent(MarkSentRequest) returns (EmailDraft);
+    rpc MarkFailed(MarkFailedRequest) returns (EmailDraft);
+    rpc MarkExpired(MarkExpiredRequest) returns (EmailDraft);
+  }
+
+  event_suffix: "Request"
+  status: { ready: Bool, pendingCount: Nat, approvedCount: Nat, sentCount: Nat }
+  conditions: ["Ready", "SMTPReachable", "MatrixBotHealthy"]
+
+  // ─── Constraints (invariants) ─────────────────────────────────
+
+  constraint "no email sent without explicit human approval" {
+    forall e in emailQueue.values():
+      e.status == Sent implies e.approvedAt != null
+  }
+
+  constraint "approval must come from designated approver" {
+    forall e in emailQueue.values():
+      e.status == Approved implies e.approver == "@scott:greybeardholdings.llc"
+  }
+
+  constraint "sent implies SMTP succeeded" {
+    forall e in emailQueue.values():
+      e.status == Sent implies e.sentAt != null
+  }
+
+  constraint "rejected email must not be sent" {
+    forall e in emailQueue.values():
+      e.status == Rejected implies e.sentAt == null
+  }
+
+  constraint "expired email must not be sent" {
+    forall e in emailQueue.values():
+      e.status == Expired implies e.sentAt == null
+  }
+
+  constraint "failed email must not be sent" {
+    forall e in emailQueue.values():
+      e.status == Failed implies e.sentAt == null
+  }
+
+  constraint "approval DM includes full draft content" {
+    forall dm in approvalLog.values():
+      emailQueue.has(dm.emailId) implies {
+        let draft := emailQueue[dm.emailId]
+        draft.from == dm.from &&
+        draft.to == dm.to &&
+        draft.subject == dm.subject &&
+        draft.body == dm.body
+      }
+  }
+
+  constraint "FIFO queue order" {
+    forall e1 in emailQueue.values():
+      forall e2 in emailQueue.values():
+        e1.status != Pending && e2.status == Pending implies e1.createdAt <= e2.createdAt
+  }
+
+  constraint "SMTP failure after approval sets status to failed" {
+    forall e in emailQueue.values():
+      e.status == Failed implies e.approvedAt != null
+  }
+
+  constraint "expired emails were never approved" {
+    forall e in emailQueue.values():
+      e.status == Expired implies e.approvedAt == null
+  }
+
+  // ─── Provenance ───────────────────────────────────────────────
+
+  provenance {
+    design_decision "Matrix as approval interface" :: "Outbound email approval is mediated via Matrix DMs to ensure human-in-the-loop verification before any email is sent through external SMTP. See Greybeard ADR-004."
+    parent_spec "greybeard-email-system.speckdl"
+    external_doc "Greybeard Architecture Decision Record — Matrix Approval Interface" :: "https://greybeardholdings.llc/docs/adr/matrix-approval-interface"
+    external_doc "Cloudflare Email Routing SMTP documentation" :: "https://developers.cloudflare.com/email-routing/email-api/"
+    design_decision "no outbound without human approval" :: "Every email must transition through Pending -> Approved before SMTP send; enforced by action preconditions and state invariants."
+    design_decision "designated approver only" :: "Approval and rejection responses must originate from @scott:greybeardholdings.llc; enforced by responder identity check in ApproveEmail and RejectEmail actions."
+    design_decision "FIFO queue ordering" :: "Pending emails are processed oldest-first to preserve temporal fairness and audit ordering; enforced by FIFO queue order constraint."
+    design_decision "SMTP failure handling" :: "On SMTP failure after approval, status transitions to Failed and Scott is notified via Matrix DM so manual intervention can occur."
+    design_decision "72-hour expiry with daily reminders" :: "If Scott does not respond within 72 hours, the email transitions to Expired and a daily reminder DM is sent until resolved."
+  }
+
+  // ─── BOM metadata ─────────────────────────────────────────────
+
+  bom {
+    compiler { name: "speckl", version: "0.3.0" }
+    runtime { name: "greybeard-matrix-bot", version: "0.1.0" }
+    license: "MIT"
+  }
+}

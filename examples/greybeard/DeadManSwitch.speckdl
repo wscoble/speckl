@@ -1,0 +1,207 @@
+// DeadManSwitch.speckdl — Dead-man switch monitoring for capability silence.
+//
+// Monitors greybeard_signal_audit for capabilities that have stopped reporting.
+// Fires Matrix alerts when silence exceeds the seam-specific threshold.
+//
+// Author: Scott Scoble <scott@scoble.me>
+// Source: Architecture review — Greybeard reliability patterns
+
+speck DeadManSwitch {
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Seam-specific silence thresholds — AI capabilities are expected to report every 30s, human-facing capabilities every 24h"
+    external_doc: "Dead-man switch pattern" at "https://en.wikipedia.org/wiki/Dead_man%27s_switch"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-reliability-2026"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type Seam = {
+    kind: String  // "determined" (AI/agent) or "underdetermined" (human)
+  }
+
+  type CapabilitySwitch = {
+    capability: String,
+    seam: String,
+    thresholdSeconds: Nat,
+    lastSignalAt: String | null,   // RFC3339 timestamp
+    lastFiredAt: String | null,   // RFC3339 timestamp — cooldown marker
+    createdAt: String
+  }
+
+  type SilenceAlert = {
+    capability: String,
+    silenceSeconds: Nat,
+    thresholdSeconds: Nat,
+    seam: String,
+    firedAt: String
+  }
+
+  // ─── Enums ──────────────────────────────────────────────────────
+
+  interface SwitchState {
+    Monitoring
+    Alerting
+    Cooldown
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    switches: Map<String, CapabilitySwitch>,
+    alertHistory: List<SilenceAlert>
+  }
+
+  init: {
+    switches := Map.empty(),
+    alertHistory := List.empty()
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action AutoRegister(capability: String, seam: String) {
+    require length(capability) >= 1
+    require seam == "determined" or seam == "underdetermined"
+    require not switches.has(capability)
+    let threshold := 86400
+    let sw := CapabilitySwitch {
+      capability: capability,
+      seam: seam,
+      thresholdSeconds: threshold,
+      lastSignalAt: null,
+      lastFiredAt: null,
+      createdAt: Date.now()
+    }
+    switches[capability] := sw
+  }
+
+  action RecordSignal(capability: String, timestamp: String) {
+    require switches.has(capability)
+    let sw := switches[capability]
+    sw.lastSignalAt := timestamp
+    switches[capability] := sw
+  }
+
+  action FireAlert(capability: String, silenceSeconds: Nat, firedAt: String) {
+    require switches.has(capability)
+    let sw := switches[capability]
+    require silenceSeconds > sw.thresholdSeconds
+    // Cooldown: don't re-fire within one check period (60s) of last fire
+    require sw.lastFiredAt == null or timeSince(sw.lastFiredAt, firedAt) >= 60
+    let alert := SilenceAlert {
+      capability: capability,
+      silenceSeconds: silenceSeconds,
+      thresholdSeconds: sw.thresholdSeconds,
+      seam: sw.seam,
+      firedAt: firedAt
+    }
+    alertHistory := alert :: alertHistory
+    sw.lastFiredAt := firedAt
+    switches[capability] := sw
+  }
+
+  action ResolveAlert(capability: String, signalTimestamp: String) {
+    require switches.has(capability)
+    let sw := switches[capability]
+    sw.lastSignalAt := signalTimestamp
+    sw.lastFiredAt := null
+    switches[capability] := sw
+  }
+
+  // ─── Service ────────────────────────────────────────────────────
+
+  service DeadManSwitchService {
+    rpc CheckCapabilities(CheckRequest) returns (CheckResult);
+    rpc RegisterCapability(RegisterRequest) returns (CapabilitySwitch);
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "determined seam threshold is 30 seconds" {
+    forall sw in switches.values():
+      implies(sw.seam == "determined", sw.thresholdSeconds == 30)
+  }
+
+  constraint "underdetermined seam threshold is 86400 seconds" {
+    forall sw in switches.values():
+      implies(sw.seam == "underdetermined", sw.thresholdSeconds == 86400)
+  }
+
+  constraint "alert only fires when silence exceeds threshold" {
+    forall a in alertHistory:
+      a.silenceSeconds > a.thresholdSeconds
+  }
+
+  constraint "cooldown prevents alert spam" {
+    forall a in alertHistory:
+      implies(a.capability has prior fire,
+              timeSince(priorFire(a.capability), a.firedAt) >= 60)
+  }
+
+  constraint "every capability is auto-registered on first signal" {
+    forall sw in switches.values():
+      length(sw.capability) >= 1
+  }
+
+  constraint "resolved alert clears lastFiredAt" {
+    forall sw in switches.values():
+      implies(sw.lastSignalAt != null and sw.lastFiredAt != null,
+              sw.lastSignalAt > sw.lastFiredAt)
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    forall sw in switches.values(): sw.lastSignalAt != null and sw.lastFiredAt != null,
+    sw.lastSignalAt > sw.lastFiredAt
+  ))
+
+  verify: always(implies(
+    silenceSeconds <= thresholdSeconds,
+    not alertFired
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event SilenceDetected {
+    capability: String,
+    silenceSeconds: Nat,
+    thresholdSeconds: Nat
+  }
+
+  event AlertFired {
+    capability: String,
+    silenceSeconds: Nat,
+    firedAt: String
+  }
+
+  event AlertResolved {
+    capability: String,
+    resolvedAt: String
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    parent_spec: SignalRouting
+    design_decision: "Dead-man switch with seam-specific thresholds — AI capabilities expected to report every 30s, human capabilities every 24h"
+  }
+
+  // ─── Wire format ───────────────────────────────────────────────
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+}

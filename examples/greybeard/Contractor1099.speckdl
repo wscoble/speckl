@@ -1,0 +1,244 @@
+// Contractor1099.speckdl — 1099 contractor tax reporting.
+//
+// Tracks contractor payments and generates 1099-NEC tax forms
+// for contractors paid more than $600 in a tax year.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck Contractor1099 {
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "1099-NEC threshold of $600 per tax year per contractor, auto-aggregated from payment records"
+    external_doc: "IRS 1099-NEC instructions" at "https://www.irs.gov/forms-pubs/about-form-1099-nec"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: regulation ref "IRS-1099-NEC-2026"
+  review: manual
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type Contractor = {
+    id: Nat,
+    name: String,
+    ein: String | null,        // Tax ID (EIN or SSN)
+    address: String | null,
+    email: String | null,
+    active: Bool
+  }
+
+  type Payment = {
+    id: Nat,
+    contractorId: Nat,
+    amount: Real,
+    paymentDate: String,       // RFC3339
+    description: String | null,
+    taxYear: Nat               // e.g. 2026
+  }
+
+  type Form1099NEC = {
+    id: Nat,
+    contractorId: Nat,
+    taxYear: Nat,
+    totalCompensation: Real,
+    status: String,            // "draft", "filed", "void"
+    generatedAt: String,
+    filedAt: String | null
+  }
+
+  // ─── Enums ──────────────────────────────────────────────────────
+
+  interface FormStatus {
+    Draft
+    Filed
+    Void
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    contractors: Map<Nat, Contractor>,
+    payments: List<Payment>,
+    forms: Map<Nat, Form1099NEC>,
+    nextPaymentId: Nat,
+    nextFormId: Nat
+  }
+
+  init: {
+    contractors := Map.empty(),
+    payments := List.empty(),
+    forms := Map.empty(),
+    nextPaymentId := 1,
+    nextFormId := 1
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action RegisterContractor(id: Nat, name: String, ein: String | null) {
+    require length(name) >= 1
+    require not contractors.has(id)
+    let c := Contractor {
+      id: id,
+      name: name,
+      ein: ein,
+      address: null,
+      email: null,
+      active: true
+    }
+    contractors[id] := c
+  }
+
+  action RecordPayment(contractorId: Nat, amount: Real, paymentDate: String, description: String | null, taxYear: Nat) {
+    require contractors.has(contractorId)
+    require contractors[contractorId].active
+    require amount > 0
+    let p := Payment {
+      id: nextPaymentId,
+      contractorId: contractorId,
+      amount: amount,
+      paymentDate: paymentDate,
+      description: description,
+      taxYear: taxYear
+    }
+    payments := p :: payments
+    nextPaymentId := nextPaymentId + 1
+  }
+
+  action GenerateForm1099(contractorId: Nat, taxYear: Nat, generatedAt: String) {
+    require contractors.has(contractorId)
+    let total := sumCompensation(contractorId, taxYear)
+    require total >= 600.0  // IRS threshold
+    require not formExists(contractorId, taxYear)
+    let form := Form1099NEC {
+      id: nextFormId,
+      contractorId: contractorId,
+      taxYear: taxYear,
+      totalCompensation: total,
+      status: "draft",
+      generatedAt: generatedAt,
+      filedAt: null
+    }
+    forms[nextFormId] := form
+    nextFormId := nextFormId + 1
+  }
+
+  action FileForm(formId: Nat, filedAt: String) {
+    require forms.has(formId)
+    let f := forms[formId]
+    require f.status == "draft"
+    f.status := "filed"
+    f.filedAt := filedAt
+    forms[formId] := f
+  }
+
+  action VoidForm(formId: Nat, reason: String) {
+    require forms.has(formId)
+    let f := forms[formId]
+    require f.status == "draft"
+    f.status := "void"
+    forms[formId] := f
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "1099 threshold is $600" {
+    forall f in forms.values():
+      f.totalCompensation >= 600.0
+  }
+
+  constraint "every form references a valid contractor" {
+    forall f in forms.values():
+      contractors.has(f.contractorId)
+  }
+
+  constraint "total compensation matches payment sum" {
+    forall f in forms.values():
+      f.totalCompensation == sumCompensation(f.contractorId, f.taxYear)
+  }
+
+  constraint "no duplicate forms for same contractor and tax year" {
+    forall f1 in forms.values():
+      forall f2 in forms.values():
+        implies(f1.id != f2.id,
+                not (f1.contractorId == f2.contractorId and f1.taxYear == f2.taxYear))
+  }
+
+  constraint "every payment is for an active contractor" {
+    forall p in payments:
+      implies(contractors.has(p.contractorId),
+              contractors[p.contractorId].active)
+  }
+
+  constraint "payment amount must be positive" {
+    forall p in payments:
+      p.amount > 0
+  }
+
+  constraint "filed forms have a filed date" {
+    forall f in forms.values():
+      implies(f.status == "filed", f.filedAt != null)
+  }
+
+  constraint "void forms have no filed date" {
+    forall f in forms.values():
+      implies(f.status == "void", f.filedAt == null)
+  }
+
+  constraint "contractor EIN is non-empty if provided" {
+    forall c in contractors.values():
+      implies(c.ein != null, length(c.ein) >= 1)
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    totalCompensation < 600.0,
+    not formGenerated(contractorId, taxYear)
+  ))
+
+  verify: always(implies(
+    f.status == "filed",
+    f.filedAt != null and f.filedAt >= f.generatedAt
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event PaymentRecorded {
+    contractorId: Nat,
+    amount: Real,
+    taxYear: Nat
+  }
+
+  event Form1099Generated {
+    formId: Nat,
+    contractorId: Nat,
+    taxYear: Nat,
+    totalCompensation: Real
+  }
+
+  event Form1099Filed {
+    formId: Nat,
+    filedAt: String
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    regulation: "IRS 1099-NEC filing requirements"
+    parent_spec: Billing
+    design_decision: "$600 threshold per IRS requirements, auto-aggregated from payment records"
+  }
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+}

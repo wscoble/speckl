@@ -1,0 +1,233 @@
+// Billing.speckdl — Billing and invoicing cycle for Greybeard Holdings.
+//
+// Monthly invoicing for active contracts. Tracks billing cycle,
+// generates invoices, and records payment status.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck Billing {
+
+  bom {
+    compiler: "speckl-compile" version "0.2.0"
+    solver: "z3" version "4.12.5"
+    runtime: "wasm-runtime" version "1.0.0"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Monthly billing cycle with auto-generated invoices from active contracts"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-billing-2026"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type Contract = {
+    id: Nat,
+    clientId: Nat,
+    title: String,
+    status: String,           // "active", "expired", "terminated"
+    billingCycle: String,     // "monthly", "quarterly", "annual"
+    rate: Real,
+    effectiveDate: String,
+    expiryDate: String
+  }
+
+  type Invoice = {
+    id: Nat,
+    contractId: Nat,
+    clientId: Nat,
+    amount: Real,
+    periodStart: String,
+    periodEnd: String,
+    status: String,           // "draft", "sent", "paid", "overdue", "void"
+    issueDate: String,
+    dueDate: String,
+    paidDate: String | null
+  }
+
+  // ─── Enums ──────────────────────────────────────────────────────
+
+  interface InvoiceStatus {
+    Draft
+    Sent
+    Paid
+    Overdue
+    Void
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  state: {
+    contracts: Map<Nat, Contract>,
+    invoices: Map<Nat, Invoice>,
+    nextInvoiceId: Nat
+  }
+
+  init: {
+    contracts := Map.empty(),
+    invoices := Map.empty(),
+    nextInvoiceId := 1
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action GenerateInvoice(contractId: Nat, periodStart: String, periodEnd: String, issueDate: String, dueDate: String) {
+    require contracts.has(contractId)
+    let c := contracts[contractId]
+    require c.status == "active"
+    require not invoiceExistsForPeriod(contractId, periodStart, periodEnd)
+    let inv := Invoice {
+      id: nextInvoiceId,
+      contractId: contractId,
+      clientId: c.clientId,
+      amount: c.rate,
+      periodStart: periodStart,
+      periodEnd: periodEnd,
+      status: "draft",
+      issueDate: issueDate,
+      dueDate: dueDate,
+      paidDate: null
+    }
+    invoices[nextInvoiceId] := inv
+    nextInvoiceId := nextInvoiceId + 1
+  }
+
+  action SendInvoice(invoiceId: Nat, sentAt: String) {
+    require invoices.has(invoiceId)
+    let inv := invoices[invoiceId]
+    require inv.status == "draft"
+    inv.status := "sent"
+    invoices[invoiceId] := inv
+  }
+
+  action RecordPayment(invoiceId: Nat, paidDate: String) {
+    require invoices.has(invoiceId)
+    let inv := invoices[invoiceId]
+    require inv.status == "sent" or inv.status == "overdue"
+    inv.status := "paid"
+    inv.paidDate := paidDate
+    invoices[invoiceId] := inv
+  }
+
+  action MarkOverdue(invoiceId: Nat, checkedAt: String) {
+    require invoices.has(invoiceId)
+    let inv := invoices[invoiceId]
+    require inv.status == "sent"
+    require inv.dueDate < checkedAt
+    inv.status := "overdue"
+    invoices[invoiceId] := inv
+  }
+
+  action VoidInvoice(invoiceId: Nat, reason: String) {
+    require invoices.has(invoiceId)
+    let inv := invoices[invoiceId]
+    require inv.status in ["draft", "sent"]
+    inv.status := "void"
+    invoices[invoiceId] := inv
+  }
+
+  // ─── Constraints ────────────────────────────────────────────────
+
+  constraint "every invoice references a valid contract" {
+    forall inv in invoices.values():
+      contracts.has(inv.contractId)
+  }
+
+  constraint "every invoice references a valid client" {
+    forall inv in invoices.values():
+      contracts.has(inv.contractId) and contracts[inv.contractId].clientId == inv.clientId
+  }
+
+  constraint "invoice amount matches contract rate" {
+    forall inv in invoices.values():
+      implies(contracts.has(inv.contractId),
+              inv.amount == contracts[inv.contractId].rate)
+  }
+
+  constraint "no duplicate invoices for the same contract period" {
+    forall inv1 in invoices.values():
+      forall inv2 in invoices.values():
+        implies(inv1.id != inv2.id and inv1.contractId == inv2.contractId,
+                not (inv1.periodStart == inv2.periodStart and inv1.periodEnd == inv2.periodEnd))
+  }
+
+  constraint "paid invoices have a paid date" {
+    forall inv in invoices.values():
+      implies(inv.status == "paid", inv.paidDate != null)
+  }
+
+  constraint "overdue invoices have no paid date" {
+    forall inv in invoices.values():
+      implies(inv.status == "overdue", inv.paidDate == null)
+  }
+
+  constraint "due date is after issue date" {
+    forall inv in invoices.values():
+      inv.dueDate > inv.issueDate
+  }
+
+  constraint "void invoices cannot be paid" {
+    forall inv in invoices.values():
+      implies(inv.status == "void", inv.paidDate == null)
+  }
+
+  constraint "only active contracts generate invoices" {
+    forall inv in invoices.values():
+      implies(contracts.has(inv.contractId),
+              contracts[inv.contractId].status == "active")
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    inv.status == "paid",
+    inv.paidDate != null and inv.paidDate >= inv.issueDate
+  ))
+
+  verify: always(implies(
+    inv.status == "draft",
+    not invoiceSent(inv.id)
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event InvoiceGenerated {
+    invoiceId: Nat,
+    contractId: Nat,
+    amount: Real,
+    periodStart: String,
+    periodEnd: String
+  }
+
+  event InvoiceSent {
+    invoiceId: Nat,
+    sentAt: String
+  }
+
+  event PaymentReceived {
+    invoiceId: Nat,
+    amount: Real,
+    paidDate: String
+  }
+
+  event InvoiceOverdue {
+    invoiceId: Nat,
+    daysOverdue: Nat
+  }
+
+  // ─── Provenance ─────────────────────────────────────────────────
+
+  provenance {
+    parent_spec: SignalRouting
+    design_decision: "Monthly billing with auto-generated invoices from active contract rates"
+  }
+
+  proto_package: "greybeard.v1"
+  go_package: "github.com/wscoble/greybeard-ops/api/v1;v1"
+  event_suffix: "Event"
+  k8s_group: "greybeard.scoble.me"
+  k8s_version: "v1"
+}
