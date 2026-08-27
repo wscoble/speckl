@@ -956,7 +956,9 @@ function parseInitBlock(inner: string): InitNode {
 }
 
 function parseActionHeader(line: string): ActionNode | null {
-  const match = line.match(/^action\s+(\w+)\s*(?:\(([^)]*)\))?\s*\{/);
+  // Greedy param capture: params may contain parenthesized types like
+  // List(BuildStep), so `[^)]*` (first-paren truncation) is wrong.
+  const match = line.match(/^action\s+(\w+)\s*(?:\((.*)\))?\s*\{/);
   if (!match) return null;
 
   const name = match[1];
@@ -1347,6 +1349,19 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   return result;
 }
 
+/** True when an expression text has unbalanced brackets or a dangling operator. */
+function exprIncomplete(text: string): boolean {
+  let depth = 0;
+  let inStr = false;
+  for (const c of text) {
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+  }
+  return depth > 0 || /(==|!=|>=|<=|[<>+\-*/]|\b(?:and|or|implies)\b)\s*$/.test(text.trim());
+}
+
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
@@ -1491,10 +1506,28 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       i = j - 1; // skip to end of if block
       continue;
     }
-    // let name := expr
+    // let name := expr (may span multiple lines, e.g. a record constructor)
     const letMatch = stmt.match(/^let\s+(\w+)\s*:=\s*(.+)$/);
     if (letMatch) {
-      statements.push({ type: 'let', name: letMatch[1], expr: letMatch[2].trim() });
+      let rhs = letMatch[2].trim();
+      // Multi-line expressions: join continuation lines while the right-hand
+      // side is syntactically incomplete (e.g. `Customer { ... }` spanning
+      // several lines). Statement starters terminate the join.
+      while (i + 1 < bodyLines.length) {
+        const nextLine = bodyLines[i + 1];
+        if (!nextLine) break;
+        const nt = nextLine.trim();
+        if (!nt || nt.startsWith('//')) break;
+        if (nt.startsWith('require ') || nt.startsWith('return ') ||
+            nt.startsWith('emit ') || nt.startsWith('let ') ||
+            /\w+\s*:=/.test(nt)) {
+          break;
+        }
+        if (!exprIncomplete(rhs)) break;
+        rhs += ' ' + nt;
+        i++;
+      }
+      statements.push({ type: 'let', name: letMatch[1], expr: rhs });
       continue;
     }
     // assignment: target := expr (may span multiple lines)
