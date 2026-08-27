@@ -1,4 +1,4 @@
-# SpeckDL Language Specification v0.2
+# SpeckDL Language Specification v0.3
 
 > The specification-first language for auditable software.
 > Part of the [Speckl](https://github.com/wscoble/speckl) project. MIT License.
@@ -7,15 +7,27 @@
 
 ## 1. Introduction
 
-SpeckDL is a domain-specific language for defining system behavior and interfaces. A SpeckDL specification (a **Speck**) describes *what* a system should do, not *how* it should do it. Specks compile through a deterministic pipeline — SpeckDL → Z3 → DST → WASM — producing verified artifacts with full dark provenance.
+SpeckDL is a domain-specific language for defining state machines and their
+interfaces. A SpeckDL specification (a **Speck**) describes *what* a system
+should do, not *how* it should do it. The compiler is a deterministic
+pipeline — SpeckDL → IR → {TypeScript, Z3, Rust, Protobuf, K8s CRD, OpenAPI,
+PROV-O, CycloneDX, SPDX} — with no LLMs in the compilation path.
 
 ### Design Goals
 
 - **Human-readable first.** A Speck should be understandable by a domain expert who doesn't write code.
-- **Machine-verifiable.** Every constraint in a Speck compiles to Z3 (SMT solver) input. Verification is automatic.
-- **Provenance-native.** The compilation pipeline records derivation edges automatically. Provenance is not bolted on — it's structural.
-- **Composable.** Specks compose via interfaces. Large systems are built from small, verified Specks.
-- **Deterministic.** Same input, same output. No LLMs in the compilation path.
+- **Machine-verifiable.** Invariants and verify blocks compile to Z3 (SMT solver) input. Verification runs against a real solver in CI.
+- **Provenance-native.** The pipeline records derivation edges automatically. Provenance is not bolted on — it's structural.
+- **Composable.** Specks compose via imports and interfaces.
+- **Deterministic.** Same input, same output. Every time.
+
+### v0.2 → v0.3
+
+v0.2 defined behavior declaratively (`input:`/`output:`/`constraint:`). v0.3
+adds the imperative state-machine form — `state`, `init`, `invariant`,
+`action`, `next` — with TLA+-style nondeterministic action selection. The
+declarative subset remains supported (see §2.7) and its constraints are
+verified over the declared inputs and outputs.
 
 ---
 
@@ -23,89 +35,108 @@ SpeckDL is a domain-specific language for defining system behavior and interface
 
 ### 2.1 Top-Level Structure
 
-A SpeckDL file consists of one or more Speck definitions:
-
 ```
-speck <Name> {
+speck Name {
   <members>
 }
 ```
 
-Members are drawn from: `input`, `output`, `constraint`, `verify`, `interface`, `import`, `event`, and the Dark Provenance primitives: `provenance`, `review`, `derives`, `satisfies`, `author`, `source`, and the SpeckBOM primitive: `bom`.
+Members are drawn from: `state`, `init`, `invariant`, `action`, `next`,
+`constraint`, `verify`, `event`, `type`, `import`, `interface`, `service`,
+`oneof`, `transition`, `input`, `output`, and the provenance/BOM primitives:
+`provenance`, `review`, `derives`, `satisfies`, `author`, `source`, and `bom`.
 
-### 2.2 EBNF Grammar
+File-level directives (before or inside a speck): `version`, `author`,
+`license`, `proto_package`, `go_package`, `event_suffix`, `k8s_group`,
+`k8s_version`.
 
-```ebnf
-file           = { speck_def | import_stmt }
+### 2.2 State Machines (v0.3)
 
-speck_def      = "speck" IDENT "{" { member } "}"
+The imperative core:
 
-member         = input_def | output_def | constraint_def
-               | verify_def | interface_def | event_def
-               | provenance_def | review_def | derives_def
-               | satisfies_def | author_def | source_def
-               | bom_def
+```speck
+speck ToggleSwitch {
+    state {
+        isOn: Bool
+    }
 
-input_def      = "input" ":" type_expr
-output_def     = "output" ":" type_expr
+    init {
+        isOn := false
+    }
 
-type_expr      = primitive | compound | IDENT
-primitive      = "Nat" | "Int" | "Real" | "Bool" | "String" | "Bytes"
-compound       = "{" { IDENT ":" type_expr [","] } "}"
-               | "[" type_expr "]"
+    invariant SwitchConsistent {
+        isOn in {true, false}
+    }
 
-constraint_def = "constraint" ":" expr
-verify_def     = "verify" ":" temporal_expr
+    action TurnOn {
+        require not isOn
+        isOn := true
+        return isOn
+    }
 
-expr           = literal | IDENT | expr op expr | expr "." IDENT
-               | func_call | "(" expr ")"
-op             = "==" | "!=" | "<=" | ">=" | "<" | ">"
-               | "+" | "-" | "*" | "/" | "mod"
-               | "and" | "or" | "not" | "implies"
-func_call      = IDENT "(" [expr { "," expr }] ")"
+    action TurnOff {
+        require isOn
+        isOn := false
+        return isOn
+    }
 
-temporal_expr  = "always" "(" expr ")"
-               | "eventually" "(" expr ")"
-               | "implies" "(" expr "," expr ")"
-
-interface_def  = "interface" IDENT "{" { method_sig } "}"
-method_sig     = IDENT "(" [ { IDENT ":" type_expr "," } ] ")" ":" type_expr
-
-event_def      = "event" IDENT "{" { IDENT ":" type_expr [","] } "}"
-
-provenance_def = "provenance" "{" { provenance_clause } "}"
-provenance_clause = "regulation" ":" STRING
-                  | "design_decision" ":" STRING
-                  | "parent_spec" ":" IDENT
-                  | "external_doc" ":" STRING [ "at" STRING ]
-
-review_def     = "review" ":" review_kind
-review_kind    = "manual" | "auto" | "hybrid"
-
-derives_def    = "derives" "from" IDENT [ "via" STRING ]
-
-satisfies_def  = "satisfies" IDENT [ "clause" STRING ]
-
-author_def     = "author" ":" STRING [ "<" STRING ">" ]
-
-source_def     = "source" ":" source_kind [ "ref" STRING ]
-source_kind    = "conversation" | "meeting" | "document" | "regulation"
-               | "architecture_review" | "threat_model" | "compliance_audit"
-
-bom_def        = "bom" "{" { bom_clause } "}"
-bom_clause     = "compiler" ":" STRING ["version" STRING]
-               | "solver" ":" STRING ["version" STRING]
-               | "runtime" ":" STRING ["version" STRING]
-               | "license" ":" STRING
-               | "hash" ":" STRING
-
-import_stmt    = "import" STRING ["as" IDENT] ["version" STRING] ["hash" STRING]
-
-literal        = NAT_LIT | INT_LIT | REAL_LIT | BOOL_LIT | STRING_LIT
-IDENT          = letter { letter | digit | "_" }
+    next: TurnOn | TurnOff
+}
 ```
 
-### 2.3 Type System
+| Member | Meaning |
+|--------|---------|
+| `state { ... }` | State variable declarations: `name: Type`. Collections: `List(T)`, `Set(T)`, `Map(K, V)`. Nullable: `T | null`. |
+| `init { ... }` | Initial state: `var := expr` (assignment form; `==` is also accepted in source but is not captured by the parser — prefer `:=`). |
+| `invariant Name { ... }` | Properties that must hold in every reachable state. |
+| `action Name(params) { ... }` | State transitions. `require` is a guard; `:=` assigns; `return` makes results observable. |
+| `next: A | B | C` | Which actions may fire — nondeterministic choice, as in TLA+. |
+
+**Post-state notation.** `x'` denotes the value of `x` after the transition:
+`currentTerm' >= currentTerm` (see §3.4 for verification semantics of post-state invariants).
+
+**Quantifier sugar.** Invariants and init blocks support
+`forall v in collection: <expr>` where collection may be `var.keys`,
+`var.values`, or a range. This sugar is recognized by the language but not
+yet lowered to Z3 (see §3.5).
+
+**Comments** — `//` line comments and `/* ... */` block comments.
+
+### 2.3 Declarative Form (v0.2, still supported)
+
+```
+speck RetryHandler {
+    input: { maxRetries: Nat, initialDelay: Real }
+    output: { success: Bool, totalDelay: Real }
+    constraint: maxRetries >= 0
+    constraint: implies(attempt > 1, delay > 0)
+    verify: always(implies(attempt > 1, delay > 0))
+}
+```
+
+Constraints range over the input/output fields, which are declared as free
+variables in the formal verification output. Constraints may be named:
+
+```
+constraint ReadConsistency: forall r in readers: (readerEndMark[r] == 0) or (readerEndMark[r] <= nFrames)
+constraint "constraint names may contain spaces" : x > 0
+```
+
+### 2.4 Verification Blocks
+
+Two forms:
+
+```
+verify Always(ReadConsistency) { depth 10 }     // named invariant + BMC depth
+verify: always(implies(attempt > 1, delay > 0)) // free-form temporal expression
+```
+
+`Always(p)` is checked by bounded model checking: the state is unrolled
+`depth` steps, transitions are constrained (action guards + assignments +
+frames + stuttering), and the solver is asked whether `p` can be violated.
+`Eventually(p)` is approximated similarly.
+
+### 2.5 Types
 
 | Type | Meaning | Z3 Mapping |
 |------|---------|------------|
@@ -113,536 +144,212 @@ IDENT          = letter { letter | digit | "_" }
 | `Int` | Signed integer | `Int` |
 | `Real` | Real number | `Real` |
 | `Bool` | Boolean | `Bool` |
-| `String` | UTF-8 string | Uninterpreted sort |
+| `String` | UTF-8 string | Uninterpreted sort / `String` |
 | `Bytes` | Byte sequence | Uninterpreted sort |
-| `{ ... }` | Record/tuple | Datatype |
-| `[T]` | List of T | Seq(T) |
+| `{ ... }` | Record | Datatype |
+| `List(T)` | Ordered sequence | Array/`Seq` |
+| `Set(T)` | Set | `(Array T Bool)` membership |
+| `Map(K, V)` | Associative map | `(Array K V)` |
+| `T \| null` | Optional | Lifted to underlying sort |
+| `type X = ...` | Named alias | Uninterpreted sort or datatype |
 
----
-
-## 3. Semantics
-
-### 3.1 Speck Definitions
-
-A Speck defines a behavioral unit with:
-- **Inputs:** Typed parameters the Speck accepts.
-- **Outputs:** Typed results the Speck produces.
-- **Constraints:** Invariants that must hold for all valid inputs and outputs.
-- **Verification conditions:** Temporal properties that the Z3 solver must prove.
-
-A Speck is *well-formed* if:
-1. All referenced identifiers are in scope.
-2. No two constraints are contradictory (Z3 must report SAT for the conjunction of all constraints).
-3. All verification conditions are provable from the constraints.
-
-### 3.2 Constraint Semantics
-
-A `constraint` defines an invariant that must hold across all valid executions of the Speck. Constraints are compiled to Z3 assertions:
-
-```
-constraint: maxRetries <= 5
-```
-
-becomes:
-
-```smt2
-(assert (<= maxRetries 5))
-```
-
-Constraints are **universally quantified** over all inputs unless explicitly scoped.
-
-### 3.3 Verification Semantics
-
-A `verify` clause defines a property that must be provable from the Speck's constraints:
-
-```
-verify: always(implies(attempt > 1, delay > 0))
-```
-
-becomes:
-
-```smt2
-(assert (=> (> attempt 1) (> delay 0)))
-(check-sat)
-```
-
-If Z3 returns `UNSAT` when asked to negate a verification condition, the condition is proven. If Z3 returns `SAT`, the Speck contains a counterexample — it can be violated.
-
-### 3.4 Interface Semantics
-
-An interface defines a contract between Specks. A Speck that provides an interface must satisfy all constraints of that interface:
-
-```
-interface PaymentProcessor {
-  charge(amount: Real, currency: String): Result
-  refund(transactionId: Nat): Result
-}
-
-speck StripeProcessor {
-  interface: PaymentProcessor
-  input: { apiKey: String }
-  output: Result
-  constraint: amount > 0
-  constraint: currency in ["USD", "EUR", "GBP"]
-}
-```
-
-### 3.5 Event Semantics
-
-Events define state transitions that the provenance graph records:
+### 2.6 Events
 
 ```
 event RetryAttempted {
-  attemptNumber: Nat
-  delay: Real
-  remainingRetries: Nat
+    attemptNumber: Nat
+    delay: Real
 }
 ```
 
-Events are emitted during execution and recorded as nodes in the provenance graph. They do not affect the verification pipeline — they exist for observability.
+Events are emitted from actions (`emit RetryAttempted { attemptNumber: 1 }`)
+and recorded in the provenance graph. They do not affect verification.
 
-### 3.6 Dark Provenance Semantics
+### 2.7 Wire-Format Members
 
-Dark Provenance primitives make intent sources and verification boundaries explicit in the specification language. They compile to JSON-LD provenance graph nodes and edges. These primitives are optional — bare Specks (without any provenance annotations) still compile — but they are recommended for safety-critical and regulated systems.
-
-#### 3.6.1 `provenance` Block Semantics
-
-The `provenance` block declares where a Speck's intent originates:
-
-| Clause | Meaning | JSON-LD Output |
-|--------|---------|----------------|
-| `regulation: "DO-178C"` | Compliance requirement | `prov:wasInformedBy` → Regulation node |
-| `design_decision: "ADR-0017"` | Architecture decision record | `prov:wasDerivedFrom` → Decision node |
-| `parent_spec: ParentSpeck` | Decomposition from another Speck | `prov:wasDerivedFrom` → Parent Speck node |
-| `external_doc: "RFC 8446" at "https://..."` | External reference | `prov:wasInformedBy` → Document node |
-
-Multiple clauses may appear; each creates a separate provenance edge.
-
-#### 3.6.2 `review` Directive Semantics
-
-The `review` directive marks verification boundaries:
-
-- `review: manual` — Requires human sign-off before deployment. Compiler emits a `ManualReviewRequired` node in the provenance graph.
-- `review: auto` — Fully automated verification. No human gate required.
-- `review: hybrid` — Automated verification with spot-check sampling. Compiler emits sampling parameters.
-
-Review status is checked at compile time; `manual` Specks without sign-off block the pipeline.
-
-#### 3.6.3 `derives` / `satisfies` Semantics
-
-These primitives create explicit edges in the provenance graph:
-
-**`derives from SpecName via "rationale"`**
-- Creates a `prov:wasDerivedFrom` edge from the current Speck to `SpecName`
-- Optional `via` clause records the derivation rationale as `rdfs:comment`
-- Used for: refactoring, decomposition, specialization
-
-**`satisfies RequirementId clause "3.2.1"`**
-- Creates a `speckl:satisfies` edge to a requirement node
-- Optional `clause` specifies the exact subsection
-- Used for: tracing to regulatory requirements, user stories, specs
-
-#### 3.6.4 `author` / `source` Metadata Semantics
-
-These primitives capture "who" and "why":
-
-**`author: "Name" <"email@example.com">`**
-- Binds the Speck to a `prov:Agent` node
-- Compiles to `prov:wasAttributedTo` edge
-- Optional email used for agent deduplication in the provenance graph
-
-**`source: kind ref "identifier"`**
-- Records what drove the creation of this Speck
-- `kind`: `conversation`, `meeting`, `document`, `regulation`, `architecture_review`, `threat_model`, `compliance_audit`
-- `ref`: Optional identifier (meeting ID, document URL, ticket number)
-- Compiles to `prov:wasInformedBy` → Source node with `prov:type`
-
-#### 3.6.5 Provenance-Aware Event Semantics
-
-Events declared with the standard `event` syntax gain provenance edges automatically:
+For serialization targets (Protobuf, K8s CRDs, OpenAPI):
 
 ```
-event DoseCalculated { volume: Real, safe: Bool }
-```
-
-When this event fires at runtime, the provenance graph records:
-- The event instance node (`prov:Activity`)
-- An edge to the declaring Speck (`prov:wasInformedBy`)
-- An edge to the Speck's `provenance` sources (transitive intent tracing)
-- An edge to the runtime WASM module that emitted it (`prov:wasGeneratedBy`)
-
-This creates complete audit trails: Event → Speck → Intent Source → Regulatory Requirement.
-
-#### 3.6.6 SpeckBOM: Bill of Materials
-
-A **SpeckBOM** is the specification analog of a Software Bill of Materials (SBOM). Where an SBOM lists software components, versions, and licenses, a SpeckBOM lists the complete dependency and artifact tree for a Speck system.
-
-The `bom` block declares **toolchain dependencies** — what compiler, solver, and runtime a Speck requires. Combined with `import`, `derives`, and `satisfies`, it provides a full bill of materials:
-
-| SpeckBOM concern | SpeckDL primitive | What it captures |
-|---|---|---|
-| **Spec dependencies** | `import` | Which other Specks this one depends on (with content hashes) |
-| **Toolchain** | `bom { compiler, solver, runtime }` | What tools produced the verified artifacts |
-| **Intent lineage** | `derives from`, `satisfies` | Which specs/requirements this one traces to |
-| **Authorship** | `author`, `source` | Who wrote it and what drove it |
-| **Artifact hashes** | `bom { hash }` | Content hash of the Speck source itself |
-| **License** | `bom { license }` | Under what terms this spec can be used |
-| **Compilation output** | *(auto-generated)* | Z3, DST, WASM hashes and solver results (see §4.5) |
-
-**Why this matters.** In regulated environments (DO-178C, IEC 62304), an auditor needs to know not just "what code runs" but "what was the complete chain from requirement to deployed artifact." The SpeckBOM answers this declaratively — it's machine-readable, hash-pinned, and queriable.
-
-**Example:**
-
-```
-speck DrugDosageCalculator {
-  bom {
-    compiler: "speckl-compile" version "0.2.0"
-    solver: "z3" version "4.12.5"
-    runtime: "wasm-runtime" version "1.0.0"
-    license: "MIT"
-    hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  }
-
-  import "retry-handler.speckdl" as retry
-  ...
+interface PaymentProcessor {          // record (fields) | enum (variants) | service (signatures)
+    kind: String
+    apiVersion: String
 }
+
+service TEFService {
+    rpc CreateCustomer(CreateCustomerRequest) returns (Customer);
+}
+
+oneof Payload { Customer customer }   // proto discriminated union
+transition Transition { prior_state: String }
 ```
 
-#### 3.6.7 Import Version Pinning
-
-The `import` statement supports optional `version` and `hash` fields for reproducible builds:
+### 2.8 Imports
 
 ```
-import "retry-handler.speckdl" as retry
-  version "1.2.0"
-  hash "sha256:abcdef1234567890..."
+import "common.speckdl" as common
+import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 ```
 
-- **`version`**: Semantic version of the imported Speck. The compiler verifies the imported file declares this version in its `bom` block.
-- **`hash`**: Content hash of the imported file. The compiler computes the hash at parse time and fails if it doesn't match.
+Version pinning is optional for local development and required for Specks
+with `review: manual` or `review: hybrid`.
 
-Version pinning is optional for local development but required for Specks with `review: manual` or `review: hybrid` — the compiler enforces that all imports are hash-pinned before allowing manual review sign-off.
+---
+
+## 3. Verification
+
+### 3.1 What the Z3 Backend Emits
+
+Each Speck compiles to SMT-LIB2 (`.smt2`, state-machine-aware, and
+`.ir.smt2`, formal-spec-only):
+
+1. Sort declarations for state variables and named types.
+2. Init assertions at step 0.
+3. One assertion per invariant/constraint.
+4. Bounded model checking for `verify` blocks: N copies of state, action
+   transition predicates (guards, assignments, frames), stuttering, and the
+   negated property.
+5. `(check-sat)` + `(get-model)` with an expectation marker:
+   `; speckl-expect: unsat` (property proven) or `; speckl-expect: sat`
+   (consistency check).
+
+### 3.2 The Verify Script
+
+`npm run verify` (in `compiler/`) compiles every example and runs the real
+Z3 binary on each emitted file:
+
+- Solver **error** → failure (generator bug — Z3 rejects the file).
+- Result matching the expectation → pass.
+- Unexpected `sat` against an `unsat` expectation → **VIOLATED**: the script
+  prints a counterexample state trace (per-BMC-step variable bindings).
+- Unexpected `unsat` → contradictory constraints.
+
+Exit code is nonzero on failure. CI runs this for every example spec.
+
+### 3.3 Graceful Degradation
+
+Constructs without a well-defined SMT translation (unresolved type unions,
+method calls like `List.empty` in unsupported positions, leaked source
+syntax) are dropped from the output with `; skipped:` comments instead of
+emitting invalid SMT. When any form is dropped, an `unsat` expectation is
+downgraded to a consistency check — the solver result is then advisory, not
+a proof.
+
+### 3.4 Known Limitations
+
+- **Post-state invariants.** Invariants using `x'` notation are checked for
+  consistency only (marked `degraded`); per-step unrolling of post-state
+  references is not implemented.
+- **Quantifier sugar.** `forall x in collection:` constraints are skipped
+  pending IR quantifier support.
+- **Free-form temporal expressions** other than `Always(InvariantName)` /
+  `Eventually(InvariantName)` are not yet unrolled.
 
 ---
 
 ## 4. Compilation Pipeline
 
-### 4.1 Stage 1: SpeckDL → Z3
-
-Each Speck is compiled to SMT-LIB2 format:
-
-1. Type declarations become Z3 sort declarations.
-2. Input/output declarations become Z3 constants.
-3. Constraints become `assert` statements.
-4. Verification conditions become `check-sat` queries.
-
-The compiler checks for:
-- **Contradictory constraints:** If the conjunction of all constraints is UNSAT, the Speck is impossible to implement.
-- **Unsatisfiable verification conditions:** If a verify clause can be violated, the compiler reports the counterexample.
-
-### 4.2 Stage 2: Z3 → DST (Decision Structures)
-
-When Z3 reports SAT for a Speck, the model (assignment of values satisfying all constraints) is compiled into a **Decision Structure Tree**:
-
 ```
-DSTNode {
-  condition: expr       // branching predicate
-  if_true: DSTNode      // subtree when condition holds
-  if_false: DSTNode     // subtree when condition doesn't hold
-  result: value?        // leaf value (if terminal)
-}
+.speckdl ──→ AST ──→ IR ──┬→ TypeScript (.ts)      ✓ tested
+                          ├→ Z3 (.smt2/.ir.smt2)   ✓ verified with real solver in CI
+                          ├→ Rust (crate)          ✓ generated (text-tested)
+                          ├→ Protobuf (.proto)     ✓ tested
+                          ├→ K8s CRDs (.yaml)      ✓ tested
+                          ├→ OpenAPI 3.1 (.json)   ✓ tested
+                          ├→ PROV-O (.jsonld)      ✓ tested
+                          ├→ CycloneDX (.cdx.json) ✓ tested
+                          └→ SPDX (.spdx.json)     ✓ tested
 ```
 
-A DST represents the complete behavioral space of a verified Speck. Every possible input maps to exactly one path through the DST, terminating at a leaf with the verified output.
+Generators consume the IR, not the AST. The IR is complete (every fact in
+the spec is in a named facet), lossless (expressions are typed trees, not
+strings), resolved (cross-spec references resolved at lower time), and
+provenanced (missing provenance is synthesized from file metadata).
 
-### 4.3 Stage 3: DST → WASM
+### 4.1 Planned Stages (not implemented)
 
-DSTs compile to WebAssembly via a direct translation:
-
-- Each DST node becomes a `br_if` / `br` instruction pair.
-- Leaf values become `i32.const`, `f64.const`, or structured return values.
-- The resulting WASM module exports a single function matching the Speck's input/output signature.
-
-This compilation is *semantics-preserving by construction*: the WASM module implements exactly the behaviors encoded in the DST, which represents exactly the satisfiable space of the Speck.
-
-### 4.4 Provenance Graph Construction
-
-At each compilation stage, the pipeline records derivation edges:
-
-```
-Speck "RetryHandler"
-  ├── compiled_to → Z3 assertion set (sha256:abc...)
-  ├── verified_by → Z3 result: SAT
-  ├── compiled_to → DST (sha256:def...)
-  ├── compiled_to → WASM module (sha256:789...)
-  └── provenance: {
-        author: "scott",
-        timestamp: "2026-04-28T09:00:00Z",
-        tool: "speckl-compiler v0.2",
-        z3_version: "4.12.5"
-      }
-```
-
-The provenance graph is serialized as **JSON-LD using the W3C PROV-O vocabulary** and stored alongside the compiled artifacts.
-
-#### 4.4.1 PROV-O Namespace and Context
-
-The JSON-LD output uses the standard PROV-O namespace:
-
-```json
-{
-  "@context": {
-    "prov": "http://www.w3.org/ns/prov#",
-    "speckl": "https://speckl.scoble.me/ns/v0.2#",
-    "rdfs": "http://www.w3.org/2000/01/rdf-schema#"
-  }
-}
-```
-
-#### 4.4.2 Provenance Node Types
-
-| Node Type | PROV-O Class | Description |
-|-----------|---------------|-------------|
-| Speck | `prov:Entity` | The specification itself |
-| Z3 Assertion Set | `prov:Entity` | Compiled SMT-LIB2 |
-| DST | `prov:Entity` | Decision structure tree |
-| WASM Module | `prov:Entity` | Compiled binary |
-| Z3 Solver | `prov:Agent` | The verification tool |
-| Compiler | `prov:Agent` | The compilation tool |
-| Compilation Act | `prov:Activity` | A compilation stage |
-| Author | `prov:Agent` | Person (from `author` primitive) |
-| Source | `prov:Activity` | Intent origin (from `source` primitive) |
-| Regulation | `prov:Entity` | Compliance requirement |
-| Design Decision | `prov:Entity` | Architecture decision record |
-
-#### 4.4.3 Provenance Edge Types
-
-| Edge | PROV-O Property | From → To |
-|------|-----------------|-----------|
-| Compiled to | `prov:wasGeneratedBy` | Artifact → Compilation Act |
-| Used tool | `prov:used` | Compilation Act → Tool (Agent) |
-| Derived from | `prov:wasDerivedFrom` | Speck → Parent Speck |
-| Informed by | `prov:wasInformedBy` | Speck → Regulation / Source |
-| Attributed to | `prov:wasAttributedTo` | Speck → Author |
-| Satisfies | `speckl:satisfies` | Speck → Requirement |
-
-### 4.5 Compilation Manifest: Dual BOM Output
-
-The compiler produces a **compilation manifest** containing both provenance and bill-of-materials data. The manifest supports two output formats:
-
-- **CycloneDX v1.6** (JSON) — OWASP standard, ECMA-424
-- **SPDX 3.0.1** (JSON-LD) — ISO 5962:2023
-
-The `--bom-format` flag controls output: `cdx`, `spdx`, or `both` (default: `both`).
-
-#### 4.5.1 Output Files
-
-For a Speck named `Name`, the compiler produces:
-
-| File | Format | Content |
-|------|--------|---------|
-| `Name.prov.jsonld` | JSON-LD / PROV-O | Intent provenance graph |
-| `Name.specbom.cdx.json` | CycloneDX v1.6 JSON | Composition BOM (CycloneDX) |
-| `Name.specbom.spdx.json` | SPDX 3.0.1 JSON-LD | Composition BOM (SPDX) |
-
-#### 4.5.2 CycloneDX v1.6 Mapping
-
-| SpeckDL Primitive | CycloneDX Location | Field |
-|---|---|---|
-| `bom { compiler }`, `bom { solver }`, `bom { runtime }` | `metadata.tools[]` | Standard tool entries |
-| `bom { license }` | `metadata.component.licenses[]` | SPDX expression |
-| `bom { hash }` | `metadata.component.hashes[]` | SHA-256 |
-| `import "X" as Y hash H version V` | `components[]` | Component entry with purl, hashes, properties |
-| `derives from X` | `component.properties[]` | `speckl:derivesFrom` |
-| `satisfies X clause Y` | `component.properties[]` | `speckl:satisfies` |
-| `author: Name <email>` | `annotations[]` | `speckl:provenanceType: author` |
-| `source: kind ref X` | `annotations[]` | `speckl:provenanceType: source` |
-| `provenance { regulation: X }` | `annotations[]` | `speckl:provenanceType: regulation` |
-| `review: manual` | `annotations[]` | `speckl:reviewType: manual` |
-| `review: auto` | No additional annotation | N/A |
-| `review: hybrid` | `annotations[]` | `speckl:reviewType: hybrid` |
-| Compilation artifacts (Z3, DST, WASM) | `components[]` (nested) | Type + hash |
-| Verification results (SAT/UNSAT) | `metadata.component.properties[]` | `speckl:verificationResult` |
-| Reproducibility status | `metadata.component.properties[]` | `speckl:reproducible` |
-
-#### 4.5.3 SPDX 3.0.1 Mapping
-
-| SpeckDL Primitive | SPDX Location | Field |
-|---|---|---|
-| `bom { compiler }`, `bom { solver }`, `bom { runtime }` | `spdx:Build` (in `builtBy`) | Tool name + version |
-| `bom { license }` | `spdx:licenseConcluded` | SPDX expression (native) |
-| `bom { hash }` | `spdx:hash` | SHA-256 |
-| `import "X" hash H version V` | `spdx:Software` element | Package with version + hash |
-| `derives from X` | `spdx:Relationship` (derivesFrom) | Standard SPDX relationship |
-| `satisfies X clause Y` | `speckl:satisfies` property | Extension on element |
-| `author: Name <email>` | `spdx:Relationship` (wasAttributedTo) | Agent element |
-| `source: kind ref X` | `spdx:Relationship` (wasInformedBy) | Activity element |
-| `provenance { regulation: X }` | `spdx:Relationship` + element | Regulation node |
-| `review: manual` | `spdx:Annotation` (REVIEW) | Standard annotation |
-| `review: auto` | No additional annotation | N/A |
-| `review: hybrid` | `spdx:Annotation` (REVIEW) | `speckl:reviewType: hybrid` |
-| Compilation artifacts (Z3, DST, WASM) | `spdx:SoftwareArtifact` elements | With hashes |
-| Verification results (SAT/UNSAT) | `speckl:verificationResult` | Extension property |
-| Reproducibility status | `speckl:reproducible` | Extension property |
-
-#### 4.5.4 Two-Layer Architecture
-
-Speckl produces **three complementary outputs**:
-
-| Layer | Format | Concern | Standard |
-|---|---|---|---|
-| **Intent provenance** | JSON-LD / PROV-O | Who, why, what drove this specification | W3C PROV-O |
-| **Composition BOM (CycloneDX)** | CycloneDX v1.6 JSON | What this spec depends on, builds with, produces | OWASP CycloneDX (ECMA-424) |
-| **Composition BOM (SPDX)** | SPDX 3.0.1 JSON-LD | Same composition data, ISO-normative format | ISO 5962:2023 |
-
-These layers are orthogonal:
-- The provenance graph answers *"Why does this constraint exist?"* (regulatory, design decision, conversation)
-- The SpeckBOM answers *"What is this spec made of, and can I reproduce it?"* (dependencies, toolchain, artifacts)
-
-Together they form the complete audit trail: **intent** (PROV-O) + **composition** (CycloneDX or SPDX) = **full accountability**.
+| Stage | Purpose | Status |
+|-------|---------|--------|
+| Z3 → DST | Decision Structure Trees from satisfiable models | Planned |
+| DST → WASM | Semantics-preserving compilation to WebAssembly | Planned |
 
 ---
 
-## 5. Examples
+## 5. Dark Provenance and SpeckBOM
 
-### 5.1 Simple: API Rate Limiter
-
-```
-speck RateLimiter {
-  input: { requests: [Request], window: Nat, maxRequests: Nat }
-  output: { allowed: [Bool], remaining: Nat }
-  constraint: maxRequests > 0
-  constraint: window > 0
-  constraint: count(allowed, true) <= maxRequests
-  constraint: remaining == maxRequests - count(allowed, true)
-  verify: always(implies(remaining == 0, not(allowed[current])))
-}
-```
-
-### 5.2 Medium: Data Pipeline with Constraints
-
-```
-speck ETLTransform {
-  input: { source: DataSource, schema: Schema, dedup: Bool }
-  output: { result: Dataset, rejected: Nat }
-  constraint: result.schema == schema
-  constraint: rejected >= 0
-  constraint: implies(dedup, count(result) <= count(source))
-  constraint: implies(not dedup, count(result) == count(source))
-  verify: always(implies(dedup, no_duplicates(result)))
-}
-```
-
-### 5.3 Complex: Regulated Medical Device Function
+The provenance and BOM primitives make intent sources and verification
+boundaries explicit in the specification language. They are optional — bare
+Specks compile — but are recommended for safety-critical and regulated
+systems.
 
 ```
 speck DrugDosageCalculator {
-  provenance {
-    regulation: "FDA 21 CFR 820.30"
-    regulation: "IEC 62304 Class C"
-    design_decision: "ADR-0017: Separate dose calculation from administration"
-  }
-  review: manual
-  author: "Scott Scoble" <"scott@scoble.me">
-  source: regulation ref "FDA 21 CFR 820.30"
+    provenance {
+        regulation "FDA 21 CFR 820.30"
+        design_decision "ADR-0017: Separate dose calculation from administration"
+        external_doc "RFC 8446" :: "https://www.rfc-editor.org/rfc/rfc8446"
+    }
+    review: manual
+    author: "Scott Scoble" <"scott@scoble.me">
+    source: regulation ref "FDA 21 CFR 820.30"
 
-  bom {
-    compiler: "speckl-compile" version "0.2.0"
-    solver: "z3" version "4.12.5"
-    runtime: "wasm-runtime" version "1.0.0"
-    license: "MIT"
-    hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  }
+    bom {
+        compiler: "speckl-compile" version "0.3.1"
+        solver: "z3" version "4.12.5"
+        runtime: "wasm-runtime" version "1.0.0"
+        license: "MIT"
+        hash: "sha256:e3b0c44298fc1c14..."
+    }
 
-  input: {
-    patientWeight: Real,
-    drugConcentration: Real,
-    prescribedDose: Real,
-    minDose: Real,
-    maxDose: Real,
-    frequency: Nat
-  }
-  output: {
-    volume: Real,
-    safe: Bool
-  }
-  constraint: patientWeight > 0
-  constraint: drugConcentration > 0
-  constraint: minDose > 0
-  constraint: maxDose > minDose
-  constraint: frequency >= 1
-  constraint: frequency <= 6
-  constraint: implies(safe, volume >= minDose / drugConcentration)
-  constraint: implies(safe, volume <= maxDose / drugConcentration)
-  constraint: implies(not safe, volume == 0)
-  verify: always(implies(
-    prescribedDose >= minDose and prescribedDose <= maxDose,
-    safe
-  ))
-  verify: always(implies(not safe, volume == 0))
-  event DoseCalculated { volume: Real, safe: Bool }
-  event DoseRejected { reason: String }
+    derives from BaseHandler via "specialization for dosage"
+    satisfies REQ-001 clause "3.2.1"
+
+    input: {
+        patientWeight: Real,
+        drugConcentration: Real,
+        prescribedDose: Real,
+        minDose: Real,
+        maxDose: Real
+    }
+    output: { volume: Real, safe: Bool }
+
+    constraint: implies(not safe, volume == 0)
+    verify: always(implies(not safe, volume == 0))
+
+    event DoseCalculated { volume: Real, safe: Bool }
 }
 ```
 
-### 5.4 Edge: Self-Referential Spec
+### 5.1 Primitives
 
-```
-speck SpeckValidator {
-  input: { spec: SpeckDefinition, references: [SpeckDefinition] }
-  output: { valid: Bool, errors: [String] }
-  constraint: implies(valid, count(errors) == 0)
-  constraint: implies(not valid, count(errors) > 0)
-  constraint: forall(ref in references, ref.is_well_formed)
-  verify: always(implies(
-    spec.is_well_formed and forall(r in references, r.is_well_formed),
-    valid
-  ))
-}
-```
+| Primitive | Meaning |
+|---|---|
+| `provenance { regulation: "..." }` | Compliance requirement → `prov:wasInformedBy` |
+| `provenance { design_decision: "..." }` | ADR reference → `prov:wasDerivedFrom` |
+| `provenance { parent_spec: "..." }` | Decomposition parent → `prov:wasDerivedFrom` |
+| `provenance { external_doc: "..." :: "url" }` | External reference |
+| `review: manual \| auto \| hybrid` | Verification boundary; `manual` blocks the pipeline without sign-off |
+| `derives from X via "rationale"` | `prov:wasDerivedFrom` + rationale |
+| `satisfies REQ clause "3.2.1"` | Requirement traceability edge |
+| `author: "Name" <"email">` | `prov:wasAttributedTo` agent |
+| `source: kind ref "id"` | Intent origin (`conversation`, `meeting`, `document`, `regulation`, `architecture_review`, `threat_model`, `compliance_audit`) |
+| `bom { ... }` | Toolchain, license, and content-hash dependencies |
 
-### 5.5 Composed: Multi-Speck System with Import Pinning
+### 5.2 Compilation Manifest: Dual BOM Output
 
-```
-speck PaymentService {
-  import "rate-limiter.speckdl" as limiter
-    version "1.0.0"
-    hash "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-  import "retry-handler.speckdl" as retry
-    version "2.1.0"
-    hash "sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+The compiler produces a compilation manifest in **CycloneDX v1.6** and/or
+**SPDX 3.0.1** JSON (controlled by `--bom-format cdx|spdx|both`, default
+`both`):
 
-  provenance {
-    regulation: "PCI DSS 4.0 Requirement 6"
-    design_decision: "ADR-0022: Payment isolation with rate limiting"
-  }
-  review: hybrid
-  author: "Scott Scoble" <"scott@scoble.me">
-  source: compliance_audit ref "PCI-DSS-AUDIT-2026-Q2"
+| File | Content |
+|------|---------|
+| `Name.prov.jsonld` | Intent provenance graph (JSON-LD / PROV-O) |
+| `Name.specbom.cdx.json` | Composition BOM (CycloneDX) |
+| `Name.specbom.spdx.json` | Composition BOM (SPDX) |
 
-  bom {
-    compiler: "speckl-compile" version "0.2.0"
-    solver: "z3" version "4.12.5"
-    runtime: "wasm-runtime" version "1.0.0"
-    license: "MIT"
-    hash: "sha256:9876543210abcdef9876543210abcdef9876543210abcdef9876543210abcdef"
-  }
-
-  input: { payment: Payment, apiKey: String }
-  output: Result
-
-  constraint: limiter.maxRequests == 100
-  constraint: limiter.window == 60
-  constraint: retry.maxRetries == 3
-  constraint: implies(not limiter.allowed, output == RateLimited)
-  constraint: implies(limiter.allowed, output in [Success, Failed, RetryExhausted])
-
-  verify: always(implies(
-    limiter.remaining == 0,
-    output == RateLimited
-  ))
-}
-```
+The layers are orthogonal: the provenance graph answers *"why does this
+constraint exist?"*; the SpeckBOM answers *"what is this spec made of, and
+can I reproduce it?"* Together: **intent** (PROV-O) + **composition**
+(CycloneDX/SPDX) = **full accountability**.
 
 ---
 
@@ -650,31 +357,32 @@ speck PaymentService {
 
 ### Reference Compiler
 
-The reference compiler (`speckl-compile`) is a Node.js/TypeScript application that:
-
-1. Parses SpeckDL files into an AST.
-2. Type-checks the AST against the type system defined in §3.
-3. Compiles constraints and verification conditions to SMT-LIB2.
-4. Invokes Z3 and interprets results.
-5. Compiles verified models to DSTs.
-6. Compiles DSTs to WASM.
-7. Emits provenance graph metadata (JSON-LD / PROV-O) at each stage.
-8. Emits SpeckBOM (CycloneDX v1.6 and/or SPDX 3.0.1) per §4.5.
-
-### CLI
-
 ```
-speckl-compile <file.speckdl> --output-dir <dir> --bom-format <cdx|spdx|both>
+speckl-compile <file.speckdl> [options]
 ```
 
-- `--output-dir`: Directory for output artifacts (default: `./out`)
-- `--bom-format`: BOM output format — `cdx` (CycloneDX), `spdx` (SPDX), or `both` (default: `both`)
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `-o, --output-dir <dir>` | Output directory for artifacts | `./out` |
+| `-t, --target <t>` | `typescript`, `z3`, `rust`, `protobuf`, `k8s`, `openapi`, `all`, `all-ir` | `typescript` |
+| `-d, --verify-depth <n>` | BMC depth for Z3 verification | `10` |
+| `-b, --bom-format <f>` | `cdx`, `spdx`, or `both` | `both` |
+
+### Verification Script
+
+```
+node scripts/verify-z3.mjs [--examples <dir>] [--depth <n>] [--keep]
+```
+
+Environment: `Z3_BIN` (solver path), `SPECKL_BIN` (compiler), `SPECKL_EXAMPLES`.
+Exit codes: `0` all verified, `1` failure, `2` z3 not available.
 
 ### Planned Tooling
 
 | Tool | Purpose | Status |
 |------|---------|--------|
-| `speckl-compile` | Reference compiler | In progress |
+| `speckl-compile` | Reference compiler | Working |
+| Z3 verification script | Real-solver verification of example suite | Done |
 | `speckl-lsp` | Language Server Protocol (IDE support) | Planned |
 | `speckl-playground` | Browser-based spec editor + live verification | Planned |
 | `speckl-fmt` | Formatter | Planned |
@@ -682,90 +390,7 @@ speckl-compile <file.speckdl> --output-dir <dir> --bom-format <cdx|spdx|both>
 
 ---
 
-## Appendix A: Z3 Mapping Reference
-
-| SpeckDL Construct | SMT-LIB2 |
-|---|---|
-| `Nat n` | `(declare-const n Int)` + `(assert (>= n 0))` |
-| `Int n` | `(declare-const n Int)` |
-| `Real r` | `(declare-const r Real)` |
-| `Bool b` | `(declare-const b Bool)` |
-| `constraint: e` | `(assert e)` |
-| `verify: always(e)` | `(assert (not e))` + `(check-sat)` — expect UNSAT |
-| `verify: eventually(e)` | Not directly expressible; requires bounded model checking |
-| `a == b` | `(= a b)` |
-| `a implies b` | `(=> a b)` |
-| `a and b` | `(and a b)` |
-| `forall(x in S, e)` | `(forall ((x T)) (=> (member x S) e))` |
-
----
-
-## Appendix B: Provenance and BOM Reference Mappings
-
-### B.1 PROV-O JSON-LD Reference
-
-| SpeckDL Primitive | PROV-O Class/Property | JSON-LD Key |
-|---|---|---|
-| `provenance { regulation: X }` | `prov:wasInformedBy` → `prov:Entity` (type: Regulation) | `wasInformedBy` |
-| `provenance { design_decision: X }` | `prov:wasDerivedFrom` → `prov:Entity` (type: DesignDecision) | `wasDerivedFrom` |
-| `provenance { parent_spec: X }` | `prov:wasDerivedFrom` → `prov:Entity` (type: Speck) | `wasDerivedFrom` |
-| `provenance { external_doc: X }` | `prov:wasInformedBy` → `prov:Entity` (type: Document) | `wasInformedBy` |
-| `author: Name <email>` | `prov:wasAttributedTo` → `prov:Agent` | `wasAttributedTo` |
-| `source: kind ref X` | `prov:wasInformedBy` → `prov:Activity` (type: kind) | `wasInformedBy` |
-| `derives from X via Y` | `prov:wasDerivedFrom` + `rdfs:comment` | `wasDerivedFrom`, `comment` |
-| `satisfies X clause Y` | `speckl:satisfies` → `prov:Entity` | `speckl:satisfies` |
-| `review: manual` | `prov:Activity` (type: ManualReview) | `speckl:reviewType` |
-| `review: auto` | *(no node)* | N/A |
-| `review: hybrid` | `prov:Activity` (type: HybridReview) | `speckl:reviewType` |
-
-### B.2 SpeckBOM — CycloneDX v1.6
-
-| SpeckDL Primitive | CycloneDX Location | Field |
-|---|---|---|
-| `bom { compiler }`, `bom { solver }`, `bom { runtime }` | `metadata.tools[]` | Standard tool entries |
-| `bom { license }` | `metadata.component.licenses[]` | SPDX expression |
-| `bom { hash }` | `metadata.component.hashes[]` | SHA-256 |
-| `import "X" as Y hash H version V` | `components[]` | Component entry with purl, hashes, properties |
-| `derives from X` | `component.properties[]` | `speckl:derivesFrom` |
-| `satisfies X clause Y` | `component.properties[]` | `speckl:satisfies` |
-| `author: Name <email>` | `annotations[]` | `speckl:provenanceType: author` |
-| `source: kind ref X` | `annotations[]` | `speckl:provenanceType: source` |
-| `provenance { regulation: X }` | `annotations[]` | `speckl:provenanceType: regulation` |
-| `review: manual` | `annotations[]` | `speckl:reviewType: manual` |
-| `review: auto` | No additional annotation | N/A |
-| `review: hybrid` | `annotations[]` | `speckl:reviewType: hybrid` |
-| Compilation artifacts (Z3, DST, WASM) | `components[]` (nested) | Type + hash |
-| Verification results (SAT/UNSAT) | `metadata.component.properties[]` | `speckl:verificationResult` |
-| Reproducibility status | `metadata.component.properties[]` | `speckl:reproducible` |
-
-### B.3 SpeckBOM — SPDX 3.0.1
-
-| SpeckDL Primitive | SPDX Location | Field |
-|---|---|---|
-| `bom { compiler }`, `bom { solver }`, `bom { runtime }` | `spdx:Build` (in `builtBy`) | Tool name + version |
-| `bom { license }` | `spdx:licenseConcluded` | SPDX expression (native) |
-| `bom { hash }` | `spdx:hash` | SHA-256 |
-| `import "X" hash H version V` | `spdx:Software` element | Package with version + hash |
-| `derives from X` | `spdx:Relationship` (derivesFrom) | Standard SPDX relationship |
-| `satisfies X clause Y` | `speckl:satisfies` property | Extension on element |
-| `author: Name <email>` | `spdx:Relationship` (wasAttributedTo) | Agent element |
-| `source: kind ref X` | `spdx:Relationship` (wasInformedBy) | Activity element |
-| `provenance { regulation: X }` | `spdx:Relationship` + element | Regulation node |
-| `review: manual` | `spdx:Annotation` (REVIEW) | Standard annotation |
-| `review: auto` | No additional annotation | N/A |
-| `review: hybrid` | `spdx:Annotation` (REVIEW) | `speckl:reviewType: hybrid` |
-| Compilation artifacts (Z3, DST, WASM) | `spdx:SoftwareArtifact` elements | With hashes |
-| Verification results (SAT/UNSAT) | `speckl:verificationResult` | Extension property |
-| Reproducibility status | `speckl:reproducible` | Extension property |
-
-### B.4 Two-Layer Architecture
-
-| Layer | Format | Concern | Standard |
-|---|---|---|---|
-| **Intent provenance** | JSON-LD / PROV-O | Who, why, what drove this specification | W3C PROV-O |
-| **Composition BOM (CycloneDX)** | CycloneDX v1.6 JSON | Dependencies, toolchain, artifacts | OWASP CycloneDX (ECMA-424) |
-| **Composition BOM (SPDX)** | SPDX 3.0.1 JSON-LD | Same data, ISO-normative format | ISO 5962:2023 |
-
----
-
-*This is a v0.2 specification. Dark Provenance and SpeckBOM primitives are optional but recommended for safety-critical and regulated systems. Feedback and contributions are welcome via the [Speckl repository](https://github.com/wscoble/speckl).*
+*This is a v0.3 specification. Dark Provenance and SpeckBOM primitives are
+optional but recommended for safety-critical and regulated systems. Feedback
+and contributions are welcome via the
+[Speckl repository](https://github.com/wscoble/speckl).*

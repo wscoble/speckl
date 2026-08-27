@@ -6,8 +6,8 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
 
 ```
 .speckdl spec ──→ TypeScript          ← typed, importable state machine classes  ✓ tested
-              ├── Z3 SMT-LIB2         ← formal verification (bounded model checking)  ✓ tested
-              ├── Rust                ← state machine structs and enums  ⚠ untested
+              ├── Z3 SMT-LIB2         ← formal verification (bounded model checking)  ✓ verified in CI
+              ├── Rust                ← state machine structs and enums  ✓ generated (text-tested)
               ├── Protobuf            ← message definitions  ✓ tested
               ├── K8s CRDs            ← Kubernetes custom resources  ✓ tested
               ├── OpenAPI 3.1         ← REST API surface  ✓ tested
@@ -17,6 +17,20 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
 ```
 
 No LLMs in the compilation path. Same spec, same output, every time.
+
+## Verification
+
+The Z3 backend emits SMT-LIB2 with bounded model checking, and CI runs a **real Z3 solver** over every example spec:
+
+```bash
+cd compiler
+npm run build
+npm run verify          # compiles examples, runs z3, checks solver results
+```
+
+Each generated `.smt2` file carries a `; speckl-expect:` marker declaring what the solver should return. When a property is violated, the verifier renders a human-readable counterexample — a per-step state trace from the solver model. Constructs the translators cannot yet handle are skipped with visible comments rather than emitted as invalid SMT.
+
+Requires the `z3` binary (`pacman -S z3`, `apt-get install z3`, or set `Z3_BIN`).
 
 ## Quick Start
 
@@ -59,9 +73,10 @@ Browse all in [examples/](examples/).
 
 ## Status
 
-- 122 tests passing, CI green
-- Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O
-- Untested backends: Rust (generator exists, no test coverage yet)
+- 140 tests passing, CI green (incl. real-solver Z3 verification of all examples)
+- Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust (generated-text tested)
+- Round-trip property tested: parse → print → parse is identity for all examples
+- Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments
 - TLA+ models: Two-Phase Commit, Paxos, and Raft are ported as `.speckdl` specs (inspired by the original TLA+ models, not TLA+ output)
 
 ## License

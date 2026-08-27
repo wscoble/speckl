@@ -7,7 +7,7 @@ A guided tour of SpeckDL through working examples — from a toggle switch to di
 SpeckDL is the specification language for Speckl. It lets you write formal, verifiable specifications that compile to:
 
 - **TypeScript** — typed state machine classes you can run
-- **WASM** — WebAssembly modules for embedded verification
+- **WASM** — WebAssembly modules for embedded verification *(planned — see SPEC.md §4)*
 - **PROV-O** — W3C provenance ontology (audit trail)
 - **CycloneDX** — Software Bill of Materials (SBOM)
 - **SPDX** — Standard license/material metadata
@@ -67,7 +67,7 @@ speck ToggleSwitch {
 
 ### What this compiles to
 
-ToggleSwitch generates a TypeScript class with typed `turnOn()` and `turnOff()` methods, each containing the guard check. The WASM output can be embedded in a browser for client-side state validation.
+ToggleSwitch generates a TypeScript class with typed `turnOn()` and `turnOff()` methods, each containing the guard check.
 
 ---
 
@@ -132,7 +132,7 @@ speck AccountLedger {
 
 ### Why this matters
 
-Financial systems live and die by invariants. SpeckDL lets you state "transfers must be atomic" or "balances must never go negative" as first-class assertions, not comments that rot. The compiler checks them at compile time; the WASM runtime enforces them at execution time.
+Financial systems live and die by invariants. SpeckDL lets you state "transfers must be atomic" or "balances must never go negative" as first-class assertions, not comments that rot. The compiler emits them as Z3 assertions checked by the solver; the generated TypeScript and Rust classes enforce them as guards at execution time.
 
 ---
 
@@ -284,7 +284,7 @@ Every speck goes through the same pipeline:
 
 ```
 .speckdl ──► Parser ──► AST ──┬──► TypeScript Generator ──► .ts (runnable)
-                              ├──► WASM Generator      ──► .wat (verifiable at runtime)
+                              ├──► Z3 Generator        ──► .smt2 (solver-checked, see `npm run verify`)
                               ├──► PROV-O Generator     ──► .ttl (audit trail)
                               ├──► CycloneDX Generator  ──► .xml (SBOM)
                               └──► SPDX Generator       ──► .json (license/material)
@@ -294,7 +294,7 @@ Every speck goes through the same pipeline:
 
 **One spec, five outputs.** Write a state machine once and get:
 - Runnable TypeScript you can import into any Node.js project
-- Verifiable WASM you can embed in CI/CD pipelines
+- Solver-verifiable SMT-LIB2 checked in CI against every example (z3)
 - Complete provenance chain for regulatory compliance (NIST SA-11)
 - SBOMs for supply chain security
 - License metadata for open source compliance
@@ -306,7 +306,7 @@ Every speck goes through the same pipeline:
 | Dimension | TLA+ | SpeckDL |
 |-----------|------|---------|
 | **Purpose** | Formal verification only | Spec → verify → compile → run |
-| **Output** | Model checker results | Runnable code (TS + WASM) |
+| **Output** | Model checker results | Runnable code (TS) + solver-checked SMT |
 | **Provenance** | None | Embedded (PROV-O, CycloneDX) |
 | **Learning curve** | Steep (untyped set theory) | Moderate (typed, familiar syntax) |
 | **Industry adoption** | AWS, Microsoft (internal) | Target: compliance-driven orgs |
@@ -320,7 +320,7 @@ TLA+ proved that formal methods work at scale. SpeckDL makes them deployable.
 ## Next Steps
 
 1. **Read the spec:** `SPEC.md` — full language reference
-2. **Run the examples:** `cd compiler && npm run build && node dist/cli.js compile ../examples/ToggleSwitch.speckdl`
+2. **Run the examples:** `cd compiler && npm run build && node dist/index.js ../examples/ToggleSwitch.speckdl -o out`
 3. **Write your own:** Start with a toggle switch, add state variables, write invariants
 4. **Target production:** See `examples/TigerBeetleLedger.speckdl` for a real financial system spec
 
