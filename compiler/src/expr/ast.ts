@@ -118,6 +118,8 @@ export interface IfExpr {
 export interface ObjectExpr {
   kind: 'object';
   fields: { key: string; value: Expr }[];
+  /** Spread base: `{ ...record, field: val }` — fields override the base. */
+  spread?: Expr;
   token: TokenT;
 }
 

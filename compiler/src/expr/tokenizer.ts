@@ -25,6 +25,7 @@ export enum TokenType {
   FORALL = 'FORALL',
   IN = 'IN',
   NOTIN = 'NOTIN',  // notIn keyword
+  ELLIPSIS = 'ELLIPSIS',  // ...
   NOT = 'NOT',
   AND = 'AND',
   OR = 'OR',
@@ -160,6 +161,9 @@ export class Tokenizer {
     if (ch === '&' && this.peek() === '&') {
       return this.advance(2, TokenType.DBLAMP, '&&');
     }
+    if (ch === '.' && this.peek() === '.' && this.peekAt(2) === '.') {
+      return this.advance(3, TokenType.ELLIPSIS, '...');
+    }
     if (ch === '.' && this.peek() === '.') {
       return this.advance(2, TokenType.DOTDOT, '..');
     }
@@ -244,6 +248,11 @@ export class Tokenizer {
   private peek(): string {
     if (this.pos + 1 >= this.src.length) return '\0';
     return this.src[this.pos + 1];
+  }
+
+  private peekAt(offset: number): string {
+    if (this.pos + offset >= this.src.length) return '\0';
+    return this.src[this.pos + offset];
   }
 
   private advance(len: number, type: TokenType, value: string): Token {

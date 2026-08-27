@@ -202,6 +202,23 @@ export class ExpressionParser {
       return { kind: 'set', elements: [], token: openTok } as SetExpr;
     }
 
+    // Spread literal: { ...record, field: val, ... }
+    if (this.current().type === TokenType.ELLIPSIS) {
+      this.advance();
+      const spreadBase = this.expr(PREC.LOWEST);
+      const fields: { key: string; value: Expr }[] = [];
+      while (this.current().type === TokenType.COMMA) {
+        this.advance();
+        if (this.current().type === TokenType.RBRACE) break;
+        const keyTok = this.expect(TokenType.IDENT, 'Expected field name');
+        this.expect(TokenType.COLON, 'Expected :');
+        const v = this.expr(PREC.LOWEST);
+        fields.push({ key: keyTok.value, value: v });
+      }
+      this.expect(TokenType.RBRACE, 'Expected }');
+      return { kind: 'object', fields, spread: spreadBase, token: openTok } as ObjectExpr;
+    }
+
     const first = this.expr(PREC.LOWEST);
 
     // Map literal: key -> val
@@ -221,11 +238,16 @@ export class ExpressionParser {
       return { kind: 'map', entries, token: openTok } as MapExpr;
     }
 
-    // Object literal: ident: val
-    if (first.kind === 'ident' && this.current().type === TokenType.COLON) {
+    // Object literal: ident: val or number: val (map-style numeric keys)
+    const isLiteralKey = first.kind === 'ident'
+      || (first.kind === 'literal' && (first as LiteralExpr).type === 'number');
+    if (isLiteralKey && this.current().type === TokenType.COLON) {
       this.advance();
       const val = this.expr(PREC.LOWEST);
-      const fields = [{ key: (first as IdentExpr).name, value: val }];
+      const keyName = first.kind === 'ident'
+        ? (first as IdentExpr).name
+        : (first as LiteralExpr).value;
+      const fields = [{ key: keyName, value: val }];
       while (this.current().type === TokenType.COMMA) {
         this.advance();
         if (this.current().type === TokenType.RBRACE) break;

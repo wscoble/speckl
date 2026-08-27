@@ -122,10 +122,20 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
     // --- let name := expr ---
     const letMatch = trimmed.match(/^let\s+([A-Za-z_]\w*)\s*:=\s*(.+)$/);
     if (letMatch) {
-      const rhs = letMatch[2].trim();
+      let rhs = letMatch[2].trim();
       if (/^if\b/.test(rhs) && !/\belse\b/.test(rhs)) {
         stmts.push({ type: 'ifblock', raw: trimmed });
         continue;
+      }
+      // Multi-line expressions: join continuation lines while the right-hand
+      // side is syntactically incomplete (e.g. a multi-line record literal
+      // opened with `Customer {`).
+      while (exprLooksIncomplete(rhs) && i + 1 < lines.length) {
+        const next = lines[i + 1];
+        const nt = next?.trim() ?? '';
+        if (!nt || nt.startsWith('//') || STMT_START_RE.test(nt) || /\w+\s*:=/.test(nt)) break;
+        rhs += ' ' + nt;
+        i++;
       }
       stmts.push({ type: 'let', name: letMatch[1], expr: parseExprSingle(rhs) });
       continue;
@@ -186,14 +196,46 @@ interface CollectResult {
 }
 
 /** Collect an expression that may continue on 'or ' lines. */
+/** True when an expression text is syntactically incomplete (dangling operator or unbalanced brackets). */
+function exprLooksIncomplete(text: string): boolean {
+  let depth = 0;
+  let inStr = false;
+  for (const c of text) {
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+  }
+  if (depth > 0) return true;
+  // Ends with a binary operator → the expression continues on the next line.
+  return /(==|!=|>=|<=|<|>|\+|-|\*|\/|\band\b|\bor\b|implies|->|=\u003e|distinct|union|mod)\s*$/i.test(text.trim());
+}
+
+const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|precondition:|postcondition:|\w+\s*:=)/;
+
 function collectExpression(lines: string[], startIdx: number, prefixLen: number, continuationPfx: string): CollectResult {
   let text = lines[startIdx].trim().substring(prefixLen).trim();
   let i = startIdx;
   while (i + 1 < lines.length) {
     const next = lines[i + 1];
-    if (!next || !next.trim().startsWith(continuationPfx)) break;
-    i++;
-    text += ' or ' + next.trim().substring(continuationPfx.length).trim();
+    if (!next) break;
+    const nt = next.trim();
+    if (!nt || nt.startsWith('//')) break;
+    // Legacy explicit continuation: each line starts with the prefix ("or ").
+    if (nt.startsWith(continuationPfx)) {
+      text += ' or ' + nt.substring(continuationPfx.length).trim();
+      i++;
+      continue;
+    }
+    // Dangling-operator continuation: the expression is incomplete and the
+    // next line is not the start of a new statement (e.g. a multi-line
+    // `postcondition: a[x] ==\n    old(a[x]) + t.amount`).
+    if (exprLooksIncomplete(text) && !STMT_START_RE.test(nt)) {
+      text += ' ' + nt;
+      i++;
+      continue;
+    }
+    break;
   }
   return { text, endIdx: i };
 }
@@ -211,6 +253,8 @@ function collectRequireExpression(lines: string[], startIdx: number): CollectRes
         nt.startsWith('let ') || /\w+\s*:=/.test(nt)) {
       break;
     }
+    // Dangling-operator continuation (see collectExpression).
+    if (!exprLooksIncomplete(text)) break;
     i++;
     text += ' ' + nt;
   }
