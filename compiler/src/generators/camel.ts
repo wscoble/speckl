@@ -503,22 +503,26 @@ function emitPom(speck: IRSpeck, artifactId: string, groupId: string, version: s
 function stmtToJava(stmt: IRStmt, speck: IRSpeck): string {
   switch (stmt.kind) {
     case 'assign': {
+      if (!stmt.value && !stmt.expr) return `        // assign ${stmt.target}: (untranslatable, skipped)`;
       const expr = exprToJava(stmt.value || stmt.expr!);
       return `        ${stmt.target} = ${expr};`;
     }
     case 'let': {
+      if (!stmt.value && !stmt.expr) return `        // let ${stmt.letName}: (untranslatable, skipped)`;
       const expr = exprToJava(stmt.value || stmt.expr!);
       const javaType = inferJavaType(stmt.value || stmt.expr, speck);
       return `        var ${stmt.letName} = ${expr};`;
     }
     case 'require': {
-      const expr = exprToJava(stmt.value!);
+      if (!stmt.value) return '        // require: (untranslatable expression, skipped)';
+      const expr = exprToJava(stmt.value);
       return `        // require: ${exprToJavaRaw(stmt.value!)}
         if (!(${expr})) {
             throw new IllegalStateException("Precondition failed: ${escapeString(exprToJavaRaw(stmt.value!))}");
         }`;
     }
     case 'precondition': {
+      if (!stmt.value) return '        // precondition: (untranslatable expression, skipped)';
       const expr = exprToJava(stmt.value!);
       return `        // precondition: ${exprToJavaRaw(stmt.value!)}
         if (!(${expr})) {
@@ -526,6 +530,7 @@ function stmtToJava(stmt: IRStmt, speck: IRSpeck): string {
         }`;
     }
     case 'postcondition': {
+      if (!stmt.value) return '        // postcondition: (untranslatable expression, skipped)';
       const expr = exprToJava(stmt.value!);
       return `        // postcondition: ${exprToJavaRaw(stmt.value!)}
         if (!(${expr})) {
@@ -547,6 +552,7 @@ function stmtToJava(stmt: IRStmt, speck: IRSpeck): string {
       return `        return ${expr};`;
     }
     case 'if': {
+      if (!stmt.expr) return '        // if: (untranslatable condition, skipped)';
       const cond = exprToJava(stmt.expr!);
       const thenBlock = (stmt.thenBlock || []).map((s) => stmtToJava(s, speck)).join('\n');
       const elseBlock = (stmt.elseBlock || []).map((s) => stmtToJava(s, speck)).join('\n');
@@ -566,7 +572,16 @@ function stmtToJava(stmt: IRStmt, speck: IRSpeck): string {
 // ─────────────────────────────────────────────────────────────────────
 
 function exprToJava(expr: IRExpr): string {
+  // Unlowerable statements (complex record constructors, forall sugar, etc.)
+  // arrive as undefined or as parse-failure placeholders — emit a
+  // compilable placeholder instead of crashing the whole target.
+  if (!expr || typeof expr !== 'object' || !expr.kind) {
+    return 'null /* unsupported expression */';
+  }
   switch (expr.kind) {
+    case 'bool_lit':
+      if (expr.value === undefined) return 'null /* unsupported expression */';
+      return String(expr.value);
     case 'bool_lit':
       return String(expr.value);
     case 'int_lit':
@@ -655,14 +670,19 @@ function unopToJava(op: string): string {
 // ─────────────────────────────────────────────────────────────────────
 
 function typeRefToJava(typeRef: IRTypeRef, speck: IRSpeck | null): string {
+  // Unresolved inline record/Map types come through with a raw-text name and
+  // no kind — emit Object rather than crashing the whole target.
+  if (!typeRef || !typeRef.kind) return 'Object';
   if (typeRef.kind === 'primitive') {
     return primitiveToJava(typeRef.primitive || 'string', typeRef.nullable);
   } else if (typeRef.kind === 'list' || typeRef.kind === 'set') {
-    const elemType = typeRefToJava(typeRef.elementType!, speck);
+    if (!typeRef.elementType) return 'java.util.List<Object>';
+    const elemType = typeRefToJava(typeRef.elementType, speck);
     return `java.util.List<${elemType}>`;
   } else if (typeRef.kind === 'map') {
-    const keyType = typeRefToJava(typeRef.keyType!, speck);
-    const valType = typeRefToJava(typeRef.valueType!, speck);
+    if (!typeRef.keyType || !typeRef.valueType) return 'java.util.Map<Object, Object>';
+    const keyType = typeRefToJava(typeRef.keyType, speck);
+    const valType = typeRefToJava(typeRef.valueType, speck);
     return `java.util.Map<${keyType}, ${valType}>`;
   } else if (typeRef.kind === 'ident') {
     const name = typeRef.name || 'Object';
