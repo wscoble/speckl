@@ -3,8 +3,20 @@
   "version": "0.3.1",
   "description": "SpeckDL compiler — compiles state machine specs to TypeScript, Rust, Z3, Protobuf, K8s CRDs, and SBOM artifacts with embedded provenance",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "speckl-compile": "./dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wscoble/speckl.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wscoble/speckl/issues"
+  },
+  "homepage": "https://github.com/wscoble/speckl#readme",
+  "engines": {
+    "node": ">=20"
   },
   "files": [
     "dist/"
@@ -12,6 +24,8 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "verify": "node scripts/verify-z3.mjs",
+    "prepublishOnly": "npm run build && npm test",
     "dev": "tsc --watch"
   },
   "dependencies": {
