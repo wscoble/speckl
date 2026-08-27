@@ -134,6 +134,12 @@ async function main() {
     generateZ3(ast, options.outputDir, z3Options);
   }
 
+  // IR-driven Z3 for the all-ir target (formal_spec facet only)
+  if (options.target === 'all-ir') {
+    console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
+    generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
+  }
+
   // TypeScript state machine + BOMs
   if (options.target !== 'z3' && options.target !== 'rust') {
     console.log('\nGenerating TypeScript state machine...');

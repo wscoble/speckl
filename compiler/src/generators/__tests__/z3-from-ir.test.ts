@@ -34,7 +34,7 @@ function runZ3(ir: any, depth = 10): string {
   try {
     generateZ3FromIR(ir, { outputDir: tmp, verifyDepth: depth });
     const speckName = ir.specks[0].name;
-    return readFileSync(join(tmp, `${speckName}.smt2`), 'utf-8');
+    return readFileSync(join(tmp, `${speckName}.ir.smt2`), 'utf-8');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -184,15 +184,24 @@ speck BMCTest {
   });
 
   it('produces valid SMT for TEF (real spec)', () => {
-    // TEF has 8 constraints. The IR-driven Z3 should emit all 8 as assert statements.
+    // TEF's constraints use quantifier sugar (`forall p in products.values():`)
+    // that the IR expression parser cannot yet lower. The generator must
+    // degrade gracefully: emit a checkable file with those constraints
+    // explicitly skipped (as comments) instead of emitting invalid SMT that
+    // Z3 rejects.
     const ast = parseSpeckFile(join(path.resolve(__dirname, '..', '..', '..', '..'), 'examples', 'tef.speckdl'));
     const ir = lower(ast, { filePath: join(path.resolve(__dirname, '..', '..', '..', '..'), 'examples', 'tef.speckdl'), resolveImports: false });
     const smt = runZ3(ir);
 
     // Should have the standard SMT-LIB2 footer
     expect(smt).toContain('(check-sat)');
-    // Should have at least 8 assert statements (one per constraint)
-    const assertCount = (smt.match(/^\(assert /gm) || []).length;
-    expect(assertCount).toBeGreaterThanOrEqual(8);
+
+    // Quantifier-sugar constraints must be visibly skipped, never emitted as
+    // malformed SMT (regression guard: the old compiler emitted
+    // `(assert forall)` atoms for each of them).
+    expect(smt).not.toMatch(/^\(assert forall\b/gm);
+
+    // Every skipped constraint is documented in the output.
+    expect(smt).toContain('; skipped');
   });
 });

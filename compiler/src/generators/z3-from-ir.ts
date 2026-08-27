@@ -21,9 +21,10 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { sanitizeSMT } from './smt-sanitize.js';
 import {
   IR, IRSpeck, IRConstraint, IRVerify, IRStateVar, IRExpr, IRBinOp,
-  IRFieldDef, IRTypeRef
+  IRFieldDef, IRTypeRef, IRBoolLit
 } from '../ir/types.js';
 
 export interface Z3FromIROptions {
@@ -50,11 +51,43 @@ export function generateZ3FromIR(ir: IR, options: Partial<Z3FromIROptions> = {})
   }
 
   for (const speck of ir.specks) {
-    const smt = emitSMT(speck, opts.verifyDepth);
-    const filename = path.join(opts.outputDir, `${speck.name}.smt2`);
-    fs.writeFileSync(filename, smt);
+    const raw = emitSMT(speck, opts.verifyDepth);
+    const sanitized = sanitizeSMT(raw);
+    const filename = path.join(opts.outputDir, `${speck.name}.ir.smt2`);
+    fs.writeFileSync(filename, sanitized.text);
+    if (sanitized.dropped.length > 0) {
+      console.log(
+        `  note: skipped ${sanitized.dropped.length} untranslatable form(s) in ${speck.name}.ir.smt2`
+      );
+    }
     console.log(`Generated Z3 (from IR): ${filename}`);
   }
+}
+
+/** True if the expression tree contains a parse-failure placeholder. */
+function containsParseFailure(e: IRExpr): boolean {
+  if (e.kind === 'bool_lit' && (e as IRBoolLit).parseFailed) return true;
+  const kids: IRExpr[] = [];
+  const node = e as unknown as Record<string, unknown>;
+  for (const key of ['left', 'right', 'operand', 'target', 'index']) {
+    if (node[key]) kids.push(node[key] as IRExpr);
+  }
+  if (node['args']) kids.push(...(node['args'] as IRExpr[]));
+  return kids.some(containsParseFailure);
+}
+
+/** Collect all named (ident) type references in a type tree. */
+function collectIdentTypeNames(t: IRTypeRef): string[] {
+  const names: string[] = [];
+  if (t.kind === 'ident' && t.name) {
+    names.push(t.name);
+  } else if (t.kind === 'list' || t.kind === 'set') {
+    if (t.elementType) names.push(...collectIdentTypeNames(t.elementType));
+  } else if (t.kind === 'map') {
+    if (t.keyType) names.push(...collectIdentTypeNames(t.keyType));
+    if (t.valueType) names.push(...collectIdentTypeNames(t.valueType));
+  }
+  return names;
 }
 
 function emitSMT(speck: IRSpeck, verifyDepth: number): string {
@@ -66,14 +99,97 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
   // 1. Declare sorts for state variables and types
   lines.push('; --- Sorts ---');
   const stateVars = speck.facets.behavior.stateVars;
+
+  const recordTypes = collectRecordTypes(speck);
+  const knownRecordNames = new Set(recordTypes.keys());
+
+  // Collect every named (ident) type referenced by state variables AND by
+  // record fields — nested references like `Term` inside `LogEntry` need
+  // declarations too. Non-record idents become uninterpreted sorts; garbage
+  // (unparseable inline types) is left for the sanitizer to skip.
+  const aliasNames = new Set<string>();
+  const isBuiltinSort = (id: string) =>
+    ['Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set', 'Nat', 'Integer'].includes(id);
+  for (const v of stateVars) {
+    for (const name of collectIdentTypeNames(v.type)) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !knownRecordNames.has(name) && !isBuiltinSort(name)) {
+        aliasNames.add(name);
+      }
+    }
+  }
+  for (const [, fields] of recordTypes) {
+    for (const sortText of fields.values()) {
+      for (const id of sortText.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+        if (!isBuiltinSort(id) && !knownRecordNames.has(id)) {
+          aliasNames.add(id);
+        }
+      }
+    }
+  }
+
+  // Declaration order matters: alias sorts must precede the datatypes that
+  // reference them, and both must precede the constants that use them.
+  // Datatypes may reference each other (BuildStep → EnvVar → EnvVarSource),
+  // so emit them in dependency order: repeatedly emit datatypes whose field
+  // sorts are all already declared.
+  for (const name of aliasNames) {
+    lines.push(`(declare-sort ${name} 0)`);
+  }
+  const knownSortNames = new Set<string>(['Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set', ...aliasNames]);
+  // Collection constructor constants (X.empty sugar) — unconstrained Ints;
+  // present so `Map.empty` / `List.empty` references resolve.
+  lines.push('(declare-const speckl_empty_Map Int)');
+  lines.push('(declare-const speckl_empty_List Int)');
+  lines.push('(declare-const speckl_empty_Set Int)');
+  const pending = [...recordTypes.entries()];
+  let progress = true;
+  while (pending.length > 0 && progress) {
+    progress = false;
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const [name, fields] = pending[i];
+      const sortIds = [...fields.values()].flatMap(s => s.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []);
+      const allKnown = sortIds.every(id => knownSortNames.has(id));
+      if (!allKnown) continue;
+      lines.push(`(declare-datatypes ((${name} 0)) ((${mkConstructor(name, fields)})))`);
+      knownSortNames.add(name);
+      pending.splice(i, 1);
+      progress = true;
+    }
+  }
+  // Datatypes with unresolvable dependencies — declare the missing sorts as
+  // opaque, then emit; the sanitizer drops anything still invalid.
+  const leftoverSorts = new Set<string>();
+  for (const [, fields] of pending) {
+    for (const sortText of fields.values()) {
+      for (const id of sortText.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+        if (!['Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set', 'Nat', 'Integer'].includes(id) && !knownSortNames.has(id)) {
+          leftoverSorts.add(id);
+        }
+      }
+    }
+  }
+  for (const id of leftoverSorts) {
+    lines.push(`(declare-sort ${id} 0)`);
+    knownSortNames.add(id);
+  }
+  for (const [name, fields] of pending) {
+    lines.push(`(declare-datatypes ((${name} 0)) ((${mkConstructor(name, fields)})))`);
+  }
   for (const v of stateVars) {
     lines.push(`(declare-const ${v.name} ${z3Sort(v.type)})`);
   }
 
-  // 2. Declare sorts for any record types used
-  const recordTypes = collectRecordTypes(speck);
-  for (const [name, fields] of recordTypes) {
-    lines.push(`(declare-datatypes ((${name} 0)) ((${mkConstructor(name, fields)})))`);
+  // 2. Declarative specs (v0.2 style) have no state block — their constraints
+  // range over input/output fields. Declare those as free constants so the
+  // formal contract is checkable.
+  const formal = speck.facets.formal_spec;
+  const ioFields = [...formal.inputs, ...formal.outputs];
+  if (ioFields.length > 0) {
+    lines.push('');
+    lines.push('; --- Inputs / Outputs (declarative spec free variables) ---');
+    for (const f of ioFields) {
+      lines.push(`(declare-const ${f.name} ${z3Sort(f.type)})`);
+    }
   }
 
   lines.push('');
@@ -81,6 +197,13 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
   // 3. Init assertions
   lines.push('; --- Init ---');
   for (const assign of speck.facets.behavior.init) {
+    // Skip parse-failure placeholders (bool_lit false emitted by parseExprSafe
+    // when the source expression couldn't be parsed — already reported as a
+    // warning diagnostic). Asserting them would make the spec spuriously UNSAT.
+    if (containsParseFailure(assign.expr)) {
+      lines.push(`; skipped init ${assign.target}: expression failed to parse`);
+      continue;
+    }
     lines.push(`(assert (= ${assign.target} ${translateExpr(assign.expr)}))`);
   }
 
@@ -89,6 +212,12 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
   // 4. Constraints (the "always holds" invariants)
   lines.push('; --- Invariants (formal_spec.constraints) ---');
   for (const c of speck.facets.formal_spec.constraints) {
+    // Skip expressions containing parse-failure placeholders — asserting
+    // them would make the spec spuriously UNSAT.
+    if (containsParseFailure(c.expr)) {
+      lines.push(`; skipped constraint: expression failed to parse`);
+      continue;
+    }
     const label = c.name ? ` ; ${c.name}` : '';
     lines.push(`(assert ${translateExpr(c.expr)})${label}`);
   }
@@ -98,14 +227,19 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
   // 5. Verifies (bounded model checking)
   if (speck.facets.formal_spec.verifies.length > 0) {
     lines.push(`; --- Verifies (BMC, depth=${verifyDepth}) ---`);
+    const declaredSteps = new Set<string>();
     for (const v of speck.facets.formal_spec.verifies) {
-      emitBMC(lines, v, stateVars, verifyDepth);
+      emitBMC(lines, v, stateVars, verifyDepth, declaredSteps);
     }
   }
 
   // 6. Check sat
   lines.push('');
   lines.push('; --- Check ---');
+  // Init + constraints + (degenerate, stuttering) BMC are asserted positively:
+  // sat means the spec is internally consistent, unsat means contradictory
+  // constraints (or a generator bug).
+  lines.push('; speckl-expect: sat');
   lines.push('(check-sat)');
   lines.push('(get-model)');
 
@@ -121,7 +255,8 @@ function emitBMC(
   lines: string[],
   verify: IRVerify,
   stateVars: IRStateVar[],
-  depth: number
+  depth: number,
+  declaredSteps: Set<string> = new Set()
 ): void {
   lines.push(`; verify "${verify.name}"`);
   for (let i = 0; i <= depth; i++) {
@@ -131,7 +266,11 @@ function emitBMC(
     for (const v of stateVars) {
       const prev = i > 0 ? `${v.name}_${i - 1}` : v.name;
       const curr = `${v.name}_${i}`;
-      lines.push(`(declare-const ${curr} ${z3Sort(v.type)})`);
+      // Multiple verify blocks unroll the same steps — declare once.
+      if (!declaredSteps.has(curr)) {
+        declaredSteps.add(curr);
+        lines.push(`(declare-const ${curr} ${z3Sort(v.type)})`);
+      }
       // Frame: if not transitioning, state stays the same
       if (i > 0) {
         lines.push(`(assert (= ${prev} ${curr}))`);
@@ -251,7 +390,11 @@ function z3Sort(t: IRTypeRef): string {
     return `(Array ${z3Sort(t.keyType || { kind: 'primitive', primitive: 'String' })} ${z3Sort(t.valueType || { kind: 'primitive', primitive: 'Unknown' })})`;
   }
   if (t.kind === 'ident') {
-    return t.name || 'Unknown';
+    const name = t.name || 'Unknown';
+    // Primitive-named idents (from unresolved unions) map to builtin sorts.
+    if (name === 'Nat' || name === 'Integer') return 'Int';
+    if (['Bool', 'Real', 'String'].includes(name)) return name;
+    return name;
   }
   return 'Unknown';
 }
@@ -277,7 +420,10 @@ function collectRecordTypes(speck: IRSpeck): Map<string, Map<string, string>> {
 function mkConstructor(name: string, fields: Map<string, string>): string {
   const parts: string[] = [`(mk-${name}`];
   for (const [fname, ftype] of fields) {
-    parts.push(`(${fname} ${ftype})`);
+    // Qualify field names with the constructor name — datatype accessors share
+    // a global namespace in SMT, and unqualified names like `totalDelay` would
+    // collide with free constants of the same name (ambiguous reference).
+    parts.push(`(${name}_${fname} ${ftype})`);
   }
   parts.push(')');
   return parts.join(' ');
