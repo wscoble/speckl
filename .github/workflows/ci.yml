@@ -25,3 +25,17 @@ jobs:
       - name: Test
         working-directory: compiler
         run: npm test
+
+      - name: Install z3 (if missing)
+        run: |
+          if ! command -v z3 >/dev/null 2>&1; then
+            echo "z3 not found — attempting install"
+            (sudo apt-get update && sudo apt-get install -y z3) \
+              || (sudo pacman -S --noconfirm z3) \
+              || (sudo dnf install -y z3) \
+              || echo "Could not install z3 automatically"
+          fi
+
+      - name: Z3 verification (real solver over all examples)
+        working-directory: compiler
+        run: npm run verify

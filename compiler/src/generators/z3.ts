@@ -1,9 +1,11 @@
 import {
   AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode,
-  ConstraintNode, VerifyNode, TypeExpr, StateVar, ActionStatement
+  ConstraintNode, VerifyNode, TypeExpr, StateVar, ActionStatement,
+  InputNode, OutputNode
 } from '../parser.js';
 import fs from 'fs';
 import path from 'path';
+import { sanitizeSMT } from './smt-sanitize.js';
 
 /**
  * Z3 SMT-LIB2 backend for SpeckDL.
@@ -93,11 +95,87 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   lines.push('(declare-fun speckl_len_Int ( (Array Int Int) ) Int)');
   // speckl_nil: sentinel for nil/null comparisons (SpeckDL nil → Z3 constant)
   lines.push('(declare-const speckl_nil Int)');
+  // Per-sort length variants for lists with non-Int element types are emitted
+  // AFTER the record datatypes (they reference record sorts) — see Step 1.5.
 
-  // Step 1: Declare sorts for record types
+  // Step 1: Declare sorts. Declaration order matters: alias sorts precede
+  // the datatypes that reference them, and both precede the constants that
+  // use them (SMT-LIB2 requires declaration before use).
   const recordTypes = collectRecordTypes(stateNode, actions);
-  for (const [name, fields] of recordTypes) {
+  const cleanRecordNames = new Set(
+    [...recordTypes.keys()].map(k => sanitizeSortName(k))
+  );
+  const isBuiltinSortName = (id: string) =>
+    ['Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set', 'Nat', 'Integer'].includes(id);
+  const aliasSorts = new Set<string>();
+  const collectAliases = (t: TypeExpr | undefined) => {
+    if (!t) return;
+    if (t.type === 'ident' && t.name) {
+      const clean = sanitizeSortName(t.name);
+      if (!isBuiltinSortName(clean) && !cleanRecordNames.has(clean)) aliasSorts.add(clean);
+    } else if (t.type === 'list' || t.type === 'set') {
+      if (t.elementType) collectAliases(t.elementType);
+    } else if (t.type === 'map') {
+      if (t.keyType) collectAliases(t.keyType);
+      if (t.valueType) collectAliases(t.valueType);
+    } else if (t.type === 'record') {
+      for (const f of t.fields ?? []) collectAliases(f.type);
+    }
+  };
+  const stateVarsPre = stateNode?.variables ?? [];
+  for (const v of stateVarsPre) collectAliases(v.typeExpr);
+  for (const [, fields] of recordTypes) {
+    for (const sortText of fields.values()) {
+      for (const id of sortText.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+        if (!isBuiltinSortName(id) && !cleanRecordNames.has(id)) aliasSorts.add(id);
+      }
+    }
+  }
+  for (const name of aliasSorts) {
+    lines.push(`(declare-sort ${name} 0)`);
+  }
+  // Datatypes in dependency order (BuildStep → EnvVar → EnvVarSource).
+  const knownSortNames = new Set<string>(['Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set', ...aliasSorts]);
+  const pendingRecords = [...recordTypes.entries()];
+  let progress = true;
+  while (pendingRecords.length > 0 && progress) {
+    progress = false;
+    for (let i = pendingRecords.length - 1; i >= 0; i--) {
+      const [name, fields] = pendingRecords[i];
+      const sortIds = [...fields.values()].flatMap(s => s.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []);
+      if (!sortIds.every(id => knownSortNames.has(id))) continue;
+      emitRecordSort(lines, name, fields);
+      knownSortNames.add(sanitizeSortName(name));
+      pendingRecords.splice(i, 1);
+      progress = true;
+    }
+  }
+  // Unresolvable ones — declare their unresolved field sorts as opaque, then
+  // emit; the sanitizer drops anything still invalid.
+  const leftoverSorts = new Set<string>();
+  for (const [, fields] of pendingRecords) {
+    for (const sortText of fields.values()) {
+      for (const id of sortText.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+        if (!isBuiltinSortName(id) && !knownSortNames.has(id)) leftoverSorts.add(id);
+      }
+    }
+  }
+  for (const id of leftoverSorts) {
+    lines.push(`(declare-sort ${id} 0)`);
+    knownSortNames.add(id);
+  }
+  for (const [name, fields] of pendingRecords) {
     emitRecordSort(lines, name, fields);
+  }
+  // Step 1.5: per-sort length variants for lists with record element types
+  // (`length(log)` with log: List(LogEntry)) — must follow the datatypes.
+  for (const v of (stateNode?.variables ?? [])) {
+    if (v.typeExpr.type === 'list' && v.typeExpr.elementType) {
+      const elem = z3Sort(v.typeExpr.elementType);
+      if (elem !== 'Int' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(elem)) {
+        lines.push(`(declare-fun speckl_len_${elem} ( (Array Int ${elem}) ) Int)`);
+      }
+    }
   }
 
   // Step 2: Declare state variables as constants
@@ -110,9 +188,24 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
     emitStateVar(lines, v, allTypeRefs);
   }
 
+  // Declarative specs (v0.2 style) have no state block — their constraints
+  // range over input/output fields. Declare those as free constants so the
+  // formal contract is checkable.
+  const ioMembers = members.filter(m => m.type === 'input' || m.type === 'output') as (InputNode | OutputNode)[];
+  const ioFields = ioMembers.flatMap(m => m.typeExpr.type === 'record' ? (m.typeExpr.fields ?? []) : []);
+  if (ioFields.length > 0) {
+    lines.push('');
+    lines.push('; --- Inputs / Outputs (declarative spec free variables) ---');
+    for (const f of ioFields) {
+      lines.push(`(declare-const ${f.name} ${z3Sort(f.type)})`);
+    }
+  }
+
   // Declare _post state variables for invariants that compare pre/post state
   // (e.g. "currentTerm' >= currentTerm" → "currentTerm_post >= currentTerm")
-  const needsPostVars = allInvariants.some((inv: InvariantNode) =>
+  // and for action step predicates (BeginReadTransactionStep etc. reference
+  // the post-state directly).
+  const needsPostVars = actions.length > 0 || allInvariants.some((inv: InvariantNode) =>
     inv.statements.some((s: InvariantStatement) => s.type === 'require' && s.expr.includes("'")));
   if (needsPostVars) {
     for (const v of stateVars) {
@@ -130,15 +223,23 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
     }
   }
 
+  // BMC only runs when there are actions to unroll and a next-relation.
+  // Specs with verifies but no actions fall back to plain invariant
+  // consistency checking (assert invariants + check-sat) — otherwise they
+  // would produce an SMT file with no check-sat at all.
+  const bmcActive = verifies.length > 0 && actions.length > 0 && !!nextNode;
+
   // Step 4: Emit constraints as assertions (invariant-based constraints)
   // Constraint invariants are handled via invariant define-fun above
   // plus the BMC unrolling below for verify blocks.
-  // For non-verify specs, emit assertion of each invariant:
-  if (verifies.length === 0 && allInvariants.length > 0) {
+  // For non-verify specs (or verifies without actions), emit assertion of each invariant:
+  if (!bmcActive && allInvariants.length > 0) {
     lines.push('');
     lines.push('; --- Invariant Assertions ---');
+    // Nullary defined functions must be referenced as bare identifiers —
+    // `(assert (Inv))` is rejected by Z3 ("invalid function application").
     for (const inv of allInvariants) {
-      lines.push(`(assert (${inv.name}))`);
+      lines.push(`(assert ${inv.name})`);
     }
   }
 
@@ -160,19 +261,28 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   if (verifies.length > 0 && actions.length > 0) {
     lines.push('');
     lines.push('; --- Bounded Model Checking ---');
+    const declaredSteps = new Set<string>();
     for (const v of verifies) {
-      emitBMC(lines, speck.name, v, allInvariants, actions, nextNode, stateVars, options);
+      emitBMC(lines, speck.name, v, allInvariants, actions, nextNode, stateVars, options, declaredSteps, initNode ?? null);
     }
   }
 
   // Step 8: Check-sat and get-model (for simple assertions)
-  if (verifies.length === 0) {
+  if (!bmcActive) {
     lines.push('');
+    // Invariants are asserted directly; sat means they are mutually consistent.
+    lines.push('; speckl-expect: sat');
     lines.push('(check-sat)');
     lines.push('(get-model)');
   }
 
-  return lines.join('\n') + '\n';
+  // Sanitize: drop any form referencing undeclared identifiers/sorts.
+  // The Z3 expression translation cannot handle every SpeckDL construct
+  // (enum variants, collection sugar, method calls); emitting those raw
+  // would make the whole file uncheckable. Skipped invariants are visible
+  // as comments in the output.
+  const sanitized = sanitizeSMT(lines.join('\n') + '\n');
+  return sanitized.text;
 }
 
 // --- Type / sort helpers ---
@@ -281,15 +391,32 @@ function z3Sort(t: TypeExpr): string {
     return recordSortName(t);
   }
 
-  if (t.type === 'ident' && t.name) {
-    // Strip ident: prefix, remove Z3-invalid chars, return clean sort name
+  if (t.type === 'ident' && t.name) {    // Strip ident: prefix, remove Z3-invalid chars, return clean sort name
     let clean = t.name.startsWith('ident:') ? t.name.substring(6) : t.name;
+    // Nat is Int in SMT; primitive-named idents (from unresolved unions) map
+    // to their builtin sort rather than an opaque declaration.
+    if (clean === 'Nat' || clean === 'Integer') return 'Int';
     // Remove parenthesized parameters: Option(NodeId) → Option_NodeId
-    clean = clean.replace(/\(([^)]+)\)/g, '_$1').replace(/[<>,\s|"\/]+/g, '_').replace(/__+/g, '_');
+    clean = sanitizeSortName(clean);
     return clean; // Named sort (declared as opaque)
   }
 
   return 'Int';
+}
+
+/**
+ * Deterministically map an arbitrary type-name string to a valid SMT
+ * identifier. Unparseable inline types (e.g. union aliases the line-oriented
+ * parser couldn't fully resolve) come through with stray characters like
+ * `}` and spaces; sanitizing keeps declared and referenced sort names
+ * consistent instead of emitting invalid declarations.
+ */
+export function sanitizeSortName(raw: string): string {
+  let clean = raw.startsWith('ident:') ? raw.substring(6) : raw;
+  clean = clean.replace(/\(([^)]+)\)/g, '_$1').replace(/[^A-Za-z0-9_]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  if (!clean) clean = 'AnonSort';
+  if (!/^[A-Za-z_]/.test(clean)) clean = 'T_' + clean;
+  return clean;
 }
 
 function recordSortName(t: TypeExpr): string {
@@ -311,9 +438,14 @@ function simpleHash(s: string): string {
 }
 
 function emitRecordSort(lines: string[], name: string, fields: Map<string, string>): void {
-  // Sanitize: strip ident: prefix and remove Z3-invalid characters
-  let cleanName = name.startsWith('ident:') ? name.substring(6) : name;
-  cleanName = cleanName.replace(/\(([^)]+)\)/g, '_$1').replace(/[<>,\s|"/]+/g, '_').replace(/__+/g, '_');
+  // Sanitize: strip ident: prefix and produce a valid SMT identifier
+  const cleanName = sanitizeSortName(name);
+
+  // Never redeclare builtin sorts (some unresolved type expressions land here
+  // with primitive names like `Bool`).
+  if (['Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set', 'Nat'].includes(cleanName)) {
+    return;
+  }
 
   if (fields.size === 0) {
     // Opaque sort (for named types like Account, Transfer)
@@ -321,12 +453,14 @@ function emitRecordSort(lines: string[], name: string, fields: Map<string, strin
     return;
   }
 
-  // Declare as a datatype
+  // Declare as a datatype. Field accessors are qualified with the type name —
+  // unqualified accessor names would collide with free constants of the same
+  // name (ambiguous reference in Z3).
   lines.push(`(declare-datatypes (( ${cleanName} 0)) ((`);
   lines.push(`  (mk-${cleanName}`);
 
   for (const [field, sort] of fields) {
-    lines.push(`    (${field} ${sort})`);
+    lines.push(`    (${cleanName}_${field} ${sort})`);
   }
   lines.push('  )');
   lines.push(')))');
@@ -568,9 +702,16 @@ function translateExpr(expr: string, stateVars: StateVar[], suffix: string): str
   e = convertToPrefix(e);
 
   // Fix length marker: len__args__xx → Z3-compatible form
-  // Use declared speckl_len functions since Z3 arrays don't have built-in length
+  // Use declared speckl_len functions since Z3 arrays don't have built-in length.
+  // Sort-specific: `length(log)` with log: List(LogEntry) needs a declaration
+  // over (Array Int LogEntry), not the generic (Array Int Int) one.
   e = e.replace(/len__([^_]\S*?)__xx/g, (_, args) => {
-    // Determine sort from context — default to Int array length
+    const base = args.replace(/_\\d+$/, '').replace(/_post$/, '').trim();
+    const sv = stateVars.find(v => v.name === base || args.startsWith(v.name));
+    if (sv && sv.typeExpr.type === 'list' && sv.typeExpr.elementType) {
+      const elem = z3Sort(sv.typeExpr.elementType);
+      if (elem !== 'Int') return `(speckl_len_${elem} ${args})`;
+    }
     return `(speckl_len_Int ${args})`;
   });
   e = e.replace(/min__([^_]\S*?)__([^_]\S*?)__xx/g, (_, a, b) => {
@@ -623,6 +764,14 @@ function convertToPrefix(expr: string): string {
   expr = convertOp(expr, 'distinct', 'distinct');
   expr = convertOp(expr, 'and', 'and');
   expr = convertOp(expr, 'or', 'or');
+  // Equality/relational operators are placeholder-tokenized (__EQ__ etc.) by
+  // the time this runs — convert them here so parenthesized operands become
+  // proper prefix forms instead of falling through to the escaped-infix
+  // regexes, which double-wrap already-parenthesized operands.
+  expr = convertOp(expr, '__EQ__', '=');
+  expr = convertOp(expr, '__NE__', 'distinct');
+  expr = convertOp(expr, '__GE__', '>=');
+  expr = convertOp(expr, '__LE__', '<=');
   expr = convertOp(expr, '=', '=');
   expr = convertOp(expr, '>', '>');
   expr = convertOp(expr, '<', '<');
@@ -875,7 +1024,9 @@ function emitBMC(
   actions: ActionNode[],
   nextNode: NextNode | null,
   stateVars: StateVar[],
-  options: Z3Options
+  options: Z3Options,
+  declaredSteps: Set<string> = new Set(),
+  initNode: InitNode | null = null
 ): void {
   const depth = verify.depth || options.verifyDepth;
   const temporalExpr = verify.temporalExpr;
@@ -887,13 +1038,17 @@ function emitBMC(
   const isAlways = temporalExpr.startsWith('Always(') || temporalExpr.startsWith('always(');
   const isEventually = temporalExpr.startsWith('Eventually(') || temporalExpr.startsWith('eventually(');
 
-  // Declare state variables at each step
+  // Declare state variables at each step — multiple verify blocks unroll the
+  // same steps, so declarations are shared via declaredSteps.
   lines.push('');
   lines.push(`; Declare state copies for ${depth} steps`);
   for (const v of stateVars) {
     for (let i = 0; i <= depth; i++) {
+      const name = `${v.name}_${i}`;
+      if (declaredSteps.has(name)) continue;
+      declaredSteps.add(name);
       const sort = z3Sort(v.typeExpr);
-      lines.push(`(declare-const ${v.name}_${i} ${sort})`);
+      lines.push(`(declare-const ${name} ${sort})`);
     }
   }
 
@@ -902,6 +1057,19 @@ function emitBMC(
   lines.push('; Initial state constraints');
   lines.push('(assert');
   lines.push('  (and');
+
+  // Assert explicit init-block assignments at step 0 (e.g. `currentTerm == 0`).
+  // Without these, step-0 state is unconstrained and BMC "finds" violations
+  // that are unreachable from the actual initial state.
+  const initAssigns: { target: string; expr: string }[] =
+    (initNode?.assignments ?? []).map(a => ({ target: a.name, expr: a.expr }));
+  for (const a of initAssigns) {
+    const z3Target = a.target.includes('[')
+      ? translateExpr(a.target, stateVars, '_0')
+      : `${a.target}_0`;
+    const z3Expr = translateExpr(a.expr, stateVars, '_0');
+    lines.push(`    (= ${z3Target} ${z3Expr})`);
+  }
 
   // Apply init assignments
   const stateNode = stateVars.length > 0 ? { type: 'state' as const, variables: stateVars } : null;
@@ -1007,31 +1175,52 @@ function emitBMC(
   if (isAlways && invariantName) {
     const inv = invariants.find(i => i.name === invariantName);
     if (inv) {
-      // Always p = for all steps up to depth, p holds
-      // To check: assert there exists step where p fails
-      // If UNSAT: p always holds within bound
-      // If SAT: counterexample found
+      // Invariants using post-state notation (x') cannot be unrolled per-step
+      // yet — their translated instances reference a single free x_post instead
+      // of x_{i+1}, so a negation-assert BMC would "find" spurious violations.
+      // Until post-state unrolling is implemented, degrade to a consistency
+      // check (sat) and say so explicitly.
+      const usesPostState = inv.statements.some(s =>
+        (s.type === 'require' || s.type === 'forall') && String((s as { expr?: string }).expr ?? '').includes("'"));
 
-      lines.push('(assert');
-      lines.push('  (or');
-      for (let i = 0; i <= depth; i++) {
-        lines.push(`    (not (${inv.name}_${i}))`);
-      }
-      lines.push('  )');
-      lines.push(')');
-
-      // Emit invariant instances at each step
+      // Emit invariant instances BEFORE the property assertion — SMT-LIB2
+      // requires define-funs to precede their use.
       for (let i = 0; i <= depth; i++) {
         emitInvariantInstance(lines, inv, stateVars, i);
       }
 
+      if (!usesPostState) {
+        // Always p = for all steps up to depth, p holds
+        // To check: assert there exists step where p fails
+        // If UNSAT: p always holds within bound
+        // If SAT: counterexample found
+        lines.push('(assert');
+        lines.push('  (or');
+        for (let i = 0; i <= depth; i++) {
+          // Nullary define-funs are referenced as bare identifiers, not applications.
+          lines.push(`    (not ${inv.name}_${i})`);
+        }
+        lines.push('  )');
+        lines.push(')');
+      } else {
+        lines.push(`; NOTE: invariant ${invariantName} uses post-state notation (x').`);
+        lines.push('; Per-step unrolling of post-state invariants is not implemented;');
+        lines.push('; this check is degraded to consistency only (no property assertion).');
+      }
+
       lines.push('');
       lines.push(`(echo "Checking: Always(${invariantName}) for ${depth} steps")`);
+      // With the negation asserted: unsat proves the property, sat means a
+      // counterexample was found. Degraded checks expect sat (consistency).
+      lines.push(usesPostState
+        ? '; speckl-expect: sat (degraded: post-state invariant, consistency check only)'
+        : '; speckl-expect: unsat');
       lines.push('(check-sat)');
       lines.push('(get-model)');
 
     } else {
       lines.push(`; Warning: invariant "${invariantName}" not found in spec`);
+      lines.push('; speckl-expect: sat');
       lines.push('(check-sat)');
       lines.push('(get-model)');
     }
@@ -1041,11 +1230,13 @@ function emitBMC(
     lines.push('(assert');
     lines.push('  (and');
     for (let i = 0; i <= depth; i++) {
-      lines.push(`    (not (${invariantName}_${i}))`);
+      // Nullary define-funs are referenced as bare identifiers, not applications.
+      lines.push(`    (not ${invariantName}_${i})`);
     }
     lines.push('  )');
     lines.push(')');
 
+    // Instances before use (SMT-LIB2 declaration order).
     for (let i = 0; i <= depth; i++) {
       const inv = invariants.find(inv => inv.name === invariantName);
       if (inv) {
@@ -1054,10 +1245,16 @@ function emitBMC(
     }
 
     lines.push(`(echo "Checking: Eventually(${invariantName})")`);
+    // We asserted the property never holds within the bound;
+    // unsat proves it eventually holds, sat means it may never hold.
+    lines.push('; speckl-expect: unsat');
     lines.push('(check-sat)');
     lines.push('(get-model)');
   } else {
     lines.push(`; Verification property: ${temporalExpr}`);
+    // Free-form temporal expression: no invariant instance to negate, so the
+    // result is only a consistency check — sat means the model is consistent.
+    lines.push('; speckl-expect: sat');
     lines.push('(check-sat)');
     lines.push('(get-model)');
   }

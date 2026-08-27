@@ -268,6 +268,16 @@ export interface FormalSpecFacet {
   constraints: IRConstraint[];
   /** Temporal verifies — what must eventually hold, with bounded depth. */
   verifies: IRVerify[];
+  /**
+   * Declared inputs (v0.2 declarative `input:` blocks). These are the free
+   * variables of the formal contract — declarative specs have no state
+   * block, so verification checks constraints over these constants.
+   * Record-typed inputs are flattened to named fields; non-record inputs
+   * are skipped (with a diagnostic).
+   */
+  inputs: IRFieldDef[];
+  /** Declared outputs — same treatment as inputs. */
+  outputs: IRFieldDef[];
 }
 
 export interface IRConstraint {
@@ -310,7 +320,7 @@ export type IRExpr =
   | IRFieldAccess
   | IRIndexExpr;
 
-export interface IRBoolLit { kind: 'bool_lit'; value: boolean }
+export interface IRBoolLit { kind: 'bool_lit'; value: boolean; /** True when this node is a placeholder for an expression that failed to parse. */ parseFailed?: boolean }
 export interface IRIntLit { kind: 'int_lit'; value: number }
 export interface IRFloatLit { kind: 'float_lit'; value: number }
 export interface IRStringLit { kind: 'string_lit'; value: string }

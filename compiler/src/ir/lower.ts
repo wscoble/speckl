@@ -24,6 +24,7 @@ import {
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
   ProvenanceNode, ReviewNode, AuthorNode, SourceNode, DerivesNode,
   SatisfiesNode, BOMNode, TypeExpr, OneofNode, TransitionNode,
+  InputNode, OutputNode,
 } from '../parser.js';
 import {
   IR, IRSpeck, IRFacets, IRImport,
@@ -330,6 +331,8 @@ function lowerFormalSpec(
 ): FormalSpecFacet {
   const constraints: IRConstraint[] = [];
   const verifies: IRVerify[] = [];
+  const inputs: IRFieldDef[] = [];
+  const outputs: IRFieldDef[] = [];
 
   for (const m of speck.members) {
     if (m.type === 'constraint') {
@@ -345,10 +348,31 @@ function lowerFormalSpec(
         temporalExpr: parseExprSafe(v.temporalExpr, diagnostics, speck.name),
         depth: v.depth,
       });
+    } else if (m.type === 'input' || m.type === 'output') {
+      // Declarative-spec free variables. Flatten record types to named
+      // fields so generators can declare them as constants.
+      const typeExpr = (m as InputNode | OutputNode).typeExpr;
+      const target = m.type === 'input' ? inputs : outputs;
+      if (typeExprRecordFields(typeExpr)) {
+        for (const f of typeExprRecordFields(typeExpr)!) {
+          target.push({ name: f.name, type: lowerTypeExpr(f.type), optional: false });
+        }
+      } else {
+        diagnostics.push({
+          level: 'warning',
+          message: `${m.type} type is not a record; fields cannot be named for formal verification — skipped`,
+          speck: speck.name,
+        });
+      }
     }
   }
 
-  return { constraints, verifies };
+  return { constraints, verifies, inputs, outputs };
+}
+
+/** Return the fields of a record TypeExpr, or null for other shapes. */
+function typeExprRecordFields(t: TypeExpr): { name: string; type: TypeExpr }[] | null {
+  return t.type === 'record' ? t.fields ?? null : null;
 }
 
 function lowerWireFormat(speck: SpeckNode): WireFormatFacet {
@@ -615,7 +639,7 @@ function lowerExpr(
   speckName: string,
 ): IRExpr {
   if (!e) {
-    return { kind: 'bool_lit', value: false };
+    return { kind: 'bool_lit', value: false, parseFailed: true };
   }
   switch (e.kind) {
     case 'literal': {
@@ -626,7 +650,7 @@ function lowerExpr(
         if (Number.isInteger(n)) return { kind: 'int_lit', value: n };
         return { kind: 'float_lit', value: n };
       }
-      return { kind: 'bool_lit', value: false };
+      return { kind: 'bool_lit', value: false, parseFailed: true };
     }
     case 'ident':
       return { kind: 'ident', name: e.name };
@@ -667,7 +691,7 @@ function lowerExpr(
         message: `expression kind ${e.kind} not yet lowered; emitting bool_lit false placeholder`,
         speck: speckName,
       });
-      return { kind: 'bool_lit', value: false };
+      return { kind: 'bool_lit', value: false, parseFailed: true };
   }
 }
 
@@ -712,7 +736,7 @@ function parseExprSafe(
       message: `expression parse failed: ${(e as Error).message}; emitting bool_lit false placeholder`,
       speck: speckName,
     });
-    return { kind: 'bool_lit', value: false };
+    return { kind: 'bool_lit', value: false, parseFailed: true };
   }
 }
 
