@@ -1,0 +1,197 @@
+// Crm.speckdl — CRM: contacts, contracts, SOWs, and the
+// client-relationship lifecycle for Greybeard Holdings.
+//
+// The behavior contract for the CRM surface in greybeard-ops
+// (CrmRepository + the /api/contacts, /api/contracts routes).
+// Complements Billing.speckdl (invoice cycle) — this spec owns the
+// entities billing operates on.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck Crm {
+
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    solver: "z3" version "4.12.5"
+    runtime: "quarkus" version "3.15.1"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision "CRM owns contact/contract/SOW identity; Billing owns the money motion on top of them" :: "greybeard-ops CrmRepository + V4__crm_tables.sql"
+    external_doc "Greybeard Holdings / Infinity Contractors MSA" :: "DocuSign envelope 5D4C118B-C1A6-821A-815A-F4FE93CC3567"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-crm-2026"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  type Contact = {
+    id: Nat,
+    kind: String,             // "person" | "organization" (CHECK-constrained)
+    name: String,
+    email: String | null,
+    phone: String | null,
+    role: String | null,
+    organizationId: Nat | null, // persons may belong to org contacts
+    notes: String | null
+  }
+
+  type Contract = {
+    id: Nat,
+    clientId: Nat,            // FK → Contact; RESTRICT on delete
+    title: String,
+    status: String,           // "draft" | "active" | "expired" | "terminated"
+    effectiveDate: String,
+    expiryDate: String | null,
+    billingCycle: String,     // "monthly" | "quarterly" | "annual" | "one_time" | "milestone"
+    rate: Real,
+    terms: String | null
+  }
+
+  type Sow = {
+    id: Nat,
+    contractId: Nat,          // FK → Contract; CASCADE on delete
+    title: String,
+    status: String,           // "draft" | "active" | "completed" | "cancelled"
+    amount: Real
+  }
+
+  // ─── Enums ──────────────────────────────────────────────────────
+
+  interface ContactKind {
+    person
+    organization
+  }
+
+  interface ContractStatus {
+    Draft
+    Active
+    Expired
+    Terminated
+  }
+
+  // ─── State ──────────────────────────────────────────────────────
+
+  state: {
+    contacts: Map<Nat, Contact>,
+    contracts: Map<Nat, Contract>,
+    contractCapabilities: Map<Nat, List<String>>   // contractId → whitelist
+  }
+
+  init: {
+    contacts := Map.empty(),
+    contracts := Map.empty(),
+    contractCapabilities := Map.empty()
+  }
+
+  // ─── Invariants ─────────────────────────────────────────────────
+
+  invariant ContactKindValid {
+    forall c in contacts.values:
+      c.kind == "person" or c.kind == "organization"
+  }
+
+  invariant ContractClientExists {
+    forall c in contracts.values:
+      contacts.has(c.clientId)
+  }
+
+  invariant PaidInvoiceProtectsClient {
+    // A client with invoices cannot be deleted — the FK is RESTRICT.
+    // (Deleted contact ⇒ no contract references it ⇒ no invoices flow.)
+    forall ct in contracts.values:
+      contacts.has(ct.clientId)
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action CreateContact(kind: String, name: String, email: String | null,
+                       organizationId: Nat | null) {
+    require kind == "person" or kind == "organization"
+    require name != ""
+    // A person may reference an organization contact; an org may not
+    // belong to another org.
+    require implies(kind == "organization", organizationId == null)
+    require implies(organizationId != null, contacts.has(organizationId))
+  }
+
+  action UpdateContact(contactId: Nat, name: String | null, email: String | null,
+                       role: String | null) {
+    require contacts.has(contactId)
+    // Partial update: at least one field provided.
+    require name != null or email != null or role != null
+    require implies(name != null, name != "")
+  }
+
+  action DeleteContact(contactId: Nat) {
+    require contacts.has(contactId)
+    // FK RESTRICT: clients with contracts cannot be deleted.
+    require not exists ct in contracts.values: ct.clientId == contactId
+  }
+
+  action CreateContract(clientId: Nat, title: String, status: String, rate: Real) {
+    require contacts.has(clientId)
+    require title != ""
+    require status == "draft" or status == "active"
+  }
+
+  // Contract status machine — mirrors the DB CHECK constraint and the
+  // PATCH /api/contracts/{id}/status route.
+  //   draft → active → {expired, terminated}
+  //   draft → terminated
+  // Terminal states stay terminal.
+
+  action ActivateContract(contractId: Nat) {
+    require contracts.has(contractId)
+    let ct := contracts[contractId]
+    require ct.status == "draft"
+    ct.status := "active"
+    contracts[contractId] := ct
+  }
+
+  action ExpireContract(contractId: Nat) {
+    require contracts.has(contractId)
+    let ct := contracts[contractId]
+    require ct.status == "active"
+    ct.status := "expired"
+    contracts[contractId] := ct
+  }
+
+  action TerminateContract(contractId: Nat, reason: String) {
+    require contracts.has(contractId)
+    let ct := contracts[contractId]
+    require ct.status == "draft" or ct.status == "active"
+    require reason != ""
+    ct.status := "terminated"
+    contracts[contractId] := ct
+  }
+
+  action AddCapability(contractId: Nat, capability: String) {
+    require contracts.has(contractId)
+    require capability != ""
+    // Duplicate adds are idempotent (ON CONFLICT DO NOTHING).
+    require not (contractCapabilities[contractId]).has(capability)
+  }
+
+  action RemoveCapability(contractId: Nat, capability: String) {
+    require contracts.has(contractId)
+    require (contractCapabilities[contractId]).has(capability)
+  }
+
+  // ─── Verify ─────────────────────────────────────────────────────
+
+  // Every contract's client exists (no orphans — P3 for relationships).
+  verify Always(ContractClientExists) { depth 5 }
+
+  // Every contact kind is one of the two allowed values.
+  verify Always(ContactKindValid) { depth 5 }
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event ContactCreated { contactId: Nat, kind: String }
+  event ContractStatusChanged { contractId: Nat, from: String, to: String }
+  event InvoiceGenerated { invoiceId: Nat, contractId: Nat, total: Real }
+}

@@ -282,8 +282,14 @@ export function sanitizeSMT(text: string): SanitizeResult {
     }
   }
 
+  const SMT_BUILTIN_SORTS = new Set(['Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set']);
+
   // Pass 2 (to fixpoint): validate define-fun bodies and asserts; drop any
   // that reference undeclared identifiers, cascading through dependencies.
+  // User-declared sorts are NOT valid terms — a sort name appearing in term
+  // position (e.g. `(= routerConfig LlmRouterConfig)` from a placeholder
+  // initializer) is invalid SMT and the form is dropped.
+  const userSorts = new Set([...knownSorts].filter(x => !SMT_BUILTIN_SORTS.has(x)));
   let changed = true;
   while (changed) {
     changed = false;
@@ -320,10 +326,17 @@ export function sanitizeSMT(text: string): SanitizeResult {
       const braceLeak = /[{}]/.test(noStrings);
       const malformed = infixLeak || forallSugar || emptyOp || doubleWrappedOp || braceLeak;
 
-      const unknown = malformed
-        ? ['malformed expression (leaked source syntax)']
+      // Built-in sorts may appear as atoms in binder sort positions; a
+      // *user-declared* sort used as a term is invalid SMT (typically a
+      // type name leaked from a placeholder initializer).
+      const userSortLeak = idents.some(id => userSorts.has(id) && !isKnownIdent(id));
+      const unknown = malformed || userSortLeak
+        ? [...new Set(
+            (malformed ? ['malformed expression (leaked source syntax)'] : [])
+              .concat(userSortLeak ? ['user sort used as a term'] : [])
+          )]
         : [...new Set(
-            idents.filter(id => !isKnownIdent(id) && !binders.has(id) && !isKnownSort(id))
+            idents.filter(id => !isKnownIdent(id) && !binders.has(id))
           )];
 
       if (unknown.length > 0) {

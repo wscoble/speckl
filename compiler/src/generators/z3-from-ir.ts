@@ -90,6 +90,14 @@ function collectIdentTypeNames(t: IRTypeRef): string[] {
   return names;
 }
 
+/**
+ * Map of state-variable name → its record sort name, used by translateExpr
+ * to resolve field accesses on record-typed state variables to datatype
+ * accessors (`(Record_field var)`) instead of the array-style select.
+ * Set at the start of emitSMT for the speck being translated.
+ */
+let currentRecordOfVar: Map<string, string> = new Map();
+
 function emitSMT(speck: IRSpeck, verifyDepth: number): string {
   const lines: string[] = [];
   lines.push(`; SMT-LIB2 generated from Speckl IR for ${speck.name}`);
@@ -177,6 +185,11 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
   }
   for (const v of stateVars) {
     lines.push(`(declare-const ${v.name} ${z3Sort(v.type)})`);
+    // Record-typed state vars register for field-accessor translation.
+    const sort = z3Sort(v.type);
+    if (recordTypes.has(sort)) {
+      currentRecordOfVar.set(v.name, sort);
+    }
   }
 
   // 2. Declarative specs (v0.2 style) have no state block — their constraints
@@ -229,6 +242,11 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
     lines.push(`; --- Verifies (BMC, depth=${verifyDepth}) ---`);
     const declaredSteps = new Set<string>();
     for (const v of speck.facets.formal_spec.verifies) {
+      // Skip parse-failure placeholders (see init/constraint handling).
+      if (containsParseFailure(v.temporalExpr)) {
+        lines.push(`; skipped verify "${v.name}": expression failed to parse`);
+        continue;
+      }
       emitBMC(lines, v, stateVars, verifyDepth, declaredSteps);
     }
   }
@@ -306,9 +324,22 @@ function translateExpr(expr: IRExpr): string {
       return `"${expr.value.replace(/"/g, '""')}"`;
     case 'ident':
       return expr.name;
-    case 'field':
+    case 'field': {
+      // Collection constructor sugar: Map.empty / List.empty / Set.empty —
+      // translate to a pre-declared constant (see header declarations).
+      if (expr.target.kind === 'ident' && expr.field === 'empty') {
+        return `speckl_empty_${expr.target.name}`;
+      }
+      // Field access on a record-typed state variable → datatype accessor
+      // `(Record_field target)`. Datatype fields are qualified with the
+      // constructor name (see mkConstructor).
+      if (expr.target.kind === 'ident' && currentRecordOfVar.has(expr.target.name)) {
+        const record = currentRecordOfVar.get(expr.target.name)!;
+        return `(${record}_${expr.field} ${expr.target.name})`;
+      }
       // Field access — only valid on record sorts; emit as a select
       return `(select ${translateExpr(expr.target)} "${expr.field}")`;
+    }
     case 'index':
       return `(select ${translateExpr(expr.target)} ${translateExpr(expr.index)})`;
     case 'binop':

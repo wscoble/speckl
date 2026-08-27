@@ -168,7 +168,18 @@ function renderCounterexample(modelStdout, smt) {
 
 // --- Main ---
 
-const exampleFiles = readdirSync(examplesDir).filter(f => f.endsWith('.speckdl')).sort();
+// Recurse into subdirectories so spec suites grouped by project
+// (e.g. examples/greybeard/) are verified too.
+function findSpeckFiles(dir, prefix = '') {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...findSpeckFiles(join(dir, entry.name), rel));
+    else if (entry.name.endsWith('.speckdl')) out.push(rel);
+  }
+  return out;
+}
+const exampleFiles = findSpeckFiles(examplesDir).sort();
 if (exampleFiles.length === 0) {
   console.error(`verify-z3: no .speckdl files found in ${examplesDir}`);
   process.exit(1);
@@ -184,7 +195,7 @@ let failed = 0;
 
 for (const file of exampleFiles) {
   const filePath = join(examplesDir, file);
-  const base = basename(file, '.speckdl');
+  const base = file.replace(/\.speckdl$/, '').replaceAll('/', '.');
 
   for (const [mode, target] of [['ast', 'z3'], ['ir', 'all-ir']]) {
     const outDir = join(workDir, `${base}.${mode}`);
