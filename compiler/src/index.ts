@@ -13,6 +13,7 @@ import { generateRust } from './generators/rust.js';
 import { generateK8sCRD } from './generators/k8s-crd.js';
 import { generateProvenanceFromIR } from './generators/provenance-from-ir.js';
 import { lower } from './ir/lower.js';
+import { generateCamel } from './generators/camel.js';
 import { OpenAPITarget } from './generators/openapi.js';
 import fs from 'fs';
 import path from 'path';
@@ -20,7 +21,7 @@ import path from 'path';
 interface CompileOptions {
   outputDir: string;
   bomFormat: 'cdx' | 'spdx' | 'both';
-  target: 'typescript' | 'z3' | 'rust' | 'protobuf' | 'k8s' | 'openapi' | 'all' | 'all-ir';
+  target: 'typescript' | 'z3' | 'rust' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'all' | 'all-ir';
   verifyDepth: number;
 }
 
@@ -43,7 +44,7 @@ async function main() {
           alias: 't',
           describe: 'Compilation target',
           type: 'string',
-          choices: ['typescript', 'z3', 'rust', 'protobuf', 'k8s', 'openapi', 'all', 'all-ir'],
+          choices: ['typescript', 'z3', 'rust', 'protobuf', 'k8s', 'openapi', 'camel', 'all', 'all-ir'],
           default: 'typescript' as const,
         })
         .option('verify-depth', {
@@ -86,7 +87,7 @@ async function main() {
   const rawSource = fs.readFileSync(file, 'utf-8');
 
   const irAst = lower(ast, { filePath: file, resolveImports: false });
-  const isIRTarget = (t: string) => ['k8s', 'openapi', 'all-ir'].includes(t);
+  const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
 
   // K8s CRDs
@@ -99,6 +100,12 @@ async function main() {
   if (options.target === 'openapi' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating OpenAPI 3.1 specification...');
     new OpenAPITarget().generate(irAst, { outputDir: options.outputDir });
+  }
+
+  // Camel (camel-quarkus Java routes + processors)
+  if (options.target === 'camel' || options.target === 'all' || options.target === 'all-ir') {
+    console.log('\nGenerating Apache Camel (camel-quarkus) routes...');
+    generateCamel(irAst, { outputDir: options.outputDir });
   }
 
   // Rust
