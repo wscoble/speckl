@@ -1339,14 +1339,39 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     const isNewVar = /^\w+\s*:/.test(line);
     // Check if prev line ends with a continuation character (brace or paren, NOT comma)
     const prevIsContinuation = /[{(]\s*$/.test(prevLine);
-    if (isNewVar && !prevIsContinuation) {
-      return acc + '; ' + line;
+    // While the accumulated text is unbalanced (a multi-line type expression,
+    // e.g. `authorizationCodes: Map(AuthorizationCode, {` opening a multi-
+    // line inline record), join every line until brackets balance — record
+    // field lines match the new-var pattern but sit inside the brackets.
+    // Join with a comma so the inline record keeps its field separators
+    // (trailing commas were stripped per-line as declaration separators).
+    // Bracket depth only (not the dangling-operator regex): type
+    // declarations never contain bare operators, and `Map<Nat, Real>` ends
+    // with `>` which the operator heuristic would misread as incomplete.
+    if (!bracketsUnbalanced(acc)) {
+      if (isNewVar && !prevIsContinuation) {
+        return acc + '; ' + line;
+      }
+      return acc + ' ' + line;
     }
-    return acc + ' ' + line;
+    return acc.endsWith('{') ? acc + ' ' + line : acc + ', ' + line;
   }, '');
   const result = parseStateBlock(inner);
   if (messageName !== undefined) result.messageName = messageName;
   return result;
+}
+
+/** True when an expression text has unbalanced brackets (type declarations). */
+function bracketsUnbalanced(text: string): boolean {
+  let depth = 0;
+  let inStr = false;
+  for (const c of text) {
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+  }
+  return depth > 0;
 }
 
 /** True when an expression text has unbalanced brackets or a dangling operator. */
