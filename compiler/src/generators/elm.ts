@@ -1843,11 +1843,11 @@ function emitCompositeMain(
   L.push(`                    div [] []`);
   L.push(`    in`);
   L.push(`    div [ class "gb-board" ]`);
-  L.push(`        (List.map (kanbanCol page spec dragFromGate) (known ++ unknown) ++ [ ghost ])`);
+  L.push(`        (List.map (kanbanRow page spec dragFromGate) (known ++ unknown) ++ [ ghost ])`);
   L.push(``);
   L.push(``);
-  L.push(`kanbanCol : Page -> KanbanSpec rec -> Bool -> ( String, List rec ) -> Html FrontMsg`);
-  L.push(`kanbanCol page spec dragFromGate ( col, items ) =`);
+  L.push(`kanbanRow : Page -> KanbanSpec rec -> Bool -> ( String, List rec ) -> Html FrontMsg`);
+  L.push(`kanbanRow page spec dragFromGate ( col, items ) =`);
   L.push(`    let`);
   L.push(`        dragInfo =`);
   L.push(`            page.drag`);
@@ -1870,14 +1870,14 @@ function emitCompositeMain(
   L.push(``);
   L.push(`                Nothing -> False`);
   L.push(``);
-  L.push(`        colClass =`);
+  L.push(`        rowClass =`);
   L.push(`            String.join " "`);
-  L.push(`                ([ "gb-board-col" ]`);
+  L.push(`                ([ "gb-board-row" ]`);
   L.push(`                    ++ (if legal && dragFromGate && List.member col approveTargets then`);
-  L.push(`                            [ "gb-col-approve" ]`);
+  L.push(`                            [ "gb-row-approve" ]`);
   L.push(``);
   L.push(`                        else if legal && dragFromGate && gateDenyTargets /= [] && List.member col gateDenyTargets then`);
-  L.push(`                            [ "gb-col-deny" ]`);
+  L.push(`                            [ "gb-row-deny" ]`);
   L.push(``);
   L.push(`                        else if legal then`);
   L.push(`                            [ "gb-col-ok" ]`);
@@ -1885,7 +1885,7 @@ function emitCompositeMain(
   L.push(`                        else`);
   L.push(`                            []`);
   L.push(`                    )`);
-  L.push(`                    ++ (if legal && hovered then [ "gb-col-hover" ] else [])`);
+  L.push(`                    ++ (if legal && hovered then [ "gb-row-hover" ] else [])`);
   L.push(`                )`);
   L.push(``);
   L.push(`        commitAttr =`);
@@ -1901,17 +1901,17 @@ function emitCompositeMain(
   L.push(`                    []`);
   L.push(`    in`);
   L.push(`    div`);
-  L.push(`        ([ class colClass`);
+  L.push(`        ([ class rowClass`);
   L.push(`        , attribute "role" "region"`);
-  L.push(`        , attribute "aria-label" (col ++ " column, " ++ String.fromInt (List.length items) ++ " cards")`);
+  L.push(`        , attribute "aria-label" (col ++ ", " ++ String.fromInt (List.length items) ++ " cards")`);
   L.push(`        , onMouseEnter (DragOverCol col)`);
   L.push(`        , onMouseLeave (DragLeaveCol col)`);
   L.push(`        ] ++ commitAttr)`);
-  L.push(`        [ div [ class "gb-board-col-hdr" ]`);
+  L.push(`        [ div [ class "gb-board-row-hdr" ]`);
   L.push(`            [ text col`);
-  L.push(`            , span [ class "gb-board-col-count" ] [ text (String.fromInt (List.length items)) ]`);
+  L.push(`            , span [ class "gb-board-row-count" ] [ text (String.fromInt (List.length items)) ]`);
   L.push(`            ]`);
-  L.push(`        , div [ class "gb-board-col-items", attribute "role" "list" ] (List.map (\\r -> kanbanCard page spec r) items)`);
+  L.push(`        , div [ class "gb-board-row-items", attribute "role" "list" ] (List.map (\\r -> kanbanCard page spec r) items)`);
   L.push(`        ]`);
   L.push(``);
   L.push(``);
@@ -3437,26 +3437,13 @@ body {
   border-radius: 0;
 }
 
-/* board (kanban transition pattern) */
+/* board (kanban transition pattern): status rows, cards flow horizontally */
 .gb-board {
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  overflow-x: auto;
   padding: 10px 14px 14px;
-  align-items: stretch;
-  scrollbar-width: thin;
-  scrollbar-color: #45475a transparent;
-  scroll-snap-type: x proximity;
 }
-.gb-board::-webkit-scrollbar { height: 10px; }
-.gb-board::-webkit-scrollbar-track { background: transparent; }
-.gb-board::-webkit-scrollbar-thumb {
-  background: #3a3f46;
-  border-radius: 6px;
-  border: 2px solid var(--gb-bg);
-}
-.gb-board::-webkit-scrollbar-thumb:hover { background: #585b70; }
-.gb-board-col { scroll-snap-align: start; }
 body {
   scrollbar-width: thin;
   scrollbar-color: #45475a transparent;
@@ -3465,61 +3452,58 @@ body::-webkit-scrollbar { width: 10px; }
 body::-webkit-scrollbar-track { background: var(--gb-bg); }
 body::-webkit-scrollbar-thumb { background: #45475a; border-radius: 6px; }
 body::-webkit-scrollbar-thumb:hover { background: #585b70; }
-.gb-board-col {
-  flex: 1 0 260px;
-  min-width: 260px;
-  min-height: 380px;
-  display: flex;
-  flex-direction: column;
-  background: #17191d;
-  border: 1px solid #2c3036;
+.gb-board-row {
+  background: #1e1e2e;
+  border: 1px solid var(--gb-border);
   border-radius: 8px;
-  padding: 6px 8px 8px;
+  padding: 8px 10px;
+  min-height: 64px;
 }
-.gb-board-col.gb-col-ok {
+.gb-board-row.gb-row-ok {
   outline: 2px dashed #6c7086;
   outline-offset: -2px;
   background: rgba(108, 112, 134, 0.12);
 }
-.gb-board-col.gb-col-approve {
+.gb-board-row.gb-row-approve {
   outline: 3px solid #a6e3a1;
   outline-offset: -2px;
   background: rgba(166, 227, 161, 0.1);
 }
-.gb-board-col.gb-col-deny {
+.gb-board-row.gb-row-deny {
   outline: 3px solid #f38ba8;
   outline-offset: -2px;
   background: rgba(243, 139, 168, 0.1);
 }
-.gb-board-col.gb-col-hover {
-  background: #fbe9e4;
-  outline-style: solid;
+.gb-board-row.gb-row-hover {
+  background: rgba(180, 190, 254, 0.06);
 }
-.gb-board-col-hdr {
+.gb-board-row-hdr {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 6px 2px;
+  padding: 2px 4px 6px;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--gb-text-2);
 }
-.gb-board-col-count {
+.gb-board-row-count {
   background: var(--gb-card);
   border: 1px solid var(--gb-border);
   border-radius: 10px;
   padding: 0 8px;
   font-size: 11px;
 }
-/* the items area fills the column to the bottom: the whole column is a
-   landing zone, so empty columns and below-card space are droppable */
-.gb-board-col-items {
+/* cards flow horizontally and wrap; empty rows stay droppable */
+.gb-board-row-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   padding: 0;
-  flex: 1 1 auto;
+  min-height: 44px;
 }
-.gb-card-draggable { cursor: grab; }
+.gb-board-row-items .gb-card { flex: 0 0 320px; max-width: 100%; }
 .gb-card-dragging { opacity: 0.35; }
 .gb-ghost {
   position: fixed;
