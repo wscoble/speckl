@@ -179,9 +179,15 @@ function rewriteGoExpr(
   }
 
   // set membership: target in { "a", "b", "c" } -> (target == "a" || target == "b" || target == "c")
-  g = g.replace(/(\w+)\s+in\s+\{([^}]+)\}/g, (_, ident, values) => {
+  g = g.replace(/([\w.]+)\s+in\s+\{([^}]+)\}/g, (_, ident, values) => {
     const vals = values.split(',').map((v: string) => v.trim().replace(/"/g, ''));
     return '(' + vals.map((v: string) => `${ident} == ${JSON.stringify(v)}`).join(' || ') + ')';
+  });
+
+  // array membership: target in [ "a", "b" ] -> (target == "a" || target == "b")
+  g = g.replace(/([\w.]+)\s+in\s+\[([^\]]+)\]/g, (_, ident, values) => {
+    const vals = values.split(',').map((v: string) => v.trim());
+    return '(' + vals.map((v: string) => `${ident} == ${v}`).join(' || ') + ')';
   });
 
   // implies -> !(p) || (q)
@@ -381,18 +387,34 @@ function emitSpeck(speck: SpeckNode): string {
   const invariantChecks = constraints.map((c, i) => {
     const cExpr = c.expr.trim();
     const fname = `Check${goName(c.name || 'Invariant' + i)}`;
-    const forallMatch = cExpr.match(/^forall\s+(\w+)\s+in\s+(\w+)(\.values\(\))?:([\s\S]+)$/);
+    // peel forall prefixes (supports nested forall: forall a ...: forall b ...: body)
+    const forallRe = /^forall\s+(\w+)\s+in\s+(\w+)(\.values\(\))?:\s*([\s\S]+)$/;
+    const loops: { varName: string; collName: string }[] = [];
+    let rest = cExpr;
+    let fm: RegExpMatchArray | null;
+    while ((fm = rest.match(forallRe))) {
+      loops.push({ varName: fm[1], collName: fm[2] });
+      rest = fm[4];
+    }
     let body: string;
-    if (forallMatch) {
-      const [, varName, collName, valuesCall, bodyExpr] = forallMatch;
-      const gColl = nameMap.get(collName) || camelCase(collName);
-      const bodyGo = goImplications(rewriteGoExpr(bodyExpr, nameMap, mapVarOrigNames, new Set<string>([varName]), stateEnumName, knownStateValues));
-      const loopVar = varName + 'Val';
-      const fieldFixed = bodyGo.replace(new RegExp(`\\b(\\w+)\\.(\\w+)`, 'g'), (m2, obj, f) => {
+    if (loops.length > 0) {
+      const innerExpr = goImplications(rewriteGoExpr(rest, nameMap, mapVarOrigNames, new Set<string>(loops.map(l => l.varName)), stateEnumName, knownStateValues));
+      let inner = innerExpr.replace(/\b(\w+)\.(\w+)/g, (m2, obj, f) => {
         const mapped = goFieldRenames.get(f);
         return mapped ? `${obj}.${mapped}` : m2;
       });
-      body = `\tfor _, ${varName}Val := range m.${gColl} {\n\t\tif !(${fieldFixed.replace(new RegExp(`\\b${varName}\\b`, 'g'), loopVar)}) {\n\t\t\treturn false\n\t\t}\n\t}\n\treturn true`;
+      for (const l of loops) inner = inner.replace(new RegExp(`\\b${l.varName}\\b`, 'g'), l.varName + 'Val');
+      const lines: string[] = [];
+      for (let d = 0; d < loops.length; d++) {
+        const gColl = nameMap.get(loops[d].collName) || camelCase(loops[d].collName);
+        lines.push(`${'\t'.repeat(d + 1)}for _, ${loops[d].varName}Val := range m.${gColl} {`);
+      }
+      lines.push(`${'\t'.repeat(loops.length + 1)}if !(${inner}) {`);
+      lines.push(`${'\t'.repeat(loops.length + 2)}return false`);
+      lines.push(`${'\t'.repeat(loops.length + 1)}}`);
+      for (let d = loops.length - 1; d >= 0; d--) lines.push(`${'\t'.repeat(d + 1)}}`);
+      lines.push('\treturn true');
+      body = lines.join('\n');
     } else {
       body = `\treturn ${goImplications(rewriteGoExpr(cExpr, nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues))}`;
     }
@@ -485,22 +507,15 @@ function emitAction(
   const hasReturn = action.statements.some(s => s.type === 'return');
   const retSig = hasReturn ? '(ret any, err error)' : '(err error)';
 
-  const guards = action.statements
-    .filter(s => s.type === 'require' || s.type === 'precondition')
-    .map(s => {
-      const expr = goImplications(rewriteGoExpr((s as any).expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues));
-      return `\tif !(${expr}) {\n\t\terr = fmt.Errorf("guard failed: ${(s as any).expr?.replace(/"/g, "'")}")\n\t\treturn\n\t}`;
-    }).join('\n');
-
-  const assigns = action.statements.filter(s => s.type === 'assign').map(s => {
-    const target = String((s as any).target);
+  const emitAssign = (s: any): string => {
+    const target = String(s.target);
     // nested field assign: mapVar[key].field := val
     const nested = target.match(/^(\w+)\[(.+)\]\.(\w+)$/);
     if (nested) {
       const gname = nameMap.get(cleanName(nested[1])) || camelCase(cleanName(nested[1]));
       const key = rewriteGoExpr(nested[2], nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
       const gfield = goFieldRenames.get(nested[3]) || goName(nested[3]);
-      const val = rewriteGoExpr((s as any).expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
+      const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
       // Go: cannot assign through a map to a struct field — read-modify-write
       return [
         `\t{`,
@@ -514,42 +529,54 @@ function emitAction(
     if (bracket) {
       const gname = nameMap.get(cleanName(bracket[1])) || camelCase(cleanName(bracket[1]));
       const key = rewriteGoExpr(bracket[2], nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
-      const val = rewriteGoExpr((s as any).expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
+      const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
       return `\tm.${gname}[${key}] = ${val}`;
     }
-    const gname = nameMap.get(cleanName((s as any).target)) || camelCase(cleanName((s as any).target));
-    const rawExpr = String((s as any).expr);
+    // local record field assign: localVar.field := val (let-bound local, not a state var)
+    const dotted = target.match(/^(\w+)\.(\w+)$/);
+    if (dotted && !nameMap.has(cleanName(dotted[1])) && localNames.has(cleanName(dotted[1]))) {
+      const gfield = goFieldRenames.get(dotted[2]) || goName(dotted[2]);
+      const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
+      return `\t${camelCase(cleanName(dotted[1]))}.${gfield} = ${val}`;
+    }
+    const gname = nameMap.get(cleanName(target)) || camelCase(cleanName(target));
+    const rawExpr = String(s.expr);
     // SpeckDL cons: ELEM :: list  ->  list = append([]Elem{elem}, list)
     const cons = rawExpr.match(/^(.+)\s*::\s*(\w+)$/s);
     if (cons) {
       const listVar = cons[2];
-      const gname = nameMap.get(cleanName(listVar)) || camelCase(cleanName(listVar));
+      const gname2 = nameMap.get(cleanName(listVar)) || camelCase(cleanName(listVar));
       const elemType = (stateVarsOf(listVar) || '').replace(/^\[\]/, '');
       const elem = fixRecordLiteral(rewriteGoExpr(cons[1].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues), elemType);
-      return `\tm.${gname} = append([]${elemType}{ ${elem} }, m.${gname}...)`;
+      return `\tm.${gname2} = append([]${elemType}{ ${elem} }, m.${gname2}...)`;
     }
     const val = rewriteGoExpr(rawExpr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
     return `\tm.${gname} = ${val}`;
-  }).join('\n');
+  };
 
-  const lets = action.statements.filter(s => s.type === 'let').map(s => {
-    localNames.add((s as any).name);
-    const val = rewriteGoExpr((s as any).expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
-    return `\t${camelCase((s as any).name)} := ${val}`;
-  }).join('\n');
-  const emits = action.statements.filter(s => s.type === 'emit').map(s => {
-    const fields = ((s as any).fields ?? [])
-      .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues)}`)
-      .join(', ');
-    return `\tm.EventLog = append(m.EventLog, ${goName((s as any).event)}{ ${fields} })`;
-  }).join('\n');
-
-  const rets = action.statements.filter(s => s.type === 'return')
-    .map(s => `\tret = ${rewriteGoExpr((s as any).expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues)}`)
-    .join('\n');
-
-  const parts = [guards, lets, assigns, emits, rets].filter(x => x);
-  let body = parts.length ? parts.join('\n') : '\treturn';
+  // emit statements in source order so lets declared before guards/assigns
+  // that reference them are emitted in the correct sequence
+  const bodyLines: string[] = [];
+  for (const s of action.statements as any[]) {
+    if (s.type === 'require' || s.type === 'precondition') {
+      const expr = goImplications(rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues));
+      bodyLines.push(`\tif !(${expr}) {\n\t\terr = fmt.Errorf("guard failed: ${String(s.expr).replace(/"/g, "'")}")\n\t\treturn\n\t}`);
+    } else if (s.type === 'let') {
+      localNames.add(s.name);
+      const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
+      bodyLines.push(`\t${camelCase(s.name)} := ${val}`);
+    } else if (s.type === 'assign') {
+      bodyLines.push(emitAssign(s));
+    } else if (s.type === 'emit') {
+      const fields = ((s.fields ?? []) as any[])
+        .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues)}`)
+        .join(', ');
+      bodyLines.push(`\tm.EventLog = append(m.EventLog, ${goName(s.event)}{ ${fields} })`);
+    } else if (s.type === 'return') {
+      bodyLines.push(`\tret = ${rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues)}`);
+    }
+  }
+  let body = bodyLines.length ? bodyLines.join('\n') : '\treturn';
   if (!hasReturn) body += '\n\treturn';
 
   return `// Execute action: ${action.name}\nfunc (m *${goName(speckName)}Machine) ${methodName}(${params}) ${retSig} {\n${body}\n}`;
