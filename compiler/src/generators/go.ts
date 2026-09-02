@@ -464,15 +464,9 @@ function emitSpeck(speck: SpeckNode): string {
   // collect known state values (enum interfaces + string literals compared/emitted)
   const known = new Set<string>();
   for (const vals of enumMap.values()) for (const v of vals) known.add(v);
-  for (const a of actions) {
-    for (const st of a.statements) {
-      const ex = String((st as any).expr ?? '');
-      for (const m of ex.match(/==\s*"(\w+)"/g) ?? []) known.add(m.split('==')[1].trim().replace(/"/g, ''));
-      if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
-        for (const m of String(f.value).match(/"([A-Za-z]+)"/g) ?? []) known.add(m.replace(/"/g, ''));
-      }
-    }
-  }
+  // DO NOT infer enums from string literals in actions — this causes
+  // type pollution in multi-entity specs. Only explicit interface enums
+  // should generate typed constants.
   const knownStateValues = Array.from(known);
 
   // enum defs
@@ -766,7 +760,17 @@ function emitAction(
     if (bracket) {
       const gname = nameMap.get(cleanName(bracket[1])) || camelCase(cleanName(bracket[1]));
       const key = rewriteGoExpr(bracket[2], nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
-      const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+      let val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+      // inline record literal assigned to a map value: { k: v, ... } -> TypeName{ K: v, ... }
+      const vt = stateVarTypes.get(cleanName(bracket[1]));
+      if (vt?.type === 'map' && vt.valueType?.type === 'ident') {
+        const recName = cleanName(vt.valueType.name);
+        const lit = val.match(/^\{\s*([\s\S]*)\s*\}$/);
+        if (lit) {
+          const inner = lit[1].replace(/(\w+)\s*:/g, (_, f) => `${goName(f)}:`);
+          val = `${recName}{ ${inner} }`;
+        }
+      }
       return `\tm.${gname}[${key}] = ${val}`;
     }
     // local record field assign: localVar.field := val (let-bound local, not a state var)
