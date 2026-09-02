@@ -474,6 +474,13 @@ function translateRecordLiteral(expr: string, recordTypes: Map<string, any[]>): 
 
 // ─── affordance synthesis ───────────────────────────────────────────
 
+/** find the bind (id) param name of an affordance plan, for per-card input keys */
+function entryIdOf(recName: string, plan: any): string {
+  const bind = plan.params.find((p: any) => p.kind === 'bind');
+  return bind ? bind.name : 'id';
+}
+
+
 /**
  * Classify each action parameter so the view can render a human affordance
  * instead of a raw form:
@@ -1892,7 +1899,13 @@ function emitCompositeMain(
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
       }
       if (affordances.has(recName)) {
-        L.push(`        , div [ class "gb-card-affordances" ] (affordances${tn} page r)`);
+        const entries = affordances.get(recName)!;
+        const rf = recordTypes.get(recName) || [];
+        const isBoard = rf.some((f: any) => ['column', 'status'].includes(f.name.toLowerCase())) && !!columnOrder;
+        const call = isBoard
+          ? `affordances${tn} page (${elmName(recName)}Ports page) r`
+          : `affordances${tn} page r`;
+        L.push(`        , div [ class "gb-card-affordances" ] (${call})`);
       }
       L.push(`        ]`);
     } else {
@@ -1901,7 +1914,13 @@ function emitCompositeMain(
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
       }
       if (affordances.has(recName)) {
-        L.push(`        , div [ class "gb-card-affordances" ] (affordances${tn} page r)`);
+        const entries = affordances.get(recName)!;
+        const rf = recordTypes.get(recName) || [];
+        const isBoard = rf.some((f: any) => ['column', 'status'].includes(f.name.toLowerCase())) && !!columnOrder;
+        const call = isBoard
+          ? `affordances${tn} page (${elmName(recName)}Ports page) r`
+          : `affordances${tn} page r`;
+        L.push(`        , div [ class "gb-card-affordances" ] (${call})`);
       }
       L.push(`        ]`);
     }
@@ -1909,46 +1928,166 @@ function emitCompositeMain(
     L.push(``);
   }
 
-  // ── affordance functions (per record with bound actions) ──
+  // ── affordance ports (per record with bound actions) ──
+  // The card is a child component: legality flows DOWN via ports.allows,
+  // status changes bubble UP via ports.emit. The card never touches the
+  // parent's model; the parent owns placement (regroup by status).
   for (const [recName, entries] of affordances) {
     if (entries.length === 0) continue;
     const tn = ElmName(recName);
+    const first = entries[0];
+    const comp = first.comp;
+    const recFields = recordTypes.get(recName) || [];
+    const isBoardRecord = recFields.some((f: any) => ['column', 'status'].includes(f.name.toLowerCase())) && !!columnOrder;
+    if (!isBoardRecord) {
+      // non-board record: plain component-wrapped buttons
+      emitPlainAffordances(tn, comp, entries);
+      continue;
+    }
+    L.push(`{-| Integration ports for the ${tn} child component: legality in,`);
+    L.push(`status changes out. -}`);
+    L.push(`type alias ${tn}Ports =`);
+    L.push(`    { allows : ${comp.module}.Msg -> Bool`);
+    L.push(`    , emit : ${comp.module}.Msg -> FrontMsg`);
+    L.push(`    , targets : List String`);
+    L.push(`    }`);
+    L.push(``);
+    L.push(``);
+    L.push(`${elmName(recName)}Ports : Page -> ${tn}Ports`);
+    L.push(`${elmName(recName)}Ports page =`);
+    L.push(`    { allows =`);
+    L.push(`        \\msg ->`);
+    L.push(`            case ${comp.module}.machine.check msg page.model.${compLower(comp)} of`);
+    L.push(`                Ok _ ->`);
+    L.push(`                    True`);
+    L.push(``);
+    L.push(`                Err _ ->`);
+    L.push(`                    False`);
+    L.push(`    , emit = \\msg -> FromMachine (${comp.module} msg)`);
+    L.push(`    , targets = boardOrder${tn}`);
+    L.push(`    }`);
+    L.push(``);
+    L.push(``);
+    // humanize helper (once)
+    if (!L.some(l => l.includes('humanizeLabel : String -> String'))) {
+      L.push(`humanizeLabel : String -> String`);
+      L.push(`humanizeLabel s =`);
+      L.push(`    String.toLower (String.trim (String.join " " (String.words (String.replace "_" " " s))))`);
+      L.push(``);
+      L.push(``);
+    }
+    // move button with GateDecision styling
+    if (entries.some(e => e.plan.params.some((p: any) => p.kind === 'choice'))) {
+      L.push(`moveBtn${tn} : ${tn}Ports -> ${tn} -> String -> Html FrontMsg`);
+      L.push(`moveBtn${tn} ports r target =`);
+      L.push(`    let`);
+      L.push(`        msg =`);
+      for (const e of entries) {
+        if (!e.plan.params.some((p: any) => p.kind === 'choice')) continue;
+        const an2 = ElmName(e.action.name);
+        const args = e.plan.params.map((p: any) => {
+          if (p.kind === 'bind') return `r.${elmName(p.name)}`;
+          if (p.kind === 'actor') return `"human"`;
+          if (p.kind === 'choice') return `target`;
+          if (p.kind === 'entity') return `(firstKey page.model.${p.stateVar})`;
+          return `"_"`;
+        }).join(' ');
+        L.push(`            ${an2} ${args}`);
+      }
+      L.push(`    in`);
+      L.push(`    if ports.allows msg then`);
+      L.push(`        button`);
+      L.push(`            [ class`);
+      L.push(`                (if target == "Approved" || target == "Denied" then`);
+      L.push(`                    "gb-btn gb-btn-sm gb-btn-gate"`);
+  L.push(``);
+      L.push(`                else`);
+      L.push(`                    "gb-btn gb-btn-sm"`);
+      L.push(`                )`);
+      L.push(`            , onClick (ports.emit msg)`);
+      L.push(`            ]`);
+      L.push(`            [ text (humanizeLabel target) ]`);
+      L.push(``);
+      L.push(`    else`);
+      L.push(`        text ""`);
+      L.push(``);
+      L.push(``);
+    }
+    // per-action affordance renderer: legal-filtered move buttons + text actions
+    L.push(`affordances${tn} : Page -> ${tn}Ports -> ${tn} -> List (Html FrontMsg)`);
+    L.push(`affordances${tn} page ports r =`);
+    L.push(`    List.concat`);
+    L.push(`        [ -- choice actions: one guard-filtered button per legal target`);
+    L.push(`          List.concatMap`);
+    L.push(`            (\\target ->`);
+    L.push(`                [ moveBtn${tn} ports r target ]`);
+    L.push(`            )`);
+    L.push(`            ports.targets`);
+    // text actions: per-card input row (CommentBox pattern)
+    for (const { comp: c, action: a, plan } of entries) {
+      const an = ElmName(a.name);
+      const textParams = plan.params.filter((p: any) => p.kind === 'text');
+      const hasChoice = plan.params.some((p: any) => p.kind === 'choice');
+      if (hasChoice || textParams.length === 0) continue;
+      const keyBase = textParams.map((p: any) => `${a.name}.${p.name}`).join('.');
+      const args = plan.params.map((p: any) => {
+        if (p.kind === 'bind') return `r.${elmName(p.name)}`;
+        if (p.kind === 'actor') return `"human"`;
+        if (p.kind === 'entity') return `(firstKey page.model.${p.stateVar})`;
+        if (p.kind === 'text') return `(getString page.inputs "${keyBase}." ++ String.fromInt r.${elmName(entryIdOf(recName, plan))})`;
+        return `"_"`;
+      }).join(' ');
+      L.push(`        , [ div [ class "gb-inline-action" ]`);
+      for (const p of textParams) {
+        L.push(`            [ inputFieldFor "${keyBase}." (String.fromInt r.${elmName(entryIdOf(recName, plan))}) page.inputs`);
+      }
+      L.push(`            , if ports.allows (${an} ${args}) then`);
+      L.push(`                button [ class "gb-btn gb-btn-sm", onClick (ports.emit (${an} ${args})) ] [ text "${humanize(a.name)}" ]`);
+      L.push(``);
+      L.push(`              else`);
+      L.push(`                text ""`);
+      L.push(`            ]`);
+      L.push(`            ]`);
+    }
+    L.push(`    ]`);
+    L.push(``);
+    L.push(``);
+  }
+
+
+  function emitPlainAffordances(tn: string, comp: any, entries: any[]): void {
     L.push(`affordances${tn} : Page -> ${tn} -> List (Html FrontMsg)`);
     L.push(`affordances${tn} page r =`);
     const lines: string[] = [];
-    for (const { comp: c, action: a, plan } of entries) {
+    for (const { action: a, plan } of entries) {
       const an = ElmName(a.name);
-      const btn = `${compLower(c)}Button page`;
+      const btn = `${compLower(comp)}Button page`;
       const mkArg = (p: any, lit?: string) => {
         if (p.kind === 'bind') return `r.${elmName(p.name)}`;
         if (p.kind === 'actor') return `"human"`;
         if (p.kind === 'choice') return `"${lit}"`;
         if (p.kind === 'entity') return `(firstKey ${varPath(p.stateVar)})`;
         if (p.kind === 'text') return `(getString page.inputs "${an}.${p.name}")`;
-        return `"${p.name}"`;
+        return `"_"`;
       };
       if (plan.params.some((p: any) => p.kind === 'choice')) {
         for (const p of plan.params) {
           if (p.kind !== 'choice') continue;
           for (const lit of p.literals || []) {
             const args = plan.params.map((pp: any) => mkArg(pp, pp.kind === 'choice' ? lit : undefined)).join(' ');
-            lines.push(`${btn} (${an} ${args}) "${humanize(lit)}"`);
+            lines.push(`[ ${btn} (${an} ${args}) "${humanize(lit)}" ]`);
           }
         }
       } else {
         const args = plan.params.map((p: any) => mkArg(p)).join(' ');
-        lines.push(`${btn} (${an} ${args}) "${humanize(a.name)}"`);
+        lines.push(`[ ${btn} (${an} ${args}) "${humanize(a.name)}" ]`);
       }
     }
     if (lines.length === 1) {
-      L.push(`    [ ${lines[0]} ]`);
+      L.push(`    ${lines[0]}`);
     } else {
       L.push(`    List.concat`);
-      L.push(`        [ [ ${lines[0]} ]`);
-      for (let k = 1; k < lines.length; k++) {
-        L.push(`        , [ ${lines[k]} ]`);
-      }
-      L.push(`        ]`);
+      for (const ln of lines) L.push(`        ${ln}`);
     }
     L.push(``);
     L.push(``);
@@ -2009,6 +2148,11 @@ function emitCompositeMain(
   L.push(`        , onInput (SetInput k)`);
   L.push(`        ]`);
   L.push(`        []`);
+  L.push(``);
+  L.push(``);
+  L.push(`inputFieldFor : String -> String -> Dict.Dict String String -> Html FrontMsg`);
+  L.push(`inputFieldFor base suffix inputs =`);
+  L.push(`    inputField (base ++ suffix) inputs`);
   L.push(``);
   L.push(``);
   L.push(`getString : Dict.Dict String String -> String -> String`);
@@ -2869,6 +3013,11 @@ number of state vars.
   L.push(`        []`);
   L.push(``);
   L.push(``);
+  L.push(`inputFieldFor : String -> String -> Dict.Dict String String -> Html FrontMsg`);
+  L.push(`inputFieldFor base suffix inputs =`);
+  L.push(`    inputField (base ++ suffix) inputs`);
+  L.push(``);
+  L.push(``);
   for (const a of actions) {
     const an = ElmName(a.name);
     L.push(`command${an} : Dict.Dict String String -> Html FrontMsg`);
@@ -3168,6 +3317,18 @@ body {
   cursor: pointer;
 }
 .gb-btn:hover { background: var(--gb-accent-dark); }
+.gb-btn-gate {
+  background: #1e7d43;
+  font-weight: 700;
+}
+.gb-btn-gate:hover { background: #166035; }
+.gb-inline-action {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 0 2px;
+}
+.gb-inline-action .gb-input { min-height: 34px; min-width: 120px; flex: 1; }
 .gb-btn:focus { outline: 2px solid var(--gb-accent-dark); outline-offset: 2px; }
 
 /* a11y: visible focus for keyboard nav */
