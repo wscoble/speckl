@@ -565,6 +565,7 @@ function emitAction(
     .join(', ');
   const methodName = goName(action.name);
   const hasReturn = action.statements.some(s => s.type === 'return');
+  const nullableParams = new Set(action.params.filter((p: any) => p.type?.nullable).map((p: any) => camelCase(cleanName(p.name))));
   const retSig = hasReturn ? '(ret any, err error)' : '(err error)';
 
   const emitAssign = (s: any): string => {
@@ -600,7 +601,7 @@ function emitAction(
       let v = val;
       const rec = letRecords.get(cleanName(dotted[1]));
       const ftype = rec ? recordFieldTypes.get(rec)?.get(dotted[2]) : undefined;
-      if (ftype?.nullable && /^([A-Za-z_]\w*)$/.test(val) && val !== 'nil') v = `&${val}`;
+      if (ftype?.nullable && /^([A-Za-z_]\w*)$/.test(val) && val !== 'nil' && !nullableParams.has(val)) v = `&${val}`;
       return `\t${camelCase(cleanName(dotted[1]))}.${gfield} = ${v}`;
     }
     const gname = nameMap.get(cleanName(target)) || camelCase(cleanName(target));
