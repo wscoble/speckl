@@ -17,7 +17,7 @@
 
           src = pkgs.lib.cleanSource ./compiler;
 
-          npmDepsHash = "sha256-bX7P63cRqaUZPobuT3Cz8WlmDQuVKxdh+rJDBJ2qXcE="; # will be computed on first build
+          npmDepsHash = "sha256-UN5SeJEgDaXzY+Jr2rmjQc/MjILZoWGqs2BWkQ8rnac="; # will be computed on first build
 
           buildPhase = ''
             npm run build --silent
@@ -28,10 +28,7 @@
             cp -r dist/* $out/lib/speckl/
             cp -r node_modules $out/lib/speckl/node_modules
 
-            cat > $out/bin/speckl <<'SCRIPT'
-            #!/bin/sh
-            exec ${pkgs.nodejs}/bin/node ${pkgs.lib.escapeShellArg "$out"}/lib/speckl/index.js "$@"
-            SCRIPT
+            printf '#!/bin/sh\nexec %s/bin/node %s/lib/speckl/index.js "$@"\n' "${pkgs.nodejs}" "$out" > $out/bin/speckl
             chmod +x $out/bin/speckl
           '';
 
