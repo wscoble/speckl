@@ -248,6 +248,24 @@ function goImplications(expr: string): string {
       return `(!(${p.trim()}) || (${q.trim()}))`;
     });
   }
+  // infix implies: A implies B -> (!(A) || (B))  (split at paren depth 0, recursive)
+  const lowerInfixImplies = (s: string): string => {
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (depth === 0 && s.startsWith('implies', i)
+        && (i === 0 || /\s/.test(s[i - 1]))
+        && (s[i + 7] === undefined || /\s/.test(s[i + 7]))) {
+        const left = lowerInfixImplies(s.slice(0, i).trim());
+        const right = lowerInfixImplies(s.slice(i + 7).trim());
+        return `(!(${left}) || (${right}))`;
+      }
+    }
+    return s;
+  };
+  e = lowerInfixImplies(e);
   e = e.replace(/\bnot\s+([a-zA-Z_]\w*)/g, '!$1');
   e = e.replace(/\bor\b/g, '||').replace(/\band\b/g, '&&');
   return e;
