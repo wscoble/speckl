@@ -258,11 +258,11 @@ function emitSpeck(speck: SpeckNode): string {
 
   // Merge all state members (multiple entities per speck)
   const stateNodes = members.filter(m => m.type === 'state') as StateNode[];
-  var mergedState: any = undefined;
-  const stateNode: any = mergedState;
+  let mergedState: any = undefined;
   if (stateNodes.length > 0) {
     mergedState = { type: 'state', variables: stateNodes.flatMap(function(n) { return n.variables; }) } as any;
   }
+  const stateNode: any = mergedState;
   const initNodes = members.filter(m => m.type === 'init') as any[];  const initNode: any = initNodes.length > 0 ? {
     type: 'init',
     assignments: initNodes.flatMap(function(n) { return n.assignments; }),
