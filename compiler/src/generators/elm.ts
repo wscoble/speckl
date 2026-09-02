@@ -1407,7 +1407,7 @@ function emitCompositeMain(
   L.push(`import Dict exposing (Dict)`);
   L.push(`import Html exposing (..)`);
   L.push(`import Html.Attributes exposing (..)`);
-  L.push(`import Html.Events exposing (onClick, onInput)`);
+  L.push(`import Html.Events exposing (onClick, onInput, custom)`);
   L.push(`import Http`);
   L.push(`import Json.Decode as D`);
   L.push(`import Json.Encode as JE`);
@@ -1430,6 +1430,7 @@ function emitCompositeMain(
   L.push(`    , error : Maybe String`);
   L.push(`    , loading : Bool`);
   L.push(`    , inputs : Dict.Dict String String`);
+  L.push(`    , drag : Maybe Int`);
   L.push(`    }`);
   L.push(``);
   L.push(``);
@@ -1438,6 +1439,9 @@ function emitCompositeMain(
   L.push(`    | GotState (Result Http.Error Model)`);
   L.push(`    | ActionDone (Result Http.Error ())`);
   L.push(`    | SetInput String String`);
+  L.push(`    | DragStart Int`);
+  L.push(`    | DragOver`);
+  L.push(`    | DragEnd`);
   L.push(``);
   L.push(``);
   L.push(`-- MSG (composite union over component messages)`);
@@ -1457,6 +1461,7 @@ function emitCompositeMain(
   L.push(`      , error = Nothing`);
   L.push(`      , loading = True`);
   L.push(`      , inputs = Dict.empty`);
+  L.push(`      , drag = Nothing`);
   L.push(`      }`);
   L.push(`    , fetchState`);
   L.push(`    )`);
@@ -1491,6 +1496,16 @@ function emitCompositeMain(
   L.push(`    case frontMsg of`);
   L.push(`        SetInput key value ->`);
   L.push(`            ( { page | inputs = Dict.insert key value page.inputs }, Cmd.none )`);
+  L.push(``);
+  L.push(`        DragStart id ->`);
+  L.push(`            ( { page | drag = Just id }, Cmd.none )`);
+  L.push(``);
+  L.push(`        DragOver ->`);
+  L.push(`            -- exists to carry preventDefault on dragover; no state change`);
+  L.push(`            ( page, Cmd.none )`);
+  L.push(``);
+  L.push(`        DragEnd ->`);
+  L.push(`            ( { page | drag = Nothing }, Cmd.none )`);
   L.push(``);
   L.push(`        GotState result ->`);
   L.push(`            case result of`);
@@ -1539,10 +1554,10 @@ function emitCompositeMain(
   L.push(`    case guardResult of`);
   L.push(`        Err guardMsg ->`);
   L.push(`            -- spec guard rejected the action client-side; server never sees it`);
-  L.push(`            ( { page | model = setSub oldModel newSub, error = Just guardMsg }, Cmd.none )`);
+  L.push(`            ( { page | model = setSub oldModel newSub, error = Just guardMsg, drag = Nothing }, Cmd.none )`);
   L.push(``);
   L.push(`        Ok _ ->`);
-  L.push(`            ( { page | model = setSub oldModel newSub }`);
+  L.push(`            ( { page | model = setSub oldModel newSub, drag = Nothing }`);
   L.push(`            , postAction (machine.actionRoute msg) (machine.actionBody msg)`);
   L.push(`            )`);
   L.push(``);
@@ -1675,6 +1690,113 @@ function emitCompositeMain(
   L.push(`nextIdList : (r -> Int) -> List r -> Int`);
   L.push(`nextIdList f items =`);
   L.push(`    1 + (Maybe.withDefault 0 (List.maximum (List.map f items)))`);
+  L.push(``);
+  L.push(``);
+
+  // ─── UI pattern catalog ───
+  // Reviewed interaction wrappers. Patterns take the component machine as an
+  // argument and never know what entity or action they express. A behavior
+  // can only reach the screen through one of these.
+  L.push(`-- ─── UI pattern catalog (human-reviewed wrappers) ───`);
+  L.push(``);
+  L.push(`{-| Kanban transition pattern: drag a card between columns. Drop legality`);
+  L.push(`is computed from the owning component machine's guards — illegal columns`);
+  L.push(`are not droppable. The guard-filtered button affordances on each card`);
+  L.push(`are the WCAG 2.5.7 keyboard alternative to the gesture. -}`);
+  L.push(`type alias KanbanSpec rec =`);
+  L.push(`    { idOf : rec -> Int`);
+  L.push(`    , columnOf : rec -> String`);
+  L.push(`    , order : List String`);
+  L.push(`    , isLegal : Int -> String -> Bool`);
+  L.push(`    , moveMsg : Int -> String -> FrontMsg`);
+  L.push(`    , cardView : Page -> rec -> Html FrontMsg`);
+  L.push(`    }`);
+  L.push(``);
+  L.push(``);
+  L.push(`legalTargets : KanbanSpec rec -> Int -> List String`);
+  L.push(`legalTargets spec id =`);
+  L.push(`    List.filter (spec.isLegal id) spec.order`);
+  L.push(``);
+  L.push(``);
+  L.push(`onEventPrevent : String -> FrontMsg -> Attribute FrontMsg`);
+  L.push(`onEventPrevent name msg =`);
+  L.push(`    custom name`);
+  L.push(`        (D.succeed { message = msg, preventDefault = True, stopPropagation = False })`);
+  L.push(``);
+  L.push(``);
+  L.push(`onDragOverAllow : FrontMsg -> Attribute FrontMsg`);
+  L.push(`onDragOverAllow msg =`);
+  L.push(`    onEventPrevent "dragover" msg`);
+  L.push(``);
+  L.push(``);
+  L.push(`onDropDo : FrontMsg -> Attribute FrontMsg`);
+  L.push(`onDropDo msg =`);
+  L.push(`    onEventPrevent "drop" msg`);
+  L.push(``);
+  L.push(``);
+  L.push(`kanbanBoard : Page -> KanbanSpec rec -> Dict.Dict String rec -> Html FrontMsg`);
+  L.push(`kanbanBoard page spec dict =`);
+  L.push(`    let`);
+  L.push(`        grouped =`);
+  L.push(`            groupByRecord spec.columnOf (Dict.values dict)`);
+  L.push(``);
+  L.push(`        known =`);
+  L.push(`            List.filterMap`);
+  L.push(`                (\\col -> Maybe.map (\\items -> ( col, items )) (Dict.get col grouped))`);
+  L.push(`                spec.order`);
+  L.push(``);
+  L.push(`        unknown =`);
+  L.push(`                Dict.toList grouped`);
+  L.push(`                    |> List.filter (\\( col, _ ) -> not (List.member col spec.order))`);
+  L.push(`    in`);
+  L.push(`    div [ class "gb-board" ]`);
+  L.push(`        (List.map (kanbanCol page spec) (known ++ unknown))`);
+  L.push(``);
+  L.push(``);
+  L.push(`kanbanCol : Page -> KanbanSpec rec -> ( String, List rec ) -> Html FrontMsg`);
+  L.push(`kanbanCol page spec ( col, items ) =`);
+  L.push(`    let`);
+  L.push(`        legal =`);
+  L.push(`            case page.drag of`);
+  L.push(`                Just id -> List.member col (legalTargets spec id)`);
+  L.push(``);
+  L.push(`                Nothing -> False`);
+  L.push(``);
+  L.push(`        dropMsg =`);
+  L.push(`            case page.drag of`);
+  L.push(`                Just id -> spec.moveMsg id col`);
+  L.push(``);
+  L.push(`                Nothing -> DragOver`);
+  L.push(``);
+  L.push(`        colClass =`);
+  L.push(`            if legal then "gb-board-col gb-col-ok" else "gb-board-col"`);
+  L.push(`    in`);
+  L.push(`    div`);
+  L.push(`        ([ class colClass ]`);
+  L.push(`            ++ (if legal then`);
+  L.push(`                    [ onDragOverAllow DragOver, onDropDo dropMsg ]`);
+  L.push(``);
+  L.push(`                else`);
+  L.push(`                    []`);
+  L.push(`               )`);
+  L.push(`        )`);
+  L.push(`        [ div [ class "gb-board-col-hdr" ]`);
+  L.push(`            [ text col`);
+  L.push(`            , span [ class "gb-board-col-count" ] [ text (String.fromInt (List.length items)) ]`);
+  L.push(`            ]`);
+  L.push(`        , div [ class "gb-board-col-items" ] (List.map (\\r -> kanbanCard page spec r) items)`);
+  L.push(`        ]`);
+  L.push(``);
+  L.push(``);
+  L.push(`kanbanCard : Page -> KanbanSpec rec -> rec -> Html FrontMsg`);
+  L.push(`kanbanCard page spec r =`);
+  L.push(`    div`);
+  L.push(`        [ class "gb-card gb-card-draggable"`);
+  L.push(`        , attribute "draggable" "true"`);
+  L.push(`        , onEventPrevent "dragstart" (DragStart (spec.idOf r))`);
+  L.push(`        , onEventPrevent "dragend" DragEnd`);
+  L.push(`        ]`);
+  L.push(`        [ spec.cardView page r ]`);
   L.push(``);
   L.push(``);
 
@@ -1845,7 +1967,7 @@ function emitCompositeMain(
           const fields = recordTypes.get(inner) || [];
           const groupField = fields.find((f: any) => ['column', 'status'].includes(f.name.toLowerCase()));
           if (groupField && columnOrder) {
-            body.push(`boardGroup page ${varPath(vn)} (view${tn} page) boardOrder${tn} .${elmName(groupField.name)}`);
+            body.push(`[ kanbanBoard page (boardSpec${tn} page) ${varPath(vn)} ]`);
           } else {
             body.push(`cardsOf page ${varPath(vn)} (view${tn} page)`);
           }
@@ -1964,6 +2086,46 @@ function emitCompositeMain(
     L.push(``);
   }
 
+  // kanban spec closures: one per board-bearing record
+  for (const [recName, entries] of affordances) {
+    const tn = ElmName(recName);
+    const fields = recordTypes.get(recName) || [];
+    const groupField = fields.find((f: any) => ['column', 'status'].includes(f.name.toLowerCase()));
+    if (!groupField || !columnOrder) continue;
+    const entry = entries.find((e: any) => e.plan.params.some((p: any) => p.kind === 'choice'));
+    if (!entry) continue;
+    const comp = entry.comp;
+    const action = entry.action;
+    const an = ElmName(action.name);
+    const idParam = entry.plan.params.find((p: any) => p.kind === 'bind');
+    const choiceParam = entry.plan.params.find((p: any) => p.kind === 'choice');
+    const actorParam = entry.plan.params.find((p: any) => p.kind === 'actor');
+    const ctorArgList = entry.plan.params.map((p: any) => {
+      if (p.kind === 'bind') return 'id';
+      if (p.kind === 'choice') return 'target';
+      if (p.kind === 'actor') return '"human"';
+      return '"_"';
+    }).join(' ');
+    L.push(`boardSpec${tn} : Page -> KanbanSpec ${tn}`);
+    L.push(`boardSpec${tn} page =`);
+    L.push(`    { idOf = \\r -> r.${elmName(idParam.name)}`);
+    L.push(`    , columnOf = .${elmName(groupField.name)}`);
+    L.push(`    , order = boardOrder${tn}`);
+    L.push(`    , isLegal =`);
+    L.push(`        \\id target ->`);
+    L.push(`            case ${comp.module}.machine.check (${an} ${ctorArgList}) page.model.${compLower(comp)} of`);
+    L.push(`                Ok _ ->`);
+    L.push(`                    True`);
+    L.push(``);
+    L.push(`                Err _ ->`);
+    L.push(`                    False`);
+    L.push(`    , moveMsg = \\id target -> FromMachine (${comp.module} (${an} ${ctorArgList}))`);
+    L.push(`    , cardView = view${tn}`);
+    L.push(`    }`);
+    L.push(``);
+    L.push(``);
+  }
+
   L.push(`main : Program () Page FrontMsg`);
   L.push(`main =`);
   L.push(`    Browser.document`);
@@ -2011,6 +2173,7 @@ function emitMain(speck: SpeckNode, stateVars: any[], actions: ActionNode[], rec
   L.push(`      , error = Nothing`);
   L.push(`      , loading = True`);
   L.push(`      , inputs = Dict.empty`);
+  L.push(`      , drag = Nothing`);
   L.push(`      }`);
   L.push(`    , fetchState`);
   L.push(`    )`);
@@ -2092,6 +2255,16 @@ number of state vars.
   L.push(`    case frontMsg of`);
   L.push(`        SetInput key value ->`);
   L.push(`            ( { page | inputs = Dict.insert key value page.inputs }, Cmd.none )`);
+  L.push(``);
+  L.push(`        DragStart id ->`);
+  L.push(`            ( { page | drag = Just id }, Cmd.none )`);
+  L.push(``);
+  L.push(`        DragOver ->`);
+  L.push(`            -- exists to carry preventDefault on dragover; no state change`);
+  L.push(`            ( page, Cmd.none )`);
+  L.push(``);
+  L.push(`        DragEnd ->`);
+  L.push(`            ( { page | drag = Nothing }, Cmd.none )`);
   L.push(``);
   L.push(`        GotState result ->`);
   L.push(`            case result of`);
@@ -2770,27 +2943,48 @@ body {
 .gb-card-meta { font-size: 12px; color: var(--gb-text-2); }
 .gb-card-body { font-size: 13px; color: var(--gb-text-2); margin-top: 2px; }
 
-/* board columns */
-.gb-board-col { display: block; border-top: 1px solid var(--gb-border); }
-.gb-board-col:first-of-type { border-top: none; }
+/* board (kanban transition pattern) */
+.gb-board {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 10px 14px 14px;
+  align-items: flex-start;
+}
+.gb-board-col {
+  flex: 1 0 170px;
+  min-width: 170px;
+  background: var(--gb-bg);
+  border: 1px solid var(--gb-border);
+  border-radius: 8px;
+  padding: 6px 8px 8px;
+}
+.gb-board-col.gb-col-ok {
+  outline: 2px dashed var(--gb-accent);
+  outline-offset: -2px;
+  background: #fdf6f0;
+}
 .gb-board-col-hdr {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 20px 2px;
-  font-size: 12px;
+  padding: 4px 6px 2px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--gb-text-2);
 }
 .gb-board-col-count {
-  background: var(--gb-bg);
+  background: var(--gb-card);
+  border: 1px solid var(--gb-border);
   border-radius: 10px;
   padding: 0 8px;
   font-size: 11px;
 }
-.gb-board-col-items { padding: 0 20px 8px; }
+.gb-board-col-items { padding: 0; }
+.gb-card-draggable { cursor: grab; }
+.gb-card-draggable:active { cursor: grabbing; }
 
 /* error */
 .gb-error {
