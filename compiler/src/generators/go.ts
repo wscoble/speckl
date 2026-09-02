@@ -197,7 +197,7 @@ function rewriteGoExpr(
 ): string {
   expr = stripComment(expr);
   // existential quantifier: (not) exists v in coll(.values())?: pred
-  const em = expr.match(/(not\s+)?exists\s+(\w+)\s+in\s+([\w.]+?)(?:\.values\(\))?:\s*([\s\S]+)$/);
+  const em = expr.match(/(not\s+)?exists\s+(\w+)\s+in\s+([\w.]+?)(?:\.values(?:\(\))?)?:\s*([\s\S]+)$/);
   if (em) {
     let origName = em[3].replace(/^m\./, '');
     for (const [orig, gn] of nameMap) { if (em[3] === gn) { origName = orig; break; } }
@@ -231,6 +231,11 @@ function rewriteGoExpr(
     .replace(/\bjoin\(([^,]+),\s*([^)]+)\)/g, 'strings.Join($1, $2)')
     .replace(/\bappend\(([^,]+),\s*([^)]+)\)/g, 'append($1, $2)')
     .replace(/(\w+)\.has\(([^)]+)\)/g, 'mapHas($1, $2)')
+    .replace(/\((\w+)\[([^\]]+)\]\)\.has\(([^)]+)\)/g, (_m, coll, key, v) => {
+      const vt = stateVarTypes.get(cleanName(coll));
+      const isList = vt?.type === 'map' && vt.valueType?.type === 'list';
+      return isList ? `listContains(${coll}[${key}], ${v})` : `mapHas(${coll}[${key}], ${v})`;
+    })
     .replace(/([\w.]+)\.contains\(([^)]+)\)/g, 'listContains($1, $2)')
     .replace(/\bcount\(([^,]+),\s*(\w+)\s*=>\s*([^)]+)\)/g, 'countWhere($1, func($2 any) bool { return $3 })');
 
