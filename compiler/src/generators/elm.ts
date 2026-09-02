@@ -1978,7 +1978,7 @@ function emitCompositeMain(
   L.push(`                        , onClick (ToggleMenu (spec.idOf r))`);
   L.push(`                        , noDrag`);
   L.push(`                        ]`);
-  L.push(`                        [ text "⋯" ]`);
+  L.push(`                        [ text "..." ]`);
   L.push(`                    ]`);
   L.push(`               )`);
   L.push(`        )`);
@@ -2392,7 +2392,7 @@ function emitCompositeMain(
   L.push(`        [ emptyNote ]`);
   L.push(``);
   L.push(`    else`);
-  L.push(`        List.map (\\( k, v ) -> row (k ++ (if v then " ✓" else " ✗"))) (Dict.toList dict)`);
+  L.push(`        List.map (\\( k, v ) -> row (k ++ ": " ++ (if v then "on" else "off"))) (Dict.toList dict)`);
   L.push(``);
   L.push(``);
   L.push(`scalarRows : Dict.Dict String v -> List (Html FrontMsg)`);
@@ -3095,7 +3095,7 @@ number of state vars.
         L.push(`        [ emptyNote ]`);
         L.push(``);
         L.push(`    else`);
-        L.push(`        List.map (\\( k, v ) -> row (k ++ (if v then " ✓" else " ✗"))) (Dict.toList dict)`);
+        L.push(`        List.map (\\( k, v ) -> row (k ++ ": " ++ (if v then "on" else "off"))) (Dict.toList dict)`);
         L.push(``);
         L.push(``);
       } else {
@@ -3273,7 +3273,7 @@ number of state vars.
   L.push(`        [ emptyNote ]`);
   L.push(``);
   L.push(`    else`);
-  L.push(`        List.map (\\( k, v ) -> row (k ++ (if v then " ✓" else " ✗"))) (Dict.toList dict)`);
+  L.push(`        List.map (\\( k, v ) -> row (k ++ ": " ++ (if v then "on" else "off"))) (Dict.toList dict)`);
   L.push(``);
   L.push(`subscriptions : Page -> Sub FrontMsg`);
   L.push(`subscriptions page =`);
