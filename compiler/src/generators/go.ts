@@ -275,6 +275,8 @@ function goImplications(expr: string): string {
 
 let goFieldRenames: Map<string, string> = new Map();
 let enumValueConsts: Map<string, string> = new Map();
+let recordFieldTypes: Map<string, Map<string, any> = new Map();
+let currentEnumMap: Map<string, string[]> = new Map();
 let stateVarTypes: Map<string, any> = new Map();
 let recordTypes: Map<string, string[]> = new Map();
 function stateVarsOf(name: string): string {
@@ -323,6 +325,7 @@ function emitSpeck(speck: SpeckNode): string {
   for (const iface of allInterfaces) {
     if (iface?.methods?.length > 0) enumMap.set(iface.name, iface.methods.map((m: any) => m.name));
   }
+  currentEnumMap = enumMap;
 
   const goNameS = goName(speck.name);
   const speckName = speck.name;
@@ -357,11 +360,13 @@ function emitSpeck(speck: SpeckNode): string {
   for (const m of members) {
     if (m.type === 'interface' && (m as any).fields) {
       recordTypes.set(goName(m.name), (m as any).fields.map((f: any) => f.name));
+      recordFieldTypes.set(cleanName(m.name), new Map((m as any).fields.map((f: any) => [f.name, f.type])));
       for (const f of (m as any).fields) goFieldRenames.set(f.name, goName(f.name));
     }
     if ((m.type as any) === 'type' && (m as any).typeExpr?.type === 'record') {
       const fields = (m as any).typeExpr.fields.map((f: any) => f.name);
       recordTypes.set(goName((m as any).name), fields);
+      recordFieldTypes.set(cleanName((m as any).name), new Map((m as any).typeExpr.fields.map((f: any) => [f.name, f.type])));
       for (const f of fields) goFieldRenames.set(f.name, goName(f.name));
     }
   }
@@ -592,7 +597,11 @@ function emitAction(
     if (dotted && !nameMap.has(cleanName(dotted[1])) && localNames.has(cleanName(dotted[1]))) {
       const gfield = goFieldRenames.get(dotted[2]) || goName(dotted[2]);
       const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
-      return `\t${camelCase(cleanName(dotted[1]))}.${gfield} = ${val}`;
+      let v = val;
+      const rec = letRecords.get(cleanName(dotted[1]));
+      const ftype = rec ? recordFieldTypes.get(rec)?.get(dotted[2]) : undefined;
+      if (ftype?.nullable && /^([A-Za-z_]\w*)$/.test(val) && val !== 'nil') v = `&${val}`;
+      return `\t${camelCase(cleanName(dotted[1]))}.${gfield} = ${v}`;
     }
     const gname = nameMap.get(cleanName(target)) || camelCase(cleanName(target));
     const rawExpr = String(s.expr);
@@ -611,6 +620,7 @@ function emitAction(
 
   // emit statements in source order so lets declared before guards/assigns
   // that reference them are emitted in the correct sequence
+  const letRecords = new Map<string, string>();
   const bodyLines: string[] = [];
   for (const s of action.statements as any[]) {
     if (s.type === 'require' || s.type === 'precondition') {
@@ -620,6 +630,16 @@ function emitAction(
       localNames.add(s.name);
       const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
       bodyLines.push(`\t${camelCase(s.name)} := ${val}`);
+      // track the record type of the let-bound local (for nullable field assigns)
+      const exprRaw = String(s.expr ?? '');
+      const bracketM = exprRaw.match(/^(\w+)\[(.+)\]$/s);
+      if (bracketM) {
+        const vt = stateVarTypes.get(bracketM[1]);
+        if (vt?.type === 'map' && vt.valueType?.type === 'ident') letRecords.set(cleanName(s.name), cleanName(vt.valueType.name));
+      } else {
+        const litM = exprRaw.match(/^([A-Za-z_]\w*)\s*\{/);
+        if (litM) letRecords.set(cleanName(s.name), cleanName(litM[1]));
+      }
     } else if (s.type === 'assign') {
       bodyLines.push(emitAssign(s));
     } else if (s.type === 'emit') {
@@ -645,7 +665,7 @@ function emitHandlers(speck: SpeckNode): string {
   const handlers = actions.map(a => {
     const route = `/actions/${snakeCase(a.name)}`;
     const typedFields = a.params
-      .map(p => `\t\t\t${goName(p.name)} ${goType(p.type, speck.name, new Map())} \`json:"${camelCase(cleanName(p.name))}"\``)
+      .map(p => `\t\t\t${goName(p.name)} ${goType(p.type, speck.name, currentEnumMap)} \`json:"${camelCase(cleanName(p.name))}"\``)
       .join('\n');
     const argNames = a.params.map(p => `req.${goName(p.name)}`).join(', ');
     const hasRet = a.statements.some(s => s.type === 'return');
