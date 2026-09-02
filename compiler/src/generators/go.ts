@@ -142,6 +142,19 @@ function goType(t: any, speckName: string, enumMap: Map<string, string[]>): stri
 
 // ─── expression rewriting ───────────────────────────────────────────
 
+// strip a trailing // comment (outside string literals) from an expression
+function stripComment(expr: string): string {
+  let inStr = false; let esc = false;
+  for (let i = 0; i < expr.length - 1; i++) {
+    const ch = expr[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { esc = true; continue; }
+    if (ch === '"') inStr = !inStr;
+    if (!inStr && ch === '/' && expr[i + 1] === '/') return expr.slice(0, i).trim();
+  }
+  return expr;
+}
+
 function rewriteGoExpr(
   expr: string,
   nameMap: Map<string, string>,
@@ -150,6 +163,7 @@ function rewriteGoExpr(
   stateEnumName: string,
   knownStateValues: string[]
 ): string {
+  expr = stripComment(expr);
   const shouldPrefix = (ident: string) => nameMap.has(ident) && !localNames.has(ident);
   const goify = (ident: string) => nameMap.has(ident) && !localNames.has(ident) ? `m.${nameMap.get(ident)}` : ident;
 
@@ -473,32 +487,64 @@ function emitSpeck(speck: SpeckNode): string {
     return `// Invariant ${fname}: ${cExpr.replace(/\s+/g, ' ').slice(0, 90)}\nfunc (m *${structName}) ${fname}() bool {\n${body}\n}`;
   }).join('\n\n');
 
-  // unknown domain functions -> explicit stubs
+  // unknown domain functions -> explicit stubs (return type inferred from usage)
   const unknown = new Set<string>();
-  const unknownBool = new Set<string>();
   const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains', 'has', 'values', 'keys', 'empty', 'size', 'count']);
-  const scanCalls = (ex: string, boolCtx: boolean) => {
-    for (const m of ex.match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
-      const fn = m.replace(/\s*\($/, '');
-      if (!builtin.has(fn)) {
-        unknown.add(fn);
-        if (boolCtx) unknownBool.add(fn);
-      }
-    }
-  };
+  const ctxExprs: { text: string; ctx: 'guard' | 'value' | 'emit' | 'return' }[] = [];
+  const letVarFn = new Map<string, string>();
   for (const a of actions) {
     for (const st of a.statements) {
-      const isGuard = st.type === 'require' || st.type === 'precondition';
-      scanCalls(String((st as any).expr ?? ''), isGuard);
+      const ctx = (st.type === 'require' || st.type === 'precondition') ? 'guard'
+        : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
+      ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
-        scanCalls(String(f.value), false);
+        ctxExprs.push({ text: String(f.value), ctx: 'emit' });
+      }
+      if (st.type === 'assign') ctxExprs.push({ text: String((st as any).target ?? ''), ctx: 'value' });
+      if (st.type === 'let') {
+        const m = String((st as any).expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
+        if (m && !builtin.has(m[1])) letVarFn.set(String((st as any).name), m[1]);
       }
     }
   }
-  for (const c of constraints) scanCalls(String((c as any).expr ?? ''), true);
+  for (const c of constraints) ctxExprs.push({ text: String((c as any).expr ?? ''), ctx: 'guard' });
+
+  const fnKinds = new Map<string, string>();
+  for (const { text, ctx } of ctxExprs) {
+    for (const m of text.match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
+      const fn = m.replace(/\s*\($/, '');
+      if (builtin.has(fn)) continue;
+      unknown.add(fn);
+      if (ctx === 'guard' && !fnKinds.has(fn)) fnKinds.set(fn, 'bool');
+    }
+  }
+  // let-bound call results: infer return type from how the variable is used
+  for (const [v, fn] of letVarFn) {
+    const varRe = new RegExp(`\\b${escapeRegex(v)}\\b`);
+    for (const { text, ctx } of ctxExprs) {
+      if (!varRe.test(text)) continue;
+      const numeric = new RegExp(`(>=|<=|>|<)\\s*${escapeRegex(v)}\\b`).test(text)
+        || new RegExp(`\\b${escapeRegex(v)}\\s*(>=|<=|>|<)`).test(text);
+      if (numeric) { if (fnKinds.get(fn) !== 'bool') fnKinds.set(fn, 'float64'); continue; }
+      if (/(==|!=)\s*(true|false)\b/.test(text)) { fnKinds.set(fn, 'bool'); continue; }
+      if (ctx === 'guard') { fnKinds.set(fn, 'bool'); continue; }
+      if (new RegExp(`\\w+\\s*:\\s*${escapeRegex(v)}\\b`).test(text) || new RegExp(`\\w+\\.\\w+\\s*:=\\s*${escapeRegex(v)}\\b`).test(text)) {
+        if (fnKinds.get(fn) !== 'bool' && fnKinds.get(fn) !== 'float64') fnKinds.set(fn, 'string');
+      }
+    }
+  }
+  // direct call comparisons: x == fn(...) / fn(...) >= y
+  for (const fn of Array.from(unknown)) {
+    const callCmp = new RegExp(`(>=|<=|>|<|==|!=)\\s*${escapeRegex(fn)}\\s*\\(|${escapeRegex(fn)}\\s*\\([^)]*\\)\\s*(>=|<=|>|<|==|!=)`);
+    for (const { text } of ctxExprs) {
+      if (!callCmp.test(text)) continue;
+      if (/(==|!=)\s*(true|false)\b/.test(text)) { if (!fnKinds.has(fn)) fnKinds.set(fn, 'bool'); continue; }
+      if (fnKinds.get(fn) !== 'bool') fnKinds.set(fn, 'float64');
+    }
+  }
   const stubs = unknown.size > 0
     ? Array.from(unknown).sort().map(fn => {
-        const ret = unknownBool.has(fn) ? 'bool' : 'any';
+        const ret = fnKinds.get(fn) ?? 'any';
         return `// ${fn} - domain function from the SpeckDL spec. Implement per spec semantics.\nfunc ${fn}(args ...any) ${ret} {\n\tpanic("speckl: domain function not implemented: ${fn}")\n}`;
       }).join('\n\n')
     : '';
