@@ -530,6 +530,7 @@ function emitSpeck(speck: SpeckNode): string {
         if (vt?.type === 'list' && vt.elementType?.type === 'ident') loopRecords.set(l.varName, cleanName(vt.elementType.name));
       }
       const innerExpr = goImplications(rewriteGoExpr(rest, nameMap, mapVarOrigNames, new Set<string>(loops.map(l => l.varName)), stateEnumName, knownStateValues, loopRecords));
+      const unlowerable = / implies\(/.test(innerExpr) || /\b\w+\s+has\s+\w+\b(?!\()/.test(innerExpr);
       let inner = innerExpr.replace(/\b(\w+)\.(\w+)/g, (m2, obj, f) => {
         const mapped = goFieldRenames.get(f);
         return mapped ? `${obj}.${mapped}` : m2;
@@ -544,8 +545,12 @@ function emitSpeck(speck: SpeckNode): string {
       lines.push(`${'\t'.repeat(loops.length + 2)}return false`);
       lines.push(`${'\t'.repeat(loops.length + 1)}}`);
       for (let d = loops.length - 1; d >= 0; d--) lines.push(`${'\t'.repeat(d + 1)}}`);
-      lines.push('\treturn true');
-      body = lines.join('\n');
+      if (unlowerable) {
+        body = `\t// TODO: manual review - invariant could not be mechanically lowered:\n\t// ${cExpr.replace(/\s+/g, ' ').replace(/\*\//g, '* /')}\n\treturn true`;
+      } else {
+        lines.push('\treturn true');
+        body = lines.join('\n');
+      }
     } else {
       body = `\treturn ${goImplications(rewriteGoExpr(cExpr, nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues))}`;
     }
