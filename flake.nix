@@ -11,16 +11,15 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
       in {
-        # The speckl compiler as a Nix package
-        packages.default = pkgs.stdenv.mkDerivation {
-          name = "speckl";
-          src = ./compiler;
+        packages.default = pkgs.buildNpmPackage {
+          pname = "speckl";
+          version = "0.3.1";
 
-          buildInputs = with pkgs; [ nodejs nodePackages.npm ];
+          src = pkgs.lib.cleanSource ./compiler;
+
+          npmDepsHash = pkgs.lib.fakeSha256; # will be computed on first build
 
           buildPhase = ''
-            export HOME=$TMP
-            npm ci --silent || npm install --silent
             npm run build --silent
           '';
 
@@ -31,14 +30,19 @@
 
             cat > $out/bin/speckl <<'SCRIPT'
             #!/bin/sh
-            exec ${pkgs.nodejs}/bin/node $out/lib/speckl/index.js "$@"
+            exec ${pkgs.nodejs}/bin/node ${pkgs.lib.escapeShellArg "$out"}/lib/speckl/index.js "$@"
             SCRIPT
             chmod +x $out/bin/speckl
           '';
+
+          meta = with pkgs.lib; {
+            description = "Behavioral specification compiler";
+            license = licenses.mit;
+          };
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [ nodejs nodePackages.npm ];
+          buildInputs = with pkgs; [ nodejs ];
         };
       });
 }
