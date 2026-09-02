@@ -472,6 +472,60 @@ function translateRecordLiteral(expr: string, recordTypes: Map<string, any[]>): 
   return `{ ${fields.join(', ')} }`;
 }
 
+// ─── view field classification ──────────────────────────────────────
+
+/**
+ * Classify record fields for element rendering:
+ *   heading — first String field named title/name (strong text)
+ *   body    — first String field named content/body/text/description/summary
+ *   meta    — everything else (joined " · " line)
+ */
+function classifyFields(fields: any[]): {
+  heading: any | null;
+  body: any | null;
+  meta: any[];
+  fallback: string | null;
+} {
+  const headingNames = ['title', 'name'];
+  const bodyNames = ['content', 'body', 'text', 'description', 'summary'];
+  let heading: any | null = null;
+  let body: any | null = null;
+  const meta: any[] = [];
+  for (const f of fields) {
+    const n = f.name.toLowerCase();
+    const isStr = elmType(f.type, new Map()) === 'String';
+    if (!heading && isStr && headingNames.includes(n)) { heading = f; continue; }
+    if (!body && isStr && bodyNames.includes(n)) { body = f; continue; }
+    meta.push(f);
+  }
+  let fallback: string | null = null;
+  if (!heading) {
+    // promote the first meta field to heading
+    if (meta.length > 0) {
+      const f = meta.shift()!;
+      fallback = metaExprFor(f, true);
+    } else if (body) {
+      fallback = `String.left 40 r.${elmName(body.name)}`;
+    }
+  }
+  return { heading, body, meta, fallback };
+}
+
+/** Elm expression for one meta field value */
+function metaExpr(f: any): string {
+  return metaExprFor(f, false);
+}
+
+function metaExprFor(f: any, asHeading: boolean): string {
+  const et = elmType(f.type, new Map());
+  const ref = `r.${elmName(f.name)}`;
+  if (et === 'String') return asHeading ? ref : ref;
+  if (et === 'Int') return asHeading ? `("#" ++ String.fromInt ${ref})` : `(String.fromInt ${ref})`;
+  if (et === 'Bool') return `(boolText ${ref})`;
+  if (et === 'Float') return `(String.fromFloat ${ref})`;
+  return `(Debug.toString ${ref})`;
+}
+
 // ─── main generator ─────────────────────────────────────────────────
 
 export function generateElm(ast: AST, outputDir: string): void {
@@ -882,6 +936,7 @@ function emitMain(speck: SpeckNode, stateVars: any[], actions: ActionNode[], rec
   L.push(`    { machine : Model`);
   L.push(`    , error : Maybe String`);
   L.push(`    , loading : Bool`);
+  L.push(`    , inputs : Dict.Dict String String`);
   L.push(`    }`);
   L.push(``);
   L.push(``);
@@ -890,6 +945,7 @@ function emitMain(speck: SpeckNode, stateVars: any[], actions: ActionNode[], rec
   L.push(`    ( { machine = ${machine}.init`);
   L.push(`      , error = Nothing`);
   L.push(`      , loading = True`);
+  L.push(`      , inputs = Dict.empty`);
   L.push(`      }`);
   L.push(`    , fetchState`);
   L.push(`    )`);
@@ -960,6 +1016,7 @@ number of state vars.
   L.push(`    = FromMachine Msg`);
   L.push(`    | GotState (Result Http.Error Model)`);
   L.push(`    | ActionDone (Result Http.Error ())`);
+  L.push(`    | SetInput String String`);
   L.push(``);
   L.push(``);
   L.push(`-- UPDATE`);
@@ -968,6 +1025,9 @@ number of state vars.
   L.push(`update : FrontMsg -> Page -> ( Page, Cmd FrontMsg )`);
   L.push(`update frontMsg page =`);
   L.push(`    case frontMsg of`);
+  L.push(`        SetInput key value ->`);
+  L.push(`            ( { page | inputs = Dict.insert key value page.inputs }, Cmd.none )`);
+  L.push(``);
   L.push(`        GotState result ->`);
   L.push(`            case result of`);
   L.push(`                Ok newModel ->`);
@@ -1082,7 +1142,8 @@ number of state vars.
   L.push(`        }`);
   L.push(``);
 
-  // View: minimal board sections per state var — style later
+  // View: real element rendering driven by the spec — records as elements,
+  // one section per state var, one command row per action. Style later.
   L.push(``);
   L.push(`-- VIEW`);
   L.push(``);
@@ -1095,6 +1156,7 @@ number of state vars.
   L.push(`            [ h1 [] [ text "${ElmName(speck.name)}" ]`);
   L.push(`            , errorBar page`);
   L.push(`            , div [] (stateSections page.machine)`);
+  L.push(`            , viewCommands page.inputs`);
   L.push(`            ]`);
   L.push(`        ]`);
   L.push(`    }`);
@@ -1112,16 +1174,178 @@ number of state vars.
   L.push(``);
   L.push(`stateSections : Model -> List (Html FrontMsg)`);
   L.push(`stateSections model =`);
-  L.push(`    [ ${stateVars.map((v: any) => `section "${goFieldName(v.name)}" (Debug.toString model.${elmName(v.name)})`).join('\n    , ')} ]`);
+  L.push(`    [ ${stateVars.map((v: any) => `section "${goFieldName(v.name)}" (${sectionBodyFn(v, recordTypes)} model.${elmName(v.name)})`).join('\n    , ')} ]`);
   L.push(``);
   L.push(``);
-  L.push(`section : String -> String -> Html FrontMsg`);
-  L.push(`section title body =`);
-  L.push(`    div []`);
-  L.push(`        [ h2 [] [ text title ]`);
-  L.push(`        , pre [] [ text body ]`);
+  L.push(`section : String -> List (Html FrontMsg) -> Html FrontMsg`);
+  L.push(`section title kids =`);
+  L.push(`    div [] (h2 [] [ text title ] :: kids)`);
+  L.push(``);
+  L.push(``);
+  L.push(`emptyNote : Html FrontMsg`);
+  L.push(`emptyNote =`);
+  L.push(`    em [] [ text "none" ]`);
+  L.push(``);
+  L.push(``);
+  L.push(`row : String -> Html FrontMsg`);
+  L.push(`row s =`);
+  L.push(`    div [] [ text s ]`);
+  L.push(``);
+  L.push(``);
+  L.push(`boolText : Bool -> String`);
+  L.push(`boolText b =`);
+  L.push(`    if b then "true" else "false"`);
+  L.push(``);
+  // ── per-record element renderers (from spec record fields) ──
+  for (const [recName, fields] of recordTypes) {
+    const tn = ElmName(recName);
+    const fieldInfos = classifyFields(fields);
+    // heading expr
+    let heading;
+    if (fieldInfos.heading) heading = `r.${elmName(fieldInfos.heading.name)}`;
+    else if (fieldInfos.fallback) heading = fieldInfos.fallback;
+    else heading = `"${tn}"`;
+    const metaParts = fieldInfos.meta.map((f: any) => metaExpr(f));
+    const metaJoined = metaParts.length > 0 ? `String.join " · " [${metaParts.join(", ")}]` : null;
+    L.push(`view${tn} : ${tn} -> Html FrontMsg`);
+    L.push(`view${tn} r =`);
+    L.push(`    div []`);
+    if (metaJoined) {
+      L.push(`        [ div []`);
+      L.push(`            [ strong [] [ text (${heading}) ]`);
+      L.push(`            , span [] [ text (" · " ++ ${metaJoined}) ]`);
+      L.push(`            ]`);
+      if (fieldInfos.body) {
+        L.push(`        , div [] [ text r.${elmName(fieldInfos.body.name)} ]`);
+      }
+      L.push(`        ]`);
+    } else {
+      L.push(`        [ strong [] [ text (${heading}) ]`);
+      if (fieldInfos.body) {
+        L.push(`        , div [] [ text r.${elmName(fieldInfos.body.name)} ]`);
+      }
+      L.push(`        ]`);
+    }
+    L.push(``);
+    L.push(``);
+  }
+  // ── per-state-var renderers ──
+  for (const v of stateVars) {
+    const t = elmStateType(v.typeExpr, recordTypes);
+    const name = elmName(v.name);
+    const fnName = sectionBodyFn(v, recordTypes);
+    if (t.startsWith('Dict.Dict String ')) {
+      const inner = t.replace('Dict.Dict String ', '');
+      if (inner === 'Bool') {
+        L.push(`view${goFieldName(v.name)} : Dict.Dict String Bool -> List (Html FrontMsg)`);
+        L.push(`view${goFieldName(v.name)} dict =`);
+        L.push(`    if Dict.isEmpty dict then`);
+        L.push(`        [ emptyNote ]`);
+        L.push(``);
+        L.push(`    else`);
+        L.push(`        List.map (\\( k, v ) -> row (k ++ (if v then " ✓" else " ✗"))) (Dict.toList dict)`);
+        L.push(``);
+        L.push(``);
+      } else {
+        const tn = ElmName(inner);
+        L.push(`view${goFieldName(v.name)} : Dict.Dict String ${tn} -> List (Html FrontMsg)`);
+        L.push(`view${goFieldName(v.name)} dict =`);
+        L.push(`    if Dict.isEmpty dict then`);
+        L.push(`        [ emptyNote ]`);
+        L.push(``);
+        L.push(`    else`);
+        L.push(`        List.map view${tn} (Dict.values dict)`);
+        L.push(``);
+        L.push(``);
+      }
+    } else if (t.startsWith('Dict.Dict ')) {
+      // non-string-key dict (scalar) — show key/value rows
+      const inner = t.replace('Dict.Dict ', '');
+      L.push(`view${goFieldName(v.name)} : ${t} -> List (Html FrontMsg)`);
+      L.push(`view${goFieldName(v.name)} dict =`);
+      L.push(`    if Dict.isEmpty dict then`);
+      L.push(`        [ emptyNote ]`);
+      L.push(``);
+      L.push(`    else`);
+      L.push(`        List.map (\\( k, v ) -> row (k ++ ": " ++ Debug.toString v)) (Dict.toList dict)`);
+      L.push(``);
+      L.push(``);
+    } else if (t.startsWith('List ')) {
+      const inner = t.slice(5);
+      const tn = ElmName(inner);
+      L.push(`view${goFieldName(v.name)} : List ${tn} -> List (Html FrontMsg)`);
+      L.push(`view${goFieldName(v.name)} items =`);
+      L.push(`    if List.isEmpty items then`);
+      L.push(`        [ emptyNote ]`);
+      L.push(``);
+      L.push(`    else`);
+      L.push(`        List.map view${tn} items`);
+      L.push(``);
+      L.push(``);
+    }
+  }
+  // ── command rows: one input+button row per action ──
+  L.push(`getString : Dict.Dict String String -> String -> String`);
+  L.push(`getString inputs k =`);
+  L.push(`    Maybe.withDefault "" (Dict.get k inputs)`);
+  L.push(``);
+  L.push(``);
+  L.push(`getInt : Dict.Dict String String -> String -> Int`);
+  L.push(`getInt inputs k =`);
+  L.push(`    Maybe.withDefault 0 (String.toInt (getString inputs k))`);
+  L.push(``);
+  L.push(``);
+  L.push(`inputField : String -> Dict.Dict String String -> Html FrontMsg`);
+  L.push(`inputField k inputs =`);
+  L.push(`    input`);
+  L.push(`        [ placeholder k`);
+  L.push(`        , value (getString inputs k)`);
+  L.push(`        , onInput (SetInput k)`);
   L.push(`        ]`);
+  L.push(`        []`);
   L.push(``);
+  L.push(``);
+  for (const a of actions) {
+    const an = ElmName(a.name);
+    L.push(`command${an} : Dict.Dict String String -> Html FrontMsg`);
+    L.push(`command${an} inputs =`);
+    const argExprs = a.params.map((p: any) => elmParamType(p.type) === 'Int'
+      ? `(getInt inputs "${an}.${p.name}")`
+      : `(getString inputs "${an}.${p.name}")`).join(' ');
+    const call = a.params.length > 0 ? `(FromMachine (${an} ${argExprs}))` : `(FromMachine ${an})`;
+    L.push(`    div []`);
+    L.push(`        [ text "${an}"`);
+    for (const p of a.params) {
+      L.push(`        , inputField "${an}.${p.name}" inputs`);
+    }
+    L.push(`        , button [ onClick ${call} ] [ text "run" ]`);
+    L.push(`        ]`);
+    L.push(``);
+    L.push(``);
+  }
+  L.push(`viewCommands : Dict.Dict String String -> Html FrontMsg`);
+  L.push(`viewCommands inputs =`);
+  L.push(`    section "Commands"`);
+  L.push(`        [ ${actions.map((a: any) => `command${ElmName(a.name)} inputs`).join('\n        , ')} ]`);
+  L.push(``);
+  function sectionBodyFn(v: any, recordTypes: Map<string, any[]>): string {
+    const t = elmStateType(v.typeExpr, recordTypes);
+    if (t.startsWith('Dict.Dict String ')) {
+      const inner = t.replace('Dict.Dict String ', '');
+      if (inner === 'Bool') return `boolDictSection`;
+      return `view${goFieldName(v.name)}`;
+    }
+    if (t.startsWith('Dict.Dict ')) return `view${goFieldName(v.name)}`;
+    if (t.startsWith('List ')) return `view${goFieldName(v.name)}`;
+    return `\\x -> [ row (Debug.toString x) ]`;
+  }
+  L.push(`boolDictSection : Dict.Dict String Bool -> List (Html FrontMsg)`);
+  L.push(`boolDictSection dict =`);
+  L.push(`    if Dict.isEmpty dict then`);
+  L.push(`        [ emptyNote ]`);
+  L.push(``);
+  L.push(`    else`);
+  L.push(`        List.map (\\( k, v ) -> row (k ++ (if v then " ✓" else " ✗"))) (Dict.toList dict)`);
   L.push(``);
   L.push(`main : Program () Page FrontMsg`);
   L.push(`main =`);
