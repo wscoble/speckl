@@ -3299,13 +3299,13 @@ function emitIndexHtml(name: string): string {
 <style>
 /* speckl-generated: Basecamp-like defaults. Behavior from the spec; style here. */
 :root {
-  --gb-bg: #f6f5f2;
-  --gb-card: #ffffff;
-  --gb-border: #e5e2db;
-  --gb-text: #2d2a26;
-  --gb-text-2: #6f6a61;
-  --gb-accent: #c0392b;
-  --gb-accent-dark: #a93226;
+  --gb-bg: #16171b;
+  --gb-card: #222428;
+  --gb-border: #35383f;
+  --gb-text: #e9e7e2;
+  --gb-text-2: #a6a29a;
+  --gb-accent: #e2604f;
+  --gb-accent-dark: #c04434;
   --gb-radius: 12px;
 }
 * { box-sizing: border-box; }
@@ -3334,7 +3334,7 @@ body {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  background: var(--gb-accent);
+  background: var(--gb-accent-dark);
   color: #fff;
   font-size: 12px;
   font-weight: 700;
@@ -3394,7 +3394,7 @@ body {
   min-height: 380px;
   display: flex;
   flex-direction: column;
-  background: var(--gb-bg);
+  background: #1b1d22;
   border: 1px solid var(--gb-border);
   border-radius: 8px;
   padding: 6px 8px 8px;
@@ -3402,17 +3402,17 @@ body {
 .gb-board-col.gb-col-ok {
   outline: 2px dashed var(--gb-accent);
   outline-offset: -2px;
-  background: #fdf6f0;
+  background: #26201c;
 }
 .gb-board-col.gb-col-approve {
-  outline: 3px solid #1e7d43;
+  outline: 3px solid #3fb374;
   outline-offset: -2px;
-  background: #eef7f0;
+  background: #1b2a20;
 }
 .gb-board-col.gb-col-deny {
   outline: 3px solid var(--gb-accent);
   outline-offset: -2px;
-  background: #fdf0ee;
+  background: #2a1d1b;
 }
 .gb-board-col.gb-col-hover {
   background: #fbe9e4;
@@ -3451,15 +3451,15 @@ body {
   pointer-events: none;
   opacity: 0.92;
   transform: translate(6px, 8px) rotate(1.5deg);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
 }
 .gb-ghost .gb-card { border-color: var(--gb-accent); }
 
 /* error */
 .gb-error {
-  background: #fdf0ee;
-  border: 1px solid #f2c9c3;
-  color: var(--gb-accent-dark);
+  background: #33201e;
+  border: 1px solid #5c3430;
+  color: #f0a093;
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 16px;
@@ -3489,7 +3489,7 @@ body {
   border-radius: 8px;
   font-size: 14px;
   font-family: inherit;
-  background: #fff;
+  background: #1a1c20;
   color: var(--gb-text);
   min-width: 140px;
 }
@@ -3500,18 +3500,18 @@ body {
   padding: 8px 16px;
   border: none;
   border-radius: 8px;
-  background: var(--gb-accent);
+  background: var(--gb-accent-dark);
   color: #fff;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
 }
-.gb-btn:hover { background: var(--gb-accent-dark); }
+.gb-btn:hover { background: #a83a2b; }
 .gb-btn-gate { font-weight: 700; }
 .gb-btn-approve {
-  background: #1e7d43;
+  background: #2b8f57;
 }
-.gb-btn-approve:hover { background: #166035; }
+.gb-btn-approve:hover { background: #237547; }
 .gb-btn-deny {
   background: var(--gb-accent);
 }
