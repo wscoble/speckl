@@ -1880,7 +1880,7 @@ function emitCompositeMain(
   L.push(`                            [ "gb-row-deny" ]`);
   L.push(``);
   L.push(`                        else if legal then`);
-  L.push(`                            [ "gb-col-ok" ]`);
+  L.push(`                            [ "gb-row-ok" ]`);
   L.push(``);
   L.push(`                        else`);
   L.push(`                            []`);
@@ -2443,17 +2443,6 @@ function emitCompositeMain(
   L.push(`                    |> List.map (\\( col, l ) -> boardCol col l viewFn)`);
   L.push(`        in`);
   L.push(`        known ++ unknown`);
-  L.push(``);
-  L.push(``);
-  L.push(`boardCol : String -> List r -> (r -> Html FrontMsg) -> Html FrontMsg`);
-  L.push(`boardCol col items viewFn =`);
-  L.push(`    div [ class "gb-board-col" ]`);
-  L.push(`        [ div [ class "gb-board-col-hdr" ]`);
-  L.push(`            [ text col`);
-  L.push(`            , span [ class "gb-board-col-count" ] [ text (String.fromInt (List.length items)) ]`);
-  L.push(`            ]`);
-  L.push(`        , div [ class "gb-board-col-items" ] (List.map viewFn items)`);
-  L.push(`        ]`);
   L.push(``);
   L.push(``);
   L.push(`groupByRecord : (r -> String) -> List r -> Dict.Dict String (List r)`);
@@ -3409,7 +3398,6 @@ body {
   border-bottom: 1px solid var(--gb-border);
 }
 .gb-section > :not(.gb-section-hdr) { padding: 8px 20px 14px; }
-.gb-section > .gb-board-col { padding: 8px 0 0; }
 
 /* rows / cards */
 .gb-row { padding: 4px 0; font-size: 14px; color: var(--gb-text-2); }
