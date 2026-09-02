@@ -529,13 +529,13 @@ function emitSpeck(speck: SpeckNode): string {
   const invariantChecks = constraints.map((c, i) => {
     const cExpr = c.expr.trim();
     const fname = `Check${goName(c.name || 'Invariant' + i)}`;
-    // peel forall prefixes (supports nested forall: forall a ...: forall b ...: body)
-    const forallRe = /^forall\s+(\w+)\s+in\s+(\w+)(\.values\(\))?:\s*([\s\S]+)$/;
-    const loops: { varName: string; collName: string }[] = [];
+    // peel forall prefixes (supports nested forall and .keys/.values suffixes)
+    const forallRe = /^forall\s+(\w+)\s+in\s+(\w+)(\.values(?:\(\))?|\.keys(?:\(\))?)?:\s*([\s\S]+)$/;
+    const loops: { varName: string; collName: string; mode: 'keys' | 'values' }[] = [];
     let rest = cExpr;
     let fm: RegExpMatchArray | null;
     while ((fm = rest.match(forallRe))) {
-      loops.push({ varName: fm[1], collName: fm[2] });
+      loops.push({ varName: fm[1], collName: fm[2], mode: fm[3] && fm[3].startsWith('.keys') ? 'keys' : 'values' });
       rest = fm[4];
     }
     let body: string;
@@ -546,21 +546,51 @@ function emitSpeck(speck: SpeckNode): string {
         if (vt?.type === 'map' && vt.valueType?.type === 'ident') loopRecords.set(l.varName, cleanName(vt.valueType.name));
         if (vt?.type === 'list' && vt.elementType?.type === 'ident') loopRecords.set(l.varName, cleanName(vt.elementType.name));
       }
-      const innerExpr = goImplications(rewriteGoExpr(rest, nameMap, mapVarOrigNames, new Set<string>(loops.map(l => l.varName)), stateEnumName, knownStateValues, loopRecords));
-      const unlowerable = / implies\(/.test(innerExpr) || /\b\w+\s+has\s+\w+\b(?!\()/.test(innerExpr);
-      let inner = innerExpr.replace(/\b(\w+)\.(\w+)/g, (m2, obj, f) => {
-        const mapped = goFieldRenames.get(f);
-        return mapped ? `${obj}.${mapped}` : m2;
-      });
-      for (const l of loops) inner = inner.replace(new RegExp(`\\b${l.varName}\\b`, 'g'), l.varName + 'Val');
+      const keyVars = new Set(loops.filter(l => l.mode === 'keys').map(l => l.varName));
+      const varRef = (v: string) => (keyVars.has(v) ? v : v + 'Val');
+      const renameLoopVars = (s2: string) => {
+        let out = s2.replace(/\b(\w+)\.(\w+)/g, (m2, obj, f) => {
+          const mapped = goFieldRenames.get(f);
+          return mapped ? `${obj}.${mapped}` : m2;
+        });
+        for (const l of loops) out = out.replace(new RegExp(`\\b${escapeRegex(l.varName)}\\b`, 'g'), varRef(l.varName));
+        return out;
+      };
       const lines: string[] = [];
       for (let d = 0; d < loops.length; d++) {
-        const gColl = nameMap.get(loops[d].collName) || camelCase(loops[d].collName);
-        lines.push(`${'\t'.repeat(d + 1)}for _, ${loops[d].varName}Val := range m.${gColl} {`);
+        const l = loops[d];
+        const vt = stateVarTypes.get(l.collName);
+        const gColl = nameMap.get(l.collName) || camelCase(l.collName);
+        if (l.mode === 'keys' && vt?.type === 'map') {
+          lines.push(`${'\t'.repeat(d + 1)}for ${l.varName} := range m.${gColl} {`);
+        } else {
+          lines.push(`${'\t'.repeat(d + 1)}for _, ${l.varName}Val := range m.${gColl} {`);
+        }
       }
-      lines.push(`${'\t'.repeat(loops.length + 1)}if !(${inner}) {`);
-      lines.push(`${'\t'.repeat(loops.length + 2)}return false`);
-      lines.push(`${'\t'.repeat(loops.length + 1)}}`);
+      const depth = loops.length;
+      const localNames2 = new Set<string>(loops.map(l => l.varName));
+      const bodyLines2: string[] = [];
+      let unlowerable = false;
+      for (const st of rest.split('\n').map(l2 => l2.trim()).filter(Boolean)) {
+        const lm = st.match(/^let\s+(\w+)\s*:=\s*([\s\S]+)$/);
+        if (lm) {
+          const val = renameLoopVars(goImplications(rewriteGoExpr(lm[2], nameMap, mapVarOrigNames, localNames2, stateEnumName, knownStateValues, loopRecords)));
+          const brm = lm[2].trim().match(/^(\w+)\[.+\]$/);
+          if (brm) {
+            const vt2 = stateVarTypes.get(brm[1]);
+            if (vt2?.type === 'map' && vt2.valueType?.type === 'ident') loopRecords.set(lm[1], cleanName(vt2.valueType.name));
+          }
+          bodyLines2.push(`${'\t'.repeat(depth + 1)}${camelCase(lm[1])} := ${val}`);
+          localNames2.add(lm[1]);
+        } else {
+          const exprGo = renameLoopVars(goImplications(rewriteGoExpr(st, nameMap, mapVarOrigNames, localNames2, stateEnumName, knownStateValues, loopRecords)));
+          unlowerable = unlowerable || / implies\(/.test(exprGo) || /\b\w+\s+has\s+\w+\b(?!\()/.test(exprGo);
+          bodyLines2.push(`${'\t'.repeat(depth + 1)}if !(${exprGo}) {`);
+          bodyLines2.push(`${'\t'.repeat(depth + 2)}return false`);
+          bodyLines2.push(`${'\t'.repeat(depth + 1)}}`);
+        }
+      }
+      lines.push(...bodyLines2);
       for (let d = loops.length - 1; d >= 0; d--) lines.push(`${'\t'.repeat(d + 1)}}`);
       if (unlowerable) {
         body = `\t// TODO: manual review - invariant could not be mechanically lowered:\n\t// ${cExpr.replace(/\s+/g, ' ').replace(/\*\//g, '* /')}\n\treturn true`;
