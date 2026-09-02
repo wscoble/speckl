@@ -472,6 +472,127 @@ function translateRecordLiteral(expr: string, recordTypes: Map<string, any[]>): 
   return `{ ${fields.join(', ')} }`;
 }
 
+// ─── affordance synthesis ───────────────────────────────────────────
+
+/**
+ * Classify each action parameter so the view can render a human affordance
+ * instead of a raw form:
+ *   bind     — param is an entity id; bound from the rendered record
+ *   choice   — param constrained by an `in { ... }` literal set; one button
+ *              per literal, visibility filtered by Machine.check
+ *   actor    — who is acting; constant "human" (agent calls hit the API)
+ *   entity   — param references another state var (projectId); defaults to
+ *              the first key of that var
+ *   text     — free text; inline input
+ */
+interface ParamPlan {
+  name: string;
+  kind: 'bind' | 'choice' | 'actor' | 'entity' | 'text' | 'plain';
+  literals?: string[];      // choice
+  stateVar?: string;        // entity
+  elmType?: string;         // param wire type
+}
+
+const ACTOR_NAMES = new Set(['actor', 'mover', 'author', 'createdby', 'created_by', 'user', 'by']);
+
+function actionParamPlans(
+  action: ActionNode,
+  recordTypes: Map<string, any[]>,
+  stateVars: any[],
+): { params: ParamPlan[]; bindRecord: string | null; createVar: string | null } {
+  // literal sets from this action's requires: param name -> literals
+  const choiceSets = new Map<string, string[]>();
+  for (const stmt of action.statements) {
+    if (stmt.type === 'require') {
+      const m = (stmt as any).expr.match(/^(\w+)\s+in\s+\{(.+)\}$/);
+      if (m) {
+        choiceSets.set(m[1], m[2].split(',').map((x: string) => x.trim().replace(/^"|"$/g, '')).filter(Boolean));
+      }
+    }
+  }
+
+  // id fields per record: field name (lowercased) -> record name.
+  // Prefer the record whose stem matches (cardId -> CardRecord over
+  // CardComment), and where the id is the record's first field.
+  const idFieldOwner = new Map<string, string>();
+  for (const [recName, fields] of recordTypes) {
+    for (const f of fields) {
+      const fl = f.name.toLowerCase();
+      if (!(fl.endsWith('id') || fl === 'id')) continue;
+      const existing = idFieldOwner.get(fl);
+      if (!existing) { idFieldOwner.set(fl, recName); continue; }
+      const stem = fl.replace(/id$/, '');
+      const better =
+        (recName.toLowerCase().startsWith(stem) && !existing.toLowerCase().startsWith(stem)) ||
+        (fields[0] && fields[0].name.toLowerCase() === fl && !(recordTypes.get(existing)?.[0]?.name.toLowerCase() === fl));
+      if (better) idFieldOwner.set(fl, recName);
+    }
+  }
+
+  const params: ParamPlan[] = action.params.map((p: any) => {
+    const pl = p.name.toLowerCase();
+    const et = elmParamType(p.type);
+    if (choiceSets.has(p.name)) {
+      return { name: p.name, kind: 'choice', literals: choiceSets.get(p.name), elmType: et };
+    }
+    if (ACTOR_NAMES.has(pl)) {
+      return { name: p.name, kind: 'actor', elmType: et };
+    }
+    // bind only when the owning record name contains the param stem
+    // (cardId -> CardRecord ✓, itemId -> TodoItemRecord ✓,
+    //  projectId -> CardRecord ✗)
+    const stem = pl.replace(/id$/, '');
+    const owner = idFieldOwner.get(pl);
+    if (owner && owner.toLowerCase().includes(stem)) {
+      return { name: p.name, kind: 'bind', elmType: et };
+    }
+    // entity default: projectId -> projects
+    const sv = stateVars.find((v: any) => elmName(v.name) === stem + 's');
+    if (sv) {
+      return { name: p.name, kind: 'entity', stateVar: elmName(sv.name), elmType: et };
+    }
+    if (et === 'String') {
+      return { name: p.name, kind: 'text', elmType: et };
+    }
+    return { name: p.name, kind: 'plain', elmType: et };
+  });
+
+  // bind record: the record owning the first bind param's id field
+  let bindRecord: string | null = null;
+  const firstBind = params.find(p => p.kind === 'bind');
+  if (firstBind) {
+    bindRecord = idFieldOwner.get(firstBind.name.toLowerCase()) || null;
+  }
+
+  // create target: first assigned state var
+  let createVar: string | null = null;
+  for (const stmt of action.statements) {
+    if (stmt.type === 'assign') {
+      const root = stmt.target.match(/^(\w+)/);
+      if (root) { createVar = elmName(root[1]); break; }
+    }
+  }
+
+  // If the action CONSTRUCTS a fresh record of the bind record's own type
+  // (dict insert or list prepend of a full record literal), it is a
+  // creation, not an affordance — e.g. CreateCard assigns
+  // cards[cardId] := CardRecord{...}; AddEvent prepends/inserts EventRecord.
+  if (bindRecord) {
+    const constructsOwn =
+      action.statements.some(st =>
+        st.type === 'assign' &&
+        new RegExp(`^${bindRecord}`, 'i').test((st as any).expr));
+    if (constructsOwn) bindRecord = null;
+  }
+
+  return { params, bindRecord, createVar };
+}
+
+/** humanize an identifier: "ApprovalRequested" -> "approval requested" */
+function humanize(s: string): string {
+  return s.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
 // ─── view field classification ──────────────────────────────────────
 
 /**
@@ -835,7 +956,7 @@ function emitMachine(
   const moduleName = `${ElmName(speck.name)}Machine`;
   L.push(`-- Code generated by speckl (elm backend): pure state machine from ${speck.name}.speckdl.`);
   L.push(`-- Model from state vars; Msg from actions; guards from require exprs.`);
-  L.push(`module ${moduleName} exposing (Model, Msg(..), init, update)`);
+  L.push(`module ${moduleName} exposing (Model, Msg(..), init, update, check)`);
   L.push(``);
   L.push(`import Dict exposing (Dict)`);
   L.push(`import Prelude exposing (..)`);
@@ -909,6 +1030,15 @@ a Result describing guard failure (Err) or success with the event log (Ok).
     for (const b of tr.bodyElm) L.push(b);
     L.push(``);
   }
+
+  // check: evaluate an action's guards against a model without committing.
+  // The view uses this to render only legal affordances.
+  L.push(``);
+  L.push(`{-| Evaluate an action's guards against a model without committing the
+transition. The generated view uses this to show only legal affordances. -}`);
+  L.push(`check : Msg -> Model -> Result String EventLog`);
+  L.push(`check msg model =`);
+  L.push(`    Tuple.second (update msg model)`);
   return L.join('\n') + '\n';
 }
 
@@ -942,7 +1072,7 @@ function emitMain(speck: SpeckNode, stateVars: any[], actions: ActionNode[], rec
   L.push(`import Json.Encode as JE`);
   L.push(`import Prelude exposing (..)`);
   L.push(`import Types exposing (..)`);
-  L.push(`import ${machine} exposing (Model, Msg(..))`);
+  L.push(`import ${machine} as Machine exposing (Model, Msg(..))`);
   L.push(``);
   L.push(``);
   L.push(`-- MODEL`);
@@ -958,7 +1088,7 @@ function emitMain(speck: SpeckNode, stateVars: any[], actions: ActionNode[], rec
   L.push(``);
   L.push(`init : () -> ( Page, Cmd FrontMsg )`);
   L.push(`init () =`);
-  L.push(`    ( { machine = ${machine}.init`);
+  L.push(`    ( { machine = Machine.init`);
   L.push(`      , error = Nothing`);
   L.push(`      , loading = True`);
   L.push(`      , inputs = Dict.empty`);
@@ -1063,7 +1193,7 @@ number of state vars.
   L.push(`        FromMachine msg ->`);
   L.push(`            let`);
   L.push(`                ( newModel, guardResult ) =`);
-  L.push(`                    ${machine}.update msg page.machine`);
+  L.push(`                    Machine.update msg page.machine`);
   L.push(`            in`);
   L.push(`            case guardResult of`);
   L.push(`                Err guardMsg ->`);
@@ -1175,7 +1305,7 @@ number of state vars.
   L.push(`                ]`);
   L.push(`            , main_ [ class "gb-main" ]`);
   L.push(`                [ errorBar page`);
-  L.push(`                , div [] (stateSections page.machine)`);
+  L.push(`                , div [] (stateSections page)`);
   L.push(`                , viewCommands page.inputs`);
   L.push(`                ]`);
   L.push(`            ]`);
@@ -1193,9 +1323,9 @@ number of state vars.
   L.push(`            div [] []`);
   L.push(``);
   L.push(``);
-  L.push(`stateSections : Model -> List (Html FrontMsg)`);
-  L.push(`stateSections model =`);
-  L.push(`    [ ${stateVars.map((v: any) => `section "${goFieldName(v.name)}" (${sectionBodyFn(v, recordTypes)} model.${elmName(v.name)})`).join('\n    , ')} ]`);
+  L.push(`stateSections : Page -> List (Html FrontMsg)`);
+  L.push(`stateSections page =`);
+  L.push(`    [ ${stateVars.map((v: any) => `section "${goFieldName(v.name)}" (${sectionBodyFn(v, recordTypes)} page.machine.${elmName(v.name)})`).join('\n    , ')} ]`);
   L.push(``);
   L.push(``);
   L.push(`section : String -> List (Html FrontMsg) -> Html FrontMsg`);
@@ -1218,6 +1348,25 @@ number of state vars.
   L.push(`boolText b =`);
   L.push(`    if b then "true" else "false"`);
   L.push(``);
+  // affordance plan: actions bound to a record type render on each record;
+  // unbound (creation) actions render as a form in the section of the state
+  // var they create into.
+  const affordances = new Map<string, { action: ActionNode; plan: ReturnType<typeof actionParamPlans> }[]>();
+  const creations = new Map<string, { action: ActionNode; plan: ReturnType<typeof actionParamPlans> }[]>();
+  for (const a of actions) {
+    const plan = actionParamPlans(a, recordTypes, stateVars);
+    if (plan.bindRecord) {
+      const list = affordances.get(plan.bindRecord) || [];
+      list.push({ action: a, plan });
+      affordances.set(plan.bindRecord, list);
+    } else if (plan.createVar) {
+      const list = creations.get(plan.createVar) || [];
+      list.push({ action: a, plan });
+      creations.set(plan.createVar, list);
+    }
+  }
+
+
   // ── per-record element renderers (from spec record fields) ──
   for (const [recName, fields] of recordTypes) {
     const tn = ElmName(recName);
@@ -1229,8 +1378,8 @@ number of state vars.
     else heading = `"${tn}"`;
     const metaParts = fieldInfos.meta.map((f: any) => metaExpr(f));
     const metaJoined = metaParts.length > 0 ? `String.join " · " [${metaParts.join(", ")}]` : null;
-    L.push(`view${tn} : ${tn} -> Html FrontMsg`);
-    L.push(`view${tn} r =`);
+    L.push(`view${tn} : Dict.Dict String String -> Model -> ${tn} -> Html FrontMsg`);
+    L.push(`view${tn} inputs model r =`);
     L.push(`    div [ class "gb-card" ]`);
     if (metaJoined) {
       L.push(`        [ div [ class "gb-card-hdr" ]`);
@@ -1240,22 +1389,145 @@ number of state vars.
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
       }
+      if (affordances.has(recName)) {
+        L.push(`        , div [ class "gb-card-affordances" ] (affordances${tn} inputs model r)`);
+      }
       L.push(`        ]`);
     } else {
       L.push(`        [ strong [ class "gb-card-title" ] [ text (${heading}) ]`);
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
       }
+      if (affordances.has(recName)) {
+        L.push(`        , div [ class "gb-card-affordances" ] (affordances${tn} inputs model r)`);
+      }
       L.push(`        ]`);
     }
     L.push(``);
     L.push(``);
   }
+
+  // affordance functions: per record, one entry per bound action; each
+  // choice param becomes one button per literal, shown only when the
+  // machine's guards allow it (Machine.check).
+  L.push(`legalButton : Model -> Msg -> String -> Html FrontMsg`);
+  L.push(`legalButton model msg label =`);
+  L.push(`    case Machine.check msg model of`);
+  L.push(`        Ok _ ->`);
+  L.push(`            button [ class "gb-btn gb-btn-sm", onClick (FromMachine msg) ] [ text label ]`);
+  L.push(``);
+  L.push(`        Err _ ->`);
+  L.push(`            text ""`);
+  L.push(``);
+  L.push(``);
+  for (const [recName, entries] of affordances) {
+    const tn = ElmName(recName);
+    // the record's id field (for binding)
+    const fields = recordTypes.get(recName) || [];
+    const lines: string[] = [];
+    for (const { action, plan } of entries) {
+      const an = ElmName(action.name);
+      const args = plan.params.map((p: ParamPlan) => {
+        if (p.kind === 'bind') {
+          // bind to the record's own id field (same lowercased name)
+          return `r.${elmName(p.name)}`;
+        }
+        if (p.kind === 'actor') {
+          return `"human"`;
+        }
+        if (p.kind === 'choice') {
+          return `__CHOICE__${humanize(p.name)}`; // handled below
+        }
+        if (p.kind === 'entity') {
+          return `(firstKey model.${p.stateVar})`;
+        }
+        if (p.kind === 'text') {
+          return `(getString inputsPage "${an}.${p.name}")`;
+        }
+        return `"${p.name}"`;
+      });
+      if (plan.params.some(p => p.kind === 'choice')) {
+        for (const p of plan.params) {
+          if (p.kind !== 'choice') continue;
+          for (const lit of p.literals || []) {
+            const choiceArgs = plan.params.map((pp: ParamPlan) => {
+              if (pp.kind === 'bind') return `r.${elmName(pp.name)}`;
+              if (pp.kind === 'actor') return `"human"`;
+              if (pp.kind === 'choice') return `"${lit}"`;
+              if (pp.kind === 'entity') return `(firstKey model.${pp.stateVar})`;
+              if (pp.kind === 'text') return `(getString inputsPage "${an}.${pp.name}")`;
+              return `"${pp.name}"`;
+            }).join(' ');
+            lines.push(`        legalButton model (${an} ${choiceArgs}) "${humanize(lit)}"`);
+          }
+        }
+      } else {
+        lines.push(`        legalButton model (${an} ${args.join(' ')}) "${humanize(action.name)}"`);
+      }
+    }
+    // text params need the page inputs — pass through a closure instead:
+    // we emit affordances with inputs as a parameter to keep it honest.
+    if (lines.length === 0) continue;
+    L.push(`affordances${tn} : Dict.Dict String String -> Model -> ${tn} -> List (Html FrontMsg)`);
+    L.push(`affordances${tn} inputsPage model r =`);
+    L.push(`    [`);
+    for (let k = 0; k < lines.length; k++) {
+      L.push(lines[k].replace(/$/, k < lines.length - 1 ? ',' : ''));
+    }
+    L.push(`    ]`);
+    L.push(``);
+    L.push(``);
+  }
+
+  // firstKey helper for entity defaults
+  L.push(`firstKey : Dict.Dict String v -> String`);
+  L.push(`firstKey dict =`);
+  L.push(`    Maybe.withDefault "" (List.head (Dict.keys dict))`);
+  L.push(``);
+  L.push(``);
+  L.push(`nextId : Dict.Dict String v -> Int`);
+  L.push(`nextId dict =`);
+  L.push(`    1 + (Maybe.withDefault 0 (List.maximum (List.map (\\k -> Maybe.withDefault 0 (String.toInt k)) (Dict.keys dict))))`);
+  L.push(``);
+  L.push(``);
+
+  // create-form emitter (called from the per-state-var loop)
+  function emitCreateForm(tn: string, varName: string, entries: { action: ActionNode; plan: ReturnType<typeof actionParamPlans> }[]): void {
+    for (const { action, plan } of entries) {
+      const an = ElmName(action.name);
+      // auto-id for a bind-looking id param on creation (client picks next id;
+      // the server guard remains authoritative on duplicates)
+      const args = plan.params.map((p: ParamPlan) => {
+        if (p.kind === 'actor') return `"human"`;
+        if (p.kind === 'entity') return `(firstKey model.${p.stateVar})`;
+        if (p.kind === 'text') return `(getString inputs "${an}.${p.name}")`;
+        if (p.elmType === 'Int' && p.name.toLowerCase().endsWith('id')) return `(nextId model.${varName})`;
+        if (p.elmType === 'Int') return `0`;
+        return `"${p.name}"`;
+      }).join(' ');
+      L.push(`create${tn}Form : Model -> Dict.Dict String String -> Html FrontMsg`);
+      L.push(`create${tn}Form model inputs =`);
+      L.push(`    div [ class "gb-create" ]`);
+      const inputs = plan.params.filter((p: ParamPlan) => p.kind === 'text');
+      L.push(`        [ ${inputs.length > 0 ? 'div [ class "gb-create-fields" ]' : 'div [ class "gb-create-fields" ]'}`);
+      if (inputs.length > 0) {
+        L.push(`            [ ${inputs.map((p: ParamPlan) => `inputField "${an}.${p.name}" inputs`).join('\n            , ')}`);
+        L.push(`            ]`);
+      } else {
+        L.push(`            []`);
+      }
+      L.push(`        , button [ class "gb-btn", onClick (FromMachine (${an} ${args})) ] [ text "${humanize(action.name)}" ]`);
+      L.push(`        ]`);
+      L.push(``);
+      L.push(``);
+    }
+  }
+  void emitCreateForm;
+
   // ── per-state-var renderers ──
   for (const v of stateVars) {
     const t = elmStateType(v.typeExpr, recordTypes);
     const name = elmName(v.name);
-    const fnName = sectionBodyFn(v, recordTypes);
     if (t.startsWith('Dict.Dict String ')) {
       const inner = t.replace('Dict.Dict String ', '');
       if (inner === 'Bool') {
@@ -1272,15 +1544,22 @@ number of state vars.
         const tn = ElmName(inner);
         const fields = recordTypes.get(inner) || [];
         const groupField = fields.find((f: any) => ['column', 'status'].includes(f.name.toLowerCase()));
+        const hasAff = affordances.has(inner);
+        const hasCreate = creations.has(name);
         if (groupField && columnOrder) {
           const accessor = `.${elmName(groupField.name)}`;
-          L.push(`view${goFieldName(v.name)} : Dict.Dict String ${tn} -> List (Html FrontMsg)`);
-          L.push(`view${goFieldName(v.name)} dict =`);
+          L.push(`view${goFieldName(v.name)} : Dict.Dict String String -> Model -> Dict.Dict String ${tn} -> List (Html FrontMsg)`);
+          L.push(`view${goFieldName(v.name)} inputs model dict =`);
           L.push(`    if Dict.isEmpty dict then`);
           L.push(`        [ emptyNote ]`);
           L.push(``);
           L.push(`    else`);
-          L.push(`        List.map view${tn}Group (groupByColumn${tn} (Dict.values dict))`);
+          L.push(`        List.concat`);
+          L.push(`            [ List.map (view${tn}Group inputs model) (groupByColumn${tn} (Dict.values dict))`);
+          if (hasCreate) {
+            L.push(`            , [ create${tn}Form model inputs ]`);
+          }
+          L.push(`            ]`);
           L.push(``);
           L.push(``);
           L.push(`groupByColumn${tn} : List ${tn} -> List ( String, List ${tn} )`);
@@ -1299,34 +1578,36 @@ number of state vars.
           L.push(`    known ++ unknown`);
           L.push(``);
           L.push(``);
-          L.push(`view${tn}Group : ( String, List ${tn} ) -> Html FrontMsg`);
-          L.push(`view${tn}Group ( col, items ) =`);
+          L.push(`view${tn}Group : Dict.Dict String String -> Model -> ( String, List ${tn} ) -> Html FrontMsg`);
+          L.push(`view${tn}Group inputs model ( col, items ) =`);
           L.push(`    div [ class "gb-board-col" ]`);
           L.push(`        [ div [ class "gb-board-col-hdr" ]`);
           L.push(`            [ text col`);
           L.push(`            , span [ class "gb-board-col-count" ] [ text (String.fromInt (List.length items)) ]`);
           L.push(`            ]`);
-          L.push(`        , div [ class "gb-board-col-items" ] (List.map view${tn} items)`);
+          L.push(`        , div [ class "gb-board-col-items" ] (List.map (view${tn} inputs model) items)`);
           L.push(`        ]`);
           L.push(``);
           L.push(``);
         } else {
-          L.push(`view${goFieldName(v.name)} : Dict.Dict String ${tn} -> List (Html FrontMsg)`);
-          L.push(`view${goFieldName(v.name)} dict =`);
+          L.push(`view${goFieldName(v.name)} : Dict.Dict String String -> Model -> Dict.Dict String ${tn} -> List (Html FrontMsg)`);
+          L.push(`view${goFieldName(v.name)} inputs model dict =`);
           L.push(`    if Dict.isEmpty dict then`);
           L.push(`        [ emptyNote ]`);
           L.push(``);
           L.push(`    else`);
-          L.push(`        List.map view${tn} (Dict.values dict)`);
+          L.push(`        List.map (view${tn} inputs model) (Dict.values dict)`);
           L.push(``);
           L.push(``);
         }
+        if (hasCreate) {
+          emitCreateForm(tn, name, creations.get(name)!);
+        }
       }
     } else if (t.startsWith('Dict.Dict ')) {
-      // non-string-key dict (scalar) — show key/value rows
       const inner = t.replace('Dict.Dict ', '');
-      L.push(`view${goFieldName(v.name)} : ${t} -> List (Html FrontMsg)`);
-      L.push(`view${goFieldName(v.name)} dict =`);
+      L.push(`view${goFieldName(v.name)} : Dict.Dict String String -> Model -> ${t} -> List (Html FrontMsg)`);
+      L.push(`view${goFieldName(v.name)} _ model dict =`);
       L.push(`    if Dict.isEmpty dict then`);
       L.push(`        [ emptyNote ]`);
       L.push(``);
@@ -1337,18 +1618,19 @@ number of state vars.
     } else if (t.startsWith('List ')) {
       const inner = t.slice(5);
       const tn = ElmName(inner);
-      L.push(`view${goFieldName(v.name)} : List ${tn} -> List (Html FrontMsg)`);
-      L.push(`view${goFieldName(v.name)} items =`);
+      L.push(`view${goFieldName(v.name)} : Dict.Dict String String -> Model -> List ${tn} -> List (Html FrontMsg)`);
+      L.push(`view${goFieldName(v.name)} inputs model items =`);
       L.push(`    if List.isEmpty items then`);
       L.push(`        [ emptyNote ]`);
       L.push(``);
       L.push(`    else`);
-      L.push(`        List.map view${tn} items`);
+      L.push(`        List.map (view${tn} inputs model) items`);
       L.push(``);
       L.push(``);
     }
   }
-  // ── board helpers ──
+
+// ── board helpers ──
   if (columnOrder) {
     L.push(`columnOrder : List String`);
     L.push(`columnOrder =`);
@@ -1416,10 +1698,10 @@ number of state vars.
     if (t.startsWith('Dict.Dict String ')) {
       const inner = t.replace('Dict.Dict String ', '');
       if (inner === 'Bool') return `boolDictSection`;
-      return `view${goFieldName(v.name)}`;
+      return `view${goFieldName(v.name)} page.inputs page.machine`;
     }
-    if (t.startsWith('Dict.Dict ')) return `view${goFieldName(v.name)}`;
-    if (t.startsWith('List ')) return `view${goFieldName(v.name)}`;
+    if (t.startsWith('Dict.Dict ')) return `view${goFieldName(v.name)} page.inputs page.machine`;
+    if (t.startsWith('List ')) return `view${goFieldName(v.name)} page.inputs page.machine`;
     return `\\x -> [ row (Debug.toString x) ]`;
   }
   L.push(`boolDictSection : Dict.Dict String Bool -> List (Html FrontMsg)`);
