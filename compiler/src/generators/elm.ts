@@ -3299,13 +3299,13 @@ function emitIndexHtml(name: string): string {
 <style>
 /* speckl-generated: Basecamp-like defaults. Behavior from the spec; style here. */
 :root {
-  --gb-bg: #16171b;
-  --gb-card: #222428;
-  --gb-border: #35383f;
-  --gb-text: #e9e7e2;
-  --gb-text-2: #a6a29a;
-  --gb-accent: #e2604f;
-  --gb-accent-dark: #c04434;
+  --gb-bg: #1b1917;
+  --gb-card: #2a2724;
+  --gb-border: #3d3831;
+  --gb-text: #ece7dd;
+  --gb-text-2: #a89f8f;
+  --gb-accent: #e57355;
+  --gb-accent-dark: #c2543a;
   --gb-radius: 12px;
 }
 * { box-sizing: border-box; }
@@ -3394,7 +3394,7 @@ body {
   min-height: 380px;
   display: flex;
   flex-direction: column;
-  background: #1b1d22;
+  background: #211e1a;
   border: 1px solid var(--gb-border);
   border-radius: 8px;
   padding: 6px 8px 8px;
@@ -3402,17 +3402,17 @@ body {
 .gb-board-col.gb-col-ok {
   outline: 2px dashed var(--gb-accent);
   outline-offset: -2px;
-  background: #26201c;
+  background: #2a241e;
 }
 .gb-board-col.gb-col-approve {
-  outline: 3px solid #3fb374;
+  outline: 3px solid #46c07a;
   outline-offset: -2px;
-  background: #1b2a20;
+  background: #202a20;
 }
 .gb-board-col.gb-col-deny {
   outline: 3px solid var(--gb-accent);
   outline-offset: -2px;
-  background: #2a1d1b;
+  background: #2b201c;
 }
 .gb-board-col.gb-col-hover {
   background: #fbe9e4;
@@ -3457,9 +3457,9 @@ body {
 
 /* error */
 .gb-error {
-  background: #33201e;
-  border: 1px solid #5c3430;
-  color: #f0a093;
+  background: #332421;
+  border: 1px solid #5c4038;
+  color: #f0a894;
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 16px;
@@ -3489,7 +3489,7 @@ body {
   border-radius: 8px;
   font-size: 14px;
   font-family: inherit;
-  background: #1a1c20;
+  background: #211e1a;
   color: var(--gb-text);
   min-width: 140px;
 }
@@ -3509,9 +3509,9 @@ body {
 .gb-btn:hover { background: #a83a2b; }
 .gb-btn-gate { font-weight: 700; }
 .gb-btn-approve {
-  background: #2b8f57;
+  background: #2f9c5e;
 }
-.gb-btn-approve:hover { background: #237547; }
+.gb-btn-approve:hover { background: #27824e; }
 .gb-btn-deny {
   background: var(--gb-accent);
 }
