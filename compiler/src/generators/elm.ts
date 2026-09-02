@@ -1440,6 +1440,7 @@ function emitCompositeMain(
   L.push(`    , inputs : Dict.Dict String String`);
   L.push(`    , drag : Maybe { id : Int, x : Float, y : Float, over : Maybe String }`);
   L.push(`    , menu : Maybe Int`);
+  L.push(`    , status : Maybe String`);
   L.push(`    }`);
   L.push(``);
   L.push(``);
@@ -1476,6 +1477,7 @@ function emitCompositeMain(
   L.push(`      , inputs = Dict.empty`);
   L.push(`      , drag = Nothing`);
   L.push(`      , menu = Nothing`);
+  L.push(`      , status = Nothing`);
   L.push(`      }`);
   L.push(`    , fetchState`);
   L.push(`    )`);
@@ -1553,7 +1555,7 @@ function emitCompositeMain(
   L.push(`        ActionDone result ->`);
   L.push(`            case result of`);
   L.push(`                Ok () ->`);
-  L.push(`                    ( page, fetchState )`);
+  L.push(`                    ( { page | status = Just "Change saved" }, fetchState )`);
   L.push(``);
   L.push(`                Err e ->`);
   L.push(`                    ( { page | loading = False, error = Just (httpError e) }, fetchState )`);
@@ -1636,17 +1638,31 @@ function emitCompositeMain(
   L.push(`    { title = "${ElmName(speck.name)}"`);
   L.push(`    , body =`);
   L.push(`        [ div [ class "gb-app", attribute "data-app" "${snakeCase(speck.name)}" ]`);
-  L.push(`            [ header [ class "gb-header" ]`);
-  L.push(`                [ span [ class "gb-logo" ] [ text "GB" ]`);
+  L.push(`            [ a [ class "gb-skip", href "#gb-main" ] [ text "Skip to content" ]`);
+  L.push(`            , header [ class "gb-header" ]`);
+  L.push(`                [ span [ class "gb-logo", attribute "aria-hidden" "true" ] [ text "GB" ]`);
   L.push(`                , span [ class "gb-title" ] [ text "${ElmName(speck.name)}" ]`);
   L.push(`                ]`);
-  L.push(`            , main_ [ class "gb-main" ]`);
+  L.push(`            , main_ [ class "gb-main", id "gb-main" ]`);
   L.push(`                [ errorBar page`);
   L.push(`                , div [] (stateSections page)`);
   L.push(`                ]`);
+  L.push(`            , statusRegion page`);
   L.push(`            ]`);
   L.push(`        ]`);
   L.push(`    }`);
+  L.push(``);
+  L.push(``);
+  L.push(`{-| Screen-reader announcements: successful actions are polite; errors`);
+  L.push(`use the alert role in errorBar. -}`);
+  L.push(`statusRegion : Page -> Html FrontMsg`);
+  L.push(`statusRegion page =`);
+  L.push(`        div`);
+  L.push(`            [ class "gb-visually-hidden"`);
+  L.push(`            , attribute "role" "status"`);
+  L.push(`            , attribute "aria-live" "polite"`);
+  L.push(`            ]`);
+  L.push(`            [ text (Maybe.withDefault "" page.status) ]`);
   L.push(``);
   L.push(``);
   L.push(`errorBar : Page -> Html FrontMsg`);
@@ -1814,7 +1830,7 @@ function emitCompositeMain(
   L.push(`                    case Dict.get (String.fromInt d.id) dict of`);
   L.push(`                        Just r ->`);
   L.push(`                            div`);
-  L.push(`                                [ class "gb-ghost"`);
+  L.push(`                                [ class "gb-ghost", attribute "aria-hidden" "true"`);
   L.push(`                                , style "left" (String.fromFloat d.x ++ "px")`);
   L.push(`                                , style "top" (String.fromFloat d.y ++ "px")`);
   L.push(`                                ]`);
@@ -1885,12 +1901,17 @@ function emitCompositeMain(
   L.push(`                    []`);
   L.push(`    in`);
   L.push(`    div`);
-  L.push(`        ([ class colClass, onMouseEnter (DragOverCol col), onMouseLeave (DragLeaveCol col) ] ++ commitAttr)`);
+  L.push(`        ([ class colClass`);
+  L.push(`        , attribute "role" "region"`);
+  L.push(`        , attribute "aria-label" (col ++ " column, " ++ String.fromInt (List.length items) ++ " cards")`);
+  L.push(`        , onMouseEnter (DragOverCol col)`);
+  L.push(`        , onMouseLeave (DragLeaveCol col)`);
+  L.push(`        ] ++ commitAttr)`);
   L.push(`        [ div [ class "gb-board-col-hdr" ]`);
   L.push(`            [ text col`);
   L.push(`            , span [ class "gb-board-col-count" ] [ text (String.fromInt (List.length items)) ]`);
   L.push(`            ]`);
-  L.push(`        , div [ class "gb-board-col-items" ] (List.map (\\r -> kanbanCard page spec r) items)`);
+  L.push(`        , div [ class "gb-board-col-items", attribute "role" "list" ] (List.map (\\r -> kanbanCard page spec r) items)`);
   L.push(`        ]`);
   L.push(``);
   L.push(``);
@@ -1917,6 +1938,7 @@ function emitCompositeMain(
   L.push(`    in`);
   L.push(`    div`);
   L.push(`        ([ class cardClass`);
+  L.push(`        , attribute "role" "listitem"`);
   L.push(`        , custom "mousedown"`);
   L.push(`            (D.map`);
   L.push(`                (\\xy ->`);
@@ -1931,7 +1953,13 @@ function emitCompositeMain(
   L.push(`        ([ spec.cardView page r`);
   L.push(`        ]`);
   L.push(`            ++ (if menuOpen then`);
-  L.push(`                    [ div [ class "gb-menu", noDrag ] (spec.menu page r) ]`);
+  L.push(`                    [ div`);
+  L.push(`                        [ class "gb-menu"`);
+  L.push(`                        , id ("gb-menu-" ++ String.fromInt (spec.idOf r))`);
+  L.push(`                        , noDrag`);
+  L.push(`                        ]`);
+  L.push(`                        (spec.menu page r)`);
+  L.push(`                    ]`);
   L.push(``);
   L.push(`                else`);
   L.push(`                    []`);
@@ -1943,6 +1971,8 @@ function emitCompositeMain(
   L.push(`                    [ button`);
   L.push(`                        [ class "gb-menu-btn"`);
   L.push(`                        , attribute "aria-label" "card actions"`);
+  L.push(`                        , attribute "aria-controls"`);
+  L.push(`                            ("gb-menu-" ++ String.fromInt (spec.idOf r))`);
   L.push(`                        , attribute "aria-expanded"`);
   L.push(`                            (if menuOpen then "true" else "false")`);
   L.push(`                        , onClick (ToggleMenu (spec.idOf r))`);
@@ -2286,8 +2316,8 @@ function emitCompositeMain(
   L.push(`inputField k inputs =`);
   L.push(`    input`);
   L.push(`        [ class "gb-input"`);
-  L.push(`        , placeholder k`);
-  L.push(`        , attribute "aria-label" k`);
+  L.push(`        , placeholder (humanizeLabel k)`);
+  L.push(`        , attribute "aria-label" (humanizeLabel k)`);
   L.push(`        , value (getString inputs k)`);
   L.push(`        , onInput (SetInput k)`);
   L.push(`        ]`);
@@ -2571,6 +2601,7 @@ function emitMain(speck: SpeckNode, stateVars: any[], actions: ActionNode[], rec
   L.push(`      , inputs = Dict.empty`);
   L.push(`      , drag = Nothing`);
   L.push(`      , menu = Nothing`);
+  L.push(`      , status = Nothing`);
   L.push(`      }`);
   L.push(`    , fetchState`);
   L.push(`    )`);
@@ -2695,7 +2726,7 @@ number of state vars.
   L.push(`        ActionDone result ->`);
   L.push(`            case result of`);
   L.push(`                Ok () ->`);
-  L.push(`                    ( page, fetchState )`);
+  L.push(`                    ( { page | status = Just "Change saved" }, fetchState )`);
   L.push(``);
   L.push(`                Err e ->`);
   L.push(`                    ( { page | loading = False, error = Just (httpError e) }, fetchState )`);
@@ -2821,6 +2852,18 @@ number of state vars.
   L.push(`            ]`);
   L.push(`        ]`);
   L.push(`    }`);
+  L.push(``);
+  L.push(``);
+  L.push(`{-| Screen-reader announcements: successful actions are polite; errors`);
+  L.push(`use the alert role in errorBar. -}`);
+  L.push(`statusRegion : Page -> Html FrontMsg`);
+  L.push(`statusRegion page =`);
+  L.push(`        div`);
+  L.push(`            [ class "gb-visually-hidden"`);
+  L.push(`            , attribute "role" "status"`);
+  L.push(`            , attribute "aria-live" "polite"`);
+  L.push(`            ]`);
+  L.push(`            [ text (Maybe.withDefault "" page.status) ]`);
   L.push(``);
   L.push(``);
   L.push(`errorBar : Page -> Html FrontMsg`);
@@ -3177,8 +3220,8 @@ number of state vars.
   L.push(`inputField k inputs =`);
   L.push(`    input`);
   L.push(`        [ class "gb-input"`);
-  L.push(`        , placeholder k`);
-  L.push(`        , attribute "aria-label" k`);
+  L.push(`        , placeholder (humanizeLabel k)`);
+  L.push(`        , attribute "aria-label" (humanizeLabel k)`);
   L.push(`        , value (getString inputs k)`);
   L.push(`        , onInput (SetInput k)`);
   L.push(`        ]`);
@@ -3509,9 +3552,9 @@ body {
 .gb-btn:hover { background: #a83a2b; }
 .gb-btn-gate { font-weight: 700; }
 .gb-btn-approve {
-  background: #2f9c5e;
+  background: #1f7a48;
 }
-.gb-btn-approve:hover { background: #27824e; }
+.gb-btn-approve:hover { background: #186139; }
 .gb-btn-deny {
   background: var(--gb-accent);
 }
