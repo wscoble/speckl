@@ -3356,6 +3356,7 @@ function emitIndexHtml(name: string): string {
 * { box-sizing: border-box; }
 body {
   margin: 0;
+  overflow-x: hidden;
   background: var(--gb-bg);
   color: var(--gb-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -3427,6 +3428,15 @@ body {
 .gb-card-meta { font-size: 12px; color: var(--gb-text-2); }
 .gb-card-body { font-size: 13px; color: var(--gb-text-2); margin-top: 2px; }
 
+/* board sections span the viewport — 8 columns need the room */
+.gb-section:has(.gb-board) {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+}
+
 /* board (kanban transition pattern) */
 .gb-board {
   display: flex;
@@ -3456,8 +3466,8 @@ body::-webkit-scrollbar-track { background: var(--gb-bg); }
 body::-webkit-scrollbar-thumb { background: #45475a; border-radius: 6px; }
 body::-webkit-scrollbar-thumb:hover { background: #585b70; }
 .gb-board-col {
-  flex: 1 0 170px;
-  min-width: 170px;
+  flex: 1 0 260px;
+  min-width: 260px;
   min-height: 380px;
   display: flex;
   flex-direction: column;
