@@ -3312,6 +3312,12 @@ function emitIndexHtml(name: string): string {
 <style>
 /* speckl-generated: Basecamp-like defaults. Behavior from the spec; style here. */
 :root {
+  /* spacing scale — containers and targets use these, not ad-hoc values */
+  --gb-s1: 4px;
+  --gb-s2: 8px;
+  --gb-s3: 12px;
+  --gb-s4: 16px;
+  --gb-s5: 24px;
   /* Catppuccin Mocha: mantle < base < surface0 elevation ladder */
   --gb-bg: #181825;
   --gb-card: #313244;
@@ -3338,10 +3344,10 @@ body {
 .gb-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--gb-s3);
   background: var(--gb-card);
   border-bottom: 1px solid var(--gb-border);
-  padding: 12px 24px;
+  padding: var(--gb-s3) var(--gb-s5);
 }
 .gb-logo {
   display: inline-flex;
@@ -3360,7 +3366,7 @@ body {
 .gb-main {
   max-width: 920px;
   margin: 0 auto;
-  padding: 24px 20px 64px;
+  padding: var(--gb-s5) var(--gb-s5) 64px;
 }
 
 /* sections */
@@ -3373,12 +3379,12 @@ body {
 }
 .gb-section-hdr {
   margin: 0;
-  padding: 12px 20px;
+  padding: var(--gb-s3) var(--gb-s5);
   font-size: 15px;
   font-weight: 700;
   border-bottom: 1px solid var(--gb-border);
 }
-.gb-section > :not(.gb-section-hdr) { padding: 8px 20px 14px; }
+.gb-section > :not(.gb-section-hdr) { padding: var(--gb-s3) var(--gb-s5) var(--gb-s4); }
 
 /* rows / cards */
 .gb-row { padding: 4px 0; font-size: 14px; color: var(--gb-text-2); }
@@ -3387,8 +3393,8 @@ body {
   border: 1px solid #2f343b;
   border-radius: 8px;
   background: #22262c;
-  padding: 10px 12px;
-  margin: 6px 0;
+  padding: var(--gb-s3) var(--gb-s4);
+  margin: var(--gb-s2) 0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 .gb-card:hover { border-color: #3f4750; background: #262b32; }
@@ -3410,8 +3416,8 @@ body {
 .gb-board {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 10px 14px 14px;
+  gap: var(--gb-s3);
+  padding: var(--gb-s3) var(--gb-s4) var(--gb-s4);
 }
 body {
   scrollbar-width: thin;
@@ -3425,7 +3431,7 @@ body::-webkit-scrollbar-thumb:hover { background: #585b70; }
   background: #1e1e2e;
   border: 1px solid var(--gb-border);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: var(--gb-s2) var(--gb-s3);
   min-height: 64px;
 }
 .gb-board-row.gb-row-ok {
@@ -3540,9 +3546,9 @@ body::-webkit-scrollbar-thumb:hover { background: #585b70; }
 }
 .gb-btn:hover { background: var(--gb-accent); filter: brightness(1.05); }
 .gb-btn-sm {
-  min-height: 30px;
-  min-width: 30px;
-  padding: 4px 10px;
+  min-height: 32px;
+  min-width: 32px;
+  padding: var(--gb-s1) var(--gb-s3);
   font-size: 13px;
   border-radius: 6px;
 }
@@ -3556,8 +3562,8 @@ body::-webkit-scrollbar-thumb:hover { background: #585b70; }
 }
 .gb-btn-deny:hover { background: #f5a0b9; }
 .gb-menu-btn {
-  min-height: 28px;
-  min-width: 28px;
+  min-height: 36px;
+  min-width: 36px;
   border: none;
   background: transparent;
   color: var(--gb-text-2);
@@ -3572,25 +3578,32 @@ body::-webkit-scrollbar-thumb:hover { background: #585b70; }
 .gb-menu {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 0 4px;
+  gap: var(--gb-s2);
+  padding: var(--gb-s2) 0 var(--gb-s1);
   border-top: 1px solid var(--gb-border);
-  margin-top: 6px;
+  margin-top: var(--gb-s2);
 }
-.gb-menu .gb-inline-action .gb-input { min-height: 30px; }
+.gb-menu .gb-btn-sm {
+  width: 100%;
+  min-height: 36px;
+  justify-content: flex-start;
+  text-align: left;
+}
+.gb-menu .gb-inline-action .gb-input { min-height: 36px; }
 .gb-card-clickable { cursor: pointer; }
 .gb-gate-row {
   display: flex;
-  gap: 6px;
-  margin-top: 6px;
+  gap: var(--gb-s2);
+  margin-top: var(--gb-s2);
 }
 .gb-inline-action {
   display: flex;
-  gap: 6px;
+  gap: var(--gb-s2);
   align-items: center;
-  padding: 4px 0 2px;
+  padding: var(--gb-s1) 0;
+  min-height: 36px;
 }
-.gb-inline-action .gb-input { min-height: 30px; min-width: 110px; flex: 1; padding: 4px 8px; font-size: 13px; }
+.gb-inline-action .gb-input { min-height: 36px; min-width: 110px; flex: 1; padding: var(--gb-s1) var(--gb-s2); font-size: 13px; }
 .gb-btn:focus { outline: 2px solid var(--gb-accent-dark); outline-offset: 2px; }
 
 /* a11y: visible focus for keyboard nav */
