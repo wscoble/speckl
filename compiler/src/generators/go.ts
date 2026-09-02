@@ -446,7 +446,7 @@ function emitSpeck(speck: SpeckNode): string {
   // unknown domain functions -> explicit stubs
   const unknown = new Set<string>();
   const unknownBool = new Set<string>();
-  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains']);
+  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains', 'has', 'values', 'keys', 'empty', 'size', 'count']);
   const scanCalls = (ex: string, boolCtx: boolean) => {
     for (const m of ex.match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
       const fn = m.replace(/\s*\($/, '');
@@ -607,7 +607,7 @@ function emitAction(
     }
   }
   let body = bodyLines.length ? bodyLines.join('\n') : '\treturn';
-  if (!hasReturn) body += '\n\treturn';
+  body += '\n\treturn';
 
   return `// Execute action: ${action.name}\nfunc (m *${goName(speckName)}Machine) ${methodName}(${params}) ${retSig} {\n${body}\n}`;
 }
