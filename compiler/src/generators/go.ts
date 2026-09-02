@@ -185,7 +185,8 @@ function rewriteGoExpr(
     if (dm) {
       const rec = localRecords.get(dm[1]);
       const ft = rec ? recordFieldTypes.get(rec)?.get(dm[2]) : undefined;
-      if (ft?.nullable && goType(ft, '', new Map()) === 'string') return `anyLen(${arg})`;
+      const base = goType({ ...ft, nullable: false }, '', new Map());
+      if (ft?.nullable && base === 'string') return `anyLen(${arg})`;
     }
     return `len(${arg})`;
   };
