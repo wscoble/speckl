@@ -3342,13 +3342,13 @@ function emitIndexHtml(name: string): string {
 <style>
 /* speckl-generated: Basecamp-like defaults. Behavior from the spec; style here. */
 :root {
-  --gb-bg: #1b1917;
-  --gb-card: #2a2724;
-  --gb-border: #3d3831;
-  --gb-text: #ece7dd;
-  --gb-text-2: #a89f8f;
-  --gb-accent: #e57355;
-  --gb-accent-dark: #c2543a;
+  --gb-bg: #101216;
+  --gb-card: #1b1e23;
+  --gb-border: #33383f;
+  --gb-text: #e8eaed;
+  --gb-text-2: #9aa0a8;
+  --gb-accent: #ff6b4a;
+  --gb-accent-dark: #c2412a;
   --gb-radius: 12px;
 }
 * { box-sizing: border-box; }
@@ -3437,25 +3437,25 @@ body {
   min-height: 380px;
   display: flex;
   flex-direction: column;
-  background: #211e1a;
-  border: 1px solid var(--gb-border);
+  background: #17191d;
+  border: 1px solid #2c3036;
   border-radius: 8px;
   padding: 6px 8px 8px;
 }
 .gb-board-col.gb-col-ok {
-  outline: 2px dashed var(--gb-accent);
+  outline: 2px dashed #7d8590;
   outline-offset: -2px;
-  background: #2a241e;
+  background: rgba(255, 255, 255, 0.04);
 }
 .gb-board-col.gb-col-approve {
-  outline: 3px solid #46c07a;
+  outline: 3px solid #3fb950;
   outline-offset: -2px;
-  background: #202a20;
+  background: rgba(63, 185, 80, 0.12);
 }
 .gb-board-col.gb-col-deny {
-  outline: 3px solid var(--gb-accent);
+  outline: 3px solid #f85149;
   outline-offset: -2px;
-  background: #2b201c;
+  background: rgba(248, 81, 73, 0.11);
 }
 .gb-board-col.gb-col-hover {
   background: #fbe9e4;
@@ -3500,9 +3500,9 @@ body {
 
 /* error */
 .gb-error {
-  background: #332421;
-  border: 1px solid #5c4038;
-  color: #f0a894;
+  background: rgba(248, 81, 73, 0.09);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  color: #ff8f85;
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 16px;
@@ -3532,7 +3532,7 @@ body {
   border-radius: 8px;
   font-size: 14px;
   font-family: inherit;
-  background: #211e1a;
+  background: #1a1d22;
   color: var(--gb-text);
   min-width: 140px;
 }
@@ -3549,16 +3549,16 @@ body {
   font-weight: 600;
   cursor: pointer;
 }
-.gb-btn:hover { background: #a83a2b; }
+.gb-btn:hover { background: #a33822; }
 .gb-btn-gate { font-weight: 700; }
 .gb-btn-approve {
-  background: #1f7a48;
+  background: #238636;
 }
-.gb-btn-approve:hover { background: #186139; }
+.gb-btn-approve:hover { background: #1f6f2d; }
 .gb-btn-deny {
-  background: var(--gb-accent);
+  background: #c93636;
 }
-.gb-btn-deny:hover { background: var(--gb-accent-dark); }
+.gb-btn-deny:hover { background: #a82c2c; }
 .gb-menu-btn {
   min-height: 28px;
   min-width: 28px;
