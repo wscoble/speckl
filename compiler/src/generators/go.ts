@@ -275,7 +275,7 @@ function goImplications(expr: string): string {
 
 let goFieldRenames: Map<string, string> = new Map();
 let enumValueConsts: Map<string, string> = new Map();
-let recordFieldTypes: Map<string, Map<string, any> = new Map();
+let recordFieldTypes: Map<string, Map<string, any>> = new Map();
 let currentEnumMap: Map<string, string[]> = new Map();
 let stateVarTypes: Map<string, any> = new Map();
 let recordTypes: Map<string, string[]> = new Map();
