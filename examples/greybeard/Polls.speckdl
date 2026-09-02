@@ -1,0 +1,106 @@
+// Polls.speckdl — Quick team voting on questions.
+// Basecamp doesn't have this natively but it's a common power-user request.
+
+speck Polls {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "One vote per person per poll, changeable until closed" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type PollOption = {
+    optionId: String,
+    pollId: String,
+    label: String
+  }
+
+  type Poll = {
+    pollId: String,
+    projectId: String,
+    question: String,
+    options: List<PollOption>,
+    createdBy: String,
+    closed: Bool,
+    closesAt: String | null,
+    createdAt: String
+  }
+
+  type Vote = {
+    pollId: String,
+    optionId: String,
+    personId: String,
+    at: String
+  }
+
+  state: {
+    polls: Map<String, Poll>,
+    votes: List<Vote>
+  }
+
+  init: {
+    polls := Map.empty(),
+    votes := List.empty()
+  }
+
+  action CreatePoll(pollId: String, projectId: String, question: String, createdBy: String) {
+    require length(question) >= 1
+    require not polls.has(pollId)
+    polls[pollId] := Poll {
+      pollId: pollId, projectId: projectId,
+      question: question, options: List.empty(),
+      createdBy: createdBy, closed: false, closesAt: null,
+      createdAt: Date.now().toString()
+    }
+    emit PollCreated { pollId: pollId, question: question }
+  }
+
+  action AddOption(pollId: String, optionId: String, label: String) {
+    require polls.has(pollId)
+    require not polls[pollId].closed
+    require length(label) >= 1
+    emit OptionAdded { pollId: pollId, optionId: optionId, label: label }
+  }
+
+  action CastVote(pollId: String, optionId: String, personId: String) {
+    require polls.has(pollId)
+    require not polls[pollId].closed
+    require length(personId) >= 1
+    votes := Vote { pollId: pollId, optionId: optionId, personId: personId, at: Date.now().toString() } :: votes
+    emit VoteCast { pollId: pollId, optionId: optionId, personId: personId }
+  }
+
+  action ChangeVote(pollId: String, newOptionId: String, personId: String) {
+    require polls.has(pollId)
+    require not polls[pollId].closed
+    votes := Vote { pollId: pollId, optionId: newOptionId, personId: personId, at: Date.now().toString() } :: votes
+    emit VoteChanged { pollId: pollId, personId: personId }
+  }
+
+  action ClosePoll(pollId: String) {
+    require polls.has(pollId)
+    require not polls[pollId].closed
+    polls[pollId].closed := true
+    emit PollClosed { pollId: pollId }
+  }
+
+  action GetResults(pollId: String) {
+    require polls.has(pollId)
+    let results := votes
+    return results
+  }
+
+  constraint "polls have questions" {
+    forall p in polls.values():
+      length(p.question) >= 1
+  }
+
+  constraint "one vote per person per poll (latest wins)" {
+    forall v in votes:
+      implies(not polls[v.pollId].closed, true)
+  }
+
+  event PollCreated { pollId: String, question: String }
+  event OptionAdded { pollId: String, optionId: String, label: String }
+  event VoteCast { pollId: String, optionId: String, personId: String }
+  event VoteChanged { pollId: String, personId: String }
+  event PollClosed { pollId: String }
+}

@@ -1,0 +1,137 @@
+// GreybeardCore.speckdl — The composed MSP platform (single entity).
+// All tools merged into one state machine for a single Go binary.
+
+speck GreybeardCore {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "One state machine serves all tools via a single HTTP mux" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type CardRecord = {
+    cardId: Nat, projectId: String, title: String,
+    content: String, column: String, createdBy: String
+  }
+
+  type CardComment = { cardId: Nat, actor: String, text: String }
+  type CardMove = { cardId: Nat, from: String, to: String, mover: String }
+  type TodoListRecord = { listId: String, projectId: String, name: String }
+  type TodoItemRecord = { itemId: Nat, listId: String, content: String, completed: Bool }
+  type EventRecord = { eventId: Nat, projectId: String, title: String, startsOn: String }
+  type CampfireMessage = { messageId: Nat, projectId: String, author: String, body: String, kind: String }
+  type ActivityRecord = { entryId: Nat, projectId: String, actor: String, action: String, targetType: String, targetTitle: String }
+
+  state: {
+    projects: Map<String, Bool>,
+    cards: Map<Nat, CardRecord>,
+    comments: List<CardComment>,
+    moves: List<CardMove>,
+    todoLists: Map<String, TodoListRecord>,
+    todoItems: Map<Nat, TodoItemRecord>,
+    events: Map<Nat, EventRecord>,
+    campfireMessages: List<CampfireMessage>,
+    activityEntries: List<ActivityRecord>
+  }
+
+  init: {
+    projects := Map.empty(),
+    cards := Map.empty(),
+    comments := List.empty(),
+    moves := List.empty(),
+    todoLists := Map.empty(),
+    todoItems := Map.empty(),
+    events := Map.empty(),
+    campfireMessages := List.empty(),
+    activityEntries := List.empty()
+  }
+
+  // ─── Card Table ───
+  action CreateCard(cardId: Nat, projectId: String, title: String, content: String, createdBy: String) {
+    require length(title) >= 1
+    require not cards.has(cardId)
+    cards[cardId] := CardRecord { cardId: cardId, projectId: projectId, title: title, content: content, column: "Triage", createdBy: createdBy }
+    emit CardCreated { cardId: cardId, title: title }
+  }
+
+  action MoveCard(cardId: Nat, target: String, mover: String) {
+    require cards.has(cardId)
+    require target in {"Triage", "NotNow", "FiguringItOut", "ApprovalRequested", "Approved", "Denied", "InProgress", "Done"}
+    require implies(mover == "agent", target != "Approved")
+    require implies(mover == "agent", target != "Denied")
+    require implies(target == "Approved", cards[cardId].column == "ApprovalRequested")
+    require implies(target == "Done", cards[cardId].column == "InProgress")
+    require implies(target == "ApprovalRequested", cards[cardId].column != "Triage")
+    cards[cardId].column := target
+    emit CardMoved { cardId: cardId, to: target, mover: mover }
+  }
+
+  action CompleteCard(cardId: Nat, verification: String) {
+    require cards.has(cardId)
+    require cards[cardId].column == "InProgress"
+    cards[cardId].column := "Done"
+    emit CardCompleted { cardId: cardId, verification: verification }
+  }
+
+  // ─── To-dos ───
+  action CreateTodoList(listId: String, projectId: String, name: String) {
+    require length(name) >= 1
+    require not todoLists.has(listId)
+    todoLists[listId] := TodoListRecord { listId: listId, projectId: projectId, name: name }
+    emit TodoListCreated { listId: listId, name: name }
+  }
+
+  action AddTodoItem(itemId: Nat, listId: String, content: String, createdBy: String) {
+    require todoLists.has(listId)
+    require not todoItems.has(itemId)
+    todoItems[itemId] := TodoItemRecord { itemId: itemId, listId: listId, content: content, completed: false }
+    emit TodoItemAdded { itemId: itemId, content: content }
+  }
+
+  action ToggleTodoItem(itemId: Nat) {
+    require todoItems.has(itemId)
+    todoItems[itemId].completed := not todoItems[itemId].completed
+    emit TodoItemToggled { itemId: itemId, completed: todoItems[itemId].completed }
+  }
+
+  // ─── Schedule ───
+  action AddEvent(eventId: Nat, projectId: String, title: String, startsOn: String) {
+    require length(title) >= 1
+    require length(startsOn) >= 1
+    require not events.has(eventId)
+    events[eventId] := EventRecord { eventId: eventId, projectId: projectId, title: title, startsOn: startsOn }
+    emit ScheduleEventAdded { eventId: eventId, title: title }
+  }
+
+  // ─── Campfire ───
+  action PostCampfireMessage(messageId: Nat, projectId: String, author: String, body: String, kind: String) {
+    require length(body) >= 1
+    campfireMessages := CampfireMessage { messageId: messageId, projectId: projectId, author: author, body: body, kind: kind } :: campfireMessages
+    emit CampfireMessagePosted { messageId: messageId, author: author, kind: kind }
+  }
+
+  // ─── Activity ───
+  action RecordActivity(entryId: Nat, projectId: String, actor: String, action: String, targetType: String, targetTitle: String) {
+    require length(actor) >= 1
+    activityEntries := ActivityRecord { entryId: entryId, projectId: projectId, actor: actor, action: action, targetType: targetType, targetTitle: targetTitle } :: activityEntries
+    emit ActivityEntryRecorded { actor: actor, action: action }
+  }
+
+  // ─── Invariants ───
+  constraint "cards in protocol columns" {
+    forall c in cards.values():
+      c.column in {"Triage", "NotNow", "FiguringItOut", "ApprovalRequested", "Approved", "Denied", "InProgress", "Done"}
+  }
+
+  constraint "comments reference cards" {
+    forall cm in comments:
+      cards.has(cm.cardId)
+  }
+
+  event CardCreated { cardId: Nat, title: String }
+  event CardMoved { cardId: Nat, to: String, mover: String }
+  event CardCompleted { cardId: Nat, verification: String }
+  event TodoListCreated { listId: String, name: String }
+  event TodoItemAdded { itemId: Nat, content: String }
+  event TodoItemToggled { itemId: Nat, completed: Bool }
+  event ScheduleEventAdded { eventId: Nat, title: String }
+  event CampfireMessagePosted { messageId: Nat, author: String, kind: String }
+}

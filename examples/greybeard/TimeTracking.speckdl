@@ -1,0 +1,85 @@
+// TimeTracking.speckdl — Hours logged against cards and todos.
+// Basecamp doesn't have this, but MSPs need it for billing.
+
+speck TimeTracking {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Time entries are per-person, per-item, per-date" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type TimeEntry = {
+    entryId: Nat,
+    personId: String,
+    projectId: String,
+    itemType: String,    // "card" | "todo"
+    itemId: String,
+    hours: Real,
+    description: String,
+    date: String,
+    billable: Bool,
+    createdAt: String
+  }
+
+  state: {
+    entries: Map<Nat, TimeEntry>
+  }
+
+  init: {
+    entries := Map.empty()
+  }
+
+  action LogTime(entryId: Nat, personId: String, projectId: String, itemType: String, itemId: String, hours: Real, description: String, date: String, billable: Bool) {
+    require length(personId) >= 1
+    require hours > 0.0
+    require hours <= 24.0
+    require length(date) >= 1
+    require not entries.has(entryId)
+    entries[entryId] := TimeEntry {
+      entryId: entryId, personId: personId, projectId: projectId,
+      itemType: itemType, itemId: itemId,
+      hours: hours, description: description,
+      date: date, billable: billable,
+      createdAt: Date.now().toString()
+    }
+    emit TimeLogged { entryId: entryId, personId: personId, hours: hours, itemType: itemType }
+  }
+
+  action UpdateTime(entryId: Nat, hours: Real, description: String) {
+    require entries.has(entryId)
+    require hours > 0.0
+    entries[entryId].hours := hours
+    entries[entryId].description := description
+    emit TimeUpdated { entryId: entryId, hours: hours }
+  }
+
+  action DeleteTime(entryId: Nat) {
+    require entries.has(entryId)
+    emit TimeDeleted { entryId: entryId }
+  }
+
+  action GetTimeByProject(projectId: String) {
+    require length(projectId) >= 1
+    let results := entries
+    return results
+  }
+
+  action GetTimeByPerson(personId: String) {
+    require length(personId) >= 1
+    let results := entries
+    return results
+  }
+
+  constraint "time entries have positive hours" {
+    forall e in entries.values():
+      e.hours > 0.0
+  }
+
+  constraint "time entries are max 24 hours" {
+    forall e in entries.values():
+      e.hours <= 24.0
+  }
+
+  event TimeLogged { entryId: Nat, personId: String, hours: Real, itemType: String }
+  event TimeUpdated { entryId: Nat, hours: Real }
+  event TimeDeleted { entryId: Nat }
+}

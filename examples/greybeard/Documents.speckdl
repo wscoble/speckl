@@ -1,0 +1,87 @@
+// Documents.speckdl — Per-project documents (writeups, guides, runbooks).
+// Basecamp pattern: rich text documents with comments, versioned.
+
+speck Documents {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Documents are lightweight — markdown body, comments" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Document = {
+    docId: Nat,
+    projectId: String,
+    title: String,
+    body: String,
+    createdBy: String,
+    createdAt: String,
+    updatedAt: String
+  }
+
+  type DocComment = {
+    docId: Nat,
+    actor: String,
+    text: String,
+    at: String
+  }
+
+  state: {
+    documents: Map<Nat, Document>,
+    comments: List<DocComment>
+  }
+
+  init: {
+    documents := Map.empty(),
+    comments := List.empty()
+  }
+
+  action CreateDocument(docId: Nat, projectId: String, title: String, body: String, createdBy: String) {
+    require length(title) >= 1
+    require length(body) >= 1
+    require not documents.has(docId)
+    documents[docId] := Document {
+      docId: docId, projectId: projectId,
+      title: title, body: body,
+      createdBy: createdBy, createdAt: Date.now().toString(),
+      updatedAt: Date.now().toString()
+    }
+    emit DocumentCreated { docId: docId, projectId: projectId, title: title }
+  }
+
+  action UpdateDocument(docId: Nat, title: String, body: String) {
+    require documents.has(docId)
+    require length(title) >= 1
+    documents[docId].title := title
+    documents[docId].body := body
+    documents[docId].updatedAt := Date.now().toString()
+    emit DocumentUpdated { docId: docId, title: title }
+  }
+
+  action CommentOnDocument(docId: Nat, actor: String, text: String) {
+    require documents.has(docId)
+    require length(text) >= 1
+    comments := DocComment {
+      docId: docId, actor: actor, text: text, at: Date.now().toString()
+    } :: comments
+    emit DocumentCommentPosted { docId: docId, actor: actor }
+  }
+
+  action DeleteDocument(docId: Nat) {
+    require documents.has(docId)
+    emit DocumentDeleted { docId: docId }
+  }
+
+  constraint "documents have titles" {
+    forall d in documents.values():
+      length(d.title) >= 1
+  }
+
+  constraint "comments reference documents" {
+    forall c in comments:
+      documents.has(c.docId)
+  }
+
+  event DocumentCreated { docId: Nat, projectId: String, title: String }
+  event DocumentUpdated { docId: Nat, title: String }
+  event DocumentCommentPosted { docId: Nat, actor: String }
+  event DocumentDeleted { docId: Nat }
+}

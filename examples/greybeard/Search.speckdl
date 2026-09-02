@@ -1,0 +1,52 @@
+// Search.speckdl — Global search across all tools.
+// Basecamp pattern: one search bar finds everything.
+
+speck Search {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Search is a read-only projection — it queries all other machines" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type SearchHit = {
+    hitId: Nat,
+    resultType: String,   // "card" | "todo" | "message" | "document" | "comment" | "event" | "answer" | "ping"
+    resultId: String,
+    title: String,
+    snippet: String,
+    projectId: String,
+    relevance: Nat
+  }
+
+  state: {
+    _index: List<SearchHit>
+  }
+
+  init: {
+    _index := List.empty()
+  }
+
+  action SearchCards(query: String, cards: List<SearchHit>) {
+    require length(query) >= 1
+    let results := searchCards(cards, query)
+    return results
+  }
+
+  action SearchAll(query: String, allItems: List<SearchHit>) {
+    require length(query) >= 1
+    let results := searchAll(allItems, query)
+    return results
+  }
+
+  action RebuildIndex(items: List<SearchHit>) {
+    _index := items
+    emit IndexRebuilt { count: length(items) }
+  }
+
+  constraint "search requires a query" {
+    forall q in _index:
+      length(q.title) >= 1
+  }
+
+  event IndexRebuilt { count: Nat }
+  event SearchPerformed { query: String, resultCount: Nat }
+}

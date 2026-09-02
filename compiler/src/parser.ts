@@ -1556,7 +1556,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       continue;
     }
     // assignment: target := expr (may span multiple lines)
-    const assignMatch = stmt.match(/^(\w+(?:\[.*?\])?)\s*:=\s*(.+)$/);
+    const assignMatch = stmt.match(/^([\w\[\]]+(?:\.\w+)?)\s*:=\s*(.+)$/);
     if (assignMatch) {
       let target = assignMatch[1];
       let expr = assignMatch[2].trim();
@@ -1575,6 +1575,21 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
 function parseEventBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): EventNode {
   const firstLine = lines[startIndex].trim();
   const header = parseEvent(firstLine);
+
+  // Handle single-line events: event Foo { a: Type, b: Type }
+  // extract fields from the first line itself
+  const inlineMatch = firstLine.match(/^event\s+(\w+)\s*\{(.*)\}\s*$/);
+  const inlineFields: { name: string; type: TypeExpr }[] = [];
+  if (inlineMatch && inlineMatch[2].trim()) {
+    const fieldStr = inlineMatch[2].trim();
+    for (const f of fieldStr.split(',')) {
+      const fm = f.trim().match(/^(\w+)\s*:\s*(.+)$/);
+      if (fm) {
+        inlineFields.push({ name: fm[1], type: { type: 'ident', name: fm[2].trim() } as TypeExpr });
+      }
+    }
+  }
+
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
@@ -1603,7 +1618,7 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
     }
   }
 
-  return { ...header, fields };
+  return { ...header, fields: fields.length > 0 ? fields : inlineFields };
 }
 
 function parseInterfaceBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InterfaceNode {

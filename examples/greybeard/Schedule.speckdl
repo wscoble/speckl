@@ -1,0 +1,70 @@
+// Schedule.speckdl — Calendar events and milestones per project.
+// Power users create events, set dates, view calendar.
+
+speck Schedule {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Events are date-bound; recurring events are derived" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Event = {
+    eventId: Nat,
+    projectId: String,
+    title: String,
+    description: String,
+    startsOn: String,
+    endsOn: String | null,
+    allDay: Bool,
+    createdBy: String,
+    createdAt: String
+  }
+
+  state: {
+    events: Map<Nat, Event>
+  }
+
+  init: {
+    events := Map.empty()
+  }
+
+  action CreateEvent(eventId: Nat, projectId: String, title: String, description: String, startsOn: String, endsOn: String | null, allDay: Bool, createdBy: String) {
+    require length(title) >= 1
+    require length(startsOn) >= 1
+    require not events.has(eventId)
+    events[eventId] := Event {
+      eventId: eventId, projectId: projectId,
+      title: title, description: description,
+      startsOn: startsOn, endsOn: endsOn, allDay: allDay,
+      createdBy: createdBy, createdAt: Date.now().toString()
+    }
+    emit EventCreated { eventId: eventId, projectId: projectId, title: title, startsOn: startsOn }
+  }
+
+  action UpdateEvent(eventId: Nat, title: String, startsOn: String, endsOn: String | null) {
+    require events.has(eventId)
+    require length(title) >= 1
+    events[eventId].title := title
+    events[eventId].startsOn := startsOn
+    events[eventId].endsOn := endsOn
+    emit EventUpdated { eventId: eventId, title: title }
+  }
+
+  action DeleteEvent(eventId: Nat) {
+    require events.has(eventId)
+    emit EventDeleted { eventId: eventId }
+  }
+
+  constraint "events have start dates" {
+    forall e in events.values():
+      length(e.startsOn) >= 1
+  }
+
+  constraint "multi-day events have end dates after start" {
+    forall e in events.values():
+      implies(e.endsOn != null, e.endsOn >= e.startsOn)
+  }
+
+  event EventCreated { eventId: Nat, projectId: String, title: String, startsOn: String }
+  event EventUpdated { eventId: Nat, title: String }
+  event EventDeleted { eventId: Nat }
+}

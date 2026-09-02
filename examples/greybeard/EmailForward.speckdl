@@ -1,0 +1,65 @@
+// EmailForward.speckdl — Email-to-project forwarding.
+// Basecamp pattern: each project gets an email address, emails become campfire
+// messages or message-board posts. This is the spec for the forward pipeline.
+
+speck EmailForward {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Email forwards become campfire messages by default, message-board posts if subject-matched" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Forward = {
+    forwardId: Nat,
+    projectId: String,
+    fromEmail: String,
+    subject: String,
+    body: String,
+    forwardedAt: String,
+    deliveredTo: String  // "campfire" | "message-board"
+  }
+
+  state: {
+    forwards: List<Forward>
+  }
+
+  init: {
+    forwards := List.empty()
+  }
+
+  action ForwardEmail(forwardId: Nat, projectId: String, fromEmail: String, subject: String, body: String) {
+    require length(fromEmail) >= 1
+    require length(subject) >= 1
+    require length(body) >= 1
+
+    // Determine delivery target based on subject
+    let target := "campfire"
+    if subject starts with "Weekly" or subject starts with "Report":
+      target := "message-board"
+
+    forwards := Forward {
+      forwardId: forwardId, projectId: projectId,
+      fromEmail: fromEmail, subject: subject, body: body,
+      forwardedAt: Date.now().toString(), deliveredTo: target
+    } :: forwards
+
+    emit EmailForwarded { forwardId: forwardId, projectId: projectId, deliveredTo: target }
+  }
+
+  action GetForwardsByProject(projectId: String) {
+    require length(projectId) >= 1
+    let results := forwards
+    return results
+  }
+
+  constraint "forwards have subjects" {
+    forall f in forwards:
+      length(f.subject) >= 1
+  }
+
+  constraint "forwards have senders" {
+    forall f in forwards:
+      length(f.fromEmail) >= 1
+  }
+
+  event EmailForwarded { forwardId: Nat, projectId: String, deliveredTo: String }
+}

@@ -1,0 +1,54 @@
+// Activity.speckdl — Activity feed: every action across all tools, visible.
+// Basecamp pattern: "Hernan moved card to Done", "Scott added a comment".
+// Derived from events in all other machines. Read-only projection.
+
+speck Activity {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Activity is a projection of events from CardTable, Todos, Campfire, etc." }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type ActivityEntry = {
+    entryId: Nat,
+    projectId: String,
+    actor: String,
+    action: String,      // "moved", "created", "commented", "completed", etc.
+    targetType: String,  // "card", "todo", "message", "event", "answer"
+    targetId: String,
+    targetTitle: String,
+    detail: String,
+    at: String
+  }
+
+  state: {
+    entries: List<ActivityEntry>
+  }
+
+  init: {
+    entries := List.empty()
+  }
+
+  action RecordActivity(entryId: Nat, projectId: String, actor: String, action: String, targetType: String, targetId: String, targetTitle: String, detail: String) {
+    require length(actor) >= 1
+    require length(action) >= 1
+    require length(targetType) >= 1
+    entries := ActivityEntry {
+      entryId: entryId, projectId: projectId,
+      actor: actor, action: action,
+      targetType: targetType, targetId: targetId, targetTitle: targetTitle,
+      detail: detail, at: Date.now().toString()
+    } :: entries
+    emit ActivityRecorded { entryId: entryId, actor: actor, action: action, targetType: targetType }
+  }
+
+  constraint "entries have actors" {
+    forall e in entries:
+      length(e.actor) >= 1
+  }
+
+  constraint "entries are newest-first" {
+    true
+  }
+
+  event ActivityRecorded { entryId: Nat, actor: String, action: String, targetType: String }
+}

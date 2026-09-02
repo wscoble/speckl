@@ -1,0 +1,92 @@
+// CheckIns.speckdl — Automatic check-ins (daily/weekly Q&A per project).
+// Basecamp pattern: system asks a question, people answer.
+// Power users configure questions, answer them, view history.
+
+speck CheckIns {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Check-ins are scheduled questions with answers, like Basecamp's automatic check-ins" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Question = {
+    questionId: String,
+    projectId: String,
+    prompt: String,
+    schedule: String,  // "daily" | "weekly" | "custom"
+    dayOfWeek: String | null,
+    active: Bool,
+    createdAt: String
+  }
+
+  type Answer = {
+    answerId: Nat,
+    questionId: String,
+    author: String,
+    body: String,
+    at: String
+  }
+
+  state: {
+    questions: Map<String, Question>,
+    answers: List<Answer>
+  }
+
+  init: {
+    questions := Map.empty(),
+    answers := List.empty()
+  }
+
+  action CreateQuestion(questionId: String, projectId: String, prompt: String, schedule: String, dayOfWeek: String | null) {
+    require length(questionId) >= 1
+    require length(prompt) >= 1
+    require schedule == "daily" or schedule == "weekly" or schedule == "custom"
+    require not questions.has(questionId)
+    questions[questionId] := Question {
+      questionId: questionId, projectId: projectId,
+      prompt: prompt, schedule: schedule, dayOfWeek: dayOfWeek,
+      active: true, createdAt: Date.now().toString()
+    }
+    emit QuestionCreated { questionId: questionId, prompt: prompt, schedule: schedule }
+  }
+
+  action DeactivateQuestion(questionId: String) {
+    require questions.has(questionId)
+    require questions[questionId].active
+    questions[questionId].active := false
+    emit QuestionDeactivated { questionId: questionId }
+  }
+
+  action ReactivateQuestion(questionId: String) {
+    require questions.has(questionId)
+    require not questions[questionId].active
+    questions[questionId].active := true
+    emit QuestionReactivated { questionId: questionId }
+  }
+
+  action SubmitAnswer(answerId: Nat, questionId: String, author: String, body: String) {
+    require questions.has(questionId)
+    require questions[questionId].active
+    require length(body) >= 1
+    require length(author) >= 1
+    answers := Answer {
+      answerId: answerId, questionId: questionId,
+      author: author, body: body, at: Date.now().toString()
+    } :: answers
+    emit AnswerSubmitted { answerId: answerId, questionId: questionId, author: author }
+  }
+
+  constraint "questions have prompts" {
+    forall q in questions.values():
+      length(q.prompt) >= 1
+  }
+
+  constraint "answers reference active questions" {
+    forall a in answers:
+      questions.has(a.questionId)
+  }
+
+  event QuestionCreated { questionId: String, prompt: String, schedule: String }
+  event QuestionDeactivated { questionId: String }
+  event QuestionReactivated { questionId: String }
+  event AnswerSubmitted { answerId: Nat, questionId: String, author: String }
+}

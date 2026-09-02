@@ -1,0 +1,100 @@
+// Notifications.speckdl — User notification preferences and delivery.
+// Basecamp pattern: users choose what they're notified about and how.
+
+speck Notifications {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Notifications are subscriptions to activity types per project" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Subscription = {
+    personId: String,
+    projectId: String,
+    notifyOnCards: Bool,
+    notifyOnTodos: Bool,
+    notifyOnCampfire: Bool,
+    notifyOnMessages: Bool,
+    notifyOnSchedule: Bool,
+    notifyOnDocuments: Bool,
+    notifyOnCheckIns: Bool,
+    digestMode: Bool
+  }
+
+  type Notification = {
+    notificationId: Nat,
+    personId: String,
+    projectId: String,
+    activityType: String,
+    summary: String,
+    read: Bool,
+    at: String
+  }
+
+  state: {
+    subscriptions: Map<String, Subscription>,
+    notifications: List<Notification>
+  }
+
+  init: {
+    subscriptions := Map.empty(),
+    notifications := List.empty()
+  }
+
+  action Subscribe(personId: String, projectId: String) {
+    require length(personId) >= 1
+    require length(projectId) >= 1
+    subscriptions[personId + ":" + projectId] := Subscription {
+      personId: personId, projectId: projectId,
+      notifyOnCards: true, notifyOnTodos: true,
+      notifyOnCampfire: true, notifyOnMessages: true,
+      notifyOnSchedule: true, notifyOnDocuments: true,
+      notifyOnCheckIns: true, digestMode: false
+    }
+    emit Subscribed { personId: personId, projectId: projectId }
+  }
+
+  action UpdatePreferences(personId: String, projectId: String, notifyOnCards: Bool, notifyOnTodos: Bool, notifyOnCampfire: Bool, notifyOnMessages: Bool, notifyOnSchedule: Bool, notifyOnDocuments: Bool, notifyOnCheckIns: Bool, digestMode: Bool) {
+    require subscriptions.has(personId + ":" + projectId)
+    subscriptions[personId + ":" + projectId].notifyOnCards := notifyOnCards
+    subscriptions[personId + ":" + projectId].notifyOnTodos := notifyOnTodos
+    subscriptions[personId + ":" + projectId].notifyOnCampfire := notifyOnCampfire
+    subscriptions[personId + ":" + projectId].notifyOnMessages := notifyOnMessages
+    subscriptions[personId + ":" + projectId].notifyOnSchedule := notifyOnSchedule
+    subscriptions[personId + ":" + projectId].notifyOnDocuments := notifyOnDocuments
+    subscriptions[personId + ":" + projectId].notifyOnCheckIns := notifyOnCheckIns
+    subscriptions[personId + ":" + projectId].digestMode := digestMode
+    emit PreferencesUpdated { personId: personId, projectId: projectId }
+  }
+
+  action Notify(notificationId: Nat, personId: String, projectId: String, activityType: String, summary: String) {
+    require length(personId) >= 1
+    require length(summary) >= 1
+    notifications := Notification {
+      notificationId: notificationId, personId: personId,
+      projectId: projectId, activityType: activityType,
+      summary: summary, read: false, at: Date.now().toString()
+    } :: notifications
+    emit Notified { notificationId: notificationId, personId: personId, activityType: activityType }
+  }
+
+  action MarkRead(notificationId: Nat) {
+    require true
+    emit NotificationRead { notificationId: notificationId }
+  }
+
+  action Unsubscribe(personId: String, projectId: String) {
+    require subscriptions.has(personId + ":" + projectId)
+    emit Unsubscribed { personId: personId, projectId: projectId }
+  }
+
+  constraint "notifications reference people" {
+    forall n in notifications:
+      length(n.personId) >= 1
+  }
+
+  event Subscribed { personId: String, projectId: String }
+  event PreferencesUpdated { personId: String, projectId: String }
+  event Notified { notificationId: Nat, personId: String, activityType: String }
+  event NotificationRead { notificationId: Nat }
+  event Unsubscribed { personId: String, projectId: String }
+}

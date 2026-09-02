@@ -1,0 +1,115 @@
+// Todos.speckdl — To-do lists and items within projects.
+// Separate from CardTable: to-dos are lightweight, not workflow.
+// Power users create lists, add items, assign, complete, reorder.
+
+speck Todos {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "To-dos are lightweight — no approval gate, no columns" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type TodoList = {
+    listId: String,
+    projectId: String,
+    name: String,
+    description: String,
+    createdAt: String
+  }
+
+  type TodoItem = {
+    itemId: Nat,
+    listId: String,
+    content: String,
+    assignee: String | null,
+    dueOn: String | null,
+    completed: Bool,
+    completedAt: String | null,
+    createdAt: String,
+    createdBy: String
+  }
+
+  state: {
+    lists: Map<String, TodoList>,
+    items: Map<Nat, TodoItem>
+  }
+
+  init: {
+    lists := Map.empty(),
+    items := Map.empty()
+  }
+
+  action CreateList(listId: String, projectId: String, name: String, description: String) {
+    require length(listId) >= 1
+    require length(name) >= 1
+    require not lists.has(listId)
+    lists[listId] := TodoList {
+      listId: listId, projectId: projectId, name: name,
+      description: description, createdAt: Date.now().toString()
+    }
+    emit ListCreated { listId: listId, projectId: projectId, name: name }
+  }
+
+  action AddItem(itemId: Nat, listId: String, content: String, createdBy: String) {
+    require lists.has(listId)
+    require length(content) >= 1
+    require not items.has(itemId)
+    items[itemId] := TodoItem {
+      itemId: itemId, listId: listId, content: content,
+      assignee: null, dueOn: null, completed: false, completedAt: null,
+      createdAt: Date.now().toString(), createdBy: createdBy
+    }
+    emit ItemAdded { itemId: itemId, listId: listId, content: content }
+  }
+
+  action AssignItem(itemId: Nat, assignee: String) {
+    require items.has(itemId)
+    require length(assignee) >= 1
+    items[itemId].assignee := assignee
+    emit ItemAssigned { itemId: itemId, assignee: assignee }
+  }
+
+  action SetItemDue(itemId: Nat, dueOn: String) {
+    require items.has(itemId)
+    items[itemId].dueOn := dueOn
+    emit ItemDueSet { itemId: itemId, dueOn: dueOn }
+  }
+
+  action CompleteItem(itemId: Nat) {
+    require items.has(itemId)
+    require not items[itemId].completed
+    items[itemId].completed := true
+    items[itemId].completedAt := Date.now().toString()
+    emit ItemCompleted { itemId: itemId }
+  }
+
+  action ReopenItem(itemId: Nat) {
+    require items.has(itemId)
+    require items[itemId].completed
+    items[itemId].completed := false
+    items[itemId].completedAt := null
+    emit ItemReopened { itemId: itemId }
+  }
+
+  action DeleteItem(itemId: Nat) {
+    require items.has(itemId)
+    emit ItemDeleted { itemId: itemId }
+  }
+
+  constraint "items belong to existing lists" {
+    forall i in items.values():
+      lists.has(i.listId)
+  }
+
+  constraint "completed items have completion time" {
+    forall i in items.values():
+      implies(i.completed, i.completedAt != null)
+  }
+
+  event ListCreated { listId: String, projectId: String, name: String }
+  event ItemAdded { itemId: Nat, listId: String, content: String }
+  event ItemAssigned { itemId: Nat, assignee: String }
+  event ItemDueSet { itemId: Nat, dueOn: String }
+  event ItemCompleted { itemId: Nat }
+  event ItemReopened { itemId: Nat }
+  event ItemDeleted { itemId: Nat }
+}

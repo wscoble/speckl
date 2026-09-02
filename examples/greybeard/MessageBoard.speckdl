@@ -1,0 +1,108 @@
+// MessageBoard.speckdl — Per-project message board for weekly logs and announcements.
+// Messages are formal posts (unlike Campfire which is chat).
+// Power users post, read, and comment on messages.
+
+speck MessageBoard {
+
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Messages are the weekly log / formal documentation surface"
+    design_decision: "Messages are per-project and perma-linked"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type BoardMessage = {
+    messageId: Nat,
+    projectId: String,
+    subject: String,
+    body: String,
+    author: String,
+    kind: String,       // "weekly-log" | "announcement" | "report"
+    at: String
+  }
+
+  type MessageComment = {
+    messageId: Nat,
+    actor: String,
+    text: String,
+    at: String
+  }
+
+  state: {
+    messages: List<BoardMessage>,
+    messageComments: List<MessageComment>
+  }
+
+  init: {
+    messages := List.empty(),
+    messageComments := List.empty()
+  }
+
+  action PostMessage(messageId: Nat, projectId: String, subject: String, body: String, author: String, kind: String) {
+    require length(subject) >= 1
+    require length(body) >= 1
+    require length(author) >= 1
+    require kind == "weekly-log" or kind == "announcement" or kind == "report"
+    messages := BoardMessage {
+      messageId: messageId,
+      projectId: projectId,
+      subject: subject,
+      body: body,
+      author: author,
+      kind: kind,
+      at: Date.now().toString()
+    } :: messages
+    emit MessagePosted { messageId: messageId, projectId: projectId, subject: subject, kind: kind }
+  }
+
+  action PostWeeklyLog(messageId: Nat, projectId: String, subject: String, body: String) {
+    require length(subject) >= 1
+    require length(body) >= 1
+    messages := BoardMessage {
+      messageId: messageId,
+      projectId: projectId,
+      subject: subject,
+      body: body,
+      author: "greybeard",
+      kind: "weekly-log",
+      at: Date.now().toString()
+    } :: messages
+    emit WeeklyLogPosted { messageId: messageId, projectId: projectId, subject: subject }
+  }
+
+  action CommentOnMessage(messageId: Nat, actor: String, text: String) {
+    require length(text) >= 1
+    require length(actor) >= 1
+    messageComments := MessageComment {
+      messageId: messageId,
+      actor: actor,
+      text: text,
+      at: Date.now().toString()
+    } :: messageComments
+    emit MessageCommentPosted { messageId: messageId, actor: actor }
+  }
+
+  constraint "messages have subjects" {
+    forall m in messages:
+      length(m.subject) >= 1
+  }
+
+  constraint "weekly logs are always from greybeard" {
+    forall m in messages:
+      implies(m.kind == "weekly-log", m.author == "greybeard")
+  }
+
+  constraint "comments reference messages" {
+    forall mc in messageComments:
+      length(mc.text) >= 1
+  }
+
+  event MessagePosted { messageId: Nat, projectId: String, subject: String, kind: String }
+  event WeeklyLogPosted { messageId: Nat, projectId: String, subject: String }
+  event MessageCommentPosted { messageId: Nat, actor: String }
+}

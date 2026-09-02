@@ -1,0 +1,60 @@
+// Pings.speckdl — Direct messages between people (DMs).
+// Basecamp's "Ping" feature: 1:1 conversations outside project campfires.
+
+speck Pings {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Pings are 1:1, project-independent, ephemeral" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Ping = {
+    pingId: Nat,
+    fromPerson: String,
+    toPerson: String,
+    body: String,
+    read: Bool,
+    at: String
+  }
+
+  state: {
+    pings: List<Ping>
+  }
+
+  init: {
+    pings := List.empty()
+  }
+
+  action SendPing(pingId: Nat, fromPerson: String, toPerson: String, body: String) {
+    require length(fromPerson) >= 1
+    require length(toPerson) >= 1
+    require length(body) >= 1
+    require fromPerson != toPerson
+    pings := Ping {
+      pingId: pingId, fromPerson: fromPerson, toPerson: toPerson,
+      body: body, read: false, at: Date.now().toString()
+    } :: pings
+    emit PingSent { pingId: pingId, fromPerson: fromPerson, toPerson: toPerson }
+  }
+
+  action MarkPingRead(pingId: Nat) {
+    require true
+    emit PingRead { pingId: pingId }
+  }
+
+  action GetConversation(personA: String, personB: String) {
+    require length(personA) >= 1
+    require length(personB) >= 1
+    let thread := pings
+    return thread
+  }
+
+  constraint "pings have senders and receivers" {
+    forall p in pings:
+      length(p.fromPerson) >= 1 and length(p.toPerson) >= 1
+  }
+
+  constraint "pings are newest-first" { true }
+
+  event PingSent { pingId: Nat, fromPerson: String, toPerson: String }
+  event PingRead { pingId: Nat }
+}

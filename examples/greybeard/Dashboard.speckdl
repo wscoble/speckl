@@ -1,0 +1,67 @@
+// Dashboard.speckdl — Power-user views: my cards, awaiting approval, overdue, recent.
+// Derived from CardTable + Project state. Read-only queries, not a state machine.
+
+speck Dashboard {
+
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Dashboard is derived state — it reads from CardTable and Campfire"
+    design_decision: "Overdue means dueOn < now and column != Done"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type DashboardCard = {
+    cardId: Nat,
+    projectId: String,
+    title: String,
+    column: String,
+    assignee: String | null,
+    dueOn: String | null,
+    overdue: Bool
+  }
+
+  state: {
+    // Dashboard is read-only — no mutable state of its own
+    _placeholder: Bool
+  }
+
+  init: {
+    _placeholder := false
+  }
+
+  action ComputeMyCards(cards: List<DashboardCard>, person: String) {
+    require length(person) >= 1
+    // derived: filter cards where assignee == person and column != Done
+    let myCards := myCards(cards, person)
+    return myCards
+  }
+
+  action ComputeAwaitingApproval(cards: List<DashboardCard>) {
+    // derived: filter cards where column == ApprovalRequested
+    let awaiting := awaitingApproval(cards)
+    return awaiting
+  }
+
+  action ComputeOverdue(cards: List<DashboardCard>, now: String) {
+    // derived: filter cards where dueOn < now and column != Done
+    let overdue := overdueCards(cards, now)
+    return overdue
+  }
+
+  action ComputeRecent(cards: List<DashboardCard>) {
+    // derived: filter cards where column == Done, sorted by completedAt desc
+    let recent := recentCards(cards)
+    return recent
+  }
+
+  constraint "dashboard is read-only" {
+    true
+  }
+
+  event DashboardComputed { view: String, count: Nat }
+}

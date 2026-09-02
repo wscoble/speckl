@@ -1,0 +1,280 @@
+// SpotBoard.speckdl — Greybeard Core SPoT: card table with approval-gate workflow.
+//
+// Encodes the card-driven work protocol:
+//   Triage -> FiguringItOut -> ApprovalRequested -> {Approved | Denied}
+//   Approved -> InProgress -> Done
+// The approval gate is machine-enforced: only human movers may transition
+// into Approved/Denied, and no card reaches Done without passing Approved.
+//
+// Author: Scott Scoble <scott@scoble.me>
+
+speck SpotBoard {
+
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    solver: "z3" version "4.12.5"
+    license: "MIT"
+  }
+
+
+  provenance {
+    design_decision: "Approval gate is machine-enforced: agent movers cannot transition into Approved or Denied"
+    design_decision: "Done is reachable only through Approved; Denied is terminal pending rework"
+    design_decision: "Approvals older than 7 days are stale and return to Triage"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+  source: architecture_review ref "greybeard-spot-protocol-2026-09"
+  review: auto
+
+  // ─── Types ──────────────────────────────────────────────────────
+
+  interface Columns {
+    Triage()
+    NotNow()
+    FiguringItOut()
+    ApprovalRequested()
+    Approved()
+    Denied()
+    InProgress()
+    Done()
+  }
+
+  type Card = {
+    cardId: Nat,
+    projectId: String,
+    title: String,
+    content: String,
+    column: String,
+    approvedAt: String | null,
+    createdBy: String
+  }
+
+  type Comment = {
+    cardId: Nat,
+    actor: String,
+    text: String
+  }
+
+  type Project = {
+    projectId: String,
+    name: String
+  }
+
+  type CardEvent = {
+    cardId: Nat,
+    from: String,
+    to: String,
+    mover: String,
+    t: String
+  }
+
+  // ─── State ───────────────────────────────────────────────────────
+
+  type Alert = {
+    alertId: Nat,
+    client: String,
+    title: String,
+    body: String,
+    t: String
+  }
+
+  state: {
+    projects: Map<String, Project>,
+    cards: Map<Nat, Card>,
+    comments: List<Comment>,
+    moves: List<CardEvent>,
+    alerts: List<Alert>
+  }
+
+  init: {
+    cards := Map.empty(),
+    comments := List.empty(),
+    moves := List.empty()
+  }
+
+  // ─── Actions ────────────────────────────────────────────────────
+
+  action CreateProject(projectId: String, name: String) {
+    require length(projectId) >= 1
+    require length(name) >= 1
+    require not projects.has(projectId)
+    projects[projectId] := Project { projectId: projectId, name: name }
+    emit ProjectCreated { projectId: projectId, name: name }
+  }
+
+  action CreateCard(cardId: Nat, projectId: String, title: String, content: String, createdBy: String) {
+    require projects.has(projectId)
+    require length(title) >= 1
+    require not cards.has(cardId)
+    cards[cardId] := Card {
+      cardId: cardId,
+      projectId: projectId,
+      title: title,
+      content: content,
+      column: "Triage",
+      approvedAt: null,
+      createdBy: createdBy
+    }
+    emit CardCreated { cardId: cardId, projectId: projectId, title: title }
+  }
+
+  // The single state-changing move. The approval gate lives in the guards:
+  // agent movers can never enter Approved or Denied, and Done is only
+  // reachable from InProgress (which is only reachable from Approved).
+  action MoveCard(cardId: Nat, target: String, mover: String) {
+    require cards.has(cardId)
+    require target == "Triage" or target == "NotNow" or target == "FiguringItOut"
+        or target == "ApprovalRequested" or target == "Approved" or target == "Denied"
+        or target == "InProgress" or target == "Done"
+    // The approval gate: only humans may grant or refuse.
+    require implies(mover == "agent", target != "Approved")
+    require implies(mover == "agent", target != "Denied")
+    // No skipping the gate: Approved/Denied are only entered from ApprovalRequested.
+    require implies(target == "Approved", cards[cardId].column == "ApprovalRequested")
+    require implies(target == "Denied", cards[cardId].column == "ApprovalRequested")
+    // No direct jump to Done: must pass through InProgress.
+    require implies(target == "Done", cards[cardId].column == "InProgress")
+    // Evidence must exist before a request can be made.
+    require implies(target == "ApprovalRequested", cards[cardId].column != "Triage")
+    let from := cards[cardId].column
+    cards[cardId].column := target
+    moves := CardEvent { cardId: cardId, from: from, to: target, mover: mover, t: Date.now().toString() } :: moves
+    emit CardMoved { cardId: cardId, from: from, to: target, mover: mover }
+  }
+
+  action CommentOnCard(cardId: Nat, actor: String, text: String) {
+    require cards.has(cardId)
+    require length(text) >= 1
+    comments := Comment { cardId: cardId, actor: actor, text: text } :: comments
+    emit CommentPosted { cardId: cardId, actor: actor }
+  }
+
+  action RequestApproval(cardId: Nat, evidence: String) {
+    require cards.has(cardId)
+    require length(evidence) >= 1
+    // Only cards that have been worked (simulated/documented) may request approval.
+    require cards[cardId].column == "FiguringItOut"
+    cards[cardId].column := "ApprovalRequested"
+    emit ApprovalRequestedEvt { cardId: cardId, evidence: evidence }
+  }
+
+  action ExecuteApproved(cardId: Nat, verification: String) {
+    require cards.has(cardId)
+    require length(verification) >= 1
+    require cards[cardId].column == "Approved"
+    cards[cardId].column := "InProgress"
+    emit ExecutionStarted { cardId: cardId, verification: verification }
+  }
+
+  action Complete(cardId: Nat, verification: String) {
+    require cards.has(cardId)
+    require length(verification) >= 1
+    require cards[cardId].column == "InProgress"
+    cards[cardId].column := "Done"
+    emit CardCompleted { cardId: cardId, verification: verification }
+  }
+
+  // Stale approvals (>7 days) return to Triage for re-request.
+  action ExpireStaleApproval(cardId: Nat, now: Int) {
+    require cards.has(cardId)
+    require cards[cardId].column == "Approved"
+    require cards[cardId].approvedAt != null
+    require now - toInt(cards[cardId].approvedAt) > 604800
+    cards[cardId].column := "Triage"
+    cards[cardId].approvedAt := null
+    emit ApprovalExpired { cardId: cardId }
+  }
+
+  action PostAlert(alertId: Nat, client: String, title: String, body: String) {
+    require length(client) >= 1
+    require length(title) >= 1
+    alerts := Alert { alertId: alertId, client: client, title: title, body: body, t: Date.now().toString() } :: alerts
+    emit AlertPosted { alertId: alertId, client: client, title: title }
+  }
+
+  // ─── Constraints (invariants) ───────────────────────────────────
+
+  constraint "cards live only in protocol columns" {
+    forall c in cards.values():
+      c.column == "Triage" or c.column == "NotNow" or c.column == "FiguringItOut"
+      or c.column == "ApprovalRequested" or c.column == "Approved" or c.column == "Denied"
+      or c.column == "InProgress" or c.column == "Done"
+  }
+
+  constraint "cards in Approved carry an approval timestamp" {
+    forall c in cards.values():
+      implies(c.column == "Approved", c.approvedAt != null)
+  }
+
+  constraint "every move's mover is recorded (audit trail)" {
+    forall mv in moves:
+      length(mv.mover) >= 1
+  }
+
+  constraint "cards in Done were approved at some point" {
+    forall c in cards.values():
+      implies(c.column == "Done", c.approvedAt != null)
+  }
+
+  constraint "every alert has a client and title" {
+    forall a in alerts:
+      length(a.client) >= 1 and length(a.title) >= 1
+  }
+
+  constraint "comments reference existing cards" {
+    forall cm in comments:
+      cards.has(cm.cardId)
+  }
+
+  // ─── Verification ───────────────────────────────────────────────
+
+  verify: always(implies(
+    cards[cardId].column == "Approved",
+    cards[cardId].approvedAt != null
+  ))
+
+  // ─── Events ─────────────────────────────────────────────────────
+
+  event ProjectCreated {
+		projectId: String
+		name: String
+	}
+  event CardCreated {
+		cardId: Nat
+		projectId: String
+		title: String
+	}
+  event CardMoved {
+		cardId: Nat
+		from: String
+		to: String
+		mover: String
+	}
+  event CommentPosted {
+		cardId: Nat
+		actor: String
+	}
+  event ApprovalRequestedEvt {
+		cardId: Nat
+		evidence: String
+	}
+  event ExecutionStarted {
+		cardId: Nat
+		verification: String
+	}
+  event CardCompleted {
+		cardId: Nat
+		verification: String
+	}
+  event ApprovalExpired {
+		cardId: Nat
+	}
+
+  event AlertPosted {
+		alertId: Nat
+		client: String
+		title: String
+	}
+
+}

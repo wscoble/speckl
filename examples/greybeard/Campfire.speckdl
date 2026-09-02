@@ -1,0 +1,94 @@
+// Campfire.speckdl — Per-project chat/alerts channel.
+// System alerts (event watcher, fleet inventory) and human messages land here.
+// Power users read the thread, post messages, and scan alerts.
+
+speck Campfire {
+
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Campfire is append-only — messages are immutable once posted"
+    design_decision: "System alerts are typed differently from human messages"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type CampfireMessage = {
+    messageId: Nat,
+    projectId: String,
+    author: String,
+    body: String,
+    kind: String,     // "human" | "system" | "alert"
+    at: String
+  }
+
+  state: {
+    messages: List<CampfireMessage>
+  }
+
+  init: {
+    messages := List.empty()
+  }
+
+  action PostMessage(messageId: Nat, projectId: String, author: String, body: String) {
+    require length(body) >= 1
+    require length(author) >= 1
+    messages := CampfireMessage {
+      messageId: messageId,
+      projectId: projectId,
+      author: author,
+      body: body,
+      kind: "human",
+      at: Date.now().toString()
+    } :: messages
+    emit MessagePosted { messageId: messageId, projectId: projectId, author: author }
+  }
+
+  action PostAlert(messageId: Nat, projectId: String, title: String, body: String) {
+    require length(title) >= 1
+    require length(body) >= 1
+    messages := CampfireMessage {
+      messageId: messageId,
+      projectId: projectId,
+      author: "system",
+      body: title + ": " + body,
+      kind: "alert",
+      at: Date.now().toString()
+    } :: messages
+    emit AlertPosted { messageId: messageId, projectId: projectId, title: title }
+  }
+
+  action PostSystemNotice(messageId: Nat, projectId: String, body: String) {
+    require length(body) >= 1
+    messages := CampfireMessage {
+      messageId: messageId,
+      projectId: projectId,
+      author: "system",
+      body: body,
+      kind: "system",
+      at: Date.now().toString()
+    } :: messages
+    emit SystemNoticePosted { messageId: messageId, projectId: projectId }
+  }
+
+  constraint "messages are never empty" {
+    forall m in messages:
+      length(m.body) >= 1
+  }
+
+  constraint "system messages identify themselves" {
+    forall m in messages:
+      implies(m.kind == "alert" or m.kind == "system", m.author == "system")
+  }
+
+  constraint "campfire is append-only (newest first)" {
+    true
+  }
+
+  event MessagePosted { messageId: Nat, projectId: String, author: String }
+  event AlertPosted { messageId: Nat, projectId: String, title: String }
+  event SystemNoticePosted { messageId: Nat, projectId: String }
+}

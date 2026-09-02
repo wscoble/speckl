@@ -1,0 +1,60 @@
+// Bookmarks.speckdl — Star/save items for later.
+// Basecamp: star anything to find it quickly later.
+
+speck Bookmarks {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Bookmarks are lightweight pointers, not copies" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Bookmark = {
+    bookmarkId: Nat,
+    personId: String,
+    itemType: String,   // "card" | "todo" | "message" | "document" | "event"
+    itemId: String,
+    projectId: String,
+    label: String,
+    createdAt: String
+  }
+
+  state: {
+    bookmarks: Map<Nat, Bookmark>
+  }
+
+  init: {
+    bookmarks := Map.empty()
+  }
+
+  action AddBookmark(bookmarkId: Nat, personId: String, itemType: String, itemId: String, projectId: String, label: String) {
+    require length(personId) >= 1
+    require length(itemType) >= 1
+    require length(itemId) >= 1
+    require not bookmarks.has(bookmarkId)
+    bookmarks[bookmarkId] := Bookmark {
+      bookmarkId: bookmarkId, personId: personId,
+      itemType: itemType, itemId: itemId,
+      projectId: projectId, label: label,
+      createdAt: Date.now().toString()
+    }
+    emit BookmarkAdded { bookmarkId: bookmarkId, personId: personId, itemType: itemType }
+  }
+
+  action RemoveBookmark(bookmarkId: Nat) {
+    require bookmarks.has(bookmarkId)
+    emit BookmarkRemoved { bookmarkId: bookmarkId }
+  }
+
+  action GetBookmarks(personId: String) {
+    require length(personId) >= 1
+    let results := bookmarks
+    return results
+  }
+
+  constraint "bookmarks reference real items" {
+    forall b in bookmarks.values():
+      length(b.itemId) >= 1
+  }
+
+  event BookmarkAdded { bookmarkId: Nat, personId: String, itemType: String }
+  event BookmarkRemoved { bookmarkId: Nat }
+}

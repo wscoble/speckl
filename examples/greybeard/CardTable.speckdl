@@ -1,0 +1,193 @@
+// CardTable.speckdl — Kanban card table with approval gate.
+// Cards move through protocol columns. The approval gate is machine-enforced.
+// Power users drag cards, comment, assign, set due dates, and search.
+
+speck CardTable {
+
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Approval gate: agent movers cannot enter Approved or Denied"
+    design_decision: "Due dates enable the overdue dashboard view"
+    design_decision: "Assignments track who owns the card"
+    parent_spec: "SpotBoard"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Card = {
+    cardId: Nat,
+    projectId: String,
+    title: String,
+    content: String,
+    column: String,
+    assignee: String | null,
+    dueOn: String | null,
+    approvedAt: String | null,
+    createdBy: String,
+    createdAt: String
+  }
+
+  type Comment = {
+    cardId: Nat,
+    actor: String,
+    text: String,
+    at: String
+  }
+
+  type Move = {
+    cardId: Nat,
+    from: String,
+    to: String,
+    mover: String,
+    at: String
+  }
+
+  state: {
+    cards: Map<Nat, Card>,
+    comments: List<Comment>,
+    moves: List<Move>
+  }
+
+  init: {
+    cards := Map.empty(),
+    comments := List.empty(),
+    moves := List.empty()
+  }
+
+  // ─── Card Lifecycle ───
+
+  action CreateCard(cardId: Nat, projectId: String, title: String, content: String, createdBy: String) {
+    require length(title) >= 1
+    require not cards.has(cardId)
+    cards[cardId] := Card {
+      cardId: cardId,
+      projectId: projectId,
+      title: title,
+      content: content,
+      column: "Triage",
+      assignee: null,
+      dueOn: null,
+      approvedAt: null,
+      createdBy: createdBy,
+      createdAt: Date.now().toString()
+    }
+    emit CardCreated { cardId: cardId, projectId: projectId, title: title }
+  }
+
+  action MoveCard(cardId: Nat, target: String, mover: String) {
+    require cards.has(cardId)
+    require target == "Triage" or target == "NotNow" or target == "FiguringItOut"
+        or target == "ApprovalRequested" or target == "Approved" or target == "Denied"
+        or target == "InProgress" or target == "Done"
+    // approval gate
+    require implies(mover == "agent", target != "Approved")
+    require implies(mover == "agent", target != "Denied")
+    require implies(target == "Approved", cards[cardId].column == "ApprovalRequested")
+    require implies(target == "Denied", cards[cardId].column == "ApprovalRequested")
+    require implies(target == "Done", cards[cardId].column == "InProgress")
+    require implies(target == "ApprovalRequested", cards[cardId].column != "Triage")
+    let from := cards[cardId].column
+    cards[cardId].column := target
+    moves := Move { cardId: cardId, from: from, to: target, mover: mover, at: Date.now().toString() } :: moves
+    emit CardMoved { cardId: cardId, from: from, to: target, mover: mover }
+  }
+
+  action RequestApproval(cardId: Nat, evidence: String) {
+    require cards.has(cardId)
+    require length(evidence) >= 1
+    require cards[cardId].column == "FiguringItOut"
+    cards[cardId].column := "ApprovalRequested"
+    emit ApprovalRequested { cardId: cardId, evidence: evidence }
+  }
+
+  action ExecuteApproved(cardId: Nat, verification: String) {
+    require cards.has(cardId)
+    require length(verification) >= 1
+    require cards[cardId].column == "Approved"
+    cards[cardId].column := "InProgress"
+    emit ExecutionStarted { cardId: cardId, verification: verification }
+  }
+
+  action Complete(cardId: Nat, verification: String) {
+    require cards.has(cardId)
+    require length(verification) >= 1
+    require cards[cardId].column == "InProgress"
+    cards[cardId].column := "Done"
+    emit CardCompleted { cardId: cardId, verification: verification }
+  }
+
+  // ─── Card Properties ───
+
+  action AssignCard(cardId: Nat, assignee: String) {
+    require cards.has(cardId)
+    require length(assignee) >= 1
+    cards[cardId].assignee := assignee
+    emit CardAssigned { cardId: cardId, assignee: assignee }
+  }
+
+  action SetDueDate(cardId: Nat, dueOn: String) {
+    require cards.has(cardId)
+    require length(dueOn) >= 1
+    cards[cardId].dueOn := dueOn
+    emit DueDateSet { cardId: cardId, dueOn: dueOn }
+  }
+
+  action CommentOnCard(cardId: Nat, actor: String, text: String) {
+    require cards.has(cardId)
+    require length(text) >= 1
+    comments := Comment { cardId: cardId, actor: actor, text: text, at: Date.now().toString() } :: comments
+    emit CommentPosted { cardId: cardId, actor: actor }
+  }
+
+  action ExpireStaleApproval(cardId: Nat, now: String) {
+    require cards.has(cardId)
+    require cards[cardId].column == "Approved"
+    require cards[cardId].approvedAt != null
+    cards[cardId].column := "Triage"
+    cards[cardId].approvedAt := null
+    emit ApprovalExpired { cardId: cardId }
+  }
+
+  // ─── Invariants ───
+
+  constraint "cards live only in protocol columns" {
+    forall c in cards.values():
+      c.column == "Triage" or c.column == "NotNow" or c.column == "FiguringItOut"
+      or c.column == "ApprovalRequested" or c.column == "Approved" or c.column == "Denied"
+      or c.column == "InProgress" or c.column == "Done"
+  }
+
+  constraint "approved cards have approval timestamp" {
+    forall c in cards.values():
+      implies(c.column == "Approved", c.approvedAt != null)
+  }
+
+  constraint "comments reference existing cards" {
+    forall cm in comments:
+      cards.has(cm.cardId)
+  }
+
+  constraint "every move records its mover" {
+    forall mv in moves:
+      length(mv.mover) >= 1
+  }
+
+  constraint "done cards passed through approved" {
+    forall c in cards.values():
+      implies(c.column == "Done", c.approvedAt != null)
+  }
+
+  event CardCreated { cardId: Nat, projectId: String, title: String }
+  event CardMoved { cardId: Nat, from: String, to: String, mover: String }
+  event CardAssigned { cardId: Nat, assignee: String }
+  event DueDateSet { cardId: Nat, dueOn: String }
+  event CommentPosted { cardId: Nat, actor: String }
+  event ApprovalRequested { cardId: Nat, evidence: String }
+  event ExecutionStarted { cardId: Nat, verification: String }
+  event CardCompleted { cardId: Nat, verification: String }
+  event ApprovalExpired { cardId: Nat }
+}

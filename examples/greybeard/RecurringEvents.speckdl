@@ -1,0 +1,77 @@
+// RecurringEvents.speckdl — Events that repeat on a schedule.
+// Extends Schedule: weekly standups, monthly reviews, quarterly audits.
+
+speck RecurringEvents {
+
+  bom { compiler: "speckl-compile" version "0.3.1"; license: "MIT" }
+  provenance { design_decision: "Recurring events generate concrete Schedule entries" }
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Recurrence = {
+    recurrenceId: String,
+    projectId: String,
+    title: String,
+    description: String,
+    frequency: String,    // "daily" | "weekly" | "monthly" | "quarterly"
+    dayOfWeek: String | null,
+    dayOfMonth: Nat | null,
+    hour: Nat,
+    minute: Nat,
+    active: Bool,
+    createdBy: String,
+    createdAt: String
+  }
+
+  state: {
+    recurrences: Map<String, Recurrence>
+  }
+
+  init: {
+    recurrences := Map.empty()
+  }
+
+  action CreateRecurrence(recurrenceId: String, projectId: String, title: String, description: String, frequency: String, dayOfWeek: String | null, dayOfMonth: Nat | null, hour: Nat, minute: Nat, createdBy: String) {
+    require length(title) >= 1
+    require frequency == "daily" or frequency == "weekly" or frequency == "monthly" or frequency == "quarterly"
+    require not recurrences.has(recurrenceId)
+    recurrences[recurrenceId] := Recurrence {
+      recurrenceId: recurrenceId, projectId: projectId,
+      title: title, description: description,
+      frequency: frequency, dayOfWeek: dayOfWeek, dayOfMonth: dayOfMonth,
+      hour: hour, minute: minute,
+      active: true, createdBy: createdBy, createdAt: Date.now().toString()
+    }
+    emit RecurrenceCreated { recurrenceId: recurrenceId, title: title, frequency: frequency }
+  }
+
+  action PauseRecurrence(recurrenceId: String) {
+    require recurrences.has(recurrenceId)
+    require recurrences[recurrenceId].active
+    recurrences[recurrenceId].active := false
+    emit RecurrencePaused { recurrenceId: recurrenceId }
+  }
+
+  action ResumeRecurrence(recurrenceId: String) {
+    require recurrences.has(recurrenceId)
+    require not recurrences[recurrenceId].active
+    recurrences[recurrenceId].active := true
+    emit RecurrenceResumed { recurrenceId: recurrenceId }
+  }
+
+  action GenerateInstances(recurrenceId: String, count: Nat) {
+    require recurrences.has(recurrenceId)
+    require recurrences[recurrenceId].active
+    require count >= 1 and count <= 52
+    emit InstancesGenerated { recurrenceId: recurrenceId, count: count }
+  }
+
+  constraint "recurrences have frequencies" {
+    forall r in recurrences.values():
+      r.frequency == "daily" or r.frequency == "weekly" or r.frequency == "monthly" or r.frequency == "quarterly"
+  }
+
+  event RecurrenceCreated { recurrenceId: String, title: String, frequency: String }
+  event RecurrencePaused { recurrenceId: String }
+  event RecurrenceResumed { recurrenceId: String }
+  event InstancesGenerated { recurrenceId: String, count: Nat }
+}

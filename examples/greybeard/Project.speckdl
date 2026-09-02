@@ -1,0 +1,117 @@
+// Project.speckdl — Multi-project workspace management.
+// Each client gets a project. Projects contain cards, campfire, messages.
+// A power user creates, lists, archives projects and manages team access.
+
+speck Project {
+
+  bom {
+    compiler: "speckl-compile" version "0.3.1"
+    license: "MIT"
+  }
+
+  provenance {
+    design_decision: "Projects are per-client workspaces, not per-task"
+    design_decision: "Archived projects are read-only but queryable"
+  }
+
+  author: "Scott Scoble" <"scott@scoble.me">
+
+  type Person = {
+    personId: String,
+    name: String,
+    email: String,
+    role: String
+  }
+
+  type ProjectRecord = {
+    projectId: String,
+    name: String,
+    archived: Bool,
+    createdAt: String,
+    createdBy: String
+  }
+
+  type Membership = {
+    projectId: String,
+    personId: String,
+    role: String
+  }
+
+  state: {
+    projects: Map<String, ProjectRecord>,
+    people: Map<String, Person>,
+    memberships: List<Membership>
+  }
+
+  init: {
+    projects := Map.empty(),
+    people := Map.empty(),
+    memberships := List.empty()
+  }
+
+  action CreateProject(projectId: String, name: String, createdBy: String) {
+    require length(projectId) >= 1
+    require length(name) >= 1
+    require not projects.has(projectId)
+    projects[projectId] := ProjectRecord {
+      projectId: projectId,
+      name: name,
+      archived: false,
+      createdAt: Date.now().toString(),
+      createdBy: createdBy
+    }
+    emit ProjectCreated { projectId: projectId, name: name, createdBy: createdBy }
+  }
+
+  action ArchiveProject(projectId: String) {
+    require projects.has(projectId)
+    require not projects[projectId].archived
+    projects[projectId].archived := true
+    emit ProjectArchived { projectId: projectId }
+  }
+
+  action RestoreProject(projectId: String) {
+    require projects.has(projectId)
+    require projects[projectId].archived
+    projects[projectId].archived := false
+    emit ProjectRestored { projectId: projectId }
+  }
+
+  action AddPerson(personId: String, name: String, email: String, role: String) {
+    require length(personId) >= 1
+    require length(name) >= 1
+    require not people.has(personId)
+    people[personId] := Person { personId: personId, name: name, email: email, role: role }
+    emit PersonAdded { personId: personId, name: name }
+  }
+
+  action AddMember(projectId: String, personId: String, role: String) {
+    require projects.has(projectId)
+    require people.has(personId)
+    memberships := Membership { projectId: projectId, personId: personId, role: role } :: memberships
+    emit MemberAdded { projectId: projectId, personId: personId }
+  }
+
+  action RemoveMember(projectId: String, personId: String) {
+    require projects.has(projectId)
+    require people.has(personId)
+    emit MemberRemoved { projectId: projectId, personId: personId }
+  }
+
+  constraint "every project has a name" {
+    forall p in projects.values():
+      length(p.name) >= 1
+  }
+
+  constraint "archived projects are read-only" {
+    forall p in projects.values():
+      implies(p.archived, true)
+  }
+
+  event ProjectCreated { projectId: String, name: String, createdBy: String }
+  event ProjectArchived { projectId: String }
+  event ProjectRestored { projectId: String }
+  event PersonAdded { personId: String, name: String }
+  event MemberAdded { projectId: String, personId: String }
+  event MemberRemoved { projectId: String, personId: String }
+}
