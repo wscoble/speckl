@@ -132,10 +132,10 @@ function goType(t: any, speckName: string, enumMap: Map<string, string[]>): stri
     const raw = cleanName(t.name);
     if (enumMap?.has(raw)) return `${goName(speckName)}${goName(raw)}`;
     const prim: Record<string, string> = { Nat: 'int64', Int: 'int64', Bool: 'bool', String: 'string', Date: 'int64', Real: 'float64', Number: 'float64' };
-    if (prim[raw]) return prim[raw];
+    if (prim[raw]) return t.nullable ? '*' + prim[raw] : prim[raw];
     const opt = raw.match(/^Option[_(]\s*(\w+)\s*\)?$/);
     if (opt) return '*' + (prim[opt[1]] || goName(opt[1]));
-    return goName(raw);
+    return t.nullable ? '*' + goName(raw) : goName(raw);
   }
   return 'any';
 }
@@ -166,10 +166,10 @@ function rewriteGoExpr(
     .replace(/([\w.]+)\.contains\(([^)]+)\)/g, 'listContains($1, $2)')
     .replace(/\bcount\(([^,]+),\s*(\w+)\s*=>\s*([^)]+)\)/g, 'countWhere($1, func($2 any) bool { return $3 })');
 
-  // state enum literals -> typed consts
-  if (knownStateValues.length > 0) {
-    const re = new RegExp('\\b(' + knownStateValues.join('|') + ')\\b(?!")', 'g');
-    g = g.replace(re, `${stateEnumName}$1`);
+  // state enum literals -> typed consts (skip field accesses `x.passed`,
+  // record-literal keys `registered:`, and quoted strings)
+  for (const [val, constName] of enumValueConsts) {
+    g = g.replace(new RegExp('(?<![.\\w])' + escapeRegex(val) + '(?![\\w":])', 'g'), constName);
   }
 
   // identifier prefixing
@@ -274,6 +274,7 @@ function goImplications(expr: string): string {
 // ─── speck emission ─────────────────────────────────────────────────
 
 let goFieldRenames: Map<string, string> = new Map();
+let enumValueConsts: Map<string, string> = new Map();
 let stateVarTypes: Map<string, any> = new Map();
 let recordTypes: Map<string, string[]> = new Map();
 function stateVarsOf(name: string): string {
@@ -390,6 +391,12 @@ function emitSpeck(speck: SpeckNode): string {
       enumDefs.push(`const ${typeName}${goName(v)} ${typeName} = ${JSON.stringify(v)}`);
     }
     enumDefs.push('');
+  }
+
+  // value -> typed const name, for lowering bare enum literals in expressions
+  enumValueConsts = new Map();
+  for (const [typeName, values] of seenEnumTypes) {
+    for (const v of values) if (!enumValueConsts.has(v)) enumValueConsts.set(v, `${typeName}${goName(v)}`);
   }
 
   const recordStructs = allInterfaces
