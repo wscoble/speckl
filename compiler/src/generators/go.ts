@@ -999,6 +999,22 @@ func main() {
 	machine.RegisterHandlers(mux, m)
 
 	addr := ":" + orDefault(os.Getenv("PORT"), "8080")
+	// compiled UI assets: serve ./static (Elm app.js, css) and ./ui (index.html)
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		b, err := os.ReadFile("ui/index.html")
+		if err != nil {
+			http.Error(w, "UI not found", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(b)
+	})
+
 	log.Printf("speckl ${snakeCase(speck.name)}: listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
