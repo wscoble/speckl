@@ -17,7 +17,7 @@
 
           src = pkgs.lib.cleanSource ./compiler;
 
-          npmDepsHash = pkgs.lib.fakeSha256; # will be computed on first build
+          npmDepsHash = "sha256-bX7P63cRqaUZPobuT3Cz8WlmDQuVKxdh+rJDBJ2qXcE="; # will be computed on first build
 
           buildPhase = ''
             npm run build --silent
