@@ -291,7 +291,8 @@ function emitSpeck(speck: SpeckNode): string {
     if (first) stateEnumName = `${goNameS}${goName(first)}`;
   }
 
-  const stateVars = (stateNode?.variables ?? []).map(v => ({
+  const stateVars: { origName: string; goName: string; typeExpr: any }[] =
+    ((stateNode?.variables ?? []) as any[]).map((v: any) => ({
     origName: cleanName(v.name),
     goName: goName(cleanName(v.name)),   // exported so JSON snapshot persistence works
     typeExpr: v.typeExpr,
@@ -364,11 +365,11 @@ function emitSpeck(speck: SpeckNode): string {
   const defaults = stateVars
     .map(v => `\tm.${v.goName} = ${defaultGoValue(v.typeExpr)}`)
     .join('\n');
-  const overrides = (initNode?.assignments ?? [])
-    .filter(a => !/^\w*\.(empty|now)/.test(cleanExpr(a.expr)))
-    .map(a => {
+  const overrides = ((initNode?.assignments ?? []) as any[])
+    .filter((a: any) => !/^\w*\.(empty|now)/.test(cleanExpr(a.expr)))
+    .map((a: any) => {
       const gname = camelCase(cleanName(a.name));
-      const expr = rewriteGoExpr(cleanExpr(a.expr), nameMap, mapVarOrigNames, new Set(), stateEnumName, knownStateValues);
+      const expr = rewriteGoExpr(cleanExpr(a.expr), nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues);
       return `\tm.${gname} = ${expr}`;
     }).join('\n');
   const initBody = overrides ? defaults + '\n' + overrides : defaults;
@@ -385,7 +386,7 @@ function emitSpeck(speck: SpeckNode): string {
     if (forallMatch) {
       const [, varName, collName, valuesCall, bodyExpr] = forallMatch;
       const gColl = nameMap.get(collName) || camelCase(collName);
-      const bodyGo = goImplications(rewriteGoExpr(bodyExpr, nameMap, mapVarOrigNames, new Set([varName]), stateEnumName, knownStateValues));
+      const bodyGo = goImplications(rewriteGoExpr(bodyExpr, nameMap, mapVarOrigNames, new Set<string>([varName]), stateEnumName, knownStateValues));
       const loopVar = varName + 'Val';
       const fieldFixed = bodyGo.replace(new RegExp(`\\b(\\w+)\\.(\\w+)`, 'g'), (m2, obj, f) => {
         const mapped = goFieldRenames.get(f);
@@ -393,7 +394,7 @@ function emitSpeck(speck: SpeckNode): string {
       });
       body = `\tfor _, ${varName}Val := range m.${gColl} {\n\t\tif !(${fieldFixed.replace(new RegExp(`\\b${varName}\\b`, 'g'), loopVar)}) {\n\t\t\treturn false\n\t\t}\n\t}\n\treturn true`;
     } else {
-      body = `\treturn ${goImplications(rewriteGoExpr(cExpr, nameMap, mapVarOrigNames, new Set(), stateEnumName, knownStateValues))}`;
+      body = `\treturn ${goImplications(rewriteGoExpr(cExpr, nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues))}`;
     }
     return `// Invariant ${fname}: ${cExpr.replace(/\s+/g, ' ').slice(0, 90)}\nfunc (m *${structName}) ${fname}() bool {\n${body}\n}`;
   }).join('\n\n');
