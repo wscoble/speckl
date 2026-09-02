@@ -751,6 +751,11 @@ function emitAction(
       return `\t${camelCase(cleanName(dotted[1]))}.${gfield} = ${v}`;
     }
     const gname = nameMap.get(cleanName(target)) || camelCase(cleanName(target));
+    // let-bound local reassignment: target = val (not a state var)
+    if (!nameMap.has(cleanName(target)) && localNames.has(cleanName(target))) {
+      const val2 = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+      return `\t${camelCase(cleanName(target))} = ${val2}`;
+    }
     const rawExpr = String(s.expr);
     // SpeckDL cons: ELEM :: list  ->  list = append([]Elem{elem}, list)
     const cons = rawExpr.match(/^(.+)\s*::\s*(\w+)$/s);
@@ -790,6 +795,8 @@ function emitAction(
       }
     } else if (s.type === 'assign') {
       bodyLines.push(emitAssign(s));
+    } else if (s.type === 'ifblock') {
+      bodyLines.push(`\t// TODO: conditional not lowered by compiler: ${String((s as any).raw ?? '').replace(/\n/g, ' ')}`);
     } else if (s.type === 'emit') {
       const fields = ((s.fields ?? []) as any[])
         .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`)
