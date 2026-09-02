@@ -577,11 +577,16 @@ function emitAction(
       const key = rewriteGoExpr(nested[2], nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
       const gfield = goFieldRenames.get(nested[3]) || goName(nested[3]);
       const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
+      let v = val;
+      const vt = stateVarTypes.get(cleanName(nested[1]));
+      const rec = vt?.type === 'map' && vt.valueType?.type === 'ident' ? cleanName(vt.valueType.name) : undefined;
+      const ftype = rec ? recordFieldTypes.get(rec)?.get(nested[3]) : undefined;
+      if (ftype?.nullable && /^([A-Za-z_]\w*)$/.test(val) && val !== 'nil' && !nullableParams.has(val)) v = `\u0026${val}`;
       // Go: cannot assign through a map to a struct field — read-modify-write
       return [
         `\t{`,
         `\t\tc := m.${gname}[${key}]`,
-        `\t\tc.${gfield} = ${val}`,
+        `\t\tc.${gfield} = ${v}`,
         `\t\tm.${gname}[${key}] = c`,
         `\t}`,
       ].join('\n');
