@@ -2029,7 +2029,7 @@ function parseConstraintColonBlock(lines: string[], startIndex: number): Constra
     }
   }
 
-  const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
+  const joined = parts.join('\n').replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim();
   return { type: 'constraint', expr: joined };
 }
 
