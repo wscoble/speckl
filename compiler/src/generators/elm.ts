@@ -1633,6 +1633,11 @@ function emitCompositeMain(
   L.push(`-- VIEW`);
   L.push(``);
   L.push(``);
+  // provenance tagline for the project banner
+  const tagline = speck.version
+    ? `v${speck.version}` + (speck.author ? ` | ${speck.author}` : '')
+    : (speck.author || 'speck-compiled workspace');
+
   L.push(`view : Page -> Browser.Document FrontMsg`);
   L.push(`view page =`);
   L.push(`    { title = "${ElmName(speck.name)}"`);
@@ -1643,7 +1648,8 @@ function emitCompositeMain(
   L.push(`                , span [ class "gb-title" ] [ text "${ElmName(speck.name)}" ]`);
   L.push(`                ]`);
   L.push(`            , main_ [ class "gb-main", id "gb-main" ]`);
-  L.push(`                [ errorBar page`);
+  L.push(`                [ banner`);
+  L.push(`                , errorBar page`);
   L.push(`                , div [] (stateSections page)`);
   L.push(`                ]`);
   L.push(`            , statusRegion page`);
@@ -1662,6 +1668,16 @@ function emitCompositeMain(
   L.push(`            , attribute "aria-live" "polite"`);
   L.push(`            ]`);
   L.push(`            [ text (Maybe.withDefault "" page.status) ]`);
+  L.push(``);
+  L.push(``);
+  L.push(`{-| Project banner: the Basecamp-style top card. Carries the compiled`);
+  L.push(`spec's identity and provenance. -}`);
+  L.push(`banner : Html FrontMsg`);
+  L.push(`banner =`);
+  L.push(`    div [ class "gb-banner" ]`);
+  L.push(`        [ h1 [ class "gb-banner-title" ] [ text "${ElmName(speck.name)}" ]`);
+  L.push(`        , p [ class "gb-banner-tagline" ] [ text "${tagline}" ]`);
+  L.push(`        ]`);
   L.push(``);
   L.push(``);
   L.push(`errorBar : Page -> Html FrontMsg`);
@@ -1684,10 +1700,19 @@ function emitCompositeMain(
   L.push(`    div [ class "gb-row" ] [ text s ]`);
   L.push(``);
   L.push(``);
-  L.push(`section : String -> List (Html FrontMsg) -> Html FrontMsg`);
-  L.push(`section title kids =`);
+  L.push(`section : Int -> String -> List (Html FrontMsg) -> Html FrontMsg`);
+  L.push(`section i title kids =`);
   L.push(`    div [ class "gb-section" ]`);
-  L.push(`        (h2 [ class "gb-section-hdr" ] [ text title ] :: kids)`);
+  L.push(`        (h2 [ class "gb-section-hdr" ]`);
+  L.push(`            [ span`);
+  L.push(`                [ class ("gb-chip gb-chip-" ++ String.fromInt i)`);
+  L.push(`                , attribute "aria-hidden" "true"`);
+  L.push(`                ]`);
+  L.push(`                []`);
+  L.push(`            , text title`);
+  L.push(`            ]`);
+  L.push(`            :: kids`);
+  L.push(`        )`);
   L.push(``);
 
   // ── affordance/creation plans across components ──
@@ -2344,6 +2369,7 @@ function emitCompositeMain(
   L.push(`stateSections : Page -> List (Html FrontMsg)`);
   L.push(`stateSections page =`);
   const sectionExprs: string[] = [];
+  let sectionChipCounter = 0;
   for (const c of components) {
     for (const v of c.vars) {
       const vn = elmName(v.name.replace(/\[\]/g, ''));
@@ -2369,11 +2395,12 @@ function emitCompositeMain(
         const tn = ElmName(t.slice(5));
         body.push(`feedOf page ${varPath(vn)} (view${tn} page)`);
       }
-      let expr = `section "${goFieldName(v.name)}" (${body[0] || '[ emptyNote ]'})`;
+      const chipIdx = sectionChipCounter++;
+      let expr = `section ${chipIdx} "${goFieldName(v.name)}" (${body[0] || '[ emptyNote ]'})`;
       if (creations.has(vn)) {
         emitCreateForm(vn);
         const forms = creations.get(vn)!.map(e => `create${ElmName(e.action.name)}Form page`);
-        expr = `sectionWith "${goFieldName(v.name)}" (${body[0] || '[ emptyNote ]'}) [ ${forms.join(', ')} ]`;
+        expr = `sectionWith ${chipIdx} "${goFieldName(v.name)}" (${body[0] || '[ emptyNote ]'}) [ ${forms.join(', ')} ]`;
       }
       sectionExprs.push(expr);
     }
@@ -2382,10 +2409,20 @@ function emitCompositeMain(
   L.push(``);
   for (const line of LATER) L.push(line);
   L.push(``);
-  L.push(`sectionWith : String -> List (Html FrontMsg) -> List (Html FrontMsg) -> Html FrontMsg`);
-  L.push(`sectionWith title kids extras =`);
+  L.push(`sectionWith : Int -> String -> List (Html FrontMsg) -> List (Html FrontMsg) -> Html FrontMsg`);
+  L.push(`sectionWith i title kids extras =`);
   L.push(`    div [ class "gb-section" ]`);
-  L.push(`        (h2 [ class "gb-section-hdr" ] [ text title ] :: kids ++ [ div [ class "gb-create-row" ] extras ])`);
+  L.push(`        (h2 [ class "gb-section-hdr" ]`);
+  L.push(`            [ span`);
+  L.push(`                [ class ("gb-chip gb-chip-" ++ String.fromInt i)`);
+  L.push(`                , attribute "aria-hidden" "true"`);
+  L.push(`                ]`);
+  L.push(`                []`);
+  L.push(`            , text title`);
+  L.push(`            ]`);
+  L.push(`            :: kids`);
+  L.push(`            ++ [ div [ class "gb-create-row" ] extras ]`);
+  L.push(`        )`);
   L.push(``);
 
   // view helpers
@@ -2804,6 +2841,11 @@ number of state vars.
   L.push(`-- VIEW`);
   L.push(``);
   L.push(``);
+  // provenance tagline for the project banner
+  const tagline = speck.version
+    ? `v${speck.version}` + (speck.author ? ` | ${speck.author}` : '')
+    : (speck.author || 'speck-compiled workspace');
+
   L.push(`view : Page -> Browser.Document FrontMsg`);
   L.push(`view page =`);
   L.push(`    { title = "${ElmName(speck.name)}"`);
@@ -2850,10 +2892,19 @@ number of state vars.
   L.push(`    [ ${stateVars.map((v: any) => `section "${goFieldName(v.name)}" (${sectionBodyFn(v, recordTypes)} page.machine.${elmName(v.name)})`).join('\n    , ')} ]`);
   L.push(``);
   L.push(``);
-  L.push(`section : String -> List (Html FrontMsg) -> Html FrontMsg`);
-  L.push(`section title kids =`);
+  L.push(`section : Int -> String -> List (Html FrontMsg) -> Html FrontMsg`);
+  L.push(`section i title kids =`);
   L.push(`    div [ class "gb-section" ]`);
-  L.push(`        (h2 [ class "gb-section-hdr" ] [ text title ] :: kids)`);
+  L.push(`        (h2 [ class "gb-section-hdr" ]`);
+  L.push(`            [ span`);
+  L.push(`                [ class ("gb-chip gb-chip-" ++ String.fromInt i)`);
+  L.push(`                , attribute "aria-hidden" "true"`);
+  L.push(`                ]`);
+  L.push(`                []`);
+  L.push(`            , text title`);
+  L.push(`            ]`);
+  L.push(`            :: kids`);
+  L.push(`        )`);
   L.push(``);
   L.push(``);
   L.push(`emptyNote : Html FrontMsg`);
@@ -3326,7 +3377,7 @@ function emitIndexHtml(name: string): string {
   --gb-accent: #f38ba8;
   --gb-accent-dark: #eba0ac;
   --gb-focus: #b4befe;
-  --gb-radius: 12px;
+  --gb-radius: 16px;
 }
 * { box-sizing: border-box; }
 body {
@@ -3370,6 +3421,45 @@ body {
   margin: 0 auto;
   padding: var(--gb-s5) var(--gb-s5) 64px;
 }
+
+/* project banner — the Basecamp top card */
+.gb-banner {
+  background: linear-gradient(135deg, #2b2839 0%, #1e1e2e 55%);
+  border: 1px solid var(--gb-border);
+  border-radius: var(--gb-radius);
+  padding: var(--gb-s5);
+  margin-bottom: var(--gb-s5);
+}
+.gb-banner-title {
+  margin: 0 0 var(--gb-s1);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--gb-text);
+}
+.gb-banner-tagline {
+  margin: 0;
+  font-size: 13px;
+  color: var(--gb-text-2);
+}
+
+/* section icon chips — Mocha accents, cycling */
+.gb-section-hdr { display: flex; align-items: center; gap: var(--gb-s3); }
+.gb-chip {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  flex: 0 0 26px;
+}
+.gb-chip-0 { background: #f38ba8; }
+.gb-chip-1 { background: #fab387; }
+.gb-chip-2 { background: #f9e2af; }
+.gb-chip-3 { background: #a6e3a1; }
+.gb-chip-4 { background: #94e2d5; }
+.gb-chip-5 { background: #89dceb; }
+.gb-chip-6 { background: #89b4fa; }
+.gb-chip-7 { background: #cba6f7; }
+.gb-chip-8 { background: #b4befe; }
 
 /* sections */
 .gb-section {
