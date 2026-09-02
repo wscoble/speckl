@@ -93,6 +93,12 @@ func listContains[T comparable](xs []T, v T) bool {
 	}
 	return false
 }
+func strCmp(a, b *string) int {
+	if a == nil || b == nil {
+		return 0
+	}
+	return strings.Compare(*a, *b)
+}
 func anyLen(v any) int {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Ptr {
@@ -298,6 +304,17 @@ function rewriteGoExpr(
   // forall cannot be an expression in Go; lower at the invariant-statement level.
   // Any residual forall is surfaced as a visible TODO, never silently dropped.
   if (/forall/.test(g)) g = `/* UNLOWERED forall - manual attention required */ (${g})`;
+  // nullable string comparisons: a.x > b.y -> strCmp(a.x, b.y) > 0
+  g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(>=|<=|>|<)\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g, (m2, o1, f1, op, o2, f2) => {
+    const r1 = localRecords.get(o1);
+    const r2 = localRecords.get(o2);
+    const t1 = r1 ? recordFieldTypes.get(r1)?.get(f1) : undefined;
+    const t2 = r2 ? recordFieldTypes.get(r2)?.get(f2) : undefined;
+    const isStr = (t: any) => t?.nullable && goType({ ...t, nullable: false }, '', new Map()) === 'string';
+    if (isStr(t1) && isStr(t2)) return `strCmp(${o1}.${f1}, ${o2}.${f2}) ${op} 0`;
+    return m2;
+  });
+
   // record field casing: .column -> .Column (known record fields)
   for (const [lower, G] of goFieldRenames) {
     g = g.replace(new RegExp(`\\.${lower}\\b`, 'g'), `.${G}`);
@@ -759,7 +776,8 @@ function emitAction(
     } else if (s.type === 'let') {
       localNames.add(s.name);
       const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
-      bodyLines.push(`\t${camelCase(s.name)} := ${val}`);
+      const litInt = val.match(/^\d+$/);
+      bodyLines.push(`\t${camelCase(s.name)} := ${litInt ? `int64(${val})` : val}`);
       // track the record type of the let-bound local (for nullable field assigns)
       const exprRaw = String(s.expr ?? '');
       const bracketM = exprRaw.match(/^(\w+)\[(.+)\]$/s);
