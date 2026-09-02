@@ -1439,6 +1439,7 @@ function emitCompositeMain(
   L.push(`    , loading : Bool`);
   L.push(`    , inputs : Dict.Dict String String`);
   L.push(`    , drag : Maybe { id : Int, x : Float, y : Float, over : Maybe String }`);
+  L.push(`    , menu : Maybe Int`);
   L.push(`    }`);
   L.push(``);
   L.push(``);
@@ -1453,6 +1454,7 @@ function emitCompositeMain(
   L.push(`    | DragLeaveCol String`);
   L.push(`    | DragDrop FrontMsg`);
   L.push(`    | DragCancel`);
+  L.push(`    | ToggleMenu Int`);
   L.push(``);
   L.push(``);
   L.push(`-- MSG (composite union over component messages)`);
@@ -1473,6 +1475,7 @@ function emitCompositeMain(
   L.push(`      , loading = True`);
   L.push(`      , inputs = Dict.empty`);
   L.push(`      , drag = Nothing`);
+  L.push(`      , menu = Nothing`);
   L.push(`      }`);
   L.push(`    , fetchState`);
   L.push(`    )`);
@@ -1536,6 +1539,9 @@ function emitCompositeMain(
   L.push(`        DragCancel ->`);
   L.push(`            ( { page | drag = Nothing }, Cmd.none )`);
   L.push(``);
+  L.push(`        ToggleMenu id ->`);
+  L.push(`            ( { page | menu = if page.menu == Just id then Nothing else Just id }, Cmd.none )`);
+  L.push(``);
   L.push(`        GotState result ->`);
   L.push(`            case result of`);
   L.push(`                Ok newModel ->`);
@@ -1583,10 +1589,10 @@ function emitCompositeMain(
   L.push(`    case guardResult of`);
   L.push(`        Err guardMsg ->`);
   L.push(`            -- spec guard rejected the action client-side; server never sees it`);
-  L.push(`            ( { page | model = setSub oldModel newSub, error = Just guardMsg }, Cmd.none )`);
+  L.push(`            ( { page | model = setSub oldModel newSub, error = Just guardMsg, menu = Nothing }, Cmd.none )`);
   L.push(``);
   L.push(`        Ok _ ->`);
-  L.push(`            ( { page | model = setSub oldModel newSub }`);
+  L.push(`            ( { page | model = setSub oldModel newSub, menu = Nothing }`);
   L.push(`            , postAction (machine.actionRoute msg) (machine.actionBody msg)`);
   L.push(`            )`);
   L.push(``);
@@ -1739,6 +1745,8 @@ function emitCompositeMain(
   L.push(`    , isLegal : Int -> String -> Bool`);
   L.push(`    , moveMsg : Int -> String -> FrontMsg`);
   L.push(`    , cardView : Page -> rec -> Html FrontMsg`);
+  L.push(`    , gates : List String`);
+  L.push(`    , menu : Page -> rec -> List (Html FrontMsg)`);
   L.push(`    }`);
   L.push(``);
   L.push(``);
@@ -1848,6 +1856,38 @@ function emitCompositeMain(
   L.push(`        ]`);
   L.push(``);
   L.push(``);
+  L.push(`{-| Gate-decision buttons: visible only when the gate targets are legal`);
+  L.push(`(i.e. the card sits at the decision point). The one obvious way per`);
+  L.push(`state: drag for moves, gate buttons for the human decision. -}`);
+  L.push(`gateRow : Page -> KanbanSpec rec -> rec -> Html FrontMsg`);
+  L.push(`gateRow page spec r =`);
+  L.push(`    div [ class "gb-gate-row" ]`);
+  L.push(`        (List.filterMap`);
+  L.push(`            (\\target ->`);
+  L.push(`                if spec.isLegal (spec.idOf r) target then`);
+  L.push(`                    Just`);
+  L.push(`                        (button`);
+  L.push(`                            [ class "gb-btn gb-btn-sm gb-btn-gate"`);
+  L.push(`                            , onClick (spec.moveMsg (spec.idOf r) target)`);
+  L.push(`                            , noDrag`);
+  L.push(`                            ]`);
+  L.push(`                            [ text (humanizeLabel target) ]`);
+  L.push(`                        )`);
+  L.push(``);
+  L.push(`                else`);
+  L.push(`                    Nothing`);
+  L.push(`            )`);
+  L.push(`            spec.gates`);
+  L.push(`        )`);
+  L.push(``);
+  L.push(``);
+  L.push(`{-| noDrag: keep card gestures from firing on interactive children. -}`);
+  L.push(`noDrag : Attribute FrontMsg`);
+  L.push(`noDrag =`);
+  L.push(`    custom "mousedown"`);
+  L.push(`        (D.succeed { message = DragCancel, preventDefault = True, stopPropagation = True })`);
+  L.push(``);
+  L.push(``);
   L.push(`kanbanCard : Page -> KanbanSpec rec -> rec -> Html FrontMsg`);
   L.push(`kanbanCard page spec r =`);
   L.push(`    let`);
@@ -1859,6 +1899,12 @@ function emitCompositeMain(
   L.push(``);
   L.push(`        cardClass =`);
   L.push(`            if dragging then "gb-card gb-card-dragging" else "gb-card gb-card-draggable"`);
+  L.push(``);
+  L.push(`        menuOpen =`);
+  L.push(`            page.menu == Just (spec.idOf r)`);
+  L.push(``);
+  L.push(`        gateVisible =`);
+  L.push(`            List.any (\\t -> spec.isLegal (spec.idOf r) t) spec.gates`);
   L.push(`    in`);
   L.push(`    div`);
   L.push(`        ([ class cardClass`);
@@ -1873,7 +1919,31 @@ function emitCompositeMain(
   L.push(`                (D.map2 Tuple.pair (D.field "clientX" D.float) (D.field "clientY" D.float))`);
   L.push(`            )`);
   L.push(`        ])`);
-  L.push(`        [ spec.cardView page r ]`);
+  L.push(`        ([ spec.cardView page r`);
+  L.push(`        ]`);
+  L.push(`            ++ (if gateVisible then [ gateRow page spec r ] else [])`);
+  L.push(`            ++ (if menuOpen then`);
+  L.push(`                    [ div [ class "gb-menu", noDrag ] (spec.menu page r) ]`);
+  L.push(``);
+  L.push(`                else`);
+  L.push(`                    []`);
+  L.push(`               )`);
+  L.push(`            ++ (if List.isEmpty (spec.menu page r) && not gateVisible then`);
+  L.push(`                    []`);
+  L.push(``);
+  L.push(`                else`);
+  L.push(`                    [ button`);
+  L.push(`                        [ class "gb-menu-btn"`);
+  L.push(`                        , attribute "aria-label" "card actions"`);
+  L.push(`                        , attribute "aria-expanded"`);
+  L.push(`                            (if menuOpen then "true" else "false")`);
+  L.push(`                        , onClick (ToggleMenu (spec.idOf r))`);
+  L.push(`                        , noDrag`);
+  L.push(`                        ]`);
+  L.push(`                        [ text "⋯" ]`);
+  L.push(`                    ]`);
+  L.push(`               )`);
+  L.push(`        )`);
   L.push(``);
   L.push(``);
 
@@ -1887,9 +1957,37 @@ function emitCompositeMain(
     else heading = `"${tn}"`;
     const metaParts = fieldInfos.meta.map((f: any) => metaExpr(f));
     const metaJoined = metaParts.length > 0 ? `String.join " · " [${metaParts.join(", ")}]` : null;
-    L.push(`view${tn} : Page -> ${tn} -> Html FrontMsg`);
-    L.push(`view${tn} page r =`);
-    L.push(`    div [ class "gb-card" ]`);
+
+    // click-to-toggle: a non-board record whose only affordance is a single-bind-param
+    // action (e.g. ToggleTodoItem) — the item itself is the one obvious control
+    const plainEntries = (affordances.get(recName) || []).filter(e => {
+      const rf = recordTypes.get(recName) || [];
+      const isBoard = rf.some((f: any) => ['column', 'status'].includes(f.name.toLowerCase())) && !!columnOrder;
+      if (isBoard) return false;
+      return e.action.params.length === 1 && e.plan.params.some((p: any) => p.kind === 'bind');
+    });
+    const toggleEntry = plainEntries.length === 1 ? plainEntries[0] : null;
+
+    let cardOpen: string;
+    if (toggleEntry) {
+      const an = ElmName(toggleEntry.action.name);
+      const bindParam = toggleEntry.plan.params.find((p: any) => p.kind === 'bind')!;
+      const compMod = toggleEntry.comp.module;
+      L.push(`view${tn} : Page -> ${tn} -> Html FrontMsg`);
+      L.push(`view${tn} page r =`);
+      L.push(`    div`);
+      L.push(`        ([ class "gb-card gb-card-clickable"`);
+      L.push(`        , onClick (FromMachine (${compMod} (${an} r.${elmName(bindParam.name)})))`);
+      L.push(`        , attribute "role" "checkbox"`);
+      L.push(`        ]`);
+      L.push(`        )`);
+      cardOpen = '';
+    } else {
+      L.push(`view${tn} : Page -> ${tn} -> Html FrontMsg`);
+      L.push(`view${tn} page r =`);
+      L.push(`    div [ class "gb-card" ]`);
+      cardOpen = '';
+    }
     if (metaJoined) {
       L.push(`        [ div [ class "gb-card-hdr" ]`);
       L.push(`            [ strong [ class "gb-card-title" ] [ text (${heading}) ]`);
@@ -1898,14 +1996,13 @@ function emitCompositeMain(
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
       }
-      if (affordances.has(recName)) {
-        const entries = affordances.get(recName)!;
+      if (affordances.has(recName) && !toggleEntry) {
         const rf = recordTypes.get(recName) || [];
         const isBoard = rf.some((f: any) => ['column', 'status'].includes(f.name.toLowerCase())) && !!columnOrder;
-        const call = isBoard
-          ? `affordances${tn} page (${elmName(recName)}Ports page) r`
-          : `affordances${tn} page r`;
-        L.push(`        , div [ class "gb-card-affordances" ] (${call})`);
+        if (!isBoard) {
+          L.push(`        , div [ class "gb-card-affordances" ] (affordances${tn} page r)`);
+        }
+        // board records: affordances live in the kanban menu + gate row
       }
       L.push(`        ]`);
     } else {
@@ -1913,14 +2010,12 @@ function emitCompositeMain(
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
       }
-      if (affordances.has(recName)) {
-        const entries = affordances.get(recName)!;
+      if (affordances.has(recName) && !toggleEntry) {
         const rf = recordTypes.get(recName) || [];
         const isBoard = rf.some((f: any) => ['column', 'status'].includes(f.name.toLowerCase())) && !!columnOrder;
-        const call = isBoard
-          ? `affordances${tn} page (${elmName(recName)}Ports page) r`
-          : `affordances${tn} page r`;
-        L.push(`        , div [ class "gb-card-affordances" ] (${call})`);
+        if (!isBoard) {
+          L.push(`        , div [ class "gb-card-affordances" ] (affordances${tn} page r)`);
+        }
       }
       L.push(`        ]`);
     }
@@ -1940,9 +2035,24 @@ function emitCompositeMain(
     const recFields = recordTypes.get(recName) || [];
     const isBoardRecord = recFields.some((f: any) => ['column', 'status'].includes(f.name.toLowerCase())) && !!columnOrder;
     if (!isBoardRecord) {
-      // non-board record: plain component-wrapped buttons
-      emitPlainAffordances(tn, comp, entries);
+      // non-board record: plain buttons, unless it's a click-to-toggle record
+      // (single bind param = the item itself is the control)
+      const isToggle = entries.length === 1 &&
+        entries[0].action.params.length === 1 &&
+        entries[0].plan.params.some((p: any) => p.kind === 'bind');
+      if (!isToggle) emitPlainAffordances(tn, comp, entries);
       continue;
+    }
+    // GateDecision targets: the reviewed name rule from the catalog
+    const gateTargets: string[] = [];
+    for (const e of entries) {
+      for (const p of e.plan.params) {
+        if (p.kind === 'choice') {
+          for (const lit of p.literals || []) {
+            if (/^(approved|denied|rejected)$/i.test(lit)) gateTargets.push(lit);
+          }
+        }
+      }
     }
     L.push(`{-| Integration ports for the ${tn} child component: legality in,`);
     L.push(`status changes out. -}`);
@@ -1951,6 +2061,11 @@ function emitCompositeMain(
     L.push(`    , emit : ${comp.module}.Msg -> FrontMsg`);
     L.push(`    , targets : List String`);
     L.push(`    }`);
+    L.push(``);
+    L.push(``);
+    L.push(`gates${tn} : List String`);
+    L.push(`gates${tn} =`);
+    L.push(`    [ ${gateTargets.map(g => `"${g}"`).join(', ')} ]`);
     L.push(``);
     L.push(``);
     L.push(`${elmName(recName)}Ports : Page -> ${tn}Ports`);
@@ -2017,12 +2132,12 @@ function emitCompositeMain(
     L.push(`affordances${tn} : Page -> ${tn}Ports -> ${tn} -> List (Html FrontMsg)`);
     L.push(`affordances${tn} page ports r =`);
     L.push(`    List.concat`);
-    L.push(`        [ -- choice actions: one guard-filtered button per legal target`);
+    L.push(`        [ -- choice actions: legal non-gate targets (gates live on the card face)`);
     L.push(`          List.concatMap`);
     L.push(`            (\\target ->`);
     L.push(`                [ moveBtn${tn} ports r target ]`);
     L.push(`            )`);
-    L.push(`            ports.targets`);
+    L.push(`            (List.filter (\\t -> not (List.member t gates${tn})) ports.targets)`);
     // text actions: per-card input row (CommentBox pattern)
     for (const { comp: c, action: a, plan } of entries) {
       const an = ElmName(a.name);
@@ -2335,6 +2450,8 @@ function emitCompositeMain(
     L.push(`                    False`);
     L.push(`    , moveMsg = \\id target -> FromMachine (${comp.module} (${an} ${ctorArgList}))`);
     L.push(`    , cardView = view${tn}`);
+    L.push(`    , gates = gates${tn}`);
+    L.push(`    , menu = \\pg r -> affordances${tn} pg (${elmName(recName)}Ports pg) r`);
     L.push(`    }`);
     L.push(``);
     L.push(``);
@@ -2402,6 +2519,7 @@ function emitMain(speck: SpeckNode, stateVars: any[], actions: ActionNode[], rec
   L.push(`      , loading = True`);
   L.push(`      , inputs = Dict.empty`);
   L.push(`      , drag = Nothing`);
+  L.push(`      , menu = Nothing`);
   L.push(`      }`);
   L.push(`    , fetchState`);
   L.push(`    )`);
@@ -2511,6 +2629,9 @@ number of state vars.
   L.push(``);
   L.push(`        DragCancel ->`);
   L.push(`            ( { page | drag = Nothing }, Cmd.none )`);
+  L.push(``);
+  L.push(`        ToggleMenu id ->`);
+  L.push(`            ( { page | menu = if page.menu == Just id then Nothing else Just id }, Cmd.none )`);
   L.push(``);
   L.push(`        GotState result ->`);
   L.push(`            case result of`);
@@ -3322,6 +3443,35 @@ body {
   font-weight: 700;
 }
 .gb-btn-gate:hover { background: #166035; }
+.gb-menu-btn {
+  min-height: 28px;
+  min-width: 28px;
+  border: none;
+  background: transparent;
+  color: var(--gb-text-2);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 6px;
+  position: absolute;
+  top: 6px;
+  right: 8px;
+}
+.gb-card { position: relative; }
+.gb-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0 4px;
+  border-top: 1px solid var(--gb-border);
+  margin-top: 6px;
+}
+.gb-menu .gb-inline-action .gb-input { min-height: 30px; }
+.gb-card-clickable { cursor: pointer; }
+.gb-gate-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
 .gb-inline-action {
   display: flex;
   gap: 6px;
