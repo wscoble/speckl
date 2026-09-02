@@ -1677,6 +1677,7 @@ function emitCompositeMain(
 
   // ── affordance/creation plans across components ──
   const affordances = new Map<string, { comp: any; action: ActionNode; plan: any }[]>();
+  const gateByRecord = new Map<string, { at: string; targets: string[] }>();
   const creations = new Map<string, { comp: any; action: ActionNode; plan: any }[]>();
   for (const c of components) {
     for (const a of c.actions) {
@@ -1745,7 +1746,7 @@ function emitCompositeMain(
   L.push(`    , isLegal : Int -> String -> Bool`);
   L.push(`    , moveMsg : Int -> String -> FrontMsg`);
   L.push(`    , cardView : Page -> rec -> Html FrontMsg`);
-  L.push(`    , gates : List String`);
+  L.push(`    , gate : Maybe { at : String, targets : List String }`);
   L.push(`    , menu : Page -> rec -> List (Html FrontMsg)`);
   L.push(`    }`);
   L.push(``);
@@ -1856,32 +1857,49 @@ function emitCompositeMain(
   L.push(`        ]`);
   L.push(``);
   L.push(``);
-  L.push(`{-| Gate-decision buttons: visible only when the gate targets are legal`);
-  L.push(`(i.e. the card sits at the decision point). The one obvious way per`);
-  L.push(`state: drag for moves, gate buttons for the human decision. -}`);
+  L.push(`{-| GateDecision pattern: the approve/deny pair. Column-scoped by the`);
+  L.push(`spec's own guard — the buttons exist only in the gate column, never`);
+  L.push(`elsewhere. Approve is green; deny is red. -}`);
+  L.push(`gateClassOf : String -> String`);
+  L.push(`gateClassOf t =`);
+  L.push(`    if List.member t approveTargets then`);
+  L.push(`        "gb-btn gb-btn-sm gb-btn-approve"`);
+  L.push(``);
+  L.push(`    else`);
+  L.push(`        "gb-btn gb-btn-sm gb-btn-deny"`);
+  L.push(``);
+  L.push(``);
   L.push(`gateRow : Page -> KanbanSpec rec -> rec -> Html FrontMsg`);
   L.push(`gateRow page spec r =`);
-  L.push(`    div [ class "gb-gate-row" ]`);
-  L.push(`        (List.filterMap`);
-  L.push(`            (\\target ->`);
-  L.push(`                if spec.isLegal (spec.idOf r) target then`);
-  L.push(`                    Just`);
-  L.push(`                        (button`);
-  L.push(`                            [ class "gb-btn gb-btn-sm gb-btn-gate"`);
-  L.push(`                            , onClick (spec.moveMsg (spec.idOf r) target)`);
-  L.push(`                            , noDrag`);
-  L.push(`                            ]`);
-  L.push(`                            [ text (humanizeLabel target) ]`);
+  L.push(`    case spec.gate of`);
+  L.push(`        Just g ->`);
+  L.push(`            if spec.columnOf r == g.at then`);
+  L.push(`                div [ class "gb-gate-row" ]`);
+  L.push(`                    (List.filterMap`);
+  L.push(`                        (\\target ->`);
+  L.push(`                            if spec.isLegal (spec.idOf r) target then`);
+  L.push(`                                Just`);
+  L.push(`                                    (button`);
+  L.push(`                                        [ class (gateClassOf target)`);
+  L.push(`                                        , onClick (spec.moveMsg (spec.idOf r) target)`);
+  L.push(`                                        , noDrag`);
+  L.push(`                                        ]`);
+  L.push(`                                        [ text (humanizeLabel target) ]`);
+  L.push(`                                    )`);
+  L.push(``);
+  L.push(`                            else`);
+  L.push(`                                Nothing`);
   L.push(`                        )`);
+  L.push(`                        g.targets`);
+  L.push(`                    )`);
   L.push(``);
-  L.push(`                else`);
-  L.push(`                    Nothing`);
-  L.push(`            )`);
-  L.push(`            spec.gates`);
-  L.push(`        )`);
+  L.push(`            else`);
+  L.push(`                div [] []`);
+  L.push(``);
+  L.push(`        Nothing ->`);
+  L.push(`            div [] []`);
   L.push(``);
   L.push(``);
-  L.push(`{-| noDrag: keep card gestures from firing on interactive children. -}`);
   L.push(`noDrag : Attribute FrontMsg`);
   L.push(`noDrag =`);
   L.push(`    custom "mousedown"`);
@@ -1904,7 +1922,13 @@ function emitCompositeMain(
   L.push(`            page.menu == Just (spec.idOf r)`);
   L.push(``);
   L.push(`        gateVisible =`);
-  L.push(`            List.any (\\t -> spec.isLegal (spec.idOf r) t) spec.gates`);
+  L.push(`            case spec.gate of`);
+  L.push(`                Just g ->`);
+  L.push(`                    spec.columnOf r == g.at`);
+  L.push(`                        && List.any (\\t -> spec.isLegal (spec.idOf r) t) g.targets`);
+  L.push(``);
+  L.push(`                Nothing ->`);
+  L.push(`                    False`);
   L.push(`    in`);
   L.push(`    div`);
   L.push(`        ([ class cardClass`);
@@ -2053,6 +2077,26 @@ function emitCompositeMain(
           }
         }
       }
+    }
+    // The gate's home column, derived from the spec's own guards:
+    //   implies(target == "<gate>", cards[cardId].column == "<col>")
+    // means the gate lives at <col>. All gate targets must agree.
+    let gateAt: string | null = null;
+    if (gateTargets.length > 0) {
+      for (const e of entries) {
+        for (const st of e.action.statements) {
+          if (st.type !== 'require') continue;
+          const m = (st as any).expr.match(
+            /implies\s*\(\s*\w+\s*==\s*"(\w+)"\s*,\s*\w+\[\w+\]\.\w+\s*==\s*"(\w+)"\s*\)/);
+          if (m && gateTargets.includes(m[1])) {
+            if (gateAt === null) gateAt = m[2];
+            else if (gateAt !== m[2]) gateAt = null; // disagreement: no single gate column
+          }
+        }
+      }
+    }
+    if (gateAt !== null && gateTargets.length > 0) {
+      gateByRecord.set(recName, { at: gateAt, targets: gateTargets });
     }
     L.push(`{-| Integration ports for the ${tn} child component: legality in,`);
     L.push(`status changes out. -}`);
@@ -2415,6 +2459,19 @@ function emitCompositeMain(
     L.push(``);
   }
 
+  // reviewed name rule: gate targets that mean "yes"
+  const approveTargets = Array.from(gateByRecord.values())
+    .flatMap(g => g.targets)
+    .filter((t: string) => /approv|accept/i.test(t));
+  const uniqApprove = Array.from(new Set(approveTargets));
+  if (uniqApprove.length > 0) {
+    L.push(`approveTargets : List String`);
+    L.push(`approveTargets =`);
+    L.push(`    [ ${uniqApprove.map(t => `"${t}"`).join(', ')} ]`);
+    L.push(``);
+    L.push(``);
+  }
+
   // kanban spec closures: one per board-bearing record
   for (const [recName, entries] of affordances) {
     const tn = ElmName(recName);
@@ -2450,7 +2507,16 @@ function emitCompositeMain(
     L.push(`                    False`);
     L.push(`    , moveMsg = \\id target -> FromMachine (${comp.module} (${an} ${ctorArgList}))`);
     L.push(`    , cardView = view${tn}`);
-    L.push(`    , gates = gates${tn}`);
+    L.push(`    , gate =`);
+    const gateInfo = gateByRecord.get(recName);
+    if (gateInfo) {
+      L.push(`        Just`);
+      L.push(`            { at = "${gateInfo.at}"`);
+      L.push(`            , targets = [ ${gateInfo.targets.map((t: string) => `"${t}"`).join(', ')} ]`);
+      L.push(`            }`);
+    } else {
+      L.push(`        Nothing`);
+    }
     L.push(`    , menu = \\pg r -> affordances${tn} pg (${elmName(recName)}Ports pg) r`);
     L.push(`    }`);
     L.push(``);
@@ -3438,11 +3504,15 @@ body {
   cursor: pointer;
 }
 .gb-btn:hover { background: var(--gb-accent-dark); }
-.gb-btn-gate {
+.gb-btn-gate { font-weight: 700; }
+.gb-btn-approve {
   background: #1e7d43;
-  font-weight: 700;
 }
-.gb-btn-gate:hover { background: #166035; }
+.gb-btn-approve:hover { background: #166035; }
+.gb-btn-deny {
+  background: var(--gb-accent);
+}
+.gb-btn-deny:hover { background: var(--gb-accent-dark); }
 .gb-menu-btn {
   min-height: 28px;
   min-width: 28px;
