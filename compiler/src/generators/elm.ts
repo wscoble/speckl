@@ -1763,8 +1763,9 @@ function emitCompositeMain(
   L.push(`            groupByRecord spec.columnOf (Dict.values dict)`);
   L.push(``);
   L.push(`        known =`);
-  L.push(`            List.filterMap`);
-  L.push(`                (\\col -> Maybe.map (\\items -> ( col, items )) (Dict.get col grouped))`);
+  L.push(`            -- every spec column renders, empty or not`);
+  L.push(`            List.map`);
+  L.push(`                (\\col -> ( col, Maybe.withDefault [] (Dict.get col grouped) ))`);
   L.push(`                spec.order`);
   L.push(``);
   L.push(`        unknown =`);
