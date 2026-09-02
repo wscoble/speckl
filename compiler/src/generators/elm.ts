@@ -1645,7 +1645,7 @@ function emitCompositeMain(
   L.push(`        [ div [ class "gb-app", attribute "data-app" "${snakeCase(speck.name)}" ]`);
   L.push(`            [ header [ class "gb-header" ]`);
   L.push(`                [ span [ class "gb-logo", attribute "aria-hidden" "true" ] [ text "GB" ]`);
-  L.push(`                , span [ class "gb-title" ] [ text "${ElmName(speck.name)}" ]`);
+  L.push(`                , span [ class "gb-title" ] [ text "Speckl" ]`);
   L.push(`                ]`);
   L.push(`            , main_ [ class "gb-main", id "gb-main" ]`);
   L.push(`                [ banner`);
@@ -1935,7 +1935,7 @@ function emitCompositeMain(
   L.push(`        , onMouseLeave (DragLeaveCol col)`);
   L.push(`        ] ++ commitAttr)`);
   L.push(`        [ div [ class "gb-board-row-hdr" ]`);
-  L.push(`            [ text col`);
+  L.push(`            [ text (humanizeLabel col)`);
   L.push(`            , span [ class "gb-board-row-count" ] [ text (String.fromInt (List.length items)) ]`);
   L.push(`            ]`);
   L.push(`        , div [ class "gb-board-row-items", attribute "role" "list" ] (List.map (\\r -> kanbanCard page spec r) items)`);
@@ -2021,7 +2021,10 @@ function emitCompositeMain(
     if (fieldInfos.heading) heading = `r.${elmName(fieldInfos.heading.name)}`;
     else if (fieldInfos.fallback) heading = fieldInfos.fallback;
     else heading = `"${tn}"`;
-    const metaParts = fieldInfos.meta.map((f: any) => metaExpr(f));
+    // board-bearing records: the status is the row's job, not the card's
+    const groupF2 = fields.find((f: any) => ['column', 'status'].includes(f.name.toLowerCase()));
+    const metaSrc = groupF2 && columnOrder ? fieldInfos.meta.filter((f: any) => f.name !== groupF2.name) : fieldInfos.meta;
+    const metaParts = metaSrc.map((f: any) => metaExpr(f));
     const metaJoined = metaParts.length > 0 ? `String.join " | " [${metaParts.join(", ")}]` : null;
 
     // click-to-toggle: a non-board record whose only affordance is a single-bind-param
@@ -2057,7 +2060,7 @@ function emitCompositeMain(
     if (metaJoined) {
       L.push(`        [ div [ class "gb-card-hdr" ]`);
       L.push(`            [ strong [ class "gb-card-title" ] [ text (${heading}) ]`);
-      L.push(`            , span [ class "gb-card-meta" ] [ text (" | " ++ ${metaJoined}) ]`);
+      L.push(`            , span [ class "gb-card-meta" ] [ text (${metaJoined}) ]`);
       L.push(`            ]`);
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
@@ -2173,7 +2176,20 @@ function emitCompositeMain(
     if (!L.some(l => l.includes('humanizeLabel : String -> String'))) {
       L.push(`humanizeLabel : String -> String`);
       L.push(`humanizeLabel s =`);
-      L.push(`    String.toLower (String.trim (String.join " " (String.words (String.replace "_" " " s))))`);
+      L.push(`    let`);
+      L.push(`        spaced =`);
+      L.push(`            String.foldl`);
+      L.push(`                (\\c acc ->`);
+      L.push(`                    if Char.isUpper c && acc /= "" then`);
+      L.push(`                        acc ++ " " ++ String.fromChar (Char.toLower c)`);
+      L.push(``);
+      L.push(`                    else`);
+      L.push(`                        acc ++ String.fromChar (Char.toLower c)`);
+      L.push(`                )`);
+      L.push(`                ""`);
+      L.push(`                s`);
+      L.push(`    in`);
+      L.push(`    spaced`);
       L.push(``);
       L.push(``);
     }
@@ -2853,7 +2869,7 @@ number of state vars.
   L.push(`        [ div [ class "gb-app", attribute "data-app" "${snakeCase(speck.name)}" ]`);
   L.push(`            [ header [ class "gb-header" ]`);
   L.push(`                [ span [ class "gb-logo" ] [ text "GB" ]`);
-  L.push(`                , span [ class "gb-title" ] [ text "${ElmName(speck.name)}" ]`);
+  L.push(`                , span [ class "gb-title" ] [ text "Speckl" ]`);
   L.push(`                ]`);
   L.push(`            , main_ [ class "gb-main" ]`);
   L.push(`                [ errorBar page`);
@@ -2949,7 +2965,10 @@ number of state vars.
     if (fieldInfos.heading) heading = `r.${elmName(fieldInfos.heading.name)}`;
     else if (fieldInfos.fallback) heading = fieldInfos.fallback;
     else heading = `"${tn}"`;
-    const metaParts = fieldInfos.meta.map((f: any) => metaExpr(f));
+    // board-bearing records: the status is the row's job, not the card's
+    const groupF2 = fields.find((f: any) => ['column', 'status'].includes(f.name.toLowerCase()));
+    const metaSrc = groupF2 && columnOrder ? fieldInfos.meta.filter((f: any) => f.name !== groupF2.name) : fieldInfos.meta;
+    const metaParts = metaSrc.map((f: any) => metaExpr(f));
     const metaJoined = metaParts.length > 0 ? `String.join " | " [${metaParts.join(", ")}]` : null;
     L.push(`view${tn} : Dict.Dict String String -> Model -> ${tn} -> Html FrontMsg`);
     L.push(`view${tn} inputs model r =`);
@@ -2957,7 +2976,7 @@ number of state vars.
     if (metaJoined) {
       L.push(`        [ div [ class "gb-card-hdr" ]`);
       L.push(`            [ strong [ class "gb-card-title" ] [ text (${heading}) ]`);
-      L.push(`            , span [ class "gb-card-meta" ] [ text (" | " ++ ${metaJoined}) ]`);
+      L.push(`            , span [ class "gb-card-meta" ] [ text (${metaJoined}) ]`);
       L.push(`            ]`);
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
@@ -3417,7 +3436,7 @@ body {
 .gb-title { font-size: 17px; font-weight: 700; }
 
 .gb-main {
-  max-width: 920px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: var(--gb-s5) var(--gb-s5) 64px;
 }
@@ -3488,26 +3507,17 @@ body {
 .gb-card {
   border: 1px solid #2f343b;
   border-radius: 8px;
-  background: #22262c;
+  background: #3a3f4c;
   padding: var(--gb-s3) var(--gb-s4);
   margin: var(--gb-s2) 0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
-.gb-card:hover { border-color: #3f4750; background: #262b32; }
+.gb-card:hover { border-color: #565e6b; background: #434956; }
 .gb-card-hdr { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding-right: 26px; }
 .gb-card-title { font-size: 15px; }
 .gb-card-title { font-size: 14px; font-weight: 600; }
 .gb-card-meta { font-size: 12px; color: var(--gb-text-2); }
 .gb-card-body { font-size: 13px; color: var(--gb-text-2); margin-top: 2px; }
-
-/* board sections span the viewport — 8 columns need the room */
-.gb-section:has(.gb-board) {
-  width: 100vw;
-  margin-left: calc(50% - 50vw);
-  border-left: none;
-  border-right: none;
-  border-radius: 0;
-}
 
 /* board (kanban transition pattern): status rows, cards flow horizontally */
 .gb-board {
@@ -3525,11 +3535,11 @@ body::-webkit-scrollbar-track { background: var(--gb-bg); }
 body::-webkit-scrollbar-thumb { background: #45475a; border-radius: 6px; }
 body::-webkit-scrollbar-thumb:hover { background: #585b70; }
 .gb-board-row {
-  background: #1e1e2e;
-  border: 1px solid var(--gb-border);
+  background: #262a33;
+  border: 1px solid #343a43;
   border-radius: 8px;
   padding: var(--gb-s2) var(--gb-s3);
-  min-height: 64px;
+  min-height: 52px;
 }
 .gb-board-row.gb-row-ok {
   outline: 2px dashed #6c7086;
