@@ -1998,7 +1998,7 @@ function emitCompositeMain(
     else if (fieldInfos.fallback) heading = fieldInfos.fallback;
     else heading = `"${tn}"`;
     const metaParts = fieldInfos.meta.map((f: any) => metaExpr(f));
-    const metaJoined = metaParts.length > 0 ? `String.join " · " [${metaParts.join(", ")}]` : null;
+    const metaJoined = metaParts.length > 0 ? `String.join " | " [${metaParts.join(", ")}]` : null;
 
     // click-to-toggle: a non-board record whose only affordance is a single-bind-param
     // action (e.g. ToggleTodoItem) — the item itself is the one obvious control
@@ -2033,7 +2033,7 @@ function emitCompositeMain(
     if (metaJoined) {
       L.push(`        [ div [ class "gb-card-hdr" ]`);
       L.push(`            [ strong [ class "gb-card-title" ] [ text (${heading}) ]`);
-      L.push(`            , span [ class "gb-card-meta" ] [ text (" · " ++ ${metaJoined}) ]`);
+      L.push(`            , span [ class "gb-card-meta" ] [ text (" | " ++ ${metaJoined}) ]`);
       L.push(`            ]`);
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
@@ -2900,14 +2900,14 @@ number of state vars.
     else if (fieldInfos.fallback) heading = fieldInfos.fallback;
     else heading = `"${tn}"`;
     const metaParts = fieldInfos.meta.map((f: any) => metaExpr(f));
-    const metaJoined = metaParts.length > 0 ? `String.join " · " [${metaParts.join(", ")}]` : null;
+    const metaJoined = metaParts.length > 0 ? `String.join " | " [${metaParts.join(", ")}]` : null;
     L.push(`view${tn} : Dict.Dict String String -> Model -> ${tn} -> Html FrontMsg`);
     L.push(`view${tn} inputs model r =`);
     L.push(`    div [ class "gb-card" ]`);
     if (metaJoined) {
       L.push(`        [ div [ class "gb-card-hdr" ]`);
       L.push(`            [ strong [ class "gb-card-title" ] [ text (${heading}) ]`);
-      L.push(`            , span [ class "gb-card-meta" ] [ text (" · " ++ ${metaJoined}) ]`);
+      L.push(`            , span [ class "gb-card-meta" ] [ text (" | " ++ ${metaJoined}) ]`);
       L.push(`            ]`);
       if (fieldInfos.body) {
         L.push(`        , div [ class "gb-card-body" ] [ text r.${elmName(fieldInfos.body.name)} ]`);
