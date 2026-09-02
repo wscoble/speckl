@@ -1778,6 +1778,26 @@ function emitCompositeMain(
   L.push(`        grouped =`);
   L.push(`            groupByRecord spec.columnOf (Dict.values dict)`);
   L.push(``);
+  L.push(`        -- the gate is expressed by the board itself: when a card is`);
+  L.push(`        -- lifted from the gate column, the approve column highlights green`);
+  L.push(`        -- and the deny column highlights red. Dropping IS deciding.`);
+  L.push(`        dragFromGate =`);
+  L.push(`            case page.drag of`);
+  L.push(`                Just d ->`);
+  L.push(`                    case Dict.get (String.fromInt d.id) dict of`);
+  L.push(`                        Just r ->`);
+  L.push(`                            case spec.gate of`);
+  L.push(`                                Just g -> spec.columnOf r == g.at`);
+  L.push(``);
+  L.push(`                                Nothing ->`);
+  L.push(`                                    False`);
+  L.push(``);
+  L.push(`                        Nothing ->`);
+  L.push(`                            False`);
+  L.push(``);
+  L.push(`                Nothing ->`);
+  L.push(`                    False`);
+  L.push(``);
   L.push(`        known =`);
   L.push(`            -- every spec column renders, empty or not`);
   L.push(`            List.map`);
@@ -1807,14 +1827,20 @@ function emitCompositeMain(
   L.push(`                    div [] []`);
   L.push(`    in`);
   L.push(`    div [ class "gb-board" ]`);
-  L.push(`        (List.map (kanbanCol page spec) (known ++ unknown) ++ [ ghost ])`);
+  L.push(`        (List.map (kanbanCol page spec dragFromGate) (known ++ unknown) ++ [ ghost ])`);
   L.push(``);
   L.push(``);
-  L.push(`kanbanCol : Page -> KanbanSpec rec -> ( String, List rec ) -> Html FrontMsg`);
-  L.push(`kanbanCol page spec ( col, items ) =`);
+  L.push(`kanbanCol : Page -> KanbanSpec rec -> Bool -> ( String, List rec ) -> Html FrontMsg`);
+  L.push(`kanbanCol page spec dragFromGate ( col, items ) =`);
   L.push(`    let`);
   L.push(`        dragInfo =`);
   L.push(`            page.drag`);
+  L.push(``);
+  L.push(`        gateDenyTargets =`);
+  L.push(`            case spec.gate of`);
+  L.push(`                Just g -> List.filter (\\t -> not (List.member t approveTargets)) g.targets`);
+  L.push(``);
+  L.push(`                Nothing -> []`);
   L.push(``);
   L.push(`        legal =`);
   L.push(`            case dragInfo of`);
@@ -1831,7 +1857,18 @@ function emitCompositeMain(
   L.push(`        colClass =`);
   L.push(`            String.join " "`);
   L.push(`                ([ "gb-board-col" ]`);
-  L.push(`                    ++ (if legal then [ "gb-col-ok" ] else [])`);
+  L.push(`                    ++ (if legal && dragFromGate && List.member col approveTargets then`);
+  L.push(`                            [ "gb-col-approve" ]`);
+  L.push(``);
+  L.push(`                        else if legal && dragFromGate && gateDenyTargets /= [] && List.member col gateDenyTargets then`);
+  L.push(`                            [ "gb-col-deny" ]`);
+  L.push(``);
+  L.push(`                        else if legal then`);
+  L.push(`                            [ "gb-col-ok" ]`);
+  L.push(``);
+  L.push(`                        else`);
+  L.push(`                            []`);
+  L.push(`                    )`);
   L.push(`                    ++ (if legal && hovered then [ "gb-col-hover" ] else [])`);
   L.push(`                )`);
   L.push(``);
@@ -1857,49 +1894,6 @@ function emitCompositeMain(
   L.push(`        ]`);
   L.push(``);
   L.push(``);
-  L.push(`{-| GateDecision pattern: the approve/deny pair. Column-scoped by the`);
-  L.push(`spec's own guard — the buttons exist only in the gate column, never`);
-  L.push(`elsewhere. Approve is green; deny is red. -}`);
-  L.push(`gateClassOf : String -> String`);
-  L.push(`gateClassOf t =`);
-  L.push(`    if List.member t approveTargets then`);
-  L.push(`        "gb-btn gb-btn-sm gb-btn-approve"`);
-  L.push(``);
-  L.push(`    else`);
-  L.push(`        "gb-btn gb-btn-sm gb-btn-deny"`);
-  L.push(``);
-  L.push(``);
-  L.push(`gateRow : Page -> KanbanSpec rec -> rec -> Html FrontMsg`);
-  L.push(`gateRow page spec r =`);
-  L.push(`    case spec.gate of`);
-  L.push(`        Just g ->`);
-  L.push(`            if spec.columnOf r == g.at then`);
-  L.push(`                div [ class "gb-gate-row" ]`);
-  L.push(`                    (List.filterMap`);
-  L.push(`                        (\\target ->`);
-  L.push(`                            if spec.isLegal (spec.idOf r) target then`);
-  L.push(`                                Just`);
-  L.push(`                                    (button`);
-  L.push(`                                        [ class (gateClassOf target)`);
-  L.push(`                                        , onClick (spec.moveMsg (spec.idOf r) target)`);
-  L.push(`                                        , noDrag`);
-  L.push(`                                        ]`);
-  L.push(`                                        [ text (humanizeLabel target) ]`);
-  L.push(`                                    )`);
-  L.push(``);
-  L.push(`                            else`);
-  L.push(`                                Nothing`);
-  L.push(`                        )`);
-  L.push(`                        g.targets`);
-  L.push(`                    )`);
-  L.push(``);
-  L.push(`            else`);
-  L.push(`                div [] []`);
-  L.push(``);
-  L.push(`        Nothing ->`);
-  L.push(`            div [] []`);
-  L.push(``);
-  L.push(``);
   L.push(`noDrag : Attribute FrontMsg`);
   L.push(`noDrag =`);
   L.push(`    custom "mousedown"`);
@@ -1920,15 +1914,6 @@ function emitCompositeMain(
   L.push(``);
   L.push(`        menuOpen =`);
   L.push(`            page.menu == Just (spec.idOf r)`);
-  L.push(``);
-  L.push(`        gateVisible =`);
-  L.push(`            case spec.gate of`);
-  L.push(`                Just g ->`);
-  L.push(`                    spec.columnOf r == g.at`);
-  L.push(`                        && List.any (\\t -> spec.isLegal (spec.idOf r) t) g.targets`);
-  L.push(``);
-  L.push(`                Nothing ->`);
-  L.push(`                    False`);
   L.push(`    in`);
   L.push(`    div`);
   L.push(`        ([ class cardClass`);
@@ -1945,14 +1930,13 @@ function emitCompositeMain(
   L.push(`        ])`);
   L.push(`        ([ spec.cardView page r`);
   L.push(`        ]`);
-  L.push(`            ++ (if gateVisible then [ gateRow page spec r ] else [])`);
   L.push(`            ++ (if menuOpen then`);
   L.push(`                    [ div [ class "gb-menu", noDrag ] (spec.menu page r) ]`);
   L.push(``);
   L.push(`                else`);
   L.push(`                    []`);
   L.push(`               )`);
-  L.push(`            ++ (if List.isEmpty (spec.menu page r) && not gateVisible then`);
+  L.push(`            ++ (if List.isEmpty (spec.menu page r) then`);
   L.push(`                    []`);
   L.push(``);
   L.push(`                else`);
@@ -2176,12 +2160,13 @@ function emitCompositeMain(
     L.push(`affordances${tn} : Page -> ${tn}Ports -> ${tn} -> List (Html FrontMsg)`);
     L.push(`affordances${tn} page ports r =`);
     L.push(`    List.concat`);
-    L.push(`        [ -- choice actions: legal non-gate targets (gates live on the card face)`);
+    L.push(`        [ -- choice actions: all legal targets (the menu is the keyboard path;`);
+    L.push(`          -- gate targets are naturally scoped here by the guards)`);
     L.push(`          List.concatMap`);
     L.push(`            (\\target ->`);
     L.push(`                [ moveBtn${tn} ports r target ]`);
     L.push(`            )`);
-    L.push(`            (List.filter (\\t -> not (List.member t gates${tn})) ports.targets)`);
+    L.push(`            ports.targets`);
     // text actions: per-card input row (CommentBox pattern)
     for (const { comp: c, action: a, plan } of entries) {
       const an = ElmName(a.name);
@@ -3401,11 +3386,14 @@ body {
   gap: 10px;
   overflow-x: auto;
   padding: 10px 14px 14px;
-  align-items: flex-start;
+  align-items: stretch;
 }
 .gb-board-col {
   flex: 1 0 170px;
   min-width: 170px;
+  min-height: 380px;
+  display: flex;
+  flex-direction: column;
   background: var(--gb-bg);
   border: 1px solid var(--gb-border);
   border-radius: 8px;
@@ -3415,6 +3403,16 @@ body {
   outline: 2px dashed var(--gb-accent);
   outline-offset: -2px;
   background: #fdf6f0;
+}
+.gb-board-col.gb-col-approve {
+  outline: 3px solid #1e7d43;
+  outline-offset: -2px;
+  background: #eef7f0;
+}
+.gb-board-col.gb-col-deny {
+  outline: 3px solid var(--gb-accent);
+  outline-offset: -2px;
+  background: #fdf0ee;
 }
 .gb-board-col.gb-col-hover {
   background: #fbe9e4;
@@ -3438,7 +3436,12 @@ body {
   padding: 0 8px;
   font-size: 11px;
 }
-.gb-board-col-items { padding: 0; }
+/* the items area fills the column to the bottom: the whole column is a
+   landing zone, so empty columns and below-card space are droppable */
+.gb-board-col-items {
+  padding: 0;
+  flex: 1 1 auto;
+}
 .gb-card-draggable { cursor: grab; }
 .gb-card-dragging { opacity: 0.35; }
 .gb-ghost {
