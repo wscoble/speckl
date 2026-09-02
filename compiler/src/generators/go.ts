@@ -59,6 +59,22 @@ func inValues[K comparable, V any](m map[K]V, v V) bool {
 	}
 	return false
 }
+func anyMatch[K comparable, V any](m map[K]V, pred func(V) bool) bool {
+	for _, v := range m {
+		if pred(v) {
+			return true
+		}
+	}
+	return false
+}
+func listAnyMatch[T any](xs []T, pred func(T) bool) bool {
+	for _, x := range xs {
+		if pred(x) {
+			return true
+		}
+	}
+	return false
+}
 func countWhere[V any](coll []V, pred func(V) bool) int {
 	n := 0
 	for _, x := range coll {
@@ -180,6 +196,18 @@ function rewriteGoExpr(
   localRecords: Map<string, string> = new Map()
 ): string {
   expr = stripComment(expr);
+  // existential quantifier: (not) exists v in coll(.values())?: pred
+  const em = expr.match(/(not\s+)?exists\s+(\w+)\s+in\s+([\w.]+?)(?:\.values\(\))?:\s*([\s\S]+)$/);
+  if (em) {
+    let origName = em[3].replace(/^m\./, '');
+    for (const [orig, gn] of nameMap) { if (em[3] === gn) { origName = orig; break; } }
+    const vt = stateVarTypes.get(origName);
+    let rec = 'any';
+    if (vt?.type === 'map' && vt.valueType?.type === 'ident') rec = goType(vt.valueType, '', currentEnumMap);
+    else if (vt?.type === 'list' && vt.elementType?.type === 'ident') rec = goType(vt.elementType, '', currentEnumMap);
+    const helper = vt?.type === 'list' ? 'listAnyMatch' : 'anyMatch';
+    expr = `${em[1] ? '!' : ''}${helper}(${em[3]}, func(${em[2]} ${rec}) bool { return ${em[4]} })`;
+  }
   const lengthLower = (arg: string): string => {
     const dm = arg.trim().match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
     if (dm) {
