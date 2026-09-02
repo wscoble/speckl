@@ -43,6 +43,7 @@ package __prelude
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -67,6 +68,26 @@ func countWhere[V any](coll []V, pred func(V) bool) int {
 	return n
 }
 func nowString() string { return strconv.FormatInt(time.Now().Unix(), 10) }
+func listContains[T comparable](xs []T, v T) bool {
+	for _, x := range xs {
+		if any(x) == any(v) {
+			return true
+		}
+	}
+	return false
+}
+func slugify(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b []rune
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b = append(b, r)
+		} else if len(b) > 0 && b[len(b)-1] != '-' {
+			b = append(b, '-')
+		}
+	}
+	return strings.Trim(string(b), "-")
+}
 func toInt(v any) int64 {
 	switch x := v.(type) {
 	case string:
@@ -142,6 +163,7 @@ function rewriteGoExpr(
     .replace(/\bjoin\(([^,]+),\s*([^)]+)\)/g, 'strings.Join($1, $2)')
     .replace(/\bappend\(([^,]+),\s*([^)]+)\)/g, 'append($1, $2)')
     .replace(/(\w+)\.has\(([^)]+)\)/g, 'mapHas($1, $2)')
+    .replace(/([\w.]+)\.contains\(([^)]+)\)/g, 'listContains($1, $2)')
     .replace(/\bcount\(([^,]+),\s*(\w+)\s*=>\s*([^)]+)\)/g, 'countWhere($1, func($2 any) bool { return $3 })');
 
   // state enum literals -> typed consts
@@ -194,7 +216,7 @@ function rewriteGoExpr(
   let changed = true;
   while (changed) {
     changed = false;
-    g = g.replace(/implies\s*\(([^,()]*(?:\([^()]*\)[^()]*)*),\s*([^()]+)\)/g, (_, p, q) => {
+    g = g.replace(/implies\s*\(([^,()]*(?:\([^()]*\)[^()]*)*),\s*([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, p, q) => {
       changed = true;
       return `(!(${p.trim()}) || (${q.trim()}))`;
     });
@@ -221,7 +243,7 @@ function goImplications(expr: string): string {
   let e = expr; let changed = true;
   while (changed) {
     changed = false;
-    e = e.replace(/implies\s*\(([^,()]*(?:\([^()]*\)[^()]*)*),\s*([^()]+)\)/g, (_, p, q) => {
+    e = e.replace(/implies\s*\(([^,()]*(?:\([^()]*\)[^()]*)*),\s*([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, p, q) => {
       changed = true;
       return `(!(${p.trim()}) || (${q.trim()}))`;
     });
@@ -374,7 +396,7 @@ function emitSpeck(speck: SpeckNode): string {
   const overrides = ((initNode?.assignments ?? []) as any[])
     .filter((a: any) => !/^\w*\.(empty|now)/.test(cleanExpr(a.expr)))
     .map((a: any) => {
-      const gname = camelCase(cleanName(a.name));
+      const gname = nameMap.get(cleanName(a.name)) || camelCase(cleanName(a.name));
       const expr = rewriteGoExpr(cleanExpr(a.expr), nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues);
       return `\tm.${gname} = ${expr}`;
     }).join('\n');
@@ -423,25 +445,32 @@ function emitSpeck(speck: SpeckNode): string {
 
   // unknown domain functions -> explicit stubs
   const unknown = new Set<string>();
-  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify']);
+  const unknownBool = new Set<string>();
+  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains']);
+  const scanCalls = (ex: string, boolCtx: boolean) => {
+    for (const m of ex.match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
+      const fn = m.replace(/\s*\($/, '');
+      if (!builtin.has(fn)) {
+        unknown.add(fn);
+        if (boolCtx) unknownBool.add(fn);
+      }
+    }
+  };
   for (const a of actions) {
     for (const st of a.statements) {
-      const ex = String((st as any).expr ?? '');
-      for (const m of ex.match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
-        const fn = m.replace(/\s*\($/, '');
-        if (!builtin.has(fn)) unknown.add(fn);
-      }
+      const isGuard = st.type === 'require' || st.type === 'precondition';
+      scanCalls(String((st as any).expr ?? ''), isGuard);
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
-        for (const m of String(f.value).match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
-          const fn = m.replace(/\s*\($/, '');
-          if (!builtin.has(fn)) unknown.add(fn);
-        }
+        scanCalls(String(f.value), false);
       }
     }
   }
+  for (const c of constraints) scanCalls(String((c as any).expr ?? ''), true);
   const stubs = unknown.size > 0
-    ? Array.from(unknown).sort().map(fn =>
-        `// ${fn} - domain function from the SpeckDL spec. Implement per spec semantics.\nfunc ${fn}(args ...any) any {\n\tpanic("speckl: domain function not implemented: ${fn}")\n}`).join('\n\n')
+    ? Array.from(unknown).sort().map(fn => {
+        const ret = unknownBool.has(fn) ? 'bool' : 'any';
+        return `// ${fn} - domain function from the SpeckDL spec. Implement per spec semantics.\nfunc ${fn}(args ...any) ${ret} {\n\tpanic("speckl: domain function not implemented: ${fn}")\n}`;
+      }).join('\n\n')
     : '';
 
   const eventLogField = events.length > 0 ? '\n\t// EventLog records every decision (spec events).\n\tEventLog []any' : '';
@@ -485,6 +514,7 @@ function emitSpeck(speck: SpeckNode): string {
     actionMethods,
     '',
     invariantChecks,
+    ...(stubs ? ['', stubs] : []),
   ].join('\n');
 }
 
