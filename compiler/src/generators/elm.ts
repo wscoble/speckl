@@ -3530,6 +3530,21 @@ body::-webkit-scrollbar-thumb:hover { background: #585b70; }
   min-width: 120px;
 }
 /* standalone create forms keep the 44px touch target */
+.gb-create {
+  display: flex;
+  gap: var(--gb-s2);
+  align-items: flex-end;
+  padding-top: var(--gb-s2);
+}
+.gb-create-fields {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gb-s1);
+  min-width: 0;
+}
+.gb-create-fields .gb-input { width: 100%; }
+.gb-create .gb-btn { flex: 0 0 auto; }
 .gb-create .gb-input { min-height: 44px; padding: 9px 12px; }
 .gb-input:focus { outline: 2px solid var(--gb-focus); outline-offset: 1px; }
 .gb-btn {
