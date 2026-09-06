@@ -333,6 +333,15 @@ function rewriteGoExpr(
     .replace(/\b===\b/g, '==')
     .replace(/([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, v, op) =>
       currentLetStringVars.has(v) ? `${v} ${op} ""` : m2)
+    // non-nullable record fields cannot compare against nil; compare with ""
+    .replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, o, f, op) => {
+      const rec = localRecords.get(o);
+      const ft = rec ? recordFieldTypes.get(rec)?.get(f) : undefined;
+      if (ft && !ft.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string') {
+        return `${o}.${goFieldRenames.get(f) || goName(f)} ${op} ""`;
+      }
+      return m2;
+    })
     .replace(/\bnull\b/g, 'nil')
     .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
     .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
@@ -572,7 +581,7 @@ function emitSpeck(speck: SpeckNode): string {
     // init: concrete empties for ALL state vars first (nil maps panic on
   // assignment), then apply explicit init assignments as overrides.
   const defaults = stateVars
-    .map(v => `\tm.${v.goName} = ${defaultGoValue(v.typeExpr)}`)
+    .map(v => `\tm.${v.goName} = ${defaultGoValue(v.typeExpr, speck.name, enumMap)}`)
     .join('\n');
   const overrides = ((initNode?.assignments ?? []) as any[])
     .filter((a: any) => !/^\w*\.(empty|now)/.test(cleanExpr(a.expr)))
@@ -878,7 +887,18 @@ function emitAction(
       const elem = fixRecordLiteral(rewriteGoExpr(cons[1].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords), elemType);
       return `\tm.${gname2} = append([]${elemType}{ ${elem} }, m.${gname2}...)`;
     }
-    const val = rewriteGoExpr(rawExpr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
+    let val = rewriteGoExpr(rawExpr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues);
+    // Collection .empty() in an action body: lower via the target's own type
+    if (/^(List|Map|Set)\.empty\(\)$/.test(val)) {
+      const vt2 = stateVarTypes.get(cleanName(target));
+      val = defaultGoValue(vt2, speckName, enumMap);
+    }
+    // A Date.now() stamp into a nullable-string state var is a timestamp string
+    const vt3 = stateVarTypes.get(cleanName(target));
+    if (vt3?.nullable && goType({ ...vt3, nullable: false }, speckName, enumMap) === 'string'
+        && /^(time\.Now\(\)\.Unix\(\)|nowString\(\))$/.test(val)) {
+      val = '&nowString()';
+    }
     return `\tm.${gname} = ${val}`;
   };
 
@@ -1274,8 +1294,14 @@ function snakeCase(s: string): string {
     .replace(/_+/g, '_').replace(/^_|_$/g, '');
 }
 
-function defaultGoValue(typeExpr: any): string {
+function defaultGoValue(typeExpr: any, speckName: string = '', enumMap: Map<string, string[]> = new Map()): string {
   if (!typeExpr) return 'nil';
+  if (typeExpr.nullable) return 'nil';
+  if (typeExpr.type === 'ident' && enumMap?.has(cleanName(typeExpr.name))) {
+    const vals = enumMap.get(cleanName(typeExpr.name))!;
+    if (vals.length > 0) return `${goName(speckName)}${goName(cleanName(typeExpr.name))}${goName(vals[0])}`;
+    return 'nil';
+  }
   if (typeExpr.type === 'primitive') {
     switch (typeExpr.name) {
       case 'Nat': case 'Int': case 'Date': return '0';
