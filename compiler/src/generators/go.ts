@@ -347,15 +347,6 @@ function rewriteGoExpr(
     .replace(/\b===\b/g, '==')
     .replace(/([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, v, op) =>
       currentLetStringVars.has(v) ? `${v} ${op} ""` : m2)
-    // non-nullable record fields cannot compare against nil; compare with ""
-    .replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, o, f, op) => {
-      const rec = localRecords.get(o);
-      const ft = rec ? recordFieldTypes.get(rec)?.get(f) : undefined;
-      if (ft && !ft.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string') {
-        return `${o}.${goFieldRenames.get(f) || goName(f)} ${op} ""`;
-      }
-      return m2;
-    })
     .replace(/\bnull\b/g, 'nil')
     .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
     .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
@@ -378,6 +369,30 @@ function rewriteGoExpr(
     const vals = values.split(',').map((v: string) => v.trim());
     return '(' + vals.map((v: string) => `${ident} == ${v}`).join(' || ') + ')';
   });
+
+  // nullable record fields compared with string literals deref the pointer
+  // (the enclosing implies/|| guards nil first; Go short-circuits)
+  g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(==|!=)\s*(\u0000\d+\u0000)/g, (m2, o, f, op, ph) => {
+      const rec = localRecords.get(o);
+      const ft = rec ? recordFieldTypes.get(rec)?.get(f) : undefined;
+      if (ft?.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string') {
+        return `*${o}.${goFieldRenames.get(f) || goName(f)} ${op} ${ph}`;
+      }
+      return m2;
+    });
+
+  // non-nullable record fields cannot compare against nil; compare with ""
+  g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, o, f, op) => {
+      const rec = localRecords.get(o);
+      const ft = rec ? recordFieldTypes.get(rec)?.get(f) : undefined;
+      if (ft && !ft.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string') {
+        return `${o}.${goFieldRenames.get(f) || goName(f)} ${op} ""`;
+      }
+      return m2;
+    })
+    .replace(/\bnull\b/g, 'nil')
+    .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
+    .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
 
   // implies -> !(p) || (q)
   let changed = true;
@@ -1089,6 +1104,7 @@ function emitAction(
           if (brM) {
             const vt = stateVarTypes.get(cleanName(brM[1]));
             if (vt?.type === 'map' && vt.valueType?.type === 'ident') letRecords.set(nm, cleanName(vt.valueType.name));
+            else if (vt?.type === 'list' && vt.elementType?.type === 'ident') letRecords.set(nm, cleanName(vt.elementType.name));
           }
           continue;
         }
@@ -1132,6 +1148,7 @@ function emitAction(
       if (bracketM) {
         const vt = stateVarTypes.get(bracketM[1]);
         if (vt?.type === 'map' && vt.valueType?.type === 'ident') letRecords.set(cleanName(s.name), cleanName(vt.valueType.name));
+        else if (vt?.type === 'list' && vt.elementType?.type === 'ident') letRecords.set(cleanName(s.name), cleanName(vt.elementType.name));
       } else {
         const litM = exprRaw.match(/^([A-Za-z_]\w*)\s*\{/);
         if (litM) letRecords.set(cleanName(s.name), cleanName(litM[1]));
