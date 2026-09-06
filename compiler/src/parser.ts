@@ -974,11 +974,19 @@ function parseInitBlock(inner: string): InitNode {
 
   const assignStrs = inner.split(/;|\n/).map(s => s.trim()).filter(Boolean);
 
-  for (const aStr of assignStrs) {
-    const match = aStr.match(/^(\w+)\s*:=\s*(.+)$/);
-    if (match) {
-      assignments.push({ name: match[1], expr: match[2].trim() });
+  for (let idx = 0; idx < assignStrs.length; idx++) {
+    const match = assignStrs[idx].match(/^(\w+)\s*:=\s*(.+)$/);
+    if (!match) continue;
+    let expr = match[2].trim();
+    // Multi-line expressions: record/map literals span several lines in the
+    // init block; join until braces/parens/brackets balance.
+    while (!isExpressionComplete(expr) && idx + 1 < assignStrs.length) {
+      idx++;
+      expr += ' ' + assignStrs[idx];
     }
+    // A trailing comma is the declaration separator, not part of the value.
+    expr = expr.replace(/,\s*$/, '').trim();
+    assignments.push({ name: match[1], expr });
   }
 
   return { type: 'init', assignments };
@@ -987,6 +995,9 @@ function parseInitBlock(inner: string): InitNode {
 function parseActionHeader(line: string): ActionNode | null {
   // Greedy param capture: params may contain parenthesized types like
   // List(BuildStep), so `[^)]*` (first-paren truncation) is wrong.
+  // Strip a `returns (...)` clause before param parsing, otherwise the
+  // greedy paren capture swallows it into the parameter list.
+  line = line.replace(/\s+returns\s*\([^)]*\)/g, '');
   const match = line.match(/^action\s+(\w+)\s*(?:\((.*)\))?\s*\{/);
   if (!match) return null;
 
@@ -1428,20 +1439,23 @@ function exprIncomplete(text: string): boolean {
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-  // Init blocks separate fields with commas or newlines/semicolons.
-  // Strip trailing commas and join with semicolons.
-  const cleanedLines = innerLines.map(l => l.replace(/,+\s*$/, ''));
-  const inner = cleanedLines.reduce((acc, line, i) => {
-    if (i === 0) return line;
-    const prevLine = cleanedLines[i - 1];
-    const isNewVar = /^\w+\s*:/.test(line);
-    const prevIsContinuation = /[{(]\s*$/.test(prevLine);
-    if (isNewVar && !prevIsContinuation) {
-      return acc + '; ' + line;
+  // Group lines into statements: a `name := ...` line starts a new
+  // assignment; anything else (record/map literal field lines) continues
+  // the current one. Only declaration lines have their trailing comma
+  // stripped - field commas inside a multi-line literal are separators and
+  // must survive.
+  const stmts: string[] = [];
+  let cur: string | null = null;
+  for (const raw of innerLines) {
+    if (/^\w+\s*:=/.test(raw) || cur === null) {
+      if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
+      cur = raw;
+    } else {
+      cur += ' ' + raw;
     }
-    return acc + ' ' + line;
-  }, '');
-  return parseInitBlock(inner);
+  }
+  if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
+  return parseInitBlock(stmts.join('\n'));
 }
 
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
