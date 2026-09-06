@@ -897,7 +897,7 @@ function emitAction(
     const vt3 = stateVarTypes.get(cleanName(target));
     if (vt3?.nullable && goType({ ...vt3, nullable: false }, speckName, enumMap) === 'string'
         && /^(time\.Now\(\)\.Unix\(\)|nowString\(\))$/.test(val)) {
-      val = '&nowString()';
+      return `\t{ s := nowString(); m.${gname} = &s }`;
     }
     return `\tm.${gname} = ${val}`;
   };
