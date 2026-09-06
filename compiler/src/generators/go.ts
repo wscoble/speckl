@@ -87,7 +87,7 @@ func countWhere[V any](coll []V, pred func(V) bool) int {
 }
 func nowString() string { return strconv.FormatInt(time.Now().Unix(), 10) }
 func strPtr(s string) *string { return &s }
-func randomInt(lo, hi int64) int64 { return lo + int64(mathRand.Intn(int(hi-lo+1))) }
+func randomInt(lo, hi int64) int64 { return lo + int64(rand.Intn(int(hi-lo+1))) }
 func intPtr(v int64) *int64 { return &v }
 func cloneSlice[T any](xs []T) []T {
 	out := make([]T, len(xs))
