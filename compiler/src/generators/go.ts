@@ -431,9 +431,10 @@ function rewriteGoExpr(
         const pm = part.match(/^\s*([A-Za-z_]\w*)\s*:\s*([\s\S]*)$/);
         if (!pm) return part;
         const ft = ftmap.get(pm[1].toLowerCase());
+        const v = pm[2].trim();
         if (ft?.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string'
-            && pm[2].trim() !== 'nil') {
-          return `${goName(pm[1])}: strPtr(${pm[2].trim()})`;
+            && v !== 'nil' && !(v.match(/^[A-Za-z_]\w*$/) && currentNullableVars.has(v))) {
+          return `${goName(pm[1])}: strPtr(${v})`;
         }
         return part;
       });
@@ -486,6 +487,7 @@ let stateVarTypes: Map<string, any> = new Map();
 let recordTypes: Map<string, string[]> = new Map();
 let currentFnRetTypes: Map<string, string> = new Map();
 let currentLetStringVars: Set<string> = new Set();
+let currentNullableVars: Set<string> = new Set();
 function stateVarsOf(name: string): string {
   const t = stateVarTypes.get(name);
   if (t && t.type === 'list') return goType(t.elementType, 'Spot', new Map());
@@ -1033,6 +1035,7 @@ function emitAction(
           const callM = letM[2].trim().match(/^([a-z_]\w*)\s*\(/);
           if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(nm);
           const val = rewriteGoExpr(letM[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+          if (/^[A-Za-z_]\w*$/.test(val) && currentNullableVars.has(val)) currentNullableVars.add(nm);
           lines.push(`\t${camelCase(nm)} := ${val}`);
           const litM = letM[2].trim().match(/^([A-Za-z_]\w*)\s*\{/);
           if (litM) letRecords.set(nm, cleanName(litM[1]));
@@ -1063,6 +1066,7 @@ function emitAction(
   const letRecords = new Map<string, string>();
   const currentLetStringVars = new Set<string>();
   currentLetStringVars.clear();
+  currentNullableVars = new Set(nullableParams);
   const bodyLines: string[] = [];
   for (const s of action.statements as any[]) {
     if (s.type === 'require' || s.type === 'precondition') {
@@ -1073,6 +1077,7 @@ function emitAction(
       const callM = String(s.expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
       if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(cleanName(s.name));
       const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+      if (/^[A-Za-z_]\w*$/.test(val) && currentNullableVars.has(val)) currentNullableVars.add(cleanName(s.name));
       const litInt = val.match(/^\d+$/);
       bodyLines.push(`\t${camelCase(s.name)} := ${litInt ? `int64(${val})` : val}`);
       // track the record type of the let-bound local (for nullable field assigns)
