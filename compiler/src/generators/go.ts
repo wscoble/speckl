@@ -331,8 +331,8 @@ function rewriteGoExpr(
 
   // speckdl patterns -> go
   g = g
-    .replace(/([\w."]+)\s+starts with\s+("[^"]*"|[\w.]+)/g, 'strings.HasPrefix($1, $2)')
-    .replace(/([\w."]+)\s+ends with\s+("[^"]*"|[\w.]+)/g, 'strings.HasSuffix($1, $2)')
+    .replace(/([\w.\u0000]+)\s+starts with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasPrefix($1, $2)')
+    .replace(/([\w.\u0000]+)\s+ends with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasSuffix($1, $2)')
     .replace(/(\w+)\.append\(([^()]*)\)/g, 'append($1, $2)')
     .replace(/(\w+)\s+notIn\s+(\w+)\.keys/g, '!mapHas($2, $1)')
     .replace(/(\w+)\s+in\s+(\w+)\.keys/g, 'mapHas($2, $1)')
