@@ -1242,7 +1242,7 @@ function splitAssignStmts(text: string): string[] {
     else if (ch === ':' && depth === 0 && text[i + 1] === '=') {
       let j = i - 1;
       while (j >= 0 && text[j] === ' ') j--;
-      while (j >= 0 && /[\w\].]/.test(text[j])) j--;
+      while (j >= 0 && /[\w\]\[.]/.test(text[j])) j--;
       const before = text.slice(0, j + 1).trimEnd();
       if (before.endsWith('let')) j = before.length - 3;
       starts.push(j + 1);
