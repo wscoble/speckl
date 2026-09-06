@@ -919,6 +919,7 @@ function emitSpeck(speck: SpeckNode): string {
       const depth = loops.length;
       const localNames2 = new Set<string>(loops.map(l => l.varName));
       const bodyLines2: string[] = [];
+      const usedLoopVars = new Set<string>();
       let unlowerable = false;
       for (const st of rest.split('\n').map(l2 => l2.trim()).filter(Boolean)) {
         const lm = st.match(/^let\s+(\w+)\s*:=\s*([\s\S]+)$/);
@@ -939,7 +940,15 @@ function emitSpeck(speck: SpeckNode): string {
           bodyLines2.push(`${'\t'.repeat(depth + 1)}}`);
         }
       }
-      lines.push(...bodyLines2);
+      for (const line of bodyLines2) {
+        let lineOut = line;
+        for (const l of loops) {
+          if (l.mode !== 'keys' && !usedLoopVars.has(l.varName)) {
+            lineOut = lineOut.replace(`for _, ${varRef(l.varName)} := range`, 'for range');
+          }
+        }
+        lines.push(lineOut);
+      }
       for (let d = loops.length - 1; d >= 0; d--) lines.push(`${'\t'.repeat(d + 1)}}`);
       if (unlowerable) {
         body = `\t// TODO: manual review - invariant could not be mechanically lowered:\n\t// ${cExpr.replace(/\s+/g, ' ').replace(/\*\//g, '* /')}\n\treturn true`;
