@@ -287,10 +287,11 @@ function rewriteGoExpr(
         if (vt?.type === 'ident') ft = recordFieldTypes.get(cleanName(vt.name))?.get(dm[2]);
       }
       const base = goType({ ...ft, nullable: false }, '', new Map());
-      // anyLen handles plain strings and *string (nil-safe) alike
-      if (ft && base === 'string') return `anyLen(${arg})`;
+      // anyLen handles plain strings and *string (nil-safe) alike; int64
+      // because Nat values compare against it
+      if (ft && base === 'string') return `int64(anyLen(${arg}))`;
     }
-    return `len(${arg})`;
+    return `int64(len(${arg}))`;
   };
   const shouldPrefix = (ident: string) => nameMap.has(ident) && !localNames.has(ident);
   const goify = (ident: string) => nameMap.has(ident) && !localNames.has(ident) ? `m.${nameMap.get(ident)}` : ident;
@@ -331,6 +332,8 @@ function rewriteGoExpr(
 
   // speckdl patterns -> go
   g = g
+    .replace(/([\w.\u0000]+)\.startsWith\(([^()]*)\)/g, 'strings.HasPrefix($1, $2)')
+    .replace(/([\w.\u0000]+)\.endsWith\(([^()]*)\)/g, 'strings.HasSuffix($1, $2)')
     .replace(/([\w.\u0000]+)\s+starts with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasPrefix($1, $2)')
     .replace(/([\w.\u0000]+)\s+ends with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasSuffix($1, $2)')
     .replace(/(\w+)\.append\(([^()]*)\)/g, 'append($1, $2)')
@@ -950,7 +953,18 @@ function emitAction(
       let v = val;
       const rec = letRecords.get(cleanName(dotted[1]));
       const ftype = rec ? recordFieldTypes.get(rec)?.get(dotted[2]) : undefined;
-      if (ftype?.nullable && /^([A-Za-z_]\w*)$/.test(val) && val !== 'nil' && !nullableParams.has(val)) v = `&${val}`;
+      if (ftype?.nullable && val !== 'nil') {
+        // assigning a non-pointer into a pointer field: take its address
+        if (/^([A-Za-z_]\w*)$/.test(val)) {
+          if (!currentNullableVars.has(val)) v = `&${val}`;
+        } else if (/^\u0000\d+\u0000$/.test(val)) {
+          return `\t{ s := ${val}; ${camelCase(cleanName(dotted[1]))}.${gfield} = &s }`;
+        } else if (!/[()]$/.test(val)) {
+          v = `&${val}`;
+        } else {
+          return `\t{ s := ${val}; ${camelCase(cleanName(dotted[1]))}.${gfield} = &s }`;
+        }
+      }
       return `\t${camelCase(cleanName(dotted[1]))}.${gfield} = ${v}`;
     }
     const gname = nameMap.get(cleanName(target)) || camelCase(cleanName(target));
@@ -989,11 +1003,21 @@ function emitAction(
     const vtMap = stateVarTypes.get(cleanName(target));
     const mapLit = lowerMapLiteral(val, vtMap);
     if (mapLit) val = mapLit;
-    // A Date.now() stamp into a nullable-string state var is a timestamp string
+    // Nullable (pointer) state var assigned a plain string value: the value
+    // must become a pointer (temp var for literals/calls, & for variables)
     const vt3 = stateVarTypes.get(cleanName(target));
-    if (vt3?.nullable && goType({ ...vt3, nullable: false }, speckName, enumMap) === 'string'
-        && /^(time\.Now\(\)\.Unix\(\)|nowString\(\))$/.test(val)) {
-      return `\t{ s := nowString(); m.${gname} = &s }`;
+    if (vt3?.nullable && goType({ ...vt3, nullable: false }, speckName, enumMap) === 'string') {
+      if (val === 'nil') return `\tm.${gname} = nil`;
+      if (/^(time\.Now\(\)\.Unix\(\)|nowString\(\))$/.test(val)) {
+        return `\t{ s := nowString(); m.${gname} = &s }`;
+      }
+      if (/^([A-Za-z_]\w*)$/.test(val)) {
+        if (!currentNullableVars.has(val)) return `\tm.${gname} = &${val}`;
+      } else if (/^\u0000\d+\u0000$/.test(val) || /[()]$/.test(val)) {
+        return `\t{ s := ${val}; m.${gname} = &s }`;
+      } else {
+        return `\tm.${gname} = &${val}`;
+      }
     }
     // Nullable (pointer) state var assigned a record literal: take its address
     if (vt3?.nullable && /^([A-Za-z_]\w*)\s*\{/.test(val)) {
