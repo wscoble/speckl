@@ -863,7 +863,7 @@ function emitSpeck(speck: SpeckNode): string {
       constSeen.add(id);
     }
   }
-  currentFnRetTypes = new Map(Array.from(unknown).map(fn => [fn, fnKind(fn)]));
+  for (const fn of Array.from(unknown)) if (!currentFnRetTypes.has(fn)) currentFnRetTypes.set(fn, fnKind(fn));
   const stubs = (unknown.size > 0
     ? Array.from(unknown).sort().map(fn => {
         const ret = currentFnRetTypes.get(fn) || fnKind(fn);
