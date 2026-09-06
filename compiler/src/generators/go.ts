@@ -816,7 +816,7 @@ function emitSpeck(speck: SpeckNode): string {
     }
     for (const { text } of ctxExprs) {
       if (!varRe.test(text)) continue;
-      if (new RegExp(`\\w+\\s*:\\s*${escapeRegex(v)}\\b`).test(text) || new RegExp(`\\w+\\.\\w+\\s*:=\\s*${escapeRegex(v)}\\b`).test(text)) strFns.add(fn);
+      if (new RegExp(`\\w+\\s*:\\s*${escapeRegex(v)}\\b(?!\\.)`).test(text) || new RegExp(`\\w+\\.\\w+\\s*:=\\s*${escapeRegex(v)}\\b`).test(text)) strFns.add(fn);
       // map-key usage implies a string-typed domain function
       if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
     }
@@ -831,13 +831,32 @@ function emitSpeck(speck: SpeckNode): string {
     }
   }
   const fnKind = (fn: string): string => numFns.has(fn) ? 'float64' : boolFns.has(fn) ? 'bool' : strFns.has(fn) ? 'string' : 'any';
+  // domain constants: bare identifiers compared against literals (e.g.
+  // flushIntervalSeconds == 15) - declare them as package vars
+  const domainConsts: string[] = [];
+  const constSeen = new Set<string>();
+  const knownIdents = new Set([...nameMap.keys(), ...Array.from(enumValueConsts.keys())]);
+  for (const { text } of ctxExprs) {
+    for (const m of text.matchAll(/\b([a-z_]\w*)\b\s*(==|!=|>=|<=|>|<)\s*(-?\d+(?:\.\d+)?|true|false|"[^"]*")/g)) {
+      const id = m[1];
+      if (constSeen.has(id) || knownIdents.has(id) || builtin.has(id)) continue;
+      const lit = m[3];
+      let t = 'int64';
+      if (lit === 'true' || lit === 'false') t = 'bool';
+      else if (lit.startsWith('"')) t = 'string';
+      else if (lit.includes('.')) t = 'float64';
+      const val = t === 'int64' && !lit.includes('.') ? lit : lit;
+      domainConsts.push(`// ${id} - domain constant from the SpeckDL spec.\nvar ${camelCase(id)} ${t} = ${val}`);
+      constSeen.add(id);
+    }
+  }
   currentFnRetTypes = new Map(Array.from(unknown).map(fn => [fn, fnKind(fn)]));
-  const stubs = unknown.size > 0
+  const stubs = (unknown.size > 0
     ? Array.from(unknown).sort().map(fn => {
         const ret = fnKind(fn);
         return `// ${fn} - domain function from the SpeckDL spec. Implement per spec semantics.\nfunc ${fn}(args ...any) ${ret} {\n\tpanic("speckl: domain function not implemented: ${fn}")\n}`;
       }).join('\n\n')
-    : '';
+    : '') + (domainConsts.length > 0 ? '\n\n' + domainConsts.join('\n\n') : '');
 
   const actionMethods = actions
     .map(a => emitAction(a, nameMap, mapVarOrigNames, goNameS, stateEnumName, knownStateValues, enumMap))
@@ -1245,8 +1264,9 @@ function emitAction(
     const lines = emitStmts(bodyText2.trim());
     if (!saved) localNames.delete(v);
     const usesVar = lines.some(l => new RegExp(`\\b${escapeRegex(v)}\\b`).test(l));
-    const rangeVar = usesVar ? v : '_';
-    return `\tfor _, ${rangeVar} := range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`;
+    return usesVar
+      ? `\tfor _, ${v} := range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`
+      : `\tfor range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`;
   };
 
   // emit statements in source order so lets declared before guards/assigns
