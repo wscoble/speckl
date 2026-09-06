@@ -87,6 +87,8 @@ func countWhere[V any](coll []V, pred func(V) bool) int {
 }
 func nowString() string { return strconv.FormatInt(time.Now().Unix(), 10) }
 func strPtr(s string) *string { return &s }
+func randomInt(lo, hi int64) int64 { return lo + int64(mathRand.Intn(int(hi-lo+1))) }
+func intPtr(v int64) *int64 { return &v }
 func cloneSlice[T any](xs []T) []T {
 	out := make([]T, len(xs))
 	copy(out, xs)
@@ -394,7 +396,8 @@ function rewriteGoExpr(
       return m2;
     })
     .replace(/\bnull\b/g, 'nil')
-    .replace(/([\w.]+)\.length\(\)/g, 'int64(len($1))')
+    .replace(/\bInt\.random\(([^()]*)\)/g, 'randomInt($1)')
+    .replace(/(\w+)\.toString\(\)/g, 'strconv.FormatInt($1, 10)')
     .replace(/([\w.]+)\.copy\(\)/g, 'cloneSlice($1)')
     .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
     .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
