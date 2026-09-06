@@ -671,7 +671,8 @@ function emitSpeck(speck: SpeckNode): string {
     .join('\n\n');
 
   const invariantChecks = constraints.map((c, i) => {
-    const cExpr = c.expr.trim();
+    // constraints whose body is comments only are vacuously true
+    const cExpr = c.expr.split('\n').map(l => l.replace(/\/\/.*$/, '').trim()).filter(Boolean).join('\n').trim();
     const fname = `Check${goName(c.name || 'Invariant' + i)}`;
     // peel forall prefixes (supports nested forall and .keys/.values suffixes)
     const forallRe = /^forall\s+(\w+)\s+in\s+(\w+)(\.values(?:\(\))?|\.keys(?:\(\))?)?:\s*([\s\S]+)$/;
@@ -743,7 +744,11 @@ function emitSpeck(speck: SpeckNode): string {
         body = lines.join('\n');
       }
     } else {
-      body = `\treturn ${goImplications(rewriteGoExpr(cExpr, nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues))}`;
+      if (!cExpr) {
+        body = '\treturn true';
+      } else {
+        body = `\treturn ${goImplications(rewriteGoExpr(cExpr, nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues))}`;
+      }
     }
     return `// Invariant ${fname}: ${cExpr.replace(/\s+/g, ' ').slice(0, 90)}\nfunc (m *${structName}) ${fname}() bool {\n${body}\n}`;
   }).join('\n\n');
