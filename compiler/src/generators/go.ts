@@ -1177,6 +1177,39 @@ function emitAction(
         }
         continue;
       }
+      if (st.startsWith('emit ')) {
+        const em = st.match(/^emit\s+(\w+)\s*\{([\s\S]*)\}\s*$/);
+        if (em) {
+          const parts: string[] = [];
+          let d = 0, inStr = false, start = 0;
+          const fstr = em[2];
+          for (let k = 0; k < fstr.length; k++) {
+            const ch = fstr[k];
+            if (ch === '"') inStr = !inStr;
+            if (inStr) continue;
+            if (ch === '(' || ch === '[' || ch === '{') d++;
+            else if (ch === ')' || ch === ']' || ch === '}') d--;
+            else if (ch === ',' && d === 0) { parts.push(fstr.slice(start, k)); start = k + 1; }
+          }
+          if (fstr.trim()) parts.push(fstr.slice(start));
+          const fields = parts.map(p => {
+            const ci = p.indexOf(':');
+            if (ci < 0) return null;
+            const name = p.slice(0, ci).trim();
+            const value = rewriteGoExpr(p.slice(ci + 1).trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+            return `${goName(name)}: ${value}`;
+          }).filter(Boolean).join(', ');
+          lines.push(`\tm.EventLog = append(m.EventLog, ${goName(em[1])}{ ${fields} })`);
+          continue;
+        }
+      }
+      const retM = st.match(/^return\s+([\s\S]+)$/);
+      if (retM) {
+        lines.push(`\tret = ${rewriteGoExpr(retM[1], nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`);
+        lines.push('\treturn');
+        continue;
+      }
+      if (st.trim() === 'return') { lines.push('\treturn'); continue; }
       const am = st.match(/^([\s\S]+?)\s*:=\s*([\s\S]*)$/);
       if (am) { lines.push(emitAssign({ type: 'assign', target: am[1], expr: am[2] } as any)); continue; }
       lines.push(`\t_ = ${st}`);
@@ -1193,7 +1226,8 @@ function emitAction(
     const header = raw.slice(4, open).trim();   // "v in coll"
     const hm = header.match(/^(\w+)\s+in\s+([\s\S]+)$/);
     if (!hm) return `\t// TODO: for-loop not lowered: ${raw.replace(/\n/g, ' ')}`;
-    const v = hm[1];
+    let v = hm[1];
+    if (v === 'm' || nameMap.has(v)) v = `${v}Iter`;   // receiver/state-name collision
     const collGo = rewriteGoExpr(hm[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
     const bodyText2 = raw.slice(open + 1, raw.lastIndexOf('}'));
     const saved = localNames.has(v);
