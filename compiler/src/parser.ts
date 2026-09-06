@@ -998,6 +998,8 @@ function parseActionHeader(line: string): ActionNode | null {
   // Strip a `returns (...)` clause before param parsing, otherwise the
   // greedy paren capture swallows it into the parameter list.
   line = line.replace(/\s+returns\s*\([^)]*\)/g, '');
+  // Strip a `: Type` return annotation (`action Foo(x: Nat): Bool {`).
+  line = line.replace(/\)\s*:\s*[A-Za-z][\w<>\[\]| ]*\s*\{\s*$/, ') {');
   const match = line.match(/^action\s+(\w+)\s*(?:\((.*)\))?\s*\{/);
   if (!match) return null;
 
@@ -1483,6 +1485,22 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     let i = 0;
     while (i < bodyEntries.length) {
       const cur = bodyEntries[i];
+      if (cur && /^for\b[^{]*:\s*$/.test(cur.text)) {
+        // colon-form for loop: `for v in coll:` - brace it; go.ts lowers the
+        // range and body
+        const forIndent = cur.indent;
+        prePass.push(cur.text.replace(/:\s*$/, ' {'));
+        i++;
+        while (i < bodyEntries.length) {
+          const l2 = bodyEntries[i];
+          if (l2 === null) { prePass.push(null); i++; continue; }
+          if (l2.indent <= forIndent) break;
+          prePass.push(l2.text);
+          i++;
+        }
+        prePass.push('}');
+        continue;
+      }
       if (!cur || !/^if\b[^{]*:\s*$/.test(cur.text) || cur.text.includes('{')) {
         prePass.push(cur ? cur.text : null);
         i++;
@@ -1594,6 +1612,26 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         }
       }
       statements.push({ type: 'emit', event: eventName, fields });
+      continue;
+    }
+    // for v in coll { ... } - range loop captured as a forblock statement
+    if (stmt.startsWith('for ')) {
+      let braceDepth = 0;
+      let j = i;
+      const blockLines2: string[] = [];
+      while (j < bodyLines.length) {
+        const line = bodyLines[j];
+        if (line === null) { j++; continue; }
+        blockLines2.push(line);
+        for (const ch of line) {
+          if (ch === '{') braceDepth++;
+          else if (ch === '}') braceDepth--;
+        }
+        j++;
+        if (braceDepth === 0) break;
+      }
+      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
+      i = j - 1;
       continue;
     }
     // if condition { ... } else if condition { ... } else { ... }
