@@ -85,6 +85,7 @@ func countWhere[V any](coll []V, pred func(V) bool) int {
 	return n
 }
 func nowString() string { return strconv.FormatInt(time.Now().Unix(), 10) }
+func strPtr(s string) *string { return &s }
 func mapValues[K comparable, V any](m map[K]V) []V {
 	out := make([]V, 0, len(m))
 	for _, v := range m {
@@ -229,6 +230,10 @@ function rewriteGoExpr(
     expr = `${em[1] ? '!' : ''}${helper}(${em[3]}, func(${em[2]} ${rec}) bool { return ${em[4]} })`;
   }
   let g = expr;
+  // Protect string literals: the chain below rewrites bare words (`not`,
+  // enum values, `null`) and must never touch string content.
+  const stringLits: string[] = [];
+  g = g.replace(/"(?:[^"\\]|\\.)*"/g, m2 => { stringLits.push(m2); return `\u0000${stringLits.length - 1}\u0000`; });
   // count(coll, v => pred) -> countWhere(<coll>, func(v T) bool { return pred })
   // Balanced-paren scan: the predicate may contain nested calls, so the
   // old first-')' regex truncated it (syntax errors in the emitted Go).
@@ -275,9 +280,15 @@ function rewriteGoExpr(
     const dm = arg.trim().match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
     if (dm) {
       const rec = localRecords.get(dm[1]);
-      const ft = rec ? recordFieldTypes.get(rec)?.get(dm[2]) : undefined;
+      let ft = rec ? recordFieldTypes.get(rec)?.get(dm[2]) : undefined;
+      // the base object may be a state variable holding a record
+      if (!ft) {
+        const vt = stateVarTypes.get(dm[1]);
+        if (vt?.type === 'ident') ft = recordFieldTypes.get(cleanName(vt.name))?.get(dm[2]);
+      }
       const base = goType({ ...ft, nullable: false }, '', new Map());
-      if (ft?.nullable && base === 'string') return `anyLen(${arg})`;
+      // anyLen handles plain strings and *string (nil-safe) alike
+      if (ft && base === 'string') return `anyLen(${arg})`;
     }
     return `len(${arg})`;
   };
@@ -377,7 +388,7 @@ function rewriteGoExpr(
   g = g.replace(/\bnot\s+([a-zA-Z_]\w*)/g, '!$1');
   // forall cannot be an expression in Go; lower at the invariant-statement level.
   // Any residual forall is surfaced as a visible TODO, never silently dropped.
-  if (/forall/.test(g)) g = `/* UNLOWERED forall - manual attention required */ (${g})`;
+  if (/forall/.test(g)) g = `/* UNLOWERED forall - manual attention required: ${g.replace(/\*\//g, '* /')} */ true`;
   // nullable string comparisons: a.x > b.y -> strCmp(a.x, b.y) > 0
   g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(>=|<=|>|<)\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g, (m2, o1, f1, op, o2, f2) => {
     const r1 = localRecords.get(o1);
@@ -397,9 +408,39 @@ function rewriteGoExpr(
   for (const [typeName, fields] of recordTypes) {
     const fieldKeys = fields.map(f => escapeRegex(f)).join('|');
     const re = new RegExp(`\\b${typeName}\\s*\\{([^{}]*)\\}`, 'g');
-    g = g.replace(re, (m2, inner) => `${typeName}{ ` +
-      inner.replace(new RegExp(`\\b(${fieldKeys})\\s*:`, 'g'), (_m: string, f: string) => `${goName(f)}:`) + ' }');
+    g = g.replace(re, (m2, inner) => {
+      // case field names, then wrap nullable-string field values with strPtr
+      const cased = inner.replace(new RegExp(`\\b(${fieldKeys})\\s*:`, 'g'), (_m: string, f: string) => `${goName(f)}:`);
+      const ftmapRaw = recordFieldTypes.get(cleanName(typeName));
+      if (!ftmapRaw) return `${typeName}{ ${cased} }`;
+      // case-insensitive field-type lookup (the pass just cased field names)
+      const ftmap = new Map(Array.from(ftmapRaw).map(([k, v]) => [k.toLowerCase(), v]));
+      // split at top-level commas (honoring strings)
+      const parts: string[] = [];
+      let d = 0, inStr = false, start = 0;
+      for (let k = 0; k < cased.length; k++) {
+        const ch = cased[k];
+        if (ch === '"') inStr = !inStr;
+        if (inStr) continue;
+        if (ch === '(' || ch === '[' || ch === '{') d++;
+        else if (ch === ')' || ch === ']' || ch === '}') d--;
+        else if (ch === ',' && d === 0) { parts.push(cased.slice(start, k)); start = k + 1; }
+      }
+      parts.push(cased.slice(start));
+      const wrapped = parts.map(part => {
+        const pm = part.match(/^\s*([A-Za-z_]\w*)\s*:\s*([\s\S]*)$/);
+        if (!pm) return part;
+        const ft = ftmap.get(pm[1].toLowerCase());
+        if (ft?.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string'
+            && pm[2].trim() !== 'nil') {
+          return `${goName(pm[1])}: strPtr(${pm[2].trim()})`;
+        }
+        return part;
+      });
+      return `${typeName}{ ${wrapped.join(', ')} }`;
+    });
   }
+  g = g.replace(/\u0000(\d+)\u0000/g, (_m, n) => stringLits[+n]);
   return g.trim();
 }
 
@@ -450,6 +491,33 @@ function stateVarsOf(name: string): string {
   if (t && t.type === 'list') return goType(t.elementType, 'Spot', new Map());
   return 'any';
 }
+// Map { "k" -> v, ... } -> map[K]V{ "k": v, ... } for a map-typed target.
+function lowerMapLiteral(val: string, vt: any): string | null {
+  const m = val.match(/^Map\s*\{([\s\S]*)\}$/);
+  if (!m || vt?.type !== 'map') return null;
+  const keyT = goType(vt.keyType, '', currentEnumMap);
+  const valT = goType(vt.valueType, '', currentEnumMap);
+  // split pairs at top-level commas
+  const pairs: string[] = [];
+  let d = 0, inStr = false, start = 0;
+  const inner = m[1];
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (ch === '(' || ch === '[' || ch === '{') d++;
+    else if (ch === ')' || ch === ']' || ch === '}') d--;
+    else if (ch === ',' && d === 0) { pairs.push(inner.slice(start, i)); start = i + 1; }
+  }
+  pairs.push(inner.slice(start));
+  const entries = pairs.map(p => {
+    const am = p.split('->');
+    if (am.length !== 2) return null;
+    return `${am[0].trim()}: ${am[1].trim()}`;
+  }).filter(Boolean);
+  return `map[${keyT}]${valT}{ ${entries.join(', ')} }`;
+}
+
 function fixRecordLiteral(expr: string, elemType: string): string {
   // uppercase record literal fields: CardEvent { cardId: x } -> CardEvent{ CardId: x }
   const m = expr.match(/^(\w+)\s*\{([\s\S]*)\}$/);
@@ -548,7 +616,12 @@ function emitSpeck(speck: SpeckNode): string {
   // enum defs
   const enumDefs: string[] = [];
   const seenEnumTypes = new Map<string, string[]>();
-  if (knownStateValues.length > 0) seenEnumTypes.set(stateEnumName, knownStateValues);
+  // Seed the state-enum name only when the first state variable's type is
+  // actually one of the interface enums. Specs whose first state var is a
+  // record (e.g. LlmRouting) would otherwise hijack every enum's constants
+  // under the wrong type name.
+  const firstVarIsEnum = stateVarType?.type === 'ident' && enumMap.has(cleanName(stateVarType.name));
+  if (knownStateValues.length > 0 && firstVarIsEnum) seenEnumTypes.set(stateEnumName, knownStateValues);
   for (const [k, v] of enumMap) seenEnumTypes.set(`${goNameS}${goName(k)}`, v);
   for (const [typeName, values] of seenEnumTypes) {
     enumDefs.push(`type ${typeName} string\n`);
@@ -587,7 +660,9 @@ function emitSpeck(speck: SpeckNode): string {
     .filter((a: any) => !/^\w*\.(empty|now)/.test(cleanExpr(a.expr)))
     .map((a: any) => {
       const gname = nameMap.get(cleanName(a.name)) || camelCase(cleanName(a.name));
-      const expr = rewriteGoExpr(cleanExpr(a.expr), nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues);
+      let expr = rewriteGoExpr(cleanExpr(a.expr), nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues);
+      const ml = lowerMapLiteral(expr, stateVarTypes.get(cleanName(a.name)));
+      if (ml) expr = ml;
       return `\tm.${gname} = ${expr}`;
     }).join('\n');
   const initBody = overrides ? defaults + '\n' + overrides : defaults;
@@ -883,6 +958,16 @@ function emitAction(
       return `\t${camelCase(cleanName(target))} = ${val2}`;
     }
     const rawExpr = String(s.expr);
+    // SpeckDL append form: list :: elem  ->  list = append(list, elem)
+    // (some specs write the list on the left of ::)
+    const app = rawExpr.match(/^(\w+)\s*::\s*([\s\S]+)$/);
+    if (app && stateVarTypes.get(cleanName(app[1]))?.type === 'list') {
+      const listVar = app[1];
+      const gname2 = nameMap.get(cleanName(listVar)) || camelCase(cleanName(listVar));
+      const elemType = (stateVarsOf(listVar) || '').replace(/^\[\]/, '');
+      const elem = fixRecordLiteral(rewriteGoExpr(app[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords), elemType);
+      return `\tm.${gname2} = append(m.${gname2}, ${elem})`;
+    }
     // SpeckDL cons: ELEM :: list  ->  list = append([]Elem{elem}, list)
     const cons = rawExpr.match(/^(.+)\s*::\s*(\w+)$/s);
     if (cons) {
@@ -898,11 +983,19 @@ function emitAction(
       const vt2 = stateVarTypes.get(cleanName(target));
       val = defaultGoValue(vt2, speckName, enumMap);
     }
+    // Map { "k" -> v, ... } literal: lower via the target's key/value types
+    const vtMap = stateVarTypes.get(cleanName(target));
+    const mapLit = lowerMapLiteral(val, vtMap);
+    if (mapLit) val = mapLit;
     // A Date.now() stamp into a nullable-string state var is a timestamp string
     const vt3 = stateVarTypes.get(cleanName(target));
     if (vt3?.nullable && goType({ ...vt3, nullable: false }, speckName, enumMap) === 'string'
         && /^(time\.Now\(\)\.Unix\(\)|nowString\(\))$/.test(val)) {
       return `\t{ s := nowString(); m.${gname} = &s }`;
+    }
+    // Nullable (pointer) state var assigned a record literal: take its address
+    if (vt3?.nullable && /^([A-Za-z_]\w*)\s*\{/.test(val)) {
+      return `\tm.${gname} = &${val}`;
     }
     return `\tm.${gname} = ${val}`;
   };
@@ -1315,6 +1408,10 @@ function defaultGoValue(typeExpr: any, speckName: string = '', enumMap: Map<stri
       case 'String': return '""';
       default: return 'nil';
     }
+  }
+  if (typeExpr.type === 'ident') {
+    const gn = goName(cleanName(typeExpr.name));
+    if (recordTypes.has(gn)) return `${gn}{}`;
   }
   if (typeExpr.type === 'list') return `[]${goType(typeExpr.elementType, '', new Map())}{}`;
   if (typeExpr.type === 'set') return `map[${goType(typeExpr.elementType, '', new Map())}]bool{}`;
