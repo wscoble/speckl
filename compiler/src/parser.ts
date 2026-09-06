@@ -940,6 +940,10 @@ function parseStateBlock(inner: string): StateNode {
       let typeStr = withDefault[2].trim();
       const commentIdx = typeStr.indexOf('//');
       if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
+      // A declaration comma can survive comment stripping when a comment
+      // followed it (`signals: List<Foo>, // note`); strip it so the type
+      // parses as a generic, not an ident.
+      typeStr = typeStr.replace(/,\s*$/, '').trim();
       variables.push({
         name: withDefault[1],
         typeExpr: parseTypeExpr(typeStr),
@@ -953,6 +957,7 @@ function parseStateBlock(inner: string): StateNode {
       let typeStr = withoutDefault[2].trim();
       const commentIdx = typeStr.indexOf('//');
       if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
+      typeStr = typeStr.replace(/,\s*$/, '').trim();
       variables.push({
         name: withoutDefault[1],
         typeExpr: parseTypeExpr(typeStr),
@@ -1042,7 +1047,16 @@ function splitOnTopLevelCommas(s: string): string[] {
 
 function parseTypeExpr(expr: string): TypeExpr {
   expr = expr.trim();
-  
+
+  // Tolerate mismatched generic closers (`List<Foo]`, `Map(K, V]`): specs in
+  // the wild occasionally close a `(`/`<` generic with `]`. Repair before
+  // dispatching so these parse as the intended generic, not an ident.
+  const mismatched = expr.match(/^(List|Map|Set)\s*[(<]([\s\S]*)\]$/);
+  if (mismatched) expr = `${mismatched[1]}(${mismatched[2]})`;
+  // A stray trailing comma (state-block separator) must not turn a generic
+  // into an ident.
+  expr = expr.replace(/,\s*$/, '').trim();
+
   // Primitive types
   const primitives = ['Nat', 'Int', 'Real', 'Bool', 'String', 'Bytes'];
   if (primitives.includes(expr)) {
@@ -1436,23 +1450,58 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   if (!header) return null;
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  // Keep blank lines as null to separate statements, filter only comments
-  const bodyLinesRaw = lines.slice(startIndex + 1, endIndex).map(l => {
+  // Keep blank lines as null to separate statements, filter only comments.
+  // Preserve indentation: it bounds colon-form if/else regions.
+  type BodyEntry = { text: string; indent: number } | null;
+  const bodyEntries: BodyEntry[] = lines.slice(startIndex + 1, endIndex).map(l => {
     const trimmed = l.trim();
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
-    return trimmed;
+    return { text: trimmed, indent: l.length - l.trimStart().length };
   });
+
+  // Pre-pass: lower colon-form if/else regions (`if cond:` / `else:`) into
+  // brace form so the brace scanner below captures the whole region as one
+  // ifblock. The then-branch is the run of deeper-indented lines after
+  // `if cond:`; an `else:` at the if's indent switches branches; a line at
+  // or below the if's indent ends the region.
+  const prePass: (string | null)[] = [];
+  {
+    let i = 0;
+    while (i < bodyEntries.length) {
+      const cur = bodyEntries[i];
+      if (!cur || !/^if\b[^{]*:\s*$/.test(cur.text) || cur.text.includes('{')) {
+        prePass.push(cur ? cur.text : null);
+        i++;
+        continue;
+      }
+      const ifIndent = cur.indent;
+      prePass.push(cur.text.replace(/:\s*$/, ' {'));
+      i++;
+      while (i < bodyEntries.length) {
+        const l2 = bodyEntries[i];
+        if (l2 === null) { prePass.push(null); i++; continue; }
+        if (l2.indent <= ifIndent) {
+          if (/^else\s*:\s*$/.test(l2.text)) { prePass.push('} else {'); i++; continue; }
+          break;
+        }
+        prePass.push(l2.text);
+        i++;
+      }
+      prePass.push('}');
+    }
+  }
   // Collapse consecutive nulls and strip trailing nulls
-  const bodyLines: (string | null)[] = [];
-  for (const line of bodyLinesRaw) {
-    if (line !== null || (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] !== null)) {
-      bodyLines.push(line);
+  const collapsed: (string | null)[] = [];
+  for (const line of prePass) {
+    if (line !== null || (collapsed.length > 0 && collapsed[collapsed.length - 1] !== null)) {
+      collapsed.push(line);
     }
   }
   // Remove trailing nulls
-  while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] === null) {
-    bodyLines.pop();
+  while (collapsed.length > 0 && collapsed[collapsed.length - 1] === null) {
+    collapsed.pop();
   }
+  const bodyLines = collapsed;
 
   const statements: ActionStatement[] = [];
   for (let i = 0; i < bodyLines.length; i++) {
@@ -1497,6 +1546,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (nextLine.startsWith('precondition:') || nextLine.startsWith('postcondition:') ||
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
+            nextLine.startsWith('if ') ||
             nextLine.includes(':=')) {
           break;
         }

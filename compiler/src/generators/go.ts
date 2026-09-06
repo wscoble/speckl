@@ -85,6 +85,20 @@ func countWhere[V any](coll []V, pred func(V) bool) int {
 	return n
 }
 func nowString() string { return strconv.FormatInt(time.Now().Unix(), 10) }
+func mapValues[K comparable, V any](m map[K]V) []V {
+	out := make([]V, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	return out
+}
+func mapKeys[K comparable, V any](m map[K]V) []K {
+	out := make([]K, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
 func listContains[T comparable](xs []T, v T) bool {
 	for _, x := range xs {
 		if any(x) == any(v) {
@@ -214,6 +228,49 @@ function rewriteGoExpr(
     const helper = vt?.type === 'list' ? 'listAnyMatch' : 'anyMatch';
     expr = `${em[1] ? '!' : ''}${helper}(${em[3]}, func(${em[2]} ${rec}) bool { return ${em[4]} })`;
   }
+  let g = expr;
+  // count(coll, v => pred) -> countWhere(<coll>, func(v T) bool { return pred })
+  // Balanced-paren scan: the predicate may contain nested calls, so the
+  // old first-')' regex truncated it (syntax errors in the emitted Go).
+  // The predicate is emitted verbatim and lowered by the chain below.
+  if (/\bcount\(/.test(g)) {
+    let out = '';
+    let i = 0;
+    while (i < g.length) {
+      if (!/^\bcount\(/.test(g.slice(i))) { out += g[i]; i++; continue; }
+      let depth = 0, close = -1, inStr = false;
+      for (let k = i; k < g.length; k++) {
+        const ch = g[k];
+        if (ch === '"') inStr = !inStr;
+        if (inStr) continue;
+        if (ch === '(') depth++;
+        else if (ch === ')') { depth--; if (depth === 0) { close = k; break; } }
+      }
+      if (close < 0) { out += g[i]; i++; continue; }
+      const inner = g.slice(i + 'count('.length, close);
+      let d2 = 0, b2 = 0, cIdx = -1;
+      for (let k = 0; k < inner.length; k++) {
+        const ch = inner[k];
+        if (ch === '(' || ch === '<' || ch === '[') d2++;
+        else if (ch === ')' || ch === '>' || ch === ']') d2--;
+        else if (ch === '{') b2++;
+        else if (ch === '}') b2--;
+        else if (ch === ',' && d2 === 0 && b2 === 0) { cIdx = k; break; }
+      }
+      const lm = cIdx >= 0 ? inner.slice(cIdx + 1).trim().match(/^(\w+)\s*=>\s*([\s\S]+)$/) : null;
+      if (cIdx < 0 || !lm) { out += g.slice(i, close + 1); i = close + 1; continue; }
+      const coll = inner.slice(0, cIdx).trim();
+      const baseVar = coll.replace(/\.values\(\)|\.keys\(\)/g, '').trim();
+      const vt = stateVarTypes.get(baseVar) || stateVarTypes.get(cleanName(baseVar));
+      let elemT = 'any';
+      if (vt?.type === 'map' && vt.valueType) elemT = goType(vt.valueType, '', currentEnumMap);
+      else if (vt?.type === 'list' && vt.elementType) elemT = goType(vt.elementType, '', currentEnumMap);
+      out += `countWhere(${coll.replace(/\.values\(\)|\.keys\(\)/g, '')}, func(${lm[1]} ${elemT}) bool { return ${lm[2].trim()} })`;
+      i = close + 1;
+    }
+    g = out;
+  }
+
   const lengthLower = (arg: string): string => {
     const dm = arg.trim().match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
     if (dm) {
@@ -227,7 +284,7 @@ function rewriteGoExpr(
   const shouldPrefix = (ident: string) => nameMap.has(ident) && !localNames.has(ident);
   const goify = (ident: string) => nameMap.has(ident) && !localNames.has(ident) ? `m.${nameMap.get(ident)}` : ident;
 
-  let g = expr
+  g = g
     .replace(/Date\.now\(\)\.toString\(\)/g, 'nowString()')
     .replace(/Date\.now\(\)/g, 'time.Now().Unix()')
     .replace(/\bnow\(\)/g, 'time.Now().Unix()')
@@ -244,6 +301,7 @@ function rewriteGoExpr(
     })
     .replace(/([\w.]+)\.contains\(([^)]+)\)/g, 'listContains($1, $2)')
     .replace(/\bcount\(([^,]+),\s*(\w+)\s*=>\s*([^)]+)\)/g, 'countWhere($1, func($2 any) bool { return $3 })');
+// (legacy count lowering superseded by the balanced-paren scanner above)
 
   // state enum literals -> typed consts (skip field accesses `x.passed`,
   // record-literal keys `registered:`, and quoted strings)
@@ -262,6 +320,9 @@ function rewriteGoExpr(
 
   // speckdl patterns -> go
   g = g
+    .replace(/([\w."]+)\s+starts with\s+("[^"]*"|[\w.]+)/g, 'strings.HasPrefix($1, $2)')
+    .replace(/([\w."]+)\s+ends with\s+("[^"]*"|[\w.]+)/g, 'strings.HasSuffix($1, $2)')
+    .replace(/(\w+)\.append\(([^()]*)\)/g, 'append($1, $2)')
     .replace(/(\w+)\s+notIn\s+(\w+)\.keys/g, '!mapHas($2, $1)')
     .replace(/(\w+)\s+in\s+(\w+)\.keys/g, 'mapHas($2, $1)')
     .replace(/(\w+)\s+notIn\s+(\w+)\.values/g, '!inValues($2, $1)')
@@ -270,7 +331,11 @@ function rewriteGoExpr(
     .replace(/old\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g, '$1')
     .replace(/\.size\(\)/g, '.len')
     .replace(/\b===\b/g, '==')
-    .replace(/\bnull\b/g, 'nil');
+    .replace(/([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, v, op) =>
+      currentLetStringVars.has(v) ? `${v} ${op} ""` : m2)
+    .replace(/\bnull\b/g, 'nil')
+    .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
+    .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
 
   // bare map var bracket access -> m.field[k]
   for (const mapVar of mapVarOrigNames) {
@@ -369,6 +434,8 @@ let recordFieldTypes: Map<string, Map<string, any>> = new Map();
 let currentEnumMap: Map<string, string[]> = new Map();
 let stateVarTypes: Map<string, any> = new Map();
 let recordTypes: Map<string, string[]> = new Map();
+let currentFnRetTypes: Map<string, string> = new Map();
+let currentLetStringVars: Set<string> = new Set();
 function stateVarsOf(name: string): string {
   const t = stateVarTypes.get(name);
   if (t && t.type === 'list') return goType(t.elementType, 'Spot', new Map());
@@ -516,6 +583,80 @@ function emitSpeck(speck: SpeckNode): string {
     }).join('\n');
   const initBody = overrides ? defaults + '\n' + overrides : defaults;
 
+  // unknown domain functions -> explicit stubs (return type inferred from usage)
+  const unknown = new Set<string>();
+  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains', 'has', 'values', 'keys', 'empty', 'size', 'count']);
+  const ctxExprs: { text: string; ctx: 'guard' | 'value' | 'emit' | 'return' }[] = [];
+  const letVarFn = new Map<string, string>();
+  for (const a of actions) {
+    for (const st of a.statements) {
+      const ctx = (st.type === 'require' || st.type === 'precondition') ? 'guard'
+        : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
+      ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
+      if (st.type === 'ifblock') ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
+      if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
+        ctxExprs.push({ text: String(f.value), ctx: 'emit' });
+      }
+      if (st.type === 'assign') ctxExprs.push({ text: String((st as any).target ?? ''), ctx: 'value' });
+      if (st.type === 'let') {
+        const m = String((st as any).expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
+        if (m && !builtin.has(m[1])) letVarFn.set(String((st as any).name), m[1]);
+      }
+      if (st.type === 'ifblock') {
+        const raw = String((st as any).raw ?? '');
+        for (const lm of raw.matchAll(/let\s+(\w+)\s*:=\s*([a-z_]\w*)\s*\(/g)) {
+          if (!builtin.has(lm[2])) letVarFn.set(lm[1], lm[2]);
+        }
+      }
+    }
+  }
+  for (const c of constraints) ctxExprs.push({ text: String((c as any).expr ?? ''), ctx: 'guard' });
+
+  const numFns = new Set<string>();
+  const boolFns = new Set<string>();
+  const strFns = new Set<string>();
+  for (const { text, ctx } of ctxExprs) {
+    for (const m of text.match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
+      const fn = m.replace(/\s*\($/, '');
+      if (builtin.has(fn)) continue;
+      unknown.add(fn);
+      if (ctx === 'guard') boolFns.add(fn);
+    }
+  }
+  // let-bound call results: infer return type from how the variable is used
+  for (const [v, fn] of letVarFn) {
+    const varRe = new RegExp(`\\b${escapeRegex(v)}\\b`);
+    for (const { text } of ctxExprs) {
+      if (!varRe.test(text)) continue;
+      if (new RegExp(`(>=|<=|>|<)\\s*${escapeRegex(v)}\\b`).test(text)
+        || new RegExp(`\\b${escapeRegex(v)}\\s*(>=|<=|>|<)`).test(text)) { numFns.add(fn); continue; }
+      if (/(==|!=)\s*(true|false)\b/.test(text)) boolFns.add(fn);
+    }
+    for (const { text } of ctxExprs) {
+      if (!varRe.test(text)) continue;
+      if (new RegExp(`\\w+\\s*:\\s*${escapeRegex(v)}\\b`).test(text) || new RegExp(`\\w+\\.\\w+\\s*:=\\s*${escapeRegex(v)}\\b`).test(text)) strFns.add(fn);
+      // map-key usage implies a string-typed domain function
+      if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
+    }
+  }
+  currentFnRetTypes = new Map(Array.from(unknown).map(fn => [fn, fnKind(fn)]));
+  // direct call comparisons: x == fn(...) / fn(...) >= y
+  for (const fn of Array.from(unknown)) {
+    const callCmp = new RegExp(`(>=|<=|>|<|==|!=)\\s*${escapeRegex(fn)}\\s*\\(|${escapeRegex(fn)}\\s*\\([^)]*\\)\\s*(>=|<=|>|<|==|!=)`);
+    for (const { text } of ctxExprs) {
+      if (!callCmp.test(text)) continue;
+      if (/(==|!=)\s*(true|false)\b/.test(text)) boolFns.add(fn);
+      else numFns.add(fn);
+    }
+  }
+  const fnKind = (fn: string): string => numFns.has(fn) ? 'float64' : boolFns.has(fn) ? 'bool' : strFns.has(fn) ? 'string' : 'any';
+  const stubs = unknown.size > 0
+    ? Array.from(unknown).sort().map(fn => {
+        const ret = fnKind(fn);
+        return `// ${fn} - domain function from the SpeckDL spec. Implement per spec semantics.\nfunc ${fn}(args ...any) ${ret} {\n\tpanic("speckl: domain function not implemented: ${fn}")\n}`;
+      }).join('\n\n')
+    : '';
+
   const actionMethods = actions
     .map(a => emitAction(a, nameMap, mapVarOrigNames, goNameS, stateEnumName, knownStateValues, enumMap))
     .join('\n\n');
@@ -598,69 +739,6 @@ function emitSpeck(speck: SpeckNode): string {
     return `// Invariant ${fname}: ${cExpr.replace(/\s+/g, ' ').slice(0, 90)}\nfunc (m *${structName}) ${fname}() bool {\n${body}\n}`;
   }).join('\n\n');
 
-  // unknown domain functions -> explicit stubs (return type inferred from usage)
-  const unknown = new Set<string>();
-  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains', 'has', 'values', 'keys', 'empty', 'size', 'count']);
-  const ctxExprs: { text: string; ctx: 'guard' | 'value' | 'emit' | 'return' }[] = [];
-  const letVarFn = new Map<string, string>();
-  for (const a of actions) {
-    for (const st of a.statements) {
-      const ctx = (st.type === 'require' || st.type === 'precondition') ? 'guard'
-        : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
-      ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
-      if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
-        ctxExprs.push({ text: String(f.value), ctx: 'emit' });
-      }
-      if (st.type === 'assign') ctxExprs.push({ text: String((st as any).target ?? ''), ctx: 'value' });
-      if (st.type === 'let') {
-        const m = String((st as any).expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
-        if (m && !builtin.has(m[1])) letVarFn.set(String((st as any).name), m[1]);
-      }
-    }
-  }
-  for (const c of constraints) ctxExprs.push({ text: String((c as any).expr ?? ''), ctx: 'guard' });
-
-  const numFns = new Set<string>();
-  const boolFns = new Set<string>();
-  const strFns = new Set<string>();
-  for (const { text, ctx } of ctxExprs) {
-    for (const m of text.match(/\b([a-z_]\w*)\s*\(/g) ?? []) {
-      const fn = m.replace(/\s*\($/, '');
-      if (builtin.has(fn)) continue;
-      unknown.add(fn);
-      if (ctx === 'guard') boolFns.add(fn);
-    }
-  }
-  // let-bound call results: infer return type from how the variable is used
-  for (const [v, fn] of letVarFn) {
-    const varRe = new RegExp(`\\b${escapeRegex(v)}\\b`);
-    for (const { text } of ctxExprs) {
-      if (!varRe.test(text)) continue;
-      if (new RegExp(`(>=|<=|>|<)\\s*${escapeRegex(v)}\\b`).test(text)
-        || new RegExp(`\\b${escapeRegex(v)}\\s*(>=|<=|>|<)`).test(text)) { numFns.add(fn); continue; }
-      if (/(==|!=)\s*(true|false)\b/.test(text)) boolFns.add(fn);
-    }
-    for (const { text } of ctxExprs) {
-      if (!varRe.test(text)) continue;
-      if (new RegExp(`\\w+\\s*:\\s*${escapeRegex(v)}\\b`).test(text) || new RegExp(`\\w+\\.\\w+\\s*:=\\s*${escapeRegex(v)}\\b`).test(text)) strFns.add(fn);
-    }
-  }
-  // direct call comparisons: x == fn(...) / fn(...) >= y
-  for (const fn of Array.from(unknown)) {
-    const callCmp = new RegExp(`(>=|<=|>|<|==|!=)\\s*${escapeRegex(fn)}\\s*\\(|${escapeRegex(fn)}\\s*\\([^)]*\\)\\s*(>=|<=|>|<|==|!=)`);
-    for (const { text } of ctxExprs) {
-      if (!callCmp.test(text)) continue;
-      if (/(==|!=)\s*(true|false)\b/.test(text)) boolFns.add(fn);
-      else numFns.add(fn);
-    }
-  }
-  const fnKind = (fn: string): string => numFns.has(fn) ? 'float64' : boolFns.has(fn) ? 'bool' : strFns.has(fn) ? 'string' : 'any';
-  const stubs = unknown.size > 0
-    ? Array.from(unknown).sort().map(fn => {
-        const ret = fnKind(fn);
-        return `// ${fn} - domain function from the SpeckDL spec. Implement per spec semantics.\nfunc ${fn}(args ...any) ${ret} {\n\tpanic("speckl: domain function not implemented: ${fn}")\n}`;
-      }).join('\n\n')
-    : '';
 
   const eventLogField = events.length > 0 ? '\n\t// EventLog records every decision (spec events).\n\tEventLog []any' : '';
   const eventStructsBlock = events.length > 0
@@ -804,9 +882,69 @@ function emitAction(
     return `\tm.${gname} = ${val}`;
   };
 
+  // Lower a brace-form conditional captured by the parser pre-pass:
+  //   "if <cond> { <stmts> } [else { <stmts> }]"
+  const emitIfBlock = (raw: string): string => {
+    const open = raw.indexOf('{');
+    if (open < 0) return `\t// TODO: conditional not lowered: ${raw.replace(/\n/g, ' ')}`;
+    const cond = raw.slice(3, open).trim().replace(/:\s*$/, '');
+    // find the top-level '} else {' (if any) and the final top-level '}'
+    let depth = 0, elseSplit = -1, closeIdx = -1;
+    for (let i = open; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          if (raw.startsWith('} else {', i)) { elseSplit = i; i += '} else {'.length - 1; continue; }
+          closeIdx = i; break;
+        }
+      }
+    }
+    if (closeIdx < 0) return `\t// TODO: conditional not lowered (unbalanced): ${raw.replace(/\n/g, ' ')}`;
+    const thenPart = raw.slice(open + 1, elseSplit >= 0 ? elseSplit : closeIdx);
+    const elsePart = elseSplit >= 0 ? raw.slice(elseSplit + '} else {'.length, closeIdx) : null;
+    const condGo = goImplications(rewriteGoExpr(cond, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords));
+    const emitStmts = (text: string): string[] => {
+      const lines: string[] = [];
+      for (const st of splitAssignStmts(text)) {
+        const letM = st.match(/^let\s+(\w+)\s*:=\s*([\s\S]*)$/);
+        if (letM) {
+          const nm = cleanName(letM[1]);
+          localNames.add(nm);
+          const callM = letM[2].trim().match(/^([a-z_]\w*)\s*\(/);
+          if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(nm);
+          const val = rewriteGoExpr(letM[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+          lines.push(`\t${camelCase(nm)} := ${val}`);
+          const litM = letM[2].trim().match(/^([A-Za-z_]\w*)\s*\{/);
+          if (litM) letRecords.set(nm, cleanName(litM[1]));
+          const brM = letM[2].trim().match(/^(\w+)\[([\s\S]+)\]$/);
+          if (brM) {
+            const vt = stateVarTypes.get(cleanName(brM[1]));
+            if (vt?.type === 'map' && vt.valueType?.type === 'ident') letRecords.set(nm, cleanName(vt.valueType.name));
+          }
+          continue;
+        }
+        const am = st.match(/^([\s\S]+?)\s*:=\s*([\s\S]*)$/);
+        if (am) { lines.push(emitAssign({ type: 'assign', target: am[1], expr: am[2] } as any)); continue; }
+        lines.push(`\t_ = ${st}`);
+      }
+      return lines;
+    };
+    const thenLines = emitStmts(thenPart.trim());
+    let out = `\tif ${condGo} {\n${thenLines.join('\n') || '\t'}\n\t}`;
+    if (elsePart !== null) {
+      const elseLines = emitStmts(elsePart.trim());
+      out += ` else {\n${elseLines.join('\n') || '\t'}\n\t}`;
+    }
+    return out;
+  };
+
   // emit statements in source order so lets declared before guards/assigns
   // that reference them are emitted in the correct sequence
   const letRecords = new Map<string, string>();
+  const currentLetStringVars = new Set<string>();
+  currentLetStringVars.clear();
   const bodyLines: string[] = [];
   for (const s of action.statements as any[]) {
     if (s.type === 'require' || s.type === 'precondition') {
@@ -814,6 +952,8 @@ function emitAction(
       bodyLines.push(`\tif !(${expr}) {\n\t\terr = fmt.Errorf("guard failed: ${String(s.expr).replace(/"/g, "'")}")\n\t\treturn\n\t}`);
     } else if (s.type === 'let') {
       localNames.add(s.name);
+      const callM = String(s.expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
+      if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(cleanName(s.name));
       const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
       const litInt = val.match(/^\d+$/);
       bodyLines.push(`\t${camelCase(s.name)} := ${litInt ? `int64(${val})` : val}`);
@@ -830,7 +970,7 @@ function emitAction(
     } else if (s.type === 'assign') {
       bodyLines.push(emitAssign(s));
     } else if (s.type === 'ifblock') {
-      bodyLines.push(`\t// TODO: conditional not lowered by compiler: ${String((s as any).raw ?? '').replace(/\n/g, ' ')}`);
+      bodyLines.push(emitIfBlock(String((s as any).raw ?? '')));
     } else if (s.type === 'emit') {
       const fields = ((s.fields ?? []) as any[])
         .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`)
@@ -840,8 +980,8 @@ function emitAction(
       bodyLines.push(`\tret = ${rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`);
     }
   }
+
   let body = bodyLines.length ? bodyLines.join('\n') : '\treturn';
-  body += '\n\treturn';
 
   return `// Execute action: ${action.name}\nfunc (m *${goName(speckName)}Machine) ${methodName}(${params}) ${retSig} {\n${body}\n}`;
 }
@@ -1083,6 +1223,37 @@ function isEmptyStub(m: MemberNode): boolean {
 function cleanName(s: string): string { return s.replace(/,$/, '').trim(); }
 function cleanExpr(s: string): string { return s.replace(/,$/, '').trim(); }
 function escapeRegex(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Split a brace-form branch body into top-level statements. A statement
+// starts at each depth-0 `:=` (walking back to the lvalue token start, or
+// to a `let` keyword). Record-literal `field:` pairs sit inside braces and
+// are never statement boundaries.
+function splitAssignStmts(text: string): string[] {
+  const starts: number[] = [];
+  let depth = 0;
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (ch === '{' || ch === '[' || ch === '(') depth++;
+    else if (ch === '}' || ch === ']' || ch === ')') depth--;
+    else if (ch === ':' && depth === 0 && text[i + 1] === '=') {
+      let j = i - 1;
+      while (j >= 0 && /[\w\].]/.test(text[j])) j--;
+      const before = text.slice(0, j + 1).trimEnd();
+      if (before.endsWith('let')) j = before.length - 3;
+      starts.push(j + 1);
+    }
+  }
+  const stmts: string[] = [];
+  for (let k = 0; k < starts.length; k++) {
+    const end = k + 1 < starts.length ? starts[k + 1] : text.length;
+    const st = text.slice(starts[k], end).trim();
+    if (st) stmts.push(st);
+  }
+  return stmts;
+}
 
 function goName(s: string): string {
   return s.split(/[^a-zA-Z0-9]+/).filter(Boolean)
