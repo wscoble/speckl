@@ -410,8 +410,15 @@ function rewriteGoExpr(
     const r2 = localRecords.get(o2);
     const t1 = r1 ? recordFieldTypes.get(r1)?.get(f1) : undefined;
     const t2 = r2 ? recordFieldTypes.get(r2)?.get(f2) : undefined;
-    const isStr = (t: any) => t?.nullable && goType({ ...t, nullable: false }, '', new Map()) === 'string';
-    if (isStr(t1) && isStr(t2)) return `strCmp(${o1}.${f1}, ${o2}.${f2}) ${op} 0`;
+    const isStr = (t: any) => !!t && goType({ ...t, nullable: false }, '', new Map()) === 'string';
+    const isPtr = (t: any) => !!t?.nullable;
+    if (isStr(t1) && isStr(t2)) {
+      const a = `${o1}.${goFieldRenames.get(f1) || goName(f1)}`;
+      const b = `${o2}.${goFieldRenames.get(f2) || goName(f2)}`;
+      const l = isPtr(t1) ? a : `&${a}`;
+      const r = isPtr(t2) ? b : `&${b}`;
+      return `strCmp(${l}, ${r}) ${op} 0`;
+    }
     return m2;
   });
 
@@ -812,7 +819,12 @@ function emitSpeck(speck: SpeckNode): string {
           const mapped = goFieldRenames.get(f);
           return mapped ? `${obj}.${mapped}` : m2;
         });
-        for (const l of loops) out = out.replace(new RegExp(`\\b${escapeRegex(l.varName)}\\b`, 'g'), varRef(l.varName));
+        for (const l of loops) {
+          // don't rename the machine receiver `m.<stateField>` - only the
+          // loop variable's own field accesses
+          const stateFields = Array.from(nameMap.values()).join('|');
+          out = out.replace(new RegExp(`\\b${escapeRegex(l.varName)}\\b(?!\\.(?:${stateFields})\\b)`, 'g'), varRef(l.varName));
+        }
         return out;
       };
       const lines: string[] = [];
