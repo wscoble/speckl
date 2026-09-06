@@ -1664,6 +1664,12 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
     }
   }
 
+  // Single-line form: the braces balance on the header line itself, so the
+  // block walk below must not run - it would overrun into later members
+  // (their `state:` / `actions:` lines would leak in as event fields).
+  if (inlineMatch && firstLine.endsWith('}')) {
+    return { ...header, fields: inlineFields };
+  }
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
