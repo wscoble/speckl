@@ -391,6 +391,27 @@ function rewriteGoExpr(
     .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
     .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
 
+  // record-field string comparisons with mixed nullability: deref the
+  // nullable side (implies guards usually precede; Go short-circuits ||)
+  g = g.replace(/([\w.]+)\.([A-Za-z_]\w*)\s*(==|!=)\s*([\w.]+)\.([A-Za-z_]\w*)/g, (m2, o1, f1, op, o2, f2) => {
+    const fieldTypeOf = (obj: string, field: string): any => {
+      const rec = localRecords.get(obj);
+      if (rec) return recordFieldTypes.get(rec)?.get(field);
+      const vt = stateVarTypes.get(obj);
+      if (vt?.type === 'ident') return recordFieldTypes.get(cleanName(vt.name))?.get(field);
+      return undefined;
+    };
+    const t1 = fieldTypeOf(o1, f1);
+    const t2 = fieldTypeOf(o2, f2);
+    if (!t1 || !t2) return m2;
+    const isStr = (t: any) => goType({ ...t, nullable: false }, '', new Map()) === 'string';
+    if (!isStr(t1) || !isStr(t2)) return m2;
+    const d1 = t1.nullable ? '*' : '';
+    const d2 = t2.nullable ? '*' : '';
+    if (!d1 && !d2) return m2;
+    return `${d1}${o1}.${goFieldRenames.get(f1) || goName(f1)} ${op} ${d2}${o2}.${goFieldRenames.get(f2) || goName(f2)}`;
+  });
+
   // implies -> !(p) || (q)
   let changed = true;
   while (changed) {
