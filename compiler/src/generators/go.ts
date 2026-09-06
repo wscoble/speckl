@@ -982,6 +982,7 @@ function emitAction(
   }
 
   let body = bodyLines.length ? bodyLines.join('\n') : '\treturn';
+  body += '\n\treturn';
 
   return `// Execute action: ${action.name}\nfunc (m *${goName(speckName)}Machine) ${methodName}(${params}) ${retSig} {\n${body}\n}`;
 }
