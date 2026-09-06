@@ -230,6 +230,9 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
       case 'ifblock':
         lines.push(String(stmt.raw));
         break;
+      case 'forblock':
+        lines.push(String(stmt.raw));
+        break;
       default:
         lines.push(`    // unprinted statement: ${stmt.type}`);
     }

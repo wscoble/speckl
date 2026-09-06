@@ -86,6 +86,11 @@ func countWhere[V any](coll []V, pred func(V) bool) int {
 }
 func nowString() string { return strconv.FormatInt(time.Now().Unix(), 10) }
 func strPtr(s string) *string { return &s }
+func cloneSlice[T any](xs []T) []T {
+	out := make([]T, len(xs))
+	copy(out, xs)
+	return out
+}
 func mapValues[K comparable, V any](m map[K]V) []V {
 	out := make([]V, 0, len(m))
 	for _, v := range m {
@@ -336,7 +341,7 @@ function rewriteGoExpr(
     .replace(/([\w.\u0000]+)\.endsWith\(([^()]*)\)/g, 'strings.HasSuffix($1, $2)')
     .replace(/([\w.\u0000]+)\s+starts with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasPrefix($1, $2)')
     .replace(/([\w.\u0000]+)\s+ends with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasSuffix($1, $2)')
-    .replace(/(\w+)\.append\(([^()]*)\)/g, 'append($1, $2)')
+    .replace(/([\w.]+)\.append\(([^()]*)\)/g, 'append($1, $2)')
     .replace(/(\w+)\s+notIn\s+(\w+)\.keys/g, '!mapHas($2, $1)')
     .replace(/(\w+)\s+in\s+(\w+)\.keys/g, 'mapHas($2, $1)')
     .replace(/(\w+)\s+notIn\s+(\w+)\.values/g, '!inValues($2, $1)')
@@ -388,6 +393,8 @@ function rewriteGoExpr(
       return m2;
     })
     .replace(/\bnull\b/g, 'nil')
+    .replace(/([\w.]+)\.length\(\)/g, 'int64(len($1))')
+    .replace(/([\w.]+)\.copy\(\)/g, 'cloneSlice($1)')
     .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
     .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
 
@@ -1137,34 +1144,6 @@ function emitAction(
     const thenPart = raw.slice(open + 1, elseSplit >= 0 ? elseSplit : closeIdx);
     const elsePart = elseSplit >= 0 ? raw.slice(elseSplit + '} else {'.length, closeIdx) : null;
     const condGo = goImplications(rewriteGoExpr(cond, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords));
-    const emitStmts = (text: string): string[] => {
-      const lines: string[] = [];
-      for (const st of splitAssignStmts(text)) {
-        const letM = st.match(/^let\s+(\w+)\s*:=\s*([\s\S]*)$/);
-        if (letM) {
-          const nm = cleanName(letM[1]);
-          localNames.add(nm);
-          const callM = letM[2].trim().match(/^([a-z_]\w*)\s*\(/);
-          if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(nm);
-          const val = rewriteGoExpr(letM[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
-          if (/^[A-Za-z_]\w*$/.test(val) && currentNullableVars.has(val)) currentNullableVars.add(nm);
-          lines.push(`\t${camelCase(nm)} := ${val}`);
-          const litM = letM[2].trim().match(/^([A-Za-z_]\w*)\s*\{/);
-          if (litM) letRecords.set(nm, cleanName(litM[1]));
-          const brM = letM[2].trim().match(/^(\w+)\[([\s\S]+)\]$/);
-          if (brM) {
-            const vt = stateVarTypes.get(cleanName(brM[1]));
-            if (vt?.type === 'map' && vt.valueType?.type === 'ident') letRecords.set(nm, cleanName(vt.valueType.name));
-            else if (vt?.type === 'list' && vt.elementType?.type === 'ident') letRecords.set(nm, cleanName(vt.elementType.name));
-          }
-          continue;
-        }
-        const am = st.match(/^([\s\S]+?)\s*:=\s*([\s\S]*)$/);
-        if (am) { lines.push(emitAssign({ type: 'assign', target: am[1], expr: am[2] } as any)); continue; }
-        lines.push(`\t_ = ${st}`);
-      }
-      return lines;
-    };
     const thenLines = emitStmts(thenPart.trim());
     let out = `\tif ${condGo} {\n${thenLines.join('\n') || '\t'}\n\t}`;
     if (elsePart !== null) {
@@ -1172,6 +1151,56 @@ function emitAction(
       out += ` else {\n${elseLines.join('\n') || '\t'}\n\t}`;
     }
     return out;
+  };
+
+  // Emit statements for a branch body (assigns/lets) - shared by the main
+// loop, ifblocks, and forblocks.
+  const emitStmts = (text: string): string[] => {
+    const lines: string[] = [];
+    for (const st of splitAssignStmts(text)) {
+      const letM = st.match(/^let\s+(\w+)\s*:=\s*([\s\S]*)$/);
+      if (letM) {
+        const nm = cleanName(letM[1]);
+        localNames.add(nm);
+        const callM = letM[2].trim().match(/^([a-z_]\w*)\s*\(/);
+        if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(nm);
+        const val = rewriteGoExpr(letM[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+        if (/^[A-Za-z_]\w*$/.test(val) && currentNullableVars.has(val)) currentNullableVars.add(nm);
+        lines.push(`\t${camelCase(nm)} := ${val}`);
+        const litM = letM[2].trim().match(/^([A-Za-z_]\w*)\s*\{/);
+        if (litM) letRecords.set(nm, cleanName(litM[1]));
+        const brM = letM[2].trim().match(/^(\w+)\[([\s\S]+)\]$/);
+        if (brM) {
+          const vt = stateVarTypes.get(cleanName(brM[1]));
+          if (vt?.type === 'map' && vt.valueType?.type === 'ident') letRecords.set(nm, cleanName(vt.valueType.name));
+          else if (vt?.type === 'list' && vt.elementType?.type === 'ident') letRecords.set(nm, cleanName(vt.elementType.name));
+        }
+        continue;
+      }
+      const am = st.match(/^([\s\S]+?)\s*:=\s*([\s\S]*)$/);
+      if (am) { lines.push(emitAssign({ type: 'assign', target: am[1], expr: am[2] } as any)); continue; }
+      lines.push(`\t_ = ${st}`);
+    }
+    return lines;
+  };
+
+
+  // Lower a brace-form range loop captured by the parser pre-pass:
+  //   "for v in coll { <stmts> }"
+  const emitForBlock = (raw: string): string => {
+    const open = raw.indexOf('{');
+    if (open < 0) return `\t// TODO: for-loop not lowered: ${raw.replace(/\n/g, ' ')}`;
+    const header = raw.slice(4, open).trim();   // "v in coll"
+    const hm = header.match(/^(\w+)\s+in\s+([\s\S]+)$/);
+    if (!hm) return `\t// TODO: for-loop not lowered: ${raw.replace(/\n/g, ' ')}`;
+    const v = hm[1];
+    const collGo = rewriteGoExpr(hm[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+    const bodyText2 = raw.slice(open + 1, raw.lastIndexOf('}'));
+    const saved = localNames.has(v);
+    localNames.add(v);
+    const lines = emitStmts(bodyText2.trim());
+    if (!saved) localNames.delete(v);
+    return `\tfor _, ${v} := range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`;
   };
 
   // emit statements in source order so lets declared before guards/assigns
@@ -1211,6 +1240,8 @@ function emitAction(
       bodyLines.push(emitAssign(s));
     } else if (s.type === 'ifblock') {
       bodyLines.push(emitIfBlock(String((s as any).raw ?? '')));
+    } else if (s.type === 'forblock') {
+      bodyLines.push(emitForBlock(String((s as any).raw ?? '')));
     } else if (s.type === 'emit') {
       const fields = ((s.fields ?? []) as any[])
         .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`)
@@ -1220,6 +1251,7 @@ function emitAction(
       bodyLines.push(`\tret = ${rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`);
     }
   }
+
 
   let body = bodyLines.length ? bodyLines.join('\n') : '\treturn';
   body += '\n\treturn';
@@ -1484,7 +1516,7 @@ function splitAssignStmts(text: string): string[] {
       while (j >= 0 && text[j] === ' ') j--;
       while (j >= 0 && /[\w\]\[.]/.test(text[j])) j--;
       const before = text.slice(0, j + 1).trimEnd();
-      if (before.endsWith('let')) j = before.length - 3;
+      if (before.endsWith('let')) { starts.push(before.length - 3); continue; }
       starts.push(j + 1);
     }
   }
