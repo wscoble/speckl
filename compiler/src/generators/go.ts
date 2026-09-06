@@ -452,10 +452,32 @@ function goImplications(expr: string): string {
   let e = expr; let changed = true;
   while (changed) {
     changed = false;
-    e = e.replace(/implies\s*\(([^,()]*(?:\([^()]*\)[^()]*)*),\s*([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, p, q) => {
-      changed = true;
-      return `(!(${p.trim()}) || (${q.trim()}))`;
-    });
+    let out = '';
+    let i = 0;
+    while (i < e.length) {
+      if (/^\bimplies\(/.test(e.slice(i))) {
+        let depth = 0, close = -1;
+        for (let k = i; k < e.length; k++) {
+          if (e[k] === '(') depth++;
+          else if (e[k] === ')') { depth--; if (depth === 0) { close = k; break; } }
+        }
+        if (close < 0) { out += e[i]; i++; continue; }
+        const inner = e.slice(i + 'implies('.length, close);
+        let d = 0, cIdx = -1;
+        for (let k = 0; k < inner.length; k++) {
+          if (inner[k] === '(') d++;
+          else if (inner[k] === ')') d--;
+          else if (inner[k] === ',' && d === 0) { cIdx = k; break; }
+        }
+        if (cIdx < 0) { out += e.slice(i, close + 1); i = close + 1; continue; }
+        out += `(!(${inner.slice(0, cIdx).trim()}) || (${inner.slice(cIdx + 1).trim()}))`;
+        changed = true;
+        i = close + 1;
+        continue;
+      }
+      out += e[i]; i++;
+    }
+    e = out;
   }
   // infix implies: A implies B -> (!(A) || (B))  (split at paren depth 0, recursive)
   const lowerInfixImplies = (s: string): string => {
@@ -809,7 +831,7 @@ function emitSpeck(speck: SpeckNode): string {
           localNames2.add(lm[1]);
         } else {
           const exprGo = renameLoopVars(goImplications(rewriteGoExpr(st, nameMap, mapVarOrigNames, localNames2, stateEnumName, knownStateValues, loopRecords)));
-          unlowerable = unlowerable || / implies\(/.test(exprGo) || /\b\w+\s+has\s+\w+\b(?!\()/.test(exprGo);
+          unlowerable = unlowerable || /\bimplies\(/.test(exprGo) || /\b\w+\s+has\s+\w+\b(?!\()/.test(exprGo);
           bodyLines2.push(`${'\t'.repeat(depth + 1)}if !(${exprGo}) {`);
           bodyLines2.push(`${'\t'.repeat(depth + 2)}return false`);
           bodyLines2.push(`${'\t'.repeat(depth + 1)}}`);
