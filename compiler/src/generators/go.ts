@@ -866,7 +866,7 @@ function emitSpeck(speck: SpeckNode): string {
   currentFnRetTypes = new Map(Array.from(unknown).map(fn => [fn, fnKind(fn)]));
   const stubs = (unknown.size > 0
     ? Array.from(unknown).sort().map(fn => {
-        const ret = fnKind(fn);
+        const ret = currentFnRetTypes.get(fn) || fnKind(fn);
         return `// ${fn} - domain function from the SpeckDL spec. Implement per spec semantics.\nfunc ${fn}(args ...any) ${ret} {\n\tpanic("speckl: domain function not implemented: ${fn}")\n}`;
       }).join('\n\n')
     : '') + (domainConsts.length > 0 ? '\n\n' + domainConsts.join('\n\n') : '');
@@ -964,7 +964,16 @@ function emitSpeck(speck: SpeckNode): string {
       }
       for (let d = loops.length - 1; d >= 0; d--) lines.push(`${'\t'.repeat(d + 1)}}`);
       if (unlowerable) {
-        body = `\t// TODO: manual review - invariant could not be mechanically lowered:\n\t// ${cExpr.replace(/\s+/g, ' ').replace(/\*\//g, '* /')}\n\treturn true`;
+        const elided = lines.map(line => {
+          let lineOut = line;
+          for (const l of loops) {
+            if (l.mode !== 'keys') {
+              lineOut = lineOut.replace(`for _, ${varRef(l.varName)} := range`, 'for range');
+            }
+          }
+          return lineOut;
+        });
+        body = `\t// TODO: manual review - invariant could not be mechanically lowered:\n\t// ${cExpr.replace(/\s+/g, ' ').replace(/\*\//g, '* /')}\n${elided.join('\n')}\n\treturn true`;
       } else {
         lines.push('\treturn true');
         body = lines.join('\n');
