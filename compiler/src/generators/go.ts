@@ -1519,6 +1519,10 @@ function splitAssignStmts(text: string): string[] {
       if (before.endsWith('let')) { starts.push(before.length - 3); continue; }
       starts.push(j + 1);
     }
+    else if (depth === 0 && (text.startsWith('emit ', i) || text.startsWith('return ', i))
+             && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1]))) {
+      starts.push(i);
+    }
   }
   const stmts: string[] = [];
   for (let k = 0; k < starts.length; k++) {
