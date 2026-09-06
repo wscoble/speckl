@@ -484,9 +484,14 @@ function rewriteGoExpr(
         if (!pm) return part;
         const ft = ftmap.get(pm[1].toLowerCase());
         const v = pm[2].trim();
-        if (ft?.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string'
-            && v !== 'nil' && !(v.match(/^[A-Za-z_]\w*$/) && currentNullableVars.has(v))) {
-          return `${goName(pm[1])}: strPtr(${v})`;
+        if (ft && goType({ ...ft, nullable: false }, '', new Map()) === 'string') {
+          if (ft.nullable) {
+            if (v !== 'nil' && !(v.match(/^[A-Za-z_]\w*$/) && currentNullableVars.has(v))) {
+              return `${goName(pm[1])}: strPtr(${v})`;
+            }
+          } else if (/^(time\.Now\(\)\.Unix\(\)|nowString\(\))$/.test(v)) {
+            return `${goName(pm[1])}: nowString()`;
+          }
         }
         return part;
       });
@@ -1184,7 +1189,10 @@ function emitAction(
       localNames.add(s.name);
       const callM = String(s.expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
       if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(cleanName(s.name));
-      const val = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+      // Date.now() bound to a let is an RFC3339 string (consuming fields are String)
+      const isDateNow = String(s.expr ?? '').trim() === 'Date.now()';
+      if (isDateNow) currentLetStringVars.add(cleanName(s.name));
+      const val = isDateNow ? 'nowString()' : rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
       if (/^[A-Za-z_]\w*$/.test(val) && currentNullableVars.has(val)) currentNullableVars.add(cleanName(s.name));
       const litInt = val.match(/^\d+$/);
       bodyLines.push(`\t${camelCase(s.name)} := ${litInt ? `int64(${val})` : val}`);
