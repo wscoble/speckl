@@ -947,6 +947,8 @@ function emitSpeck(speck: SpeckNode): string {
           localNames2.add(lm[1]);
         } else {
           const exprGo = renameLoopVars(goImplications(rewriteGoExpr(st, nameMap, mapVarOrigNames, localNames2, stateEnumName, knownStateValues, loopRecords)));
+          const exprNoComments = exprGo.replace(/\/\*[\s\S]*?\*\//g, '');
+          for (const l of loops) if (new RegExp(`\\b${escapeRegex(varRef(l.varName))}\\b`).test(exprNoComments)) usedLoopVars.add(l.varName);
           unlowerable = unlowerable || /\bimplies\(/.test(exprGo) || /\b\w+\s+has\s+\w+\b(?!\()/.test(exprGo);
           bodyLines2.push(`${'\t'.repeat(depth + 1)}if !(${exprGo}) {`);
           bodyLines2.push(`${'\t'.repeat(depth + 2)}return false`);
