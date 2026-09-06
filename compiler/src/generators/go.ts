@@ -398,8 +398,7 @@ function rewriteGoExpr(
     .replace(/\bnull\b/g, 'nil')
     .replace(/\bInt\.random\(([^()]*)\)/g, 'randomInt($1)')
     .replace(/(\w+)\.toString\(\)/g, 'strconv.FormatInt($1, 10)')
-    .replace(/\bInt\.random\(([^()]*)\)/g, 'randomInt($1)')
-    .replace(/(\w+)\.toString\(\)/g, 'strconv.FormatInt($1, 10)')
+    .replace(/([\w.]+)\.length\(\)/g, 'int64(len($1))')
     .replace(/([\w.]+)\.copy\(\)/g, 'cloneSlice($1)')
     .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
     .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
