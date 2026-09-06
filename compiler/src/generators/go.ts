@@ -398,6 +398,8 @@ function rewriteGoExpr(
     .replace(/\bnull\b/g, 'nil')
     .replace(/\bInt\.random\(([^()]*)\)/g, 'randomInt($1)')
     .replace(/(\w+)\.toString\(\)/g, 'strconv.FormatInt($1, 10)')
+    .replace(/\bInt\.random\(([^()]*)\)/g, 'randomInt($1)')
+    .replace(/(\w+)\.toString\(\)/g, 'strconv.FormatInt($1, 10)')
     .replace(/([\w.]+)\.copy\(\)/g, 'cloneSlice($1)')
     .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
     .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
@@ -503,6 +505,10 @@ function rewriteGoExpr(
           } else if (/^(time\.Now\(\)\.Unix\(\)|nowString\(\))$/.test(v)) {
             return `${goName(pm[1])}: nowString()`;
           }
+        }
+        if (ft?.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'int64'
+            && v !== 'nil') {
+          return `${goName(pm[1])}: intPtr(${v})`;
         }
         return part;
       });
@@ -769,7 +775,7 @@ function emitSpeck(speck: SpeckNode): string {
       const ctx = (st.type === 'require' || st.type === 'precondition') ? 'guard'
         : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
       ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
-      if (st.type === 'ifblock') ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
+      if (st.type === 'ifblock' || (st.type as any) === 'forblock') ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
         ctxExprs.push({ text: String(f.value), ctx: 'emit' });
       }
@@ -778,7 +784,7 @@ function emitSpeck(speck: SpeckNode): string {
         const m = String((st as any).expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
         if (m && !builtin.has(m[1])) letVarFn.set(String((st as any).name), m[1]);
       }
-      if (st.type === 'ifblock') {
+      if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
         const raw = String((st as any).raw ?? '');
         for (const lm of raw.matchAll(/let\s+(\w+)\s*:=\s*([a-z_]\w*)\s*\(/g)) {
           if (!builtin.has(lm[2])) letVarFn.set(lm[1], lm[2]);
@@ -1238,7 +1244,9 @@ function emitAction(
     localNames.add(v);
     const lines = emitStmts(bodyText2.trim());
     if (!saved) localNames.delete(v);
-    return `\tfor _, ${v} := range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`;
+    const usesVar = lines.some(l => new RegExp(`\\b${escapeRegex(v)}\\b`).test(l));
+    const rangeVar = usesVar ? v : '_';
+    return `\tfor _, ${rangeVar} := range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`;
   };
 
   // emit statements in source order so lets declared before guards/assigns
