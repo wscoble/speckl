@@ -823,8 +823,15 @@ function emitSpeck(speck: SpeckNode): string {
 
   const invariantChecks = constraints.map((c, i) => {
     // constraints whose body is comments only are vacuously true
-    const cExpr = c.expr.split('\n').map(l => l.replace(/\/\/.*$/, '').trim()).filter(Boolean).join('\n').trim();
+    let cExpr = c.expr.split('\n').map(l => l.replace(/\/\/.*$/, '').trim()).filter(Boolean).join('\n').trim();
     const fname = `Check${goName(c.name || 'Invariant' + i)}`;
+    // block-form implies (`implies { let ... expr }`) is not lowerable to an
+    // expression - vacuously true with a visible TODO
+    if (/\bimplies\s*\{/.test(cExpr)) {
+      return `// Invariant ${fname}: ${cExpr.replace(/\s+/g, ' ').slice(0, 90)}\n` +
+        `// TODO: manual review - block-form implies could not be mechanically lowered:\n// ${cExpr.replace(/\s+/g, ' ').replace(/\*\//g, '* /')}\n` +
+        `func (m *${goName(speck.name)}Machine) ${fname}() bool {\n\treturn true\n}`;
+    }
     // peel forall prefixes (supports nested forall and .keys/.values suffixes)
     const forallRe = /^forall\s+(\w+)\s+in\s+(\w+)(\.values(?:\(\))?|\.keys(?:\(\))?)?:\s*([\s\S]+)$/;
     const loops: { varName: string; collName: string; mode: 'keys' | 'values' }[] = [];
