@@ -819,6 +819,20 @@ function emitSpeck(speck: SpeckNode): string {
       // map-key usage implies a string-typed domain function
       if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
     }
+    // record-shape inference: field accesses on the let var match a known
+    // record type's fields -> the domain function returns that record
+    const usedFields = new Set<string>();
+    for (const { text } of ctxExprs) {
+      for (const fm of text.matchAll(new RegExp(`\\b${escapeRegex(v)}\\.(\\w+)`, 'g'))) usedFields.add(fm[1].toLowerCase());
+    }
+    if (usedFields.size > 0) {
+      for (const [recName, ftm] of recordFieldTypes) {
+        const keys = new Set(Array.from(ftm.keys()).map(k => k.toLowerCase()));
+        let all = true;
+        for (const uf of usedFields) if (!keys.has(uf.toLowerCase())) { all = false; break; }
+        if (all) { currentFnRetTypes.set(fn, goName(recName)); break; }
+      }
+    }
   }
   // direct call comparisons: x == fn(...) / fn(...) >= y
   for (const fn of Array.from(unknown)) {
