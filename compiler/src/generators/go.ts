@@ -397,8 +397,17 @@ function rewriteGoExpr(
     const fieldTypeOf = (obj: string, field: string): any => {
       const rec = localRecords.get(obj);
       if (rec) return recordFieldTypes.get(rec)?.get(field);
-      const vt = stateVarTypes.get(obj);
+      // machine-prefixed state vars: m.<GoName> -> raw state name
+      let vt = stateVarTypes.get(obj);
+      if (!vt && obj.startsWith('m.')) {
+        const rev = new Map(Array.from(nameMap).map(([raw, gn]) => [gn, raw]));
+        const rawName = rev.get(obj.slice(2));
+        if (rawName !== undefined) vt = stateVarTypes.get(rawName);
+      }
       if (vt?.type === 'ident') return recordFieldTypes.get(cleanName(vt.name))?.get(field);
+      if (vt?.type === 'record') {
+        for (const f of (vt.fields || [])) if (f.name === field) return f.type;
+      }
       return undefined;
     };
     const t1 = fieldTypeOf(o1, f1);
