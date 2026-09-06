@@ -346,10 +346,7 @@ function rewriteGoExpr(
     .replace(/\.size\(\)/g, '.len')
     .replace(/\b===\b/g, '==')
     .replace(/([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, v, op) =>
-      currentLetStringVars.has(v) ? `${v} ${op} ""` : m2)
-    .replace(/\bnull\b/g, 'nil')
-    .replace(/([\w.]+)\.values\(\)/g, 'mapValues($1)')
-    .replace(/([\w.]+)\.keys\(\)/g, 'mapKeys($1)');
+      currentLetStringVars.has(v) ? `${v} ${op} ""` : m2);
 
   // bare map var bracket access -> m.field[k]
   for (const mapVar of mapVarOrigNames) {
