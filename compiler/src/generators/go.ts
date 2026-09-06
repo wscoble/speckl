@@ -639,7 +639,6 @@ function emitSpeck(speck: SpeckNode): string {
       if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
     }
   }
-  currentFnRetTypes = new Map(Array.from(unknown).map(fn => [fn, fnKind(fn)]));
   // direct call comparisons: x == fn(...) / fn(...) >= y
   for (const fn of Array.from(unknown)) {
     const callCmp = new RegExp(`(>=|<=|>|<|==|!=)\\s*${escapeRegex(fn)}\\s*\\(|${escapeRegex(fn)}\\s*\\([^)]*\\)\\s*(>=|<=|>|<|==|!=)`);
@@ -650,6 +649,7 @@ function emitSpeck(speck: SpeckNode): string {
     }
   }
   const fnKind = (fn: string): string => numFns.has(fn) ? 'float64' : boolFns.has(fn) ? 'bool' : strFns.has(fn) ? 'string' : 'any';
+  currentFnRetTypes = new Map(Array.from(unknown).map(fn => [fn, fnKind(fn)]));
   const stubs = unknown.size > 0
     ? Array.from(unknown).sort().map(fn => {
         const ret = fnKind(fn);
