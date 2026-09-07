@@ -431,6 +431,18 @@ function rewriteGoExpr(
       return m2;
     });
 
+  // nullable enum fields compared with an enum constant: deref the pointer
+  // (the surrounding implies guards nil first; Go short-circuits)
+  g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(==|!=)\s*([A-Z][A-Za-z0-9]*)\b/g, (m2, o, f, op, constName) => {
+    if (!/^[A-Z]/.test(constName) || constName.includes('_')) return m2;
+    const rec = localRecords.get(o);
+    const ft = rec ? recordFieldTypes.get(rec)?.get(f) : undefined;
+    if (ft?.nullable && ft.type === 'ident' && currentEnumMap.has(cleanName(ft.name))) {
+      return `*${o}.${goFieldRenames.get(f) || goName(f)} ${op} ${constName}`;
+    }
+    return m2;
+  });
+
   // non-nullable record fields cannot compare against nil; compare with ""
   g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, o, f, op) => {
       const rec = localRecords.get(o);
@@ -564,7 +576,7 @@ function rewriteGoExpr(
           }
         }
         if (ft?.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'int64'
-            && v !== 'nil') {
+            && v !== 'nil' && !(v.match(/^[A-Za-z_]\w*$/) && currentNullableVars.has(v))) {
           return `${goName(pm[1])}: intPtr(${v})`;
         }
         // non-nullable int64 (Date) field with a string timestamp: keep it numeric
@@ -1211,7 +1223,7 @@ function emitAction(
         if (/^([A-Za-z_]\w*)$/.test(val)) {
           if (!currentNullableVars.has(val)) v = `\u0026${val}`;
         } else {
-          return `\t{ s := ${val}; c.${gfield} = &s; m.${gname}[${key}] = c }`;
+          return `\t{ c := m.${gname}[${key}]; s := ${val}; c.${gfield} = &s; m.${gname}[${key}] = c }`;
         }
       }
       // Go: cannot assign through a map to a struct field — read-modify-write
