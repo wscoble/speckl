@@ -335,7 +335,7 @@ function rewriteGoExpr(
     .replace(/Date\.now\(\)/g, 'time.Now().Unix()')
     .replace(/\bnow\(\)/g, 'time.Now().Unix()')
     .replace(/\btoInt\(([^)]+)\)/g, 'toInt($1)')
-    .replace(/\blength\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, a) => lengthLower(a))
+    .replace(/(?<!\.)\blength\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, a) => lengthLower(a))
     .replace(/\blen\(([^)]+)\)/g, (_, a) => lengthLower(a))
     .replace(/\bjoin\(([^,]+),\s*([^)]+)\)/g, 'strings.Join($1, $2)')
     .replace(/\bappend\(([^,]+),\s*([^)]+)\)/g, 'append($1, $2)')
