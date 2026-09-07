@@ -257,6 +257,7 @@ function rewriteGoExpr(
   // enum values, `null`) and must never touch string content.
   const stringLits: string[] = [];
   g = g.replace(/"(?:[^"\\]|\\.)*"/g, m2 => { stringLits.push(m2); return `\u0000${stringLits.length - 1}\u0000`; });
+
   // count(coll, v => pred) -> int64(countWhere(...))
   // filter(coll, v => pred) -> filterFn(coll, func(v T) bool { return pred })
   // Balanced-paren scan: the predicate may contain nested calls, so the
@@ -327,6 +328,24 @@ function rewriteGoExpr(
     }
     return `int64(len(${arg}))`;
   };
+
+  // length(arg) with a balanced-paren scan (args may contain nested calls)
+  if (/\blength\(/.test(g)) {
+    let lenOut = '';
+    let li = 0;
+    while (li < g.length) {
+      if (!/^\blength\(/.test(g.slice(li))) { lenOut += g[li]; li++; continue; }
+      let d2 = 0, close2 = -1;
+      for (let k = li; k < g.length; k++) {
+        if (g[k] === '(') d2++;
+        else if (g[k] === ')') { d2--; if (d2 === 0) { close2 = k; break; } }
+      }
+      if (close2 < 0) { lenOut += g[li]; li++; continue; }
+      lenOut += lengthLower(g.slice(li + 'length('.length, close2));
+      li = close2 + 1;
+    }
+    g = lenOut;
+  }
   const shouldPrefix = (ident: string) => nameMap.has(ident) && !localNames.has(ident);
   const goify = (ident: string) => nameMap.has(ident) && !localNames.has(ident) ? `m.${nameMap.get(ident)}` : ident;
 
@@ -335,7 +354,7 @@ function rewriteGoExpr(
     .replace(/Date\.now\(\)/g, 'time.Now().Unix()')
     .replace(/\bnow\(\)/g, 'time.Now().Unix()')
     .replace(/\btoInt\(([^)]+)\)/g, 'toInt($1)')
-    .replace(/(?<!\.)\blength\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, a) => lengthLower(a))
+
     .replace(/\blen\(([^)]+)\)/g, (_, a) => lengthLower(a))
     .replace(/\bjoin\(([^,]+),\s*([^)]+)\)/g, 'strings.Join($1, $2)')
     .replace(/\bappend\(([^,]+),\s*([^)]+)\)/g, 'append($1, $2)')
@@ -474,10 +493,18 @@ function rewriteGoExpr(
   if (/forall/.test(g)) g = `/* UNLOWERED forall - manual attention required: ${g.replace(/\*\//g, '* /')} */ true`;
   // nullable string comparisons: a.x > b.y -> strCmp(a.x, b.y) > 0
   g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(>=|<=|>|<)\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g, (m2, o1, f1, op, o2, f2) => {
-    const r1 = localRecords.get(o1);
-    const r2 = localRecords.get(o2);
-    const t1 = r1 ? recordFieldTypes.get(r1)?.get(f1) : undefined;
-    const t2 = r2 ? recordFieldTypes.get(r2)?.get(f2) : undefined;
+    const fieldTypeOf = (obj: string, field: string): any => {
+      const rec = localRecords.get(obj);
+      if (rec) return recordFieldTypes.get(rec)?.get(field);
+      const vt = stateVarTypes.get(obj);
+      if (vt?.type === 'ident') return recordFieldTypes.get(cleanName(vt.name))?.get(field);
+      if (vt?.type === 'record') {
+        for (const f of (vt.fields || [])) if (f.name === field) return f.type;
+      }
+      return undefined;
+    };
+    const t1 = fieldTypeOf(o1, f1);
+    const t2 = fieldTypeOf(o2, f2);
     const isStr = (t: any) => !!t && goType({ ...t, nullable: false }, '', new Map()) === 'string';
     const isPtr = (t: any) => !!t?.nullable;
     if (isStr(t1) && isStr(t2)) {
@@ -879,6 +906,8 @@ function emitSpeck(speck: SpeckNode): string {
       }
       // map-key usage implies a string-typed domain function
       if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
+      // used as an if/for condition -> bool
+      if (new RegExp(`\\b(if|while)\\s+${escapeRegex(v)}\\b`).test(text)) boolFns.add(fn);
     }
     // record-shape inference: field accesses on the let var match a known
     // record type's fields -> the domain function returns that record
