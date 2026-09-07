@@ -447,7 +447,9 @@ function rewriteGoExpr(
   g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(==|!=)\s*null\b/g, (m2, o, f, op) => {
       const rec = localRecords.get(o);
       const ft = rec ? recordFieldTypes.get(rec)?.get(f) : undefined;
-      if (ft && !ft.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'string') {
+      const base = ft ? goType({ ...ft, nullable: false }, '', new Map()) : undefined;
+      // string fields and enum fields (string-underlying) cannot compare with nil
+      if (ft && !ft.nullable && (base === 'string' || (ft.type === 'ident' && currentEnumMap.has(cleanName(ft.name))))) {
         return `${o}.${goFieldRenames.get(f) || goName(f)} ${op} ""`;
       }
       return m2;
