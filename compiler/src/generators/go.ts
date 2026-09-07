@@ -335,7 +335,7 @@ function rewriteGoExpr(
     .replace(/Date\.now\(\)/g, 'time.Now().Unix()')
     .replace(/\bnow\(\)/g, 'time.Now().Unix()')
     .replace(/\btoInt\(([^)]+)\)/g, 'toInt($1)')
-    .replace(/\blength\(([^)]+)\)/g, (_, a) => lengthLower(a))
+    .replace(/\blength\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, a) => lengthLower(a))
     .replace(/\blen\(([^)]+)\)/g, (_, a) => lengthLower(a))
     .replace(/\bjoin\(([^,]+),\s*([^)]+)\)/g, 'strings.Join($1, $2)')
     .replace(/\bappend\(([^,]+),\s*([^)]+)\)/g, 'append($1, $2)')
@@ -542,6 +542,22 @@ function rewriteGoExpr(
   }
   g = g.replace(/\u0000(\d+)\u0000/g, (_m, n) => stringLits[+n]);
   return g.trim();
+}
+
+// Split record-literal field pairs at top-level commas.
+function splitRecordFields(text: string): string[] {
+  const parts: string[] = [];
+  let d = 0, inStr = false, start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (ch === '(' || ch === '[' || ch === '{') d++;
+    else if (ch === ')' || ch === ']' || ch === '}') d--;
+    else if (ch === ',' && d === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+  }
+  if (text.slice(start).trim()) parts.push(text.slice(start));
+  return parts;
 }
 
 function goImplications(expr: string): string {
@@ -879,6 +895,29 @@ function emitSpeck(speck: SpeckNode): string {
       }
     }
   }
+
+  // record-literal field values: `field: domainFn(...)` infers the domain
+  // fn's return type from the field's declared type
+  for (const { text } of ctxExprs) {
+    const rm = text.match(/^([A-Za-z_]\w*)\s*\{([\s\S]*)\}$/);
+    if (!rm) continue;
+    const ftm = recordFieldTypes.get(cleanName(rm[1]));
+    if (!ftm) continue;
+    const ftmLower = new Map(Array.from(ftm).map(([k, v]) => [k.toLowerCase(), v]));
+    for (const part of splitRecordFields(rm[2])) {
+      const pm = part.match(/^\s*([A-Za-z_]\w*)\s*:\s*([\s\S]*)$/);
+      if (!pm) continue;
+      const callM = pm[2].trim().match(/^([a-z_]\w*)\s*\(/);
+      if (!callM || builtin.has(callM[1]) || currentFnRetTypes.has(callM[1])) continue;
+      const ft = ftmLower.get(pm[1].toLowerCase());
+      if (!ft) continue;
+      const base = goType({ ...ft, nullable: false }, '', new Map());
+      if (base === 'bool') boolFns.add(callM[1]);
+      else if (base === 'string') strFns.add(callM[1]);
+      else if (base === 'int64' || base === 'float64') numFns.add(callM[1]);
+    }
+  }
+
   // direct call comparisons: x == fn(...) / fn(...) >= y
   for (const fn of Array.from(unknown)) {
     const callCmp = new RegExp(`(>=|<=|>|<|==|!=)\\s*${escapeRegex(fn)}\\s*\\(|${escapeRegex(fn)}\\s*\\([^)]*\\)\\s*(>=|<=|>|<|==|!=)`);
