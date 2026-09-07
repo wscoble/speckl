@@ -492,11 +492,16 @@ function rewriteGoExpr(
   // Any residual forall is surfaced as a visible TODO, never silently dropped.
   if (/forall/.test(g)) g = `/* UNLOWERED forall - manual attention required: ${g.replace(/\*\//g, '* /')} */ true`;
   // nullable string comparisons: a.x > b.y -> strCmp(a.x, b.y) > 0
-  g = g.replace(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*(>=|<=|>|<)\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g, (m2, o1, f1, op, o2, f2) => {
+  g = g.replace(/([A-Za-z_][\w.]*)\.([A-Za-z_]\w*)\s*(>=|<=|>|<)\s*([A-Za-z_][\w.]*)\.([A-Za-z_]\w*)/g, (m2, o1, f1, op, o2, f2) => {
     const fieldTypeOf = (obj: string, field: string): any => {
       const rec = localRecords.get(obj);
       if (rec) return recordFieldTypes.get(rec)?.get(field);
-      const vt = stateVarTypes.get(obj);
+      let vt = stateVarTypes.get(obj);
+      if (!vt && obj.startsWith('m.')) {
+        const rev = new Map(Array.from(nameMap).map(([raw, gn]) => [gn, raw]));
+        const rawName = rev.get(obj.slice(2));
+        if (rawName !== undefined) vt = stateVarTypes.get(rawName);
+      }
       if (vt?.type === 'ident') return recordFieldTypes.get(cleanName(vt.name))?.get(field);
       if (vt?.type === 'record') {
         for (const f of (vt.fields || [])) if (f.name === field) return f.type;
@@ -891,22 +896,24 @@ function emitSpeck(speck: SpeckNode): string {
       const fieldCtx = new RegExp(`(\\w+)\\s*:\\s*${escapeRegex(v)}\\b(?!\\.)`).exec(text);
       if (fieldCtx) {
         // the var is a record-literal field value: infer the fn's type from
-        // the field's declared type across known records
+        // the field's declared type - only when ALL records containing the
+        // field agree (ambiguous fields stay untyped)
         const fieldName = fieldCtx[1].toLowerCase();
-        let matched = false;
+        let sawAny = false, allBool = true, allString = true, allNum = true;
         for (const [recName, ftm] of recordFieldTypes) {
           for (const [k, ft] of ftm) {
             if (k.toLowerCase() === fieldName) {
+              sawAny = true;
               const base = goType({ ...ft, nullable: false }, '', new Map());
-              if (base === 'bool') { boolFns.add(fn); matched = true; }
-              else if (base === 'string') { strFns.add(fn); matched = true; }
-              else if (base === 'int64' || base === 'float64') { numFns.add(fn); matched = true; }
-              break;
+              if (base !== 'bool') allBool = false;
+              if (base !== 'string') allString = false;
+              if (base !== 'int64' && base !== 'float64') allNum = false;
             }
           }
-          if (matched) break;
         }
-        if (!matched) strFns.add(fn);
+        if (sawAny && allBool) boolFns.add(fn);
+        else if (sawAny && allString) strFns.add(fn);
+        else if (sawAny && allNum) numFns.add(fn);
       }
       // map-key usage implies a string-typed domain function
       if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
