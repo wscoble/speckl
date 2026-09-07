@@ -205,7 +205,7 @@ function goType(t: any, speckName: string, enumMap: Map<string, string[]>): stri
   }
   if (t.type === 'ident') {
     const raw = cleanName(t.name);
-    if (enumMap?.has(raw)) return `${goName(speckName)}${goName(raw)}`;
+    if (enumMap?.has(raw)) return (t.nullable ? '*' : '') + `${goName(speckName)}${goName(raw)}`;
     const prim: Record<string, string> = { Nat: 'int64', Int: 'int64', Bool: 'bool', String: 'string', Date: 'int64', Real: 'float64', Number: 'float64' };
     if (prim[raw]) return t.nullable ? '*' + prim[raw] : prim[raw];
     const opt = raw.match(/^Option[_(]\s*(\w+)\s*\)?$/);
@@ -566,6 +566,9 @@ function rewriteGoExpr(
         if (ft?.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'int64'
             && v !== 'nil') {
           return `${goName(pm[1])}: intPtr(${v})`;
+        }
+        if (/^(List|Map|Set)\.empty\(\)$/.test(v)) {
+          return `${goName(pm[1])}: ${defaultGoValue(ft, '', new Map())}`;
         }
         return part;
       });
@@ -1199,7 +1202,13 @@ function emitAction(
       const vt = stateVarTypes.get(cleanName(nested[1]));
       const rec = vt?.type === 'map' && vt.valueType?.type === 'ident' ? cleanName(vt.valueType.name) : undefined;
       const ftype = rec ? recordFieldTypes.get(rec)?.get(nested[3]) : undefined;
-      if (ftype?.nullable && /^([A-Za-z_]\w*)$/.test(val) && val !== 'nil' && !nullableParams.has(val)) v = `\u0026${val}`;
+      if (ftype?.nullable && val !== 'nil') {
+        if (/^([A-Za-z_]\w*)$/.test(val)) {
+          if (!currentNullableVars.has(val)) v = `\u0026${val}`;
+        } else {
+          return `\t{ s := ${val}; c.${gfield} = &s }`;
+        }
+      }
       // Go: cannot assign through a map to a struct field — read-modify-write
       return [
         `\t{`,
