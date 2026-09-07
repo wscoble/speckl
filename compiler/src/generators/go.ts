@@ -448,9 +448,12 @@ function rewriteGoExpr(
       const rec = localRecords.get(o);
       const ft = rec ? recordFieldTypes.get(rec)?.get(f) : undefined;
       const base = ft ? goType({ ...ft, nullable: false }, '', new Map()) : undefined;
-      // string fields and enum fields (string-underlying) cannot compare with nil
+      // non-nullable fields cannot compare with nil: string/enum -> "", numeric -> 0
       if (ft && !ft.nullable && (base === 'string' || (ft.type === 'ident' && currentEnumMap.has(cleanName(ft.name))))) {
         return `${o}.${goFieldRenames.get(f) || goName(f)} ${op} ""`;
+      }
+      if (ft && !ft.nullable && (base === 'int64' || base === 'float64')) {
+        return `${o}.${goFieldRenames.get(f) || goName(f)} ${op} 0`;
       }
       return m2;
     })
