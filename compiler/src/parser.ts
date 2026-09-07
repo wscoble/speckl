@@ -2452,6 +2452,12 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
     let expr = quotedMatch[3].trim();
     if (followsBrace) {
       if (expr.startsWith('{')) expr = expr.substring(1).trim();
+      // Single-line form: the braces balance on the header line itself
+      // (`constraint "name" { true }`) - the block walk below would overrun
+      // into later members (their content leaks in as constraint expr).
+      if (firstLine.endsWith('}')) {
+        return { type: 'constraint', name, expr: expr.replace(/}\s*$/, '').trim() };
+      }
       const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
       const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
       const inner = innerLines.join(' ');
