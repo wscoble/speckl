@@ -163,7 +163,7 @@ func slugify(s string) string {
 	}
 	return strings.Trim(string(b), "-")
 }
-func toInt(v any) int64 {
+func toInt64(v any) int64 {
 	switch x := v.(type) {
 	case string:
 		n, _ := strconv.ParseInt(x, 10, 64)
@@ -351,9 +351,9 @@ function rewriteGoExpr(
 
   g = g
     .replace(/Date\.now\(\)\.toString\(\)/g, 'nowString()')
-    .replace(/Date\.now\(\)/g, 'time.Now().Unix()')
+    .replace(/Date\.now\(\)/g, 'nowString()')
     .replace(/\bnow\(\)/g, 'time.Now().Unix()')
-    .replace(/\btoInt\(([^)]+)\)/g, 'toInt($1)')
+    .replace(/\btoInt\(([^)]+)\)/g, 'toInt64($1)')
 
     .replace(/\blen\(([^()]+)\)/g, (_, a) => lengthLower(a))
     .replace(/\bjoin\(([^,]+),\s*([^)]+)\)/g, 'strings.Join($1, $2)')
@@ -843,7 +843,7 @@ function emitSpeck(speck: SpeckNode): string {
 
   // unknown domain functions -> explicit stubs (return type inferred from usage)
   const unknown = new Set<string>();
-  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains', 'has', 'values', 'keys', 'empty', 'size', 'count']);
+  const builtin = new Set(['now', 'len', 'length', 'join', 'append', 'mapHas', 'setContains', 'inValues', 'countWhere', 'implies', 'slugify', 'contains', 'has', 'values', 'keys', 'empty', 'size', 'count', 'randomInt', 'mapValues', 'mapKeys', 'strPtr', 'intPtr', 'cloneSlice', 'filterFn', 'anyStr', 'nowString', 'toInt64']);
   const ctxExprs: { text: string; ctx: 'guard' | 'value' | 'emit' | 'return' }[] = [];
   const letVarFn = new Map<string, string>();
   for (const a of actions) {
@@ -1206,7 +1206,7 @@ function emitAction(
         if (/^([A-Za-z_]\w*)$/.test(val)) {
           if (!currentNullableVars.has(val)) v = `\u0026${val}`;
         } else {
-          return `\t{ s := ${val}; c.${gfield} = &s }`;
+          return `\t{ s := ${val}; c.${gfield} = &s; m.${gname}[${key}] = c }`;
         }
       }
       // Go: cannot assign through a map to a struct field — read-modify-write
