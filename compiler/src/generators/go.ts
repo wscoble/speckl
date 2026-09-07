@@ -87,6 +87,12 @@ func countWhere[V any](coll []V, pred func(V) bool) int {
 }
 func nowString() string { return strconv.FormatInt(time.Now().Unix(), 10) }
 func strPtr(s string) *string { return &s }
+func anyStr(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
 func randomInt(lo, hi int64) int64 { return lo + int64(rand.Intn(int(hi-lo+1))) }
 func intPtr(v int64) *int64 { return &v }
 func cloneSlice[T any](xs []T) []T {
@@ -273,12 +279,15 @@ function rewriteGoExpr(
       const lm = cIdx >= 0 ? inner.slice(cIdx + 1).trim().match(/^(\w+)\s*=>\s*([\s\S]+)$/) : null;
       if (cIdx < 0 || !lm) { out += g.slice(i, close + 1); i = close + 1; continue; }
       const coll = inner.slice(0, cIdx).trim();
+      const hadValues = /\.values\(\)$/.test(coll);
       const baseVar = coll.replace(/\.values\(\)|\.keys\(\)/g, '').trim();
       const vt = stateVarTypes.get(baseVar) || stateVarTypes.get(cleanName(baseVar));
       let elemT = 'any';
       if (vt?.type === 'map' && vt.valueType) elemT = goType(vt.valueType, '', currentEnumMap);
       else if (vt?.type === 'list' && vt.elementType) elemT = goType(vt.elementType, '', currentEnumMap);
-      out += `countWhere(${coll.replace(/\.values\(\)|\.keys\(\)/g, '')}, func(${lm[1]} ${elemT}) bool { return ${lm[2].trim()} })`;
+      let collGo = coll.replace(/\.values\(\)|\.keys\(\)/g, '');
+      if (hadValues && vt?.type === 'map') collGo = `mapValues(${collGo})`;
+      out += `int64(countWhere(${collGo}, func(${lm[1]} ${elemT}) bool { return ${lm[2].trim()} }))`;
       i = close + 1;
     }
     g = out;
@@ -1147,6 +1156,12 @@ function emitAction(
     // let-bound local reassignment: target = val (not a state var)
     if (!nameMap.has(cleanName(target)) && localNames.has(cleanName(target))) {
       const val2 = rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+      // a string-typed local reassigned from an untyped domain call: convert
+      if (currentLetStringVars.has(cleanName(target))
+          && /^([a-z_]\w*)\s*\(/.test(String(s.expr))
+          && currentFnRetTypes.get(String(s.expr).trim().match(/^([a-z_]\w*)\s*\(/)![1]) !== 'string') {
+        return `\t${camelCase(cleanName(target))} = anyStr(${val2})`;
+      }
       return `\t${camelCase(cleanName(target))} = ${val2}`;
     }
     const rawExpr = String(s.expr);
@@ -1216,7 +1231,7 @@ function emitAction(
       else if (ch === '}') {
         depth--;
         if (depth === 0) {
-          if (raw.startsWith('} else {', i)) { elseSplit = i; i += '} else {'.length - 1; continue; }
+          if (raw.startsWith('} else {', i)) { elseSplit = i; continue; }
           closeIdx = i; break;
         }
       }
@@ -1324,8 +1339,7 @@ function emitAction(
   // emit statements in source order so lets declared before guards/assigns
   // that reference them are emitted in the correct sequence
   const letRecords = new Map<string, string>();
-  const currentLetStringVars = new Set<string>();
-  currentLetStringVars.clear();
+  currentLetStringVars = new Set<string>();
   currentNullableVars = new Set(nullableParams);
   const bodyLines: string[] = [];
   for (const s of action.statements as any[]) {
