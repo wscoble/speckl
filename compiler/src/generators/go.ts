@@ -95,6 +95,15 @@ func anyStr(v any) string {
 }
 func randomInt(lo, hi int64) int64 { return lo + int64(rand.Intn(int(hi-lo+1))) }
 func intPtr(v int64) *int64 { return &v }
+func filterFn[T any](xs []T, pred func(T) bool) []T {
+	out := make([]T, 0)
+	for _, x := range xs {
+		if pred(x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
 func cloneSlice[T any](xs []T) []T {
 	out := make([]T, len(xs))
 	copy(out, xs)
@@ -248,15 +257,17 @@ function rewriteGoExpr(
   // enum values, `null`) and must never touch string content.
   const stringLits: string[] = [];
   g = g.replace(/"(?:[^"\\]|\\.)*"/g, m2 => { stringLits.push(m2); return `\u0000${stringLits.length - 1}\u0000`; });
-  // count(coll, v => pred) -> countWhere(<coll>, func(v T) bool { return pred })
+  // count(coll, v => pred) -> int64(countWhere(...))
+  // filter(coll, v => pred) -> filterFn(coll, func(v T) bool { return pred })
   // Balanced-paren scan: the predicate may contain nested calls, so the
   // old first-')' regex truncated it (syntax errors in the emitted Go).
   // The predicate is emitted verbatim and lowered by the chain below.
-  if (/\bcount\(/.test(g)) {
+  if (/\b(count|filter)\(/.test(g)) {
     let out = '';
     let i = 0;
     while (i < g.length) {
-      if (!/^\bcount\(/.test(g.slice(i))) { out += g[i]; i++; continue; }
+      const kindM = /^(count|filter)\(/.exec(g.slice(i));
+      if (!kindM) { out += g[i]; i++; continue; }
       let depth = 0, close = -1, inStr = false;
       for (let k = i; k < g.length; k++) {
         const ch = g[k];
@@ -266,7 +277,7 @@ function rewriteGoExpr(
         else if (ch === ')') { depth--; if (depth === 0) { close = k; break; } }
       }
       if (close < 0) { out += g[i]; i++; continue; }
-      const inner = g.slice(i + 'count('.length, close);
+      const inner = g.slice(i + kindM[1].length + 1, close);
       let d2 = 0, b2 = 0, cIdx = -1;
       for (let k = 0; k < inner.length; k++) {
         const ch = inner[k];
@@ -278,6 +289,10 @@ function rewriteGoExpr(
       }
       const lm = cIdx >= 0 ? inner.slice(cIdx + 1).trim().match(/^(\w+)\s*=>\s*([\s\S]+)$/) : null;
       if (cIdx < 0 || !lm) { out += g.slice(i, close + 1); i = close + 1; continue; }
+      const collRaw = inner.slice(0, cIdx).trim();
+      const hadVals = /\.values\(\)$/.test(collRaw);
+      const baseV = collRaw.replace(/\.values\(\)|\.keys\(\)/g, '').trim();
+      const vtV = stateVarTypes.get(baseV) || stateVarTypes.get(cleanName(baseV));
       const coll = inner.slice(0, cIdx).trim();
       const hadValues = /\.values\(\)$/.test(coll);
       const baseVar = coll.replace(/\.values\(\)|\.keys\(\)/g, '').trim();
@@ -287,7 +302,9 @@ function rewriteGoExpr(
       else if (vt?.type === 'list' && vt.elementType) elemT = goType(vt.elementType, '', currentEnumMap);
       let collGo = coll.replace(/\.values\(\)|\.keys\(\)/g, '');
       if (hadValues && vt?.type === 'map') collGo = `mapValues(${collGo})`;
-      out += `int64(countWhere(${collGo}, func(${lm[1]} ${elemT}) bool { return ${lm[2].trim()} }))`;
+      const pred = `func(${lm[1]} ${elemT}) bool { return ${lm[2].trim()} }`;
+      if (kindM[1] === 'filter') out += `filterFn(${collGo}, ${pred})`;
+      else out += `int64(countWhere(${collGo}, ${pred}))`;
       i = close + 1;
     }
     g = out;
