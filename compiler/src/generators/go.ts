@@ -567,6 +567,11 @@ function rewriteGoExpr(
             && v !== 'nil') {
           return `${goName(pm[1])}: intPtr(${v})`;
         }
+        // non-nullable int64 (Date) field with a string timestamp: keep it numeric
+        if (ft && !ft.nullable && goType({ ...ft, nullable: false }, '', new Map()) === 'int64'
+            && /^(nowString\(\)|time\.Now\(\)\.Unix\(\))$/.test(v)) {
+          return `${goName(pm[1])}: time.Now().Unix()`;
+        }
         if (/^(List|Map|Set)\.empty\(\)$/.test(v)) {
           return `${goName(pm[1])}: ${defaultGoValue(ft, '', new Map())}`;
         }
