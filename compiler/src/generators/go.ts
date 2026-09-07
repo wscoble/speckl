@@ -334,7 +334,7 @@ function rewriteGoExpr(
     let lenOut = '';
     let li = 0;
     while (li < g.length) {
-      if (!/^\blength\(/.test(g.slice(li))) { lenOut += g[li]; li++; continue; }
+      if (!/^\blength\(/.test(g.slice(li)) || (li > 0 && g[li - 1] === '.')) { lenOut += g[li]; li++; continue; }
       let d2 = 0, close2 = -1;
       for (let k = li; k < g.length; k++) {
         if (g[k] === '(') d2++;
