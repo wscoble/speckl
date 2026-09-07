@@ -955,21 +955,21 @@ function emitSpeck(speck: SpeckNode): string {
           bodyLines2.push(`${'\t'.repeat(depth + 1)}}`);
         }
       }
-      for (const line of bodyLines2) {
-        let lineOut = line;
-        for (const l of loops) {
-          if (l.mode !== 'keys' && !usedLoopVars.has(l.varName)) {
-            lineOut = lineOut.replace(`for _, ${varRef(l.varName)} := range`, 'for range');
+      lines.push(...bodyLines2);
+      // elide unused loop vars across all emitted lines (range + body)
+      for (const l of loops) {
+        if (l.mode !== 'keys' && !usedLoopVars.has(l.varName)) {
+          for (let li = 0; li < lines.length; li++) {
+            lines[li] = lines[li].replace(`for _, ${varRef(l.varName)} := range`, 'for range');
           }
         }
-        lines.push(lineOut);
       }
       for (let d = loops.length - 1; d >= 0; d--) lines.push(`${'\t'.repeat(d + 1)}}`);
       if (unlowerable) {
-        const elided = lines.map(line => {
+        const elided = lines.map((line: string) => {
           let lineOut = line;
           for (const l of loops) {
-            if (l.mode !== 'keys') {
+            if (l.mode !== 'keys' && !usedLoopVars.has(l.varName)) {
               lineOut = lineOut.replace(`for _, ${varRef(l.varName)} := range`, 'for range');
             }
           }
