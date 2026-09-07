@@ -993,9 +993,10 @@ function emitSpeck(speck: SpeckNode): string {
     if (numFns.has(fn)) return 'float64';
     // strFns wins over boolFns: a bool-typed record field assignment keeps
     // the variable's own type, while a string context is unambiguous
-    if (strFns.has(fn) && !boolFns.has(fn)) return 'string';
-    if (boolFns.has(fn)) return 'bool';
+    // string wins over bool: a *string field assignment (strPtr) is
+    // recoverable, while a string-typed use of a bool stub is not
     if (strFns.has(fn)) return 'string';
+    if (boolFns.has(fn)) return 'bool';
     return 'any';
   };
   // domain constants: bare identifiers compared against literals (e.g.
