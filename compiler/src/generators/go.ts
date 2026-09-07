@@ -843,7 +843,11 @@ function emitSpeck(speck: SpeckNode): string {
       const ctx = (st.type === 'require' || st.type === 'precondition') ? 'guard'
         : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
       ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
-      if (st.type === 'ifblock' || (st.type as any) === 'forblock') ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
+      if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
+        ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
+        const cm2 = String((st as any).raw ?? '').match(/^if\s+(.+?)\s*\{/);
+        if (cm2) ctxExprs.push({ text: cm2[1].trim(), ctx: 'guard' });
+      }
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
         ctxExprs.push({ text: String(f.value), ctx: 'emit' });
       }
@@ -906,8 +910,8 @@ function emitSpeck(speck: SpeckNode): string {
       }
       // map-key usage implies a string-typed domain function
       if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
-      // used as an if/for condition -> bool
-      if (new RegExp(`\\b(if|while)\\s+${escapeRegex(v)}\\b`).test(text)) boolFns.add(fn);
+      // used as a bare if condition (the whole condition is the var) -> bool
+      if (text === v) boolFns.add(fn);
     }
     // record-shape inference: field accesses on the let var match a known
     // record type's fields -> the domain function returns that record
