@@ -815,7 +815,26 @@ function emitSpeck(speck: SpeckNode): string {
     }
     for (const { text } of ctxExprs) {
       if (!varRe.test(text)) continue;
-      if (new RegExp(`\\w+\\s*:\\s*${escapeRegex(v)}\\b(?!\\.)`).test(text) || new RegExp(`\\w+\\.\\w+\\s*:=\\s*${escapeRegex(v)}\\b`).test(text)) strFns.add(fn);
+      const fieldCtx = new RegExp(`(\\w+)\\s*:\\s*${escapeRegex(v)}\\b(?!\\.)`).exec(text);
+      if (fieldCtx) {
+        // the var is a record-literal field value: infer the fn's type from
+        // the field's declared type across known records
+        const fieldName = fieldCtx[1].toLowerCase();
+        let matched = false;
+        for (const [recName, ftm] of recordFieldTypes) {
+          for (const [k, ft] of ftm) {
+            if (k.toLowerCase() === fieldName) {
+              const base = goType({ ...ft, nullable: false }, '', new Map());
+              if (base === 'bool') { boolFns.add(fn); matched = true; }
+              else if (base === 'string') { strFns.add(fn); matched = true; }
+              else if (base === 'int64' || base === 'float64') { numFns.add(fn); matched = true; }
+              break;
+            }
+          }
+          if (matched) break;
+        }
+        if (!matched) strFns.add(fn);
+      }
       // map-key usage implies a string-typed domain function
       if (new RegExp(`\\[\\s*${escapeRegex(v)}\\s*\\]`).test(text)) strFns.add(fn);
     }
@@ -1351,6 +1370,29 @@ function emitAction(
     }
   }
 
+
+  // let-bound locals that are never used: declare as _ (Go requires use)
+  for (const lineIdx in bodyLines) {
+    for (const [nm, rec] of letRecords) {
+      // nothing here - handled below by direct scan
+    }
+  }
+  const declMatch = /(?:^|\n)\t([A-Za-z_]\w*) :?= /g;
+  for (const st of action.statements as any[]) {
+    if (st.type !== 'let') continue;
+    const nm = camelCase(cleanName(st.name));
+    const varRe = new RegExp(`\\b${escapeRegex(nm)}\\b`);
+    const used = bodyLines.some(l => varRe.test(l.replace(declMatch.source, ''))) &&
+      !(bodyLines.filter(l => varRe.test(l)).length <= 1 &&
+        bodyLines.some(l => l.trim().startsWith(`${nm} :=`) || l.trim().startsWith(`${nm} =`)));
+    if (!used) {
+      for (const li in bodyLines) {
+        bodyLines[li] = bodyLines[li]
+          .replace(`\t${nm} :=`, '\t_ = ')
+          .replace(`\t${nm} =`, '\t_ = ');
+      }
+    }
+  }
 
   let body = bodyLines.length ? bodyLines.join('\n') : '\treturn';
   body += '\n\treturn';
