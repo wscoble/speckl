@@ -873,7 +873,7 @@ function emitSpeck(speck: SpeckNode): string {
       if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
         ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
         const cm2 = String((st as any).raw ?? '').match(/^if\s+(.+?)\s*\{/);
-        if (cm2) ctxExprs.push({ text: cm2[1].trim(), ctx: 'guard' });
+        if (cm2) { ctxExprs.push({ text: cm2[1].trim(), ctx: 'guard' }); console.error('COND-GUARD in', a.name, ':', JSON.stringify(cm2[1].trim().slice(0, 60))); }
       }
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
         ctxExprs.push({ text: String(f.value), ctx: 'emit' });
@@ -901,7 +901,7 @@ function emitSpeck(speck: SpeckNode): string {
       const fn = m.replace(/\s*\($/, '');
       if (builtin.has(fn)) continue;
       unknown.add(fn);
-      if (ctx === 'guard') boolFns.add(fn);
+      if (ctx === 'guard') boolFns.add(fn); if (fn === "collectPowerShell") console.error("GRD-TEXT:", JSON.stringify(text.slice(0, 120)));if (fn === "collectPowerShell") console.error("BFSITE ts-" + (1), fn);
     }
   }
   // let-bound call results: infer return type from how the variable is used
@@ -989,7 +989,15 @@ function emitSpeck(speck: SpeckNode): string {
       else numFns.add(fn);
     }
   }
-  const fnKind = (fn: string): string => numFns.has(fn) ? 'float64' : boolFns.has(fn) ? 'bool' : strFns.has(fn) ? 'string' : 'any';
+  const fnKind = (fn: string): string => {
+    if (numFns.has(fn)) return 'float64';
+    // strFns wins over boolFns: a bool-typed record field assignment keeps
+    // the variable's own type, while a string context is unambiguous
+    if (strFns.has(fn) && !boolFns.has(fn)) return 'string';
+    if (boolFns.has(fn)) return 'bool';
+    if (strFns.has(fn)) return 'string';
+    return 'any';
+  };
   // domain constants: bare identifiers compared against literals (e.g.
   // flushIntervalSeconds == 15) - declare them as package vars
   const domainConsts: string[] = [];
