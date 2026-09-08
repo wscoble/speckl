@@ -5,6 +5,7 @@ const state = {
   sessionId: null,
   sessions: [],
   specs: [],
+  checks: [],
   streaming: false,
   currentAssistantEl: null,
 };
@@ -57,6 +58,87 @@ function syncHighlightScroll() {
   const pre = $('specHighlight');
   pre.scrollTop = ta.scrollTop;
   pre.scrollLeft = ta.scrollLeft;
+  syncInlineScroll();
+}
+
+// ---------- inline verification (wallaby-style) ----------
+
+const VERDICT_STYLE = {
+  pass: { icon: '✔', cls: 'inl-pass' },
+  violated: { icon: '✘', cls: 'inl-violated' },
+  contradictory: { icon: '✘', cls: 'inl-violated' },
+  error: { icon: '⚠', cls: 'inl-warn' },
+  unexpected: { icon: '⚠', cls: 'inl-warn' },
+};
+
+function verdictLabel(c) {
+  const name = c.check === '(consistency check)' ? 'consistency' : c.check;
+  switch (c.verdict) {
+    case 'pass':
+      return c.check.startsWith('Always') ? `✔ ${name}: proven within depth` : `✔ ${name}: consistent`;
+    case 'violated':
+      return c.advisory ? `⚠ ${name}: possible violation (advisory - degraded model)` : `✘ ${name}: violated`;
+    case 'contradictory':
+      return `✘ ${name}: contradictory constraints`;
+    case 'error':
+      return `⚠ ${name}: solver error`;
+    default:
+      return `⚠ ${name}: unexpected solver result`;
+  }
+}
+
+/** Map each check to a source line: its verify block, else its invariant, else the speck. */
+function annotateChecks(checks) {
+  const layer = $('specInline');
+  layer.innerHTML = '';
+  if (!checks.length) return;
+  const ta = $('specEditor');
+  const lines = ta.value.split('\n');
+  const lh = parseFloat(getComputedStyle($('specHighlight')).lineHeight) || 20;
+  const pre = $('specHighlight');
+
+  for (const c of checks) {
+    // which speck does this file belong to? (e.g. "CallSession.smt2")
+    const speckName = c.file.replace(/\.ir\.smt2$|\.smt2$/, '');
+    let target = -1;
+    const cm = c.check.match(/Always\((\w+)\)/);
+    if (cm) {
+      target = lines.findIndex((l) => new RegExp(`verify\\s+Always\\(${cm[1]}\\)`).test(l));
+      if (target < 0) target = lines.findIndex((l) => new RegExp(`invariant\\s+${cm[1]}\\s*\\{`).test(l));
+    }
+    if (target < 0) {
+      target = lines.findIndex((l) => new RegExp(`speck\\s+${speckName}\\s*\\{`).test(l));
+    }
+    if (target < 0) continue;
+
+    const style = VERDICT_STYLE[c.verdict] ?? VERDICT_STYLE.unexpected;
+    const label = verdictLabel(c);
+    const col = Math.min(lines[target].replace(/\t/g, '    ').length + 2, 72);
+    const tooltip = [label, `solver: ${c.got} (expect ${c.expect})`, c.detail ?? ''].filter(Boolean).join('\n');
+
+    const el = document.createElement('div');
+    el.className = `inl ${style.cls}`;
+    el.style.top = `${14 + target * lh}px`;
+    el.style.left = `calc(32px + ${col}ch)`;
+    el.textContent = label;
+    el.title = tooltip;
+    layer.appendChild(el);
+
+    const dot = document.createElement('span');
+    dot.className = `inl-dot ${style.cls}`;
+    dot.style.top = `${14 + target * lh + (lh - 8) / 2}px`;
+    dot.title = tooltip;
+    layer.appendChild(dot);
+  }
+}
+
+function clearAnnotations() {
+  $('specInline').innerHTML = '';
+}
+
+function syncInlineScroll() {
+  const ta = $('specEditor');
+  $('specInline').style.transform = `translate(${-ta.scrollLeft}px, ${-ta.scrollTop}px)`;
 }
 
 // highlight SpeckDL code blocks inside rendered assistant messages
@@ -318,6 +400,7 @@ async function saveAndCompile() {
   out.className = 'output ' + (data.ok ? 'pass' : 'fail');
   await refreshSpecs();
   $('specSelect').value = name;
+  if (data.ok) await verify(); // wallaby-style: save gives you fresh inline verdicts
 }
 
 async function verify() {
@@ -337,6 +420,8 @@ async function verify() {
   const data = await res.json();
   out.textContent = data.report;
   out.className = 'output ' + (data.ok ? 'pass' : 'fail');
+  state.checks = data.checks ?? [];
+  annotateChecks(state.checks);
 }
 
 // ---------- boot ----------
@@ -355,7 +440,10 @@ $('sessionSelect').addEventListener('change', (e) => openSession(e.target.value)
 $('specSelect').addEventListener('change', (e) => openSpec(e.target.value));
 $('saveBtn').addEventListener('click', saveAndCompile);
 $('verifyBtn').addEventListener('click', verify);
-$('specEditor').addEventListener('input', updateHighlight);
+$('specEditor').addEventListener('input', () => {
+  updateHighlight();
+  clearAnnotations(); // verdicts are stale the moment you type
+});
 $('specEditor').addEventListener('scroll', syncHighlightScroll);
 $('specEditor').addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {

@@ -213,101 +213,176 @@ export async function writeSpec(sessionDir: string, name: string, content: strin
   };
 }
 
-export interface VerifyFileResult {
+export interface VerifyCheck {
   file: string;
+  /** e.g. "Always(PhaseInDomain) for 6 steps" or "(consistency check)" */
+  check: string;
   expect: string;
   got: string;
   verdict: 'pass' | 'violated' | 'contradictory' | 'unexpected' | 'error';
+  /** degraded model - result is advisory, not a proof */
+  advisory: boolean;
   detail?: string;
 }
 
 export interface VerifyResult {
   ok: boolean;
   report: string;
-  files: VerifyFileResult[];
+  checks: VerifyCheck[];
+}
+
+/**
+ * Declared checks, in file order: each verify block emits an
+ * `(echo "Checking: …")` banner followed by a `; speckl-expect:` marker.
+ * A file with only a bare `(check-sat)` is a single consistency check.
+ */
+function parseDeclaredChecks(text: string): Array<{ check: string; expect: string; note: string; bmc: boolean }> {
+  const re = /\(echo\s+"Checking:\s*([^"]+)"\)|;\s*speckl-expect:\s*(\w+)(\s*\([^)]*\))?/g;
+  const checks: Array<{ check: string; expect: string; note: string; bmc: boolean }> = [];
+  let pendingName: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m[1] !== undefined) {
+      pendingName = m[1].trim();
+    } else if (m[2] !== undefined) {
+      checks.push({
+        check: pendingName ?? '(consistency check)',
+        expect: m[2],
+        note: m[3]?.trim() ?? '',
+        bmc: pendingName !== null,
+      });
+      pendingName = null;
+    }
+  }
+  return checks;
+}
+
+/** Split solver output into per-check segments: banner, result, raw text. */
+function parseResultSegments(stdout: string): Array<{ banner: string | null; result: string | null; errors: string[]; raw: string }> {
+  const segs: Array<{ banner: string | null; result: string | null; errors: string[]; raw: string }> = [];
+  let cur: { banner: string | null; result: string | null; errors: string[]; raw: string } | null = null;
+  for (const l of stdout.split('\n')) {
+    const t = l.trim();
+    const bm = t.match(/^Checking:\s*(.+)$/);
+    if (bm) {
+      cur = { banner: bm[1].trim(), result: null, errors: [], raw: l + '\n' };
+      segs.push(cur);
+      continue;
+    }
+    if (t === 'sat' || t === 'unsat' || t === 'unknown') {
+      if (!cur) {
+        cur = { banner: null, result: null, errors: [], raw: '' };
+        segs.push(cur);
+      }
+      if (cur.result === null) cur.result = t;
+      cur.raw += l + '\n';
+      continue;
+    }
+    if (cur) {
+      cur.raw += l + '\n';
+      if (t.startsWith('(error')) cur.errors.push(t);
+    }
+  }
+  return segs;
+}
+
+function verdictFor(expect: string, got: string, bmc: boolean): VerifyCheck['verdict'] {
+  if (expect === 'unsat' && got === 'unsat') return 'pass';
+  if (expect === 'sat' && got === 'sat') {
+    // Degraded BMC files: expect was downgraded to a consistency check, but a sat
+    // result on an unrolled Always(...) check is still a bounded counterexample.
+    return bmc ? 'violated' : 'pass';
+  }
+  if (expect === 'unsat' && got === 'sat') return 'violated';
+  if (expect === 'sat' && got === 'unsat') return 'contradictory';
+  return 'unexpected';
 }
 
 /** Compile a spec to Z3 and run the real solver over every emitted .smt2 file. */
 export async function verifySpec(sessionDir: string, name: string): Promise<VerifyResult> {
   if (!NAME_RE.test(name)) {
-    return { ok: false, files: [], report: `Error: invalid spec name "${name}"` };
+    return { ok: false, checks: [], report: `Error: invalid spec name "${name}"` };
   }
   const specPath = join(sessionDir, 'specs', `${name}.speckdl`);
   let specContent: string;
   try {
     specContent = await readFile(specPath, 'utf8');
   } catch {
-    return { ok: false, files: [], report: `Error: spec "${name}" not found. Write it first with write_spec.` };
+    return { ok: false, checks: [], report: `Error: spec "${name}" not found. Write it first with write_spec.` };
   }
   const outDir = join(sessionDir, 'out', name);
   const r = await compile(specPath, outDir, 'z3');
   if (r.code !== 0) {
-    return { ok: false, files: [], report: `Spec "${name}" failed to compile to Z3.\n\n${fmtRun('compile (z3)', r)}` };
+    return { ok: false, checks: [], report: `Spec "${name}" failed to compile to Z3.\n\n${fmtRun('compile (z3)', r)}` };
   }
 
   const smtFiles = await findFiles(outDir, /\.smt2$/);
   if (smtFiles.length === 0) {
-    return { ok: false, files: [], report: `Compile succeeded but no .smt2 files were emitted for "${name}".` };
+    return { ok: false, checks: [], report: `Compile succeeded but no .smt2 files were emitted for "${name}".` };
   }
 
-  const files: VerifyFileResult[] = [];
+  const checks: VerifyCheck[] = [];
   for (const f of smtFiles) {
     const rel = f.slice(outDir.length + 1);
     const text = await readFile(f, 'utf8');
-    const m = text.match(/;\s*speckl-expect:\s*(\w+)\s*(\([^\n]*\))?/);
-    const expect = m?.[1] ?? 'unknown';
-    const note = m?.[2] ?? '';
-    const isBmc = /Checking:/.test(text);
+    const declared = parseDeclaredChecks(text);
     let zr: RunResult;
     try {
       zr = await run(Z3_BIN, [f], undefined, 60_000);
     } catch (e: any) {
-      files.push({ file: rel, expect, got: 'error', verdict: 'error', detail: String(e.message ?? e) });
+      checks.push({ file: rel, check: declared[0]?.check ?? '(solver run)', expect: declared[0]?.expect ?? 'unknown', got: 'error', verdict: 'error', advisory: /degraded/.test(declared[0]?.note ?? ''), detail: String(e.message ?? e) });
       continue;
     }
-    const gotLine = zr.stdout.split('\n').map((l) => l.trim()).find((l) => l === 'sat' || l === 'unsat' || l === 'unknown');
-    const got = gotLine ?? `exit ${zr.code}`;
-    let verdict: VerifyFileResult['verdict'];
-    if (expect === 'unsat' && got === 'unsat') verdict = 'pass';
-    else if (expect === 'sat' && got === 'sat') {
-      // Degraded BMC files: expect was downgraded to a consistency check, but a sat
-      // result on an unrolled Always(...) check is still a bounded counterexample.
-      verdict = isBmc && got === 'sat' ? 'violated' : 'pass';
+    const segs = parseResultSegments(zr.stdout);
+    const count = Math.max(declared.length, segs.length);
+    if (count === 0) {
+      checks.push({ file: rel, check: '(no checks emitted)', expect: ' - ', got: `exit ${zr.code}`, verdict: zr.code === 0 ? 'unexpected' : 'error', advisory: false, detail: zr.stderr || zr.stdout });
+      continue;
     }
-    else if (expect === 'unsat' && got === 'sat') verdict = 'violated';
-    else if (expect === 'sat' && got === 'unsat') verdict = 'contradictory';
-    else if (zr.code !== 0) verdict = 'error';
-    else verdict = 'unexpected';
-    files.push({
-      file: rel,
-      expect: note ? `${expect} ${note}` : expect,
-      got,
-      verdict,
-      detail: verdict === 'violated' ? formatCounterexample(zr.stdout) : verdict === 'error' ? zr.stderr || zr.stdout : undefined,
-    });
+    for (let i = 0; i < count; i++) {
+      const d = declared[i];
+      const s = segs[i];
+      const check = d?.check ?? s?.banner ?? `check ${i + 1}`;
+      const expect = d ? (d.note ? `${d.expect} ${d.note}` : d.expect) : 'unknown';
+      const bmc = d?.bmc ?? !!s?.banner;
+      const advisory = /degraded/.test(d?.note ?? '');
+      const got = s?.result ?? (zr.code !== 0 ? `exit ${zr.code}` : 'unknown');
+      const verdict = s?.result ? verdictFor(d?.expect ?? 'unknown', got, bmc) : 'error';
+      checks.push({
+        file: rel,
+        check,
+        expect,
+        got,
+        verdict,
+        advisory,
+        detail:
+          verdict === 'violated' ? formatCounterexample(s!.raw) :
+          verdict === 'error' ? (s?.errors.join('\n') || zr.stderr || zr.stdout) :
+          undefined,
+      });
+    }
   }
 
-  const degraded = /; skipped:|degraded/.test(specContent);
-  const lines = files.map((f) => {
+  const lines = checks.map((c) => {
     const mark =
-      f.verdict === 'pass' ? 'PASS' :
-      f.verdict === 'violated' ? 'VIOLATED' :
-      f.verdict === 'contradictory' ? 'CONTRADICTORY (constraints unsatisfiable)' :
-      f.verdict === 'error' ? 'SOLVER ERROR' : 'UNEXPECTED';
-    const advisory = /degraded/.test(f.expect) ? ' [advisory - degraded model: counterexample may be spurious due to skipped constructs]' : '';
-    let line = `- ${mark}${advisory}: ${f.file} (expect ${f.expect}, got ${f.got})`;
-    if (f.verdict === 'violated' && f.detail) {
-      const trace = f.detail.split('\n').slice(0, 60).join('\n');
-      line += `\n${trace.split('\n').map((l) => '  ' + l).join('\n')}`;
+      c.verdict === 'pass' ? 'PASS' :
+      c.verdict === 'violated' ? 'VIOLATED' :
+      c.verdict === 'contradictory' ? 'CONTRADICTORY (constraints unsatisfiable)' :
+      c.verdict === 'error' ? 'SOLVER ERROR' : 'UNEXPECTED';
+    const adv = c.advisory ? ' [advisory - degraded model: counterexample may be spurious due to skipped constructs]' : '';
+    let line = `- ${mark}${adv}: ${c.check} - ${c.file} (expect ${c.expect}, got ${c.got})`;
+    if (c.verdict === 'violated' && c.detail) {
+      line += '\n' + c.detail.split('\n').map((l) => '  ' + l).join('\n');
     }
-    if (f.verdict === 'error' && f.detail) line += `\n  ${f.detail.split('\n').slice(0, 20).join('\n  ')}`;
+    if (c.verdict === 'error' && c.detail) line += `\n  ${c.detail.split('\n').slice(0, 20).join('\n  ')}`;
     return line;
   });
-  const ok = files.every((f) => f.verdict === 'pass');
+  const ok = checks.every((c) => c.verdict === 'pass');
+  const degraded = /; skipped:|degraded/.test(specContent);
   const report =
     `Verification of "${name}": ${ok ? 'ALL PASS' : 'FAILURES PRESENT'}\n\n${lines.join('\n')}\n` +
     (degraded ? '\nNote: the spec or output contains skipped/degraded constructs; results are advisory where marked.\n' : '');
-  return { ok, files, report };
+  return { ok, checks, report };
 }
 
 async function findFiles(dir: string, re: RegExp): Promise<string[]> {

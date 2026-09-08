@@ -95,7 +95,7 @@ main {
 #specHighlight, #specEditor {
   position: absolute; inset: 0;
   margin: 0; border: 0; outline: none;
-  padding: 14px 16px;
+  padding: 14px 16px 14px 32px;
   font: 13px/1.55 var(--mono);
   letter-spacing: 0;
   tab-size: 4;
@@ -113,6 +113,37 @@ main {
 }
 #specEditor::selection { background: rgba(78, 161, 255, 0.35); color: transparent; }
 #specEditor::placeholder { color: var(--dim); }
+
+/* inline verification layer (wallaby-style gutter dots + verdicts) */
+#specInline {
+  position: absolute; inset: 0;
+  z-index: 2; pointer-events: none;
+  font: 13px/1.55 var(--mono);
+  color: var(--dim);
+  overflow: hidden;
+}
+#specInline .inl {
+  position: absolute;
+  white-space: pre;
+  pointer-events: auto;
+  padding: 0 6px;
+  border-radius: 4px;
+  cursor: help;
+}
+#specInline .inl-dot {
+  position: absolute;
+  left: 12px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  pointer-events: auto;
+  cursor: help;
+}
+.inl-pass { color: var(--accent2); }
+.inl-violated { color: var(--err); }
+.inl-warn { color: var(--warn); }
+span.inl-dot.inl-pass { background: var(--accent2); }
+span.inl-dot.inl-violated { background: var(--err); }
+span.inl-dot.inl-warn { background: var(--warn); }
 
 /* SpeckDL tokens */
 .tk-comment { color: #5d6b7d; font-style: italic; }
