@@ -89,63 +89,47 @@ main {
 .specToolbar { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
 #specSelect { flex: 0 1 240px; font-family: var(--mono); font-size: 13px; }
 
-/* editor overlay: highlighted pre under a transparent-text textarea.
-   Both layers MUST share identical font/padding/line-height metrics. */
+/* editor: CodeMirror 6 host - theme colors come from the bundle; sizing here */
 #editorWrap { position: relative; flex: 1; min-height: 0; background: var(--bg); }
-#specHighlight, #specEditor {
-  position: absolute; inset: 0;
-  margin: 0; border: 0; outline: none;
-  padding: 14px 16px 14px 32px;
-  font: 13px/1.55 var(--mono);
-  letter-spacing: 0;
-  tab-size: 4;
-  white-space: pre;
-  overflow: auto;
-  background: transparent;
-}
-#specHighlight { pointer-events: none; z-index: 0; }
-#specHighlight code { display: block; }
-#specEditor {
-  z-index: 1;
-  color: transparent;
-  caret-color: var(--text);
-  background: transparent;
-}
-#specEditor::selection { background: rgba(78, 161, 255, 0.35); color: transparent; }
-#specEditor::placeholder { color: var(--dim); }
+#cmHost { position: absolute; inset: 0; }
+#cmHost .cm-editor { height: 100%; }
+#cmHost .cm-scroller { overflow: auto; }
 
-/* inline verification layer (wallaby-style gutter dots + verdicts) */
-#specInline {
-  position: absolute; inset: 0;
-  z-index: 2; pointer-events: none;
-  font: 13px/1.55 var(--mono);
-  color: var(--dim);
-  overflow: hidden;
-}
-#specInline .inl {
-  position: absolute;
-  white-space: pre;
-  pointer-events: auto;
+/* SpeckDL tokens (chat code blocks - the editor uses the CodeMirror theme) */
+.tk-comment { color: #5d6b7d; font-style: italic; }
+.tk-kw      { color: #c792ea; }
+.tk-type    { color: #7ee2a8; }
+.tk-string  { color: #ecc48d; }
+.tk-num     { color: #f78c6c; }
+.tk-op      { color: #89a0b0; }
+
+/* inline verification widgets + gutter dots (rendered by CodeMirror) */
+.inl {
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-left: 12px;
   padding: 0 6px;
   border-radius: 4px;
+  background: rgba(21, 26, 33, 0.9);
+  white-space: pre;
   cursor: help;
 }
-#specInline .inl-dot {
-  position: absolute;
-  left: 12px;
+.inl-dot {
+  display: inline-block;
   width: 8px; height: 8px;
+  margin-top: 5px;
   border-radius: 50%;
-  pointer-events: auto;
   cursor: help;
 }
-.inl-pass { color: var(--accent2); }
-.inl-violated { color: var(--err); }
-.inl-warn { color: var(--warn); }
+.inl-pass, span.inl-dot.inl-pass { color: var(--accent2); background: transparent; }
+.inl-violated, span.inl-dot.inl-violated { color: var(--err); background: transparent; }
+.inl-warn, span.inl-dot.inl-warn { color: var(--warn); background: transparent; }
 span.inl-dot.inl-pass { background: var(--accent2); }
 span.inl-dot.inl-violated { background: var(--err); }
 span.inl-dot.inl-warn { background: var(--warn); }
-
-#specInline.stale .inl, #specInline.stale .inl-dot { opacity: 0.3; transition: opacity 0.3s; }
+.inl.stale, .inl-dot.stale { opacity: 0.3; }
+.cm-verdict-gutter { width: 14px; }
+.cm-verdict-gutter .cm-gutterElement { display: flex; justify-content: center; }
 
 /* live verification status pill */
 .live {

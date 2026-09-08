@@ -13,7 +13,7 @@ const state = {
   dirty: false,
 };
 
-// ---------- SpeckDL syntax highlighting ----------
+// ---------- SpeckDL syntax highlighting (chat code blocks) ----------
 const SPECKL_KEYWORDS = new Set((
   'speck state init invariant action next verify constraint event type import interface ' +
   'service oneof transition input output provenance review derives satisfies author source ' +
@@ -44,150 +44,42 @@ function highlightSpeck(src) {
     last = m.index + full.length;
   }
   out += esc(src.slice(last));
-  return out + '\n'; // trailing newline keeps last line height consistent
+  return out + '\n';
 }
 
 const isSpecklSource = (s) => /\bspeck\s+[A-Za-z_]\w*\s*\{/.test(s);
 
-function updateHighlight() {
-  const ta = $('specEditor');
-  const code = $('specHighlight').firstElementChild;
-  code.innerHTML = ta.value ? highlightSpeck(ta.value) : '';
-  syncHighlightScroll();
+// ---------- editor (CodeMirror 6 - see editor-src.js) ----------
+let editor = null;
+
+function editorText() {
+  return editor ? editor.getDoc() : '';
 }
 
-function syncHighlightScroll() {
-  const ta = $('specEditor');
-  const pre = $('specHighlight');
-  pre.scrollTop = ta.scrollTop;
-  pre.scrollLeft = ta.scrollLeft;
-  syncInlineScroll();
+function initEditor() {
+  editor = SpecklEditor.create($('cmHost'), '', {
+    onChange: () => {
+      markAnnotationsStale(); // keep last verdicts visible, dimmed, until the solver catches up
+      state.dirty = true;
+      setLiveStatus('stale');
+      scheduleAutoVerify();
+    },
+    onSave: () => saveAndCompile(false),
+  });
 }
 
-// ---------- inline verification (wallaby-style) ----------
+// ---------- inline verification annotations (delegated to the editor) ----------
 
-const VERDICT_STYLE = {
-  pass: { icon: '✔', cls: 'inl-pass' },
-  violated: { icon: '✘', cls: 'inl-violated' },
-  contradictory: { icon: '✘', cls: 'inl-violated' },
-  error: { icon: '⚠', cls: 'inl-warn' },
-  unexpected: { icon: '⚠', cls: 'inl-warn' },
-};
-
-function verdictLabel(c) {
-  const name = c.check === '(consistency check)' ? 'consistency' : c.check;
-  switch (c.verdict) {
-    case 'pass':
-      return c.check.startsWith('Always') ? `✔ ${name}: proven within depth` : `✔ ${name}: consistent`;
-    case 'violated':
-      return c.advisory ? `⚠ ${name}: possible violation (advisory - degraded model)` : `✘ ${name}: violated`;
-    case 'contradictory':
-      return `✘ ${name}: contradictory constraints`;
-    case 'error':
-      return `⚠ ${name}: solver error`;
-    default:
-      return `⚠ ${name}: unexpected solver result`;
-  }
-}
-
-/** Map each check to a source line: its verify block, else its invariant, else the speck. */
 function annotateChecks(checks) {
-  const layer = $('specInline');
-  layer.innerHTML = '';
-  if (!checks.length) return;
-  const ta = $('specEditor');
-  const lines = ta.value.split('\n');
-  const lh = parseFloat(getComputedStyle($('specHighlight')).lineHeight) || 20;
-  const pre = $('specHighlight');
-
-  for (const c of checks) {
-    // which speck does this file belong to? (e.g. "CallSession.smt2")
-    const speckName = c.file.replace(/\.ir\.smt2$|\.smt2$/, '');
-    let target = -1;
-    const cm = c.check.match(/Always\((\w+)\)/);
-    if (cm) {
-      target = lines.findIndex((l) => new RegExp(`verify\\s+Always\\(${cm[1]}\\)`).test(l));
-      if (target < 0) target = lines.findIndex((l) => new RegExp(`invariant\\s+${cm[1]}\\s*\\{`).test(l));
-    }
-    if (target < 0) {
-      target = lines.findIndex((l) => new RegExp(`speck\\s+${speckName}\\s*\\{`).test(l));
-    }
-    if (target < 0) continue;
-
-    const style = VERDICT_STYLE[c.verdict] ?? VERDICT_STYLE.unexpected;
-    const label = verdictLabel(c);
-    const col = Math.min(lines[target].replace(/\t/g, '    ').length + 2, 72);
-    const tooltip = [label, `solver: ${c.got} (expect ${c.expect})`, c.detail ?? ''].filter(Boolean).join('\n');
-
-    const el = document.createElement('div');
-    el.className = `inl ${style.cls}`;
-    el.style.top = `${14 + target * lh}px`;
-    el.style.left = `calc(32px + ${col}ch)`;
-    el.textContent = label;
-    el.title = tooltip;
-    layer.appendChild(el);
-
-    const dot = document.createElement('span');
-    dot.className = `inl-dot ${style.cls}`;
-    dot.style.top = `${14 + target * lh + (lh - 8) / 2}px`;
-    dot.title = tooltip;
-    layer.appendChild(dot);
-  }
+  editor?.setChecks(checks, false);
 }
 
 function clearAnnotations() {
-  $('specInline').innerHTML = '';
+  editor?.setChecks([], false);
 }
 
 function markAnnotationsStale() {
-  if ($('specInline').childNodes.length) $('specInline').classList.add('stale');
-}
-
-// live verification: re-run save+compile+verify shortly after the user stops typing,
-// wallaby-style. One run at a time; only runs when the text changed since the last run.
-const AUTO_VERIFY_DELAY = 1200;
-function scheduleAutoVerify() {
-  clearTimeout(state.autoTimer);
-  state.autoTimer = setTimeout(autoVerify, AUTO_VERIFY_DELAY);
-}
-
-async function autoVerify() {
-  if (!state.dirty) return;
-  if (state.autoRunning) {
-    scheduleAutoVerify(); // a run is in flight; re-check after it lands
-    return;
-  }
-  const name = $('specSelect').value || $('specEditor').value.match(/speck\s+(\w+)/)?.[1];
-  if (!name || !state.sessionId || !$('specEditor').value.trim()) return;
-  state.dirty = false;
-  state.autoRunning = true;
-  setLiveStatus('busy');
-  try {
-    await saveAndCompile(true);
-  } catch {
-    state.autoRunning = false;
-    setLiveStatus('err');
-  }
-}
-
-function setLiveStatus(s) {
-  const el = $('liveStatus');
-  if (!el) return;
-  const map = {
-    ok: ['live-ok', '● verified'],
-    fail: ['live-fail', '● failures'],
-    busy: ['live-busy', '⟳ verifying'],
-    err: ['live-fail', '● error'],
-    stale: ['live-stale', '● edited'],
-  };
-  const [cls, text] = map[s] ?? map.stale;
-  el.className = 'live ' + cls;
-  el.textContent = text;
-}
-
-function syncInlineScroll() {
-  const ta = $('specEditor');
-  $('specInline').style.transform = `translate(${-ta.scrollLeft}px, ${-ta.scrollTop}px)`;
+  if (state.checks.length) editor?.setChecks(state.checks, true);
 }
 
 // highlight SpeckDL code blocks inside rendered assistant messages
@@ -427,9 +319,8 @@ async function openSpec(name) {
   if (!name || !state.sessionId) return;
   const res = await fetch(`/api/spec/${state.sessionId}/${name}`);
   if (res.ok) {
-    $('specEditor').value = await res.text();
+    editor?.setDoc(await res.text());
     $('specSelect').value = name;
-    updateHighlight();
     clearAnnotations();
     state.dirty = true; // fresh spec, not yet verified in this view
     setLiveStatus('stale');
@@ -438,7 +329,7 @@ async function openSpec(name) {
 }
 
 async function saveAndCompile(quiet) {
-  const name = $('specSelect').value || $('specEditor').value.match(/speck\s+(\w+)/)?.[1] || prompt('Spec name (PascalCase):');
+  const name = $('specSelect').value || editorText().match(/speck\s+(\w+)/)?.[1] || prompt('Spec name (PascalCase):');
   if (!name || !state.sessionId) return;
   const out = $('toolOutput');
   if (!quiet) {
@@ -448,7 +339,7 @@ async function saveAndCompile(quiet) {
   const res = await fetch(`/api/spec/${state.sessionId}/${name}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content: $('specEditor').value }),
+    body: JSON.stringify({ content: editorText() }),
   });
   const data = await res.json();
   if (!quiet) {
@@ -461,7 +352,7 @@ async function saveAndCompile(quiet) {
 }
 
 async function verify(quiet) {
-  const name = $('specSelect').value || $('specEditor').value.match(/speck\s+(\w+)/)?.[1];
+  const name = $('specSelect').value || editorText().match(/speck\s+(\w+)/)?.[1];
   if (!name || !state.sessionId) {
     if (!quiet) $('toolOutput').textContent = 'No spec selected or found in the editor.';
     return;
@@ -483,7 +374,6 @@ async function verify(quiet) {
   }
   state.checks = data.checks ?? [];
   annotateChecks(state.checks);
-  $('specInline').classList.remove('stale');
   state.autoRunning = false;
   setLiveStatus(data.ok ? 'ok' : 'fail');
 }
@@ -504,33 +394,11 @@ $('sessionSelect').addEventListener('change', (e) => openSession(e.target.value)
 $('specSelect').addEventListener('change', (e) => openSpec(e.target.value));
 $('saveBtn').addEventListener('click', saveAndCompile);
 $('verifyBtn').addEventListener('click', verify);
-$('specEditor').addEventListener('input', () => {
-  updateHighlight();
-  markAnnotationsStale(); // keep last verdicts visible, dimmed, until the solver catches up
-  state.dirty = true;
-  setLiveStatus('stale');
-  scheduleAutoVerify();
-});
-$('specEditor').addEventListener('scroll', syncHighlightScroll);
-$('specEditor').addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-    e.preventDefault();
-    saveAndCompile();
-  }
-  // Tab inserts spaces instead of leaving the editor
-  if (e.key === 'Tab' && !e.shiftKey) {
-    e.preventDefault();
-    const ta = e.target;
-    const { selectionStart: s, selectionEnd: en, value } = ta;
-    ta.value = value.slice(0, s) + '    ' + value.slice(en);
-    ta.selectionStart = ta.selectionEnd = s + 4;
-    updateHighlight();
-  }
-});
 
 (async function init() {
   const health = await (await fetch('/api/health')).json();
   $('modelBadge').textContent = health.model;
+  initEditor();
   await loadSessions();
   const first = state.sessions[0];
   if (first) await openSession(first.id);

@@ -41,15 +41,13 @@
         <span id="liveStatus" class="live live-stale">● edited</span>
       </div>
       <div id="editorWrap">
-        <pre id="specHighlight" aria-hidden="true"><code></code></pre>
-        <textarea id="specEditor" wrap="off" spellcheck="false" placeholder="// SpeckDL spec source appears here when the assistant writes one,
-// or select a spec above. You can edit and compile it yourself."></textarea>
-        <div id="specInline"></div>
+        <div id="cmHost"></div>
       </div>
       <pre id="toolOutput" class="output">// compile &amp; verification output</pre>
     </section>
   </main>
 
+  <script src="/vendor/cm.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
