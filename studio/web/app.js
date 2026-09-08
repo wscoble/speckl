@@ -114,6 +114,7 @@ function setLiveStatus(s) {
   if (!el) return;
   const map = {
     ok: ['live-ok', '● verified'],
+    warn: ['live-warn', '⚠ advisory'],
     fail: ['live-fail', '● failures'],
     busy: ['live-busy', '⟳ verifying'],
     err: ['live-fail', '● error'],
@@ -402,11 +403,12 @@ async function verify(quiet) {
   state.checks = data.checks ?? [];
   annotateChecks(state.checks);
   state.autoRunning = false;
-  setLiveStatus(data.ok ? 'ok' : 'fail');
+  const failed = (data.checks ?? []).filter((c) => c.verdict !== 'pass');
+  const allAdvisory = failed.length > 0 && failed.every((c) => c.advisory);
+  setLiveStatus(allAdvisory ? 'warn' : data.ok ? 'ok' : 'fail');
   const pill = $('liveStatus');
-  const failed = data.checks.filter((c) => c.verdict !== 'pass');
   pill.title = failed.length
-    ? failed.map((c) => `${c.verdict.toUpperCase()}${c.advisory ? ' (advisory)' : ''}: ${c.check}`).join('\n')
+    ? failed.map((c) => `${c.advisory ? '⚠ ADVISORY' : c.verdict.toUpperCase()}: ${c.check}`).join('\n')
     : '';
 }
 

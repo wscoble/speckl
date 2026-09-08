@@ -192,6 +192,12 @@ const VERDICT_STYLE = {
   unexpected: 'inl-warn',
 };
 
+/** Advisory results are warnings (orange), not failures (red). */
+function styleForCheck(c) {
+  if (c.verdict === 'violated' && c.advisory) return 'inl-advisory';
+  return VERDICT_STYLE[c.verdict] ?? VERDICT_STYLE.unexpected;
+}
+
 function verdictLabel(c) {
   const name = c.check === '(consistency check)' ? 'consistency' : c.check;
   switch (c.verdict) {
@@ -278,7 +284,7 @@ function buildDecorations(value, state) {
   for (const c of value.checks) {
     const line = lineForCheck(docText, state.doc, c);
     if (!line) continue;
-    const cls = VERDICT_STYLE[c.verdict] ?? VERDICT_STYLE.unexpected;
+    const cls = styleForCheck(c);
     ranges.push(Decoration.line({ class: `cm-verdict-${c.verdict}` }).range(line.from));
     const label = verdictLabel(c);
     const tooltip = [label, `solver: ${c.got} (expect ${c.expect})`, c.detail ?? ''].filter(Boolean).join('\n');
@@ -295,10 +301,11 @@ function verdictGutter() {
       const { checks } = view.state.field(checksField);
       if (!checks.length) return EMPTY_MARKER;
       const docText = view.state.doc.toString();
+      const lineNo = view.state.doc.lineAt(line.from).number;
       for (const c of checks) {
         const cl = lineForCheck(docText, view.state.doc, c);
-        if (cl && cl.number === line.number) {
-          const cls = VERDICT_STYLE[c.verdict] ?? VERDICT_STYLE.unexpected;
+        if (cl && cl.number === lineNo) {
+          const cls = styleForCheck(c);
           const label = verdictLabel(c);
           const tooltip = [label, `solver: ${c.got} (expect ${c.expect})`, c.detail ?? ''].filter(Boolean).join('\n');
           return new DotMarker(cls, tooltip);

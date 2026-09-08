@@ -124,9 +124,10 @@ main {
 .inl-pass, span.inl-dot.inl-pass { color: var(--accent2); background: transparent; }
 .inl-violated, span.inl-dot.inl-violated { color: var(--err); background: transparent; }
 .inl-warn, span.inl-dot.inl-warn { color: var(--warn); background: transparent; }
+.inl-advisory, span.inl-dot.inl-advisory { color: var(--warn); background: transparent; }
 span.inl-dot.inl-pass { background: var(--accent2); }
 span.inl-dot.inl-violated { background: var(--err); }
-span.inl-dot.inl-warn { background: var(--warn); }
+span.inl-dot.inl-warn, span.inl-dot.inl-advisory { background: var(--warn); }
 .inl.stale, .inl-dot.stale { opacity: 0.3; }
 .cm-verdict-gutter { width: 14px; }
 .cm-verdict-gutter .cm-gutterElement { display: flex; justify-content: center; }
@@ -160,6 +161,7 @@ span.inl-dot.inl-warn { background: var(--warn); }
   cursor: help;
 }
 .live-ok { color: var(--accent2); border-color: var(--accent2); }
+.live-warn { color: var(--warn); border-color: var(--warn); }
 .live-fail { color: var(--err); border-color: var(--err); }
 .live-busy { color: var(--accent); border-color: var(--accent); }
 .live-stale { color: var(--warn); border-color: var(--warn); }
