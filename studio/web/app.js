@@ -82,6 +82,48 @@ function markAnnotationsStale() {
   if (state.checks.length) editor?.setChecks(state.checks, true);
 }
 
+// live verification: re-run save+compile+verify shortly after the user stops typing,
+// wallaby-style. One run at a time; only runs when the text changed since the last run.
+const AUTO_VERIFY_DELAY = 1200;
+function scheduleAutoVerify() {
+  clearTimeout(state.autoTimer);
+  state.autoTimer = setTimeout(autoVerify, AUTO_VERIFY_DELAY);
+}
+
+async function autoVerify() {
+  if (!state.dirty) return;
+  if (state.autoRunning) {
+    scheduleAutoVerify(); // a run is in flight; re-check after it lands
+    return;
+  }
+  const name = $('specSelect').value || editorText().match(/speck\s+(\w+)/)?.[1];
+  if (!name || !state.sessionId || !editorText().trim()) return;
+  state.dirty = false;
+  state.autoRunning = true;
+  setLiveStatus('busy');
+  try {
+    await saveAndCompile(true);
+  } catch {
+    state.autoRunning = false;
+    setLiveStatus('err');
+  }
+}
+
+function setLiveStatus(s) {
+  const el = $('liveStatus');
+  if (!el) return;
+  const map = {
+    ok: ['live-ok', '● verified'],
+    fail: ['live-fail', '● failures'],
+    busy: ['live-busy', '⟳ verifying'],
+    err: ['live-fail', '● error'],
+    stale: ['live-stale', '● edited'],
+  };
+  const [cls, text] = map[s] ?? map.stale;
+  el.className = 'live ' + cls;
+  el.textContent = text;
+}
+
 // highlight SpeckDL code blocks inside rendered assistant messages
 function highlightChatCode(scopeEl) {
   for (const codeEl of scopeEl.querySelectorAll('.body pre code')) {
@@ -382,8 +424,8 @@ $('chatInput').addEventListener('keydown', (e) => {
 $('newSession').addEventListener('click', newSession);
 $('sessionSelect').addEventListener('change', (e) => openSession(e.target.value));
 $('specSelect').addEventListener('change', (e) => openSpec(e.target.value));
-$('saveBtn').addEventListener('click', saveAndCompile);
-$('verifyBtn').addEventListener('click', verify);
+$('saveBtn').addEventListener('click', () => saveAndCompile(false));
+$('verifyBtn').addEventListener('click', () => verify(false));
 
 (async function init() {
   const health = await (await fetch('/api/health')).json();

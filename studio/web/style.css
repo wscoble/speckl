@@ -152,6 +152,12 @@ span.inl-dot.inl-warn { background: var(--warn); }
   border: 1px solid var(--border);
   color: var(--dim);
   margin-left: auto;
+  min-width: 88px;
+  text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color 0.2s, border-color 0.2s;
+  cursor: help;
 }
 .live-ok { color: var(--accent2); border-color: var(--accent2); }
 .live-fail { color: var(--err); border-color: var(--err); }
