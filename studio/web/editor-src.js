@@ -2,7 +2,7 @@
 // Provides: line numbers, code folding on {...} blocks, SpeckDL syntax highlighting,
 // and wallaby-style inline verification annotations (gutter dots + verdict widgets).
 import {
-  EditorView, Decoration, WidgetType, GutterMarker, gutter, keymap,
+  EditorView, Decoration, WidgetType, GutterMarker, gutter, keymap, lineNumbers,
 } from '@codemirror/view';
 import {
   EditorState, StateField, StateEffect,
@@ -11,9 +11,10 @@ import {
   defaultKeymap, history, historyKeymap, indentWithTab,
 } from '@codemirror/commands';
 import {
-  StreamLanguage, foldGutter, foldService, syntaxHighlighting, HighlightStyle,
+  StreamLanguage, foldGutter, foldService, foldable, syntaxHighlighting, HighlightStyle,
 } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
+import { parseSpeckContent } from '@speckl/parser';
 
 // ---------- SpeckDL tokenizer ----------
 
@@ -64,25 +65,56 @@ const specklHighlight = syntaxHighlighting(HighlightStyle.define([
   { tag: t.number, color: '#f78c6c' },
 ]));
 
-// ---------- folding: any line with `{` folds to its matching `}` line ----------
+// ---------- folding: AST-driven, via the real SpeckDL compiler parser ----------
 
-const specklFoldService = foldService.of((state, from) => {
+/**
+ * Fold ranges come from the compiler's own AST (startLine/endLine spans),
+ * not brace matching - so folds follow the grammar, not the punctuation,
+ * and stay correct even when braces appear in comments or strings.
+ * The parser runs in the browser; it is pure line-walking with no I/O.
+ */
+function computeFoldRanges(doc) {
+  let ast;
+  try {
+    ast = parseSpeckContent(doc.toString());
+  } catch {
+    return []; // unparseable input: no folds rather than wrong folds
+  }
+  const ranges = [];
+  const clamp = (n) => Math.min(Math.max(1, n), doc.lines);
+  const spanToRange = (s, e) => {
+    const startL = doc.line(clamp(s));
+    const endL = doc.line(clamp(e));
+    const brace = startL.text.indexOf('{');
+    if (brace < 0) return null; // single-line or braceless: nothing to fold
+    return { from: startL.from + brace + 1, to: endL.to };
+  };
+  for (const speck of ast.specks ?? []) {
+    const r = spanToRange(speck.startLine ?? 1, speck.endLine ?? 1);
+    if (r) ranges.push(r);
+    for (const m of speck.members ?? []) {
+      if (!m || typeof m !== 'object' || m.startLine === undefined || m.endLine === undefined) continue;
+      const mr = spanToRange(m.startLine, m.endLine);
+      if (mr) ranges.push(mr);
+    }
+  }
+  return ranges;
+}
+
+const foldsField = StateField.define({
+  create: () => [],
+  update(value, tr) {
+    if (!tr.docChanged && !tr.effects.some((e) => e.is(setChecksEffect))) return value;
+    return computeFoldRanges(tr.state.doc);
+  },
+});
+
+const astFoldService = foldService.of((state, from) => {
+  const ranges = state.field(foldsField);
   const line = state.doc.lineAt(from);
-  const openCol = line.text.indexOf('{');
-  if (openCol < 0) return null;
-  let depth = 0;
-  for (let pos = line.from + openCol; pos < state.doc.length; pos++) {
-    const ch = state.doc.sliceString(pos, pos + 1);
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        const closeLine = state.doc.lineAt(pos);
-        if (closeLine.number > line.number) {
-          return { from: line.from + openCol + 1, to: closeLine.to };
-        }
-        return null;
-      }
+  for (const r of ranges) {
+    if (state.doc.lineAt(r.from).number === line.number) {
+      return { from: r.from, to: r.to };
     }
   }
   return null;
@@ -244,7 +276,7 @@ export function create(host, initialDoc, handlers) {
       extensions: [
         lineNumbers(),
         foldGutter(),
-        specklFoldService,
+        astFoldService,
         specklMode,
         specklHighlight,
         history(),
