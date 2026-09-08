@@ -277,7 +277,19 @@ export type MemberNode = (
   | ActionNode
   | ComponentNode
   | ServiceNode
+  | InvariantMemberNode
 ) & LineSpan;
+
+/**
+ * Invariant block parsed as a first-class member (v0.3.2). The body is a
+ * single boolean expression in source form; downstream generators parse it
+ * with the typed expression parser rather than scraping raw source.
+ */
+export interface InvariantMemberNode {
+  type: 'invariant';
+  name: string;
+  expr: string;
+}
 
 export interface TypeExpr {
   type: 'primitive' | 'record' | 'list' | 'set' | 'map' | 'ident';
@@ -448,7 +460,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     // Check for block-opening members (those that open braces on the same line)
     const blockStarters = ['state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
       'state {', 'init {', 'verify ', 'constraint ', 'input:', 'output:', 'service ', 'oneof ', 'transition ',
-      'state as ', 'type ', 'component '];
+      'state as ', 'type ', 'component ', 'invariant '];
     const isBlockStarter = blockStarters.some(s => line.startsWith(s));
 
     // Handle single-line metadata members that aren't block-starters:
@@ -615,6 +627,9 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
   }
   if (firstLine.startsWith('action ')) {
     return parseActionBlockMultiline(lines, startIndex, startBraceCount);
+  }
+  if (firstLine.startsWith('invariant ')) {
+    return parseInvariantBlockMultiline(lines, startIndex, startBraceCount);
   }
   if (firstLine.startsWith('component ')) {
     return parseComponentBlockMultiline(lines, startIndex, startBraceCount);
@@ -1483,6 +1498,22 @@ function parseInitBlockMultiline(lines: string[], startIndex: number, startBrace
   }
   if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
   return parseInitBlock(stmts.join('\n'));
+}
+
+/**
+ * Parse an `invariant Name { expr }` block into a first-class member.
+ */
+function parseInvariantBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InvariantMemberNode {
+  const firstLine = lines[startIndex].trim();
+  const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
+  const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
+  const body = lines
+    .slice(startIndex + 1, endIndex)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('//') && !l.startsWith('/*'))
+    .join(' ');
+  return { type: 'invariant', name, expr: body.trim() };
 }
 
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {

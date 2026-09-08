@@ -7,7 +7,8 @@ import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
 import { generateTypeScriptStateMachine } from './generators/typescript-state-machine.js';
 import { generateProtobuf } from './generators/protobuf.js';
-import { generateZ3, Z3Options, parseInvariantsFromSource, parseNextFromSource } from './generators/z3.js';
+import { generateZ3, Z3Options, parseNextFromSource } from './generators/z3.js';
+import type { InvariantMemberNode } from './parser.js';
 import { generateZ3FromIR } from './generators/z3-from-ir.js';
 import { generateRust } from './generators/rust.js';
 import { generateGo } from './generators/go.js';
@@ -143,7 +144,16 @@ async function main() {
     generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
     console.log('\nGenerating Z3 SMT-LIB2 (AST-driven, state machine + transitions)...');
     for (const speck of ast.specks) {
-      const invariants = parseInvariantsFromSource(rawSource, speck.name);
+      // Invariants are first-class AST members now; wrap their expression in
+      // the statement shape the Z3 generator consumes. (Legacy raw-source
+      // scraping in parseInvariantsFromSource is retired.)
+      const invariants = speck.members
+        .filter((m): m is InvariantMemberNode => m.type === 'invariant')
+        .map((m) => ({
+          type: 'invariant' as const,
+          name: m.name,
+          statements: [{ type: 'require' as const, expr: m.expr }],
+        }));
       const nextNode = parseNextFromSource(rawSource, speck.name);
       (speck as any)._invariants = invariants;
       (speck as any)._next = nextNode;

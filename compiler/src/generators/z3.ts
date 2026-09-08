@@ -49,6 +49,14 @@ export interface NextNode {
   actions: string[]; // action names separated by |
 }
 
+// Words reserved by SMT-LIB2 that a SpeckDL identifier may legally use.
+// Renamed with a `_v` suffix when declared as SMT constants.
+const SMT_RESERVED_WORDS = new Set([
+  'forall', 'exists', 'let', 'par', 'assert', 'check-sat', 'get-model',
+  'get-value', 'get-unsat-core', 'declare-const', 'declare-fun', 'define-fun',
+  'set-logic', 'set-option', 'push', 'pop', 'exit', 'root-obj',
+]);
+
 /**
  * Generate Z3 SMT-LIB2 from a SpeckDL AST.
  */
@@ -181,7 +189,19 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   // Step 2: Declare state variables as constants
   lines.push('');
   lines.push('; --- State Variables ---');
-  const stateVars = stateNode?.variables ?? [];
+  // SMT-LIB2 reserves identifiers like `exists`/`forall`; a user state
+  // variable with one of those names would collide with quantifier syntax
+  // and trip the sanitizer's leak detection. Rename at the SMT boundary and
+  // keep the original→safe map for expression translation.
+  const varRename = new Map<string, string>();
+  const stateVars = (stateNode?.variables ?? []).map((v) => {
+    if (SMT_RESERVED_WORDS.has(v.name)) {
+      const safe = `${v.name}_v`;
+      varRename.set(v.name, safe);
+      return { ...v, name: safe };
+    }
+    return v;
+  });
   const allTypeRefs: string[] = [];
 
   for (const v of stateVars) {
@@ -219,7 +239,7 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
     lines.push('');
     lines.push('; --- Invariants ---');
     for (const inv of allInvariants) {
-      emitInvariant(lines, inv, stateVars);
+      emitInvariant(lines, inv, stateVars, varRename);
     }
   }
 
@@ -248,7 +268,7 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
     lines.push('');
     lines.push('; --- Action Transition Predicates ---');
     for (const action of actions) {
-      emitActionTransition(lines, action, stateVars);
+      emitActionTransition(lines, action, stateVars, varRename);
     }
 
     // Step 6: Emit transition relation (next: A | B | C ...)
@@ -261,9 +281,16 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   if (verifies.length > 0 && actions.length > 0) {
     lines.push('');
     lines.push('; --- Bounded Model Checking ---');
-    const declaredSteps = new Set<string>();
     for (const v of verifies) {
-      emitBMC(lines, speck.name, v, allInvariants, actions, nextNode, stateVars, options, declaredSteps, initNode ?? null);
+      // Each verify is an independent query: z3 assertions accumulate across
+      // check-sat calls, so a section's property-negation assert would leak
+      // into every later section's solver context. Isolate with push/pop.
+      // Each section re-declares its own step copies: the pop below erases
+      // section-local declarations, so declaredSteps cannot be shared.
+      const declaredSteps = new Set<string>();
+      lines.push('(push)');
+      emitBMC(lines, speck.name, v, allInvariants, actions, nextNode, stateVars, options, declaredSteps, initNode ?? null, varRename);
+      lines.push('(pop)');
     }
   }
 
@@ -468,6 +495,55 @@ function emitRecordSort(lines: string[], name: string, fields: Map<string, strin
 
 // --- State variable emission ---
 
+import { translateExpr as translateIRExpr, containsParseFailure } from './z3-from-ir.js';
+import { parseStringToIRExpr } from '../ir/lower.js';
+
+/**
+ * Translate an invariant body expression via the typed IR expression parser
+ * and tree-walking SMT translator (structured, no string manipulation).
+ * Falls back to the legacy regex translator when the expression does not
+ * parse as typed IR - the SMT sanitizer guards that path.
+ */
+/** Rename the leading identifier of an assignment target (base of `x[...]`). */
+function renameTarget(t: string, renameMap?: Map<string, string>): string {
+  if (!renameMap || renameMap.size === 0) return t;
+  return t.replace(/^[A-Za-z_]\w*/, (m) => renameMap.get(m) ?? m);
+}
+
+function translateInvariantExpr(expr: string, stateVars: StateVar[], suffix: string, renameMap?: Map<string, string>): string {
+  try {
+    // Post-state notation (x') has no typed-IR representation - the regex
+    // translator maps it to x_post and the caller degrades to a consistency
+    // check (documented limitation). Keep those on the legacy path.
+    // Quantifier SUGAR (forall x in coll: … / let x := …) is likewise not
+    // fully lowered by the typed path yet - legacy handles it explicitly.
+    // A variable merely NAMED `exists` does not trigger the fallback.
+    if (expr.includes("'") || /\b(forall|exists)\s+\w+\s+in\b/.test(expr) || /\blet\s+\w+\s*:=/.test(expr)) {
+      return translateExpr(expr, stateVars, suffix);
+    }
+    const tree = parseStringToIRExpr(expr);
+    if (containsParseFailure(tree)) {
+      return translateExpr(expr, stateVars, suffix);
+    }
+    const varNames = new Set(stateVars.map((v) => v.name));
+    const rename = renameMap ? (n: string) => renameMap.get(n) ?? n : undefined;
+    const smt = translateIRExpr(tree, { stateVars: varNames, suffix, rename });
+    // Fidelity check: every state variable the source references must appear
+    // in the translation. Silent mangling (e.g. set-literal sugar lowered to
+    // a bare select) otherwise produces valid-looking but wrong SMT.
+    const referenced = stateVars
+      .filter((v) => new RegExp(`\\b${v.name}\\b`).test(expr) || new RegExp(`\\b${v.name}\\b`).test(expr.replace(/'/g, "")))
+      .map((v) => v.name);
+    const missing = referenced.filter((n) => !smt.includes(n));
+    if (missing.length) {
+      return translateExpr(expr, stateVars, suffix);
+    }
+    return smt;
+  } catch {
+    return translateExpr(expr, stateVars, suffix);
+  }
+}
+
 function emitStateVar(lines: string[], v: StateVar, _allTypeRefs: string[]): void {
   const sort = z3Sort(v.typeExpr);
   const comment = v.defaultInit ? ` ; default: ${v.defaultInit}` : '';
@@ -476,7 +552,7 @@ function emitStateVar(lines: string[], v: StateVar, _allTypeRefs: string[]): voi
 
 // --- Invariant emission ---
 
-function emitInvariant(lines: string[], inv: InvariantNode, stateVars: StateVar[]): void {
+function emitInvariant(lines: string[], inv: InvariantNode, stateVars: StateVar[], renameMap?: Map<string, string>): void {
   lines.push(`(define-fun ${inv.name} () Bool`);
   lines.push('  (and');
 
@@ -487,7 +563,7 @@ function emitInvariant(lines: string[], inv: InvariantNode, stateVars: StateVar[
         lines.push(`    ${stmt.expr}`);
         continue;
       }
-      const z3Expr = translateExpr(stmt.expr, stateVars, '');
+      const z3Expr = translateInvariantExpr(stmt.expr, stateVars, '', renameMap);
       lines.push(`    ${z3Expr}`);
     } else if (stmt.type === 'forall') {
       // forall var in domain: expr
@@ -910,7 +986,7 @@ function convertOp(expr: string, op: string, smtOp: string): string {
 
 // --- Action transition predicate emission ---
 
-function emitActionTransition(lines: string[], action: ActionNode, stateVars: StateVar[]): void {
+function emitActionTransition(lines: string[], action: ActionNode, stateVars: StateVar[], renameMap?: Map<string, string>): void {
   const funName = `${action.name}Enabled`;
   const nextName = `${action.name}Step`;
 
@@ -931,7 +1007,7 @@ function emitActionTransition(lines: string[], action: ActionNode, stateVars: St
     lines.push(`(define-fun ${funName} () Bool`);
     lines.push('  (and');
     for (const g of guards) {
-      const z3Expr = translateExpr(g, stateVars, '');
+      const z3Expr = translateInvariantExpr(g, stateVars, '', renameMap);
       lines.push(`    ${z3Expr}`);
     }
     lines.push('  )');
@@ -945,12 +1021,12 @@ function emitActionTransition(lines: string[], action: ActionNode, stateVars: St
     for (const a of assigns) {
       // a.target becomes post-state, RHS reads pre-state
       // Target: if it's a simple name, post-state; if indexed, translate
-      const z3RHS = translateExpr(a.expr, stateVars, '');
+      const z3RHS = translateInvariantExpr(a.expr, stateVars, '', renameMap);
       if (a.target.includes('[')) {
-        const z3Target = translateExpr(a.target, stateVars, "_post");
+        const z3Target = translateExpr(renameTarget(a.target, renameMap), stateVars, "_post");
         lines.push(`    (= ${z3Target} ${z3RHS})`);
       } else {
-        lines.push(`    (= ${a.target}_post ${z3RHS})`);
+        lines.push(`    (= ${renameTarget(a.target, renameMap)}_post ${z3RHS})`);
       }
     }
     lines.push('  )');
@@ -987,7 +1063,8 @@ function emitNextTransition(
       const hasStep = action.statements.some(s => s.type === 'assign');
 
       if (hasEnabled && hasStep) {
-        lines.push(`    (and (${enabled}) (${step}))`);
+        // Nullary define-funs are referenced by bare name, not application.
+        lines.push(`    (and ${enabled} ${step})`);
       } else if (hasEnabled) {
         lines.push(`    (and (${enabled})`);
         lines.push('      (and');
@@ -1026,7 +1103,8 @@ function emitBMC(
   stateVars: StateVar[],
   options: Z3Options,
   declaredSteps: Set<string> = new Set(),
-  initNode: InitNode | null = null
+  initNode: InitNode | null = null,
+  renameMap?: Map<string, string>
 ): void {
   const depth = verify.depth || options.verifyDepth;
   const temporalExpr = verify.temporalExpr;
@@ -1064,9 +1142,10 @@ function emitBMC(
   const initAssigns: { target: string; expr: string }[] =
     (initNode?.assignments ?? []).map(a => ({ target: a.name, expr: a.expr }));
   for (const a of initAssigns) {
-    const z3Target = a.target.includes('[')
-      ? translateExpr(a.target, stateVars, '_0')
-      : `${a.target}_0`;
+    const safeTarget = renameTarget(a.target, renameMap);
+    const z3Target = safeTarget.includes('[')
+      ? translateExpr(safeTarget, stateVars, '_0')
+      : `${safeTarget}_0`;
     const z3Expr = translateExpr(a.expr, stateVars, '_0');
     lines.push(`    (= ${z3Target} ${z3Expr})`);
   }
@@ -1117,13 +1196,16 @@ function emitBMC(
         if (s.type === 'precondition' || s.type === 'require') {
           guards.push(s.expr);
         } else if (s.type === 'assign') {
+          // Rename assignment targets the same way state vars were renamed,
+          // so `exists` targets match the renamed declaration `exists_v`.
+          const safeTarget = renameMap?.get(s.target) ?? s.target;
           if (s.target.includes('[')) {
-            const z3LHS = translateExpr(s.target, stateVars, `_${i + 1}`);
-            const z3RHS = translateExpr(s.expr, stateVars, `_${i}`);
+            const z3LHS = translateExpr(renameTarget(s.target, renameMap), stateVars, `_${i + 1}`);
+            const z3RHS = translateInvariantExpr(s.expr, stateVars, `_${i}`, renameMap);
             stepAssigns.push(`(= ${z3LHS} ${z3RHS})`);
           } else {
-            const z3RHS = translateExpr(s.expr, stateVars, `_${i}`);
-            stepAssigns.push(`(= ${s.target}_${i + 1} ${z3RHS})`);
+            const z3RHS = translateInvariantExpr(s.expr, stateVars, `_${i}`, renameMap);
+            stepAssigns.push(`(= ${safeTarget}_${i + 1} ${z3RHS})`);
           }
         }
       }
@@ -1133,7 +1215,7 @@ function emitBMC(
 
         // Guards at step i
         for (const g of guards) {
-          const z3Expr = translateExpr(g, stateVars, `_${i}`);
+          const z3Expr = translateInvariantExpr(g, stateVars, `_${i}`, renameMap);
           lines.push(`      ${z3Expr}`);
         }
 
@@ -1145,7 +1227,7 @@ function emitBMC(
         // Frame: unchanged vars
         const changedVars = new Set(action.statements
           .filter(s => s.type === 'assign')
-          .map(s => s.target.replace(/\[.*\]/, '')));
+          .map(s => renameMap?.get(s.target.replace(/\[.*\]/, '')) ?? s.target.replace(/\[.*\]/, '')));
         for (const v of stateVars) {
           if (!changedVars.has(v.name)) {
             lines.push(`      (= ${v.name}_${i + 1} ${v.name}_${i})`);
@@ -1186,7 +1268,7 @@ function emitBMC(
       // Emit invariant instances BEFORE the property assertion — SMT-LIB2
       // requires define-funs to precede their use.
       for (let i = 0; i <= depth; i++) {
-        emitInvariantInstance(lines, inv, stateVars, i);
+        emitInvariantInstance(lines, inv, stateVars, i, renameMap);
       }
 
       if (!usesPostState) {
@@ -1240,7 +1322,7 @@ function emitBMC(
     for (let i = 0; i <= depth; i++) {
       const inv = invariants.find(inv => inv.name === invariantName);
       if (inv) {
-        emitInvariantInstance(lines, inv, stateVars, i);
+        emitInvariantInstance(lines, inv, stateVars, i, renameMap);
       }
     }
 
@@ -1265,13 +1347,13 @@ function extractInvariantName(temporalExpr: string): string | null {
   return match ? match[1] : null;
 }
 
-function emitInvariantInstance(lines: string[], inv: InvariantNode, stateVars: StateVar[], step: number): void {
+function emitInvariantInstance(lines: string[], inv: InvariantNode, stateVars: StateVar[], step: number, renameMap?: Map<string, string>): void {
   lines.push(`(define-fun ${inv.name}_${step} () Bool`);
   lines.push('  (and');
 
   for (const stmt of inv.statements) {
     if (stmt.type === 'require') {
-      const z3Expr = translateExpr(stmt.expr, stateVars, `_${step}`);
+      const z3Expr = translateInvariantExpr(stmt.expr, stateVars, `_${step}`, renameMap);
       lines.push(`    ${z3Expr}`);
     } else if (stmt.type === 'forall') {
       const domainSort = inferDomainSort(stmt.domain, stateVars);

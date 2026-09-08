@@ -60,6 +60,8 @@ function printMember(member: MemberNode): string[] {
       }
       return [`constraint: ${member.expr}`];
     }
+    case 'invariant':
+      return [`invariant ${member.name} {`, `    ${member.expr}`, `}`];
     case 'verify':
       return [printVerify(member)];
     case 'state':
