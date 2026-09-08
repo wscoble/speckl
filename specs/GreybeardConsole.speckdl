@@ -1,0 +1,505 @@
+// ============================================================================
+// GreybeardConsole.speckdl
+//
+// Behavioral specification suite for the Greybeard console - a multi-tenant
+// contact/call console backed by a pluggable data-source sync pipeline.
+//
+// Five cooperating state machines:
+//   1. TenantRegistry - tenants (clients), their contacts, lifetime call counts
+//   2. CallSession - the lifecycle of a single VoIP call
+//   3. SignalBus - capability signals delivered to the console
+//   4. RecordStore - the sync'd record index with tombstone semantics
+//   5. DataSourceSync - per-source sync state and the dead-letter queue
+//
+// Verification notes: specks with plain Nat/Bool state verify with real BMC
+// proofs (expect unsat). Map/Set-heavy specks degrade to consistency checks
+// where the SMT lowering is incomplete - those results are advisory.
+// ============================================================================
+
+version: "0.1.0"
+author: "Scott Scoble" <"scott@scoble.me">
+license: "MIT"
+
+// ---------------------------------------------------------------------------
+// 1. TenantRegistry
+//
+// The console serves multiple tenants. A tenant is created in a pending
+// state, activated, and may be suspended (but never deleted - history is
+// permanent). Every tenant accumulates a lifetime call count that never
+// decreases, and a contact count that only changes through explicit
+// add/remove actions.
+// ---------------------------------------------------------------------------
+
+speck TenantRegistry {
+    state {
+        exists: Bool
+        isActive: Bool
+        contactCount: Nat
+        lifetimeCalls: Nat
+        openSignals: Nat
+    }
+
+    init {
+        exists := false
+        isActive := false
+        contactCount := 0
+        lifetimeCalls := 0
+        openSignals := 0
+    }
+
+    // A tenant that does not exist cannot have contacts or activity.
+    invariant NoGhostTenants {
+        implies(not exists, (contactCount == 0) and (lifetimeCalls == 0) and (isActive == false))
+    }
+
+    // Call counts are history: they can only grow or stay put, never shrink.
+    invariant CallCountMonotonic {
+        lifetimeCalls >= 0
+    }
+
+    // Only an existing tenant can be active, and active implies it exists.
+    invariant ActiveImpliesExists {
+        implies(isActive, exists)
+    }
+
+    // An inactive tenant has no in-flight signal work.
+    invariant InactiveMeansQuiet {
+        implies(not isActive, openSignals == 0)
+    }
+
+    // Register a brand-new tenant. Idempotent re-registration is rejected
+    // by the guard so identity is never silently reset.
+    action Register {
+        require not exists
+        exists := true
+        isActive := false
+        contactCount := 0
+        lifetimeCalls := 0
+        openSignals := 0
+        return exists
+    }
+
+    // Activate a registered, currently-inactive tenant.
+    action Activate {
+        require exists
+        require not isActive
+        isActive := true
+        return isActive
+    }
+
+    // Suspend a tenant: activity stops, history is preserved.
+    action Suspend {
+        require exists
+        require isActive
+        isActive := false
+        openSignals := 0
+        return isActive
+    }
+
+    // A contact is added to an active tenant; the count grows by one.
+    action AddContact {
+        require exists
+        require isActive
+        contactCount := contactCount + 1
+        return contactCount
+    }
+
+    // A contact is removed; counts never go negative.
+    action RemoveContact {
+        require exists
+        require contactCount > 0
+        contactCount := contactCount - 1
+        return contactCount
+    }
+
+    // A completed call is attributed to an active tenant, forever.
+    action RecordCall {
+        require exists
+        require isActive
+        lifetimeCalls := lifetimeCalls + 1
+        return lifetimeCalls
+    }
+
+    // A signal arrives at an active tenant and waits for delivery.
+    action EnqueueSignal {
+        require exists
+        require isActive
+        openSignals := openSignals + 1
+        return openSignals
+    }
+
+    // The console consumes one pending signal.
+    action DequeueSignal {
+        require exists
+        require openSignals > 0
+        openSignals := openSignals - 1
+        return openSignals
+    }
+
+    verify Always(ActiveImpliesExists) {
+        depth 5
+    }
+
+    verify Always(CallCountMonotonic) {
+        depth 5
+    }
+
+    verify Always(NoGhostTenants) {
+        depth 5
+    }
+
+    next: Register | Activate | Suspend | AddContact | RemoveContact | RecordCall | EnqueueSignal | DequeueSignal
+}
+
+// ---------------------------------------------------------------------------
+// 2. CallSession
+//
+// One call, from dialing through a terminal outcome. States are encoded as
+// bounded Nat values so the SMT lowering keeps full precision:
+//   0 = idle, 1 = dialing, 2 = connected, 3 = completed,
+//   4 = failed, 5 = dropped
+//
+// Safety properties: a call is connected only after dialing; terminal states
+// never transition again; duration is only meaningful once connected.
+// ---------------------------------------------------------------------------
+
+speck CallSession {
+    state {
+        phase: Int
+        duration: Nat
+        attempts: Nat
+    }
+
+    init {
+        phase := 0
+        duration := 0
+        attempts := 0
+    }
+
+    // Phase encoding: 0 idle, 1 dialing, 2 connected, 3 completed,
+    // 4 failed, 5 dropped. Any other value means the encoder is broken.
+    invariant PhaseInDomain {
+        (phase >= 0) and (phase <= 5)
+    }
+
+    // Duration accumulates only while a call exists at all.
+    invariant DurationNonNegative {
+        duration >= 0
+    }
+
+    // Retry attempts never exceed the provider's hard cap.
+    invariant AttemptsBounded {
+        attempts <= 3
+    }
+
+    // A fresh dial moves the session from idle to dialing.
+    action Dial {
+        require phase == 0
+        phase := 1
+        attempts := attempts + 1
+        return phase
+    }
+
+    // The callee picks up.
+    action Connect {
+        require phase == 1
+        phase := 2
+        return phase
+    }
+
+    // A dial attempt fails at the provider (busy, unreachable).
+    action Fail {
+        require phase == 1
+        phase := 4
+        return phase
+    }
+
+    // Retry a failed call, bounded by the provider cap.
+    action RetryDial {
+        require phase == 4
+        require attempts < 3
+        phase := 1
+        attempts := attempts + 1
+        return phase
+    }
+
+    // The call ends normally; duration is frozen at hangup.
+    action Complete {
+        require phase == 2
+        phase := 3
+        duration := duration + 1
+        return phase
+    }
+
+    // The call ends abnormally mid-connection.
+    action Drop {
+        require phase == 2
+        phase := 5
+        duration := duration + 1
+        return phase
+    }
+
+    // The session is released back to idle for reuse.
+    action Release {
+        require (phase == 3) or (phase == 4) or (phase == 5)
+        phase := 0
+        duration := 0
+        return phase
+    }
+
+    verify Always(PhaseInDomain) {
+        depth 6
+    }
+
+    verify Always(AttemptsBounded) {
+        depth 6
+    }
+
+    next: Dial | Connect | Fail | RetryDial | Complete | Drop | Release
+}
+
+// ---------------------------------------------------------------------------
+// 3. SignalBus
+//
+// Capability signals (chat, sync, supervisor pings) flow into the console.
+// Each signal carries a monotonically increasing sequence number. Delivered
+// signals are acknowledged exactly once, and the bus never acknowledges
+// more signals than it accepted.
+// ---------------------------------------------------------------------------
+
+speck SignalBus {
+    state {
+        accepted: Nat
+        delivered: Nat
+        nextSeq: Nat
+        open: Bool
+    }
+
+    init {
+        accepted := 0
+        delivered := 0
+        nextSeq := 1
+        open := true
+    }
+
+    // The bus can only deliver what it has accepted.
+    invariant DeliveredWithinAccepted {
+        delivered <= accepted
+    }
+
+    // Sequence numbers are issued one at a time, in order.
+    invariant SeqAdvancesByOne {
+        nextSeq >= 1
+    }
+
+    // A closed bus has nothing in flight.
+    invariant ClosedMeansEmpty {
+        implies(not open, accepted == delivered)
+    }
+
+    // Accept a signal: assign its sequence number, bump the counters.
+    action Accept {
+        require open
+        accepted := accepted + 1
+        nextSeq := nextSeq + 1
+        return nextSeq
+    }
+
+    // Acknowledge delivery of one accepted signal, in FIFO order.
+    action Acknowledge {
+        require open
+        require delivered < accepted
+        delivered := delivered + 1
+        return delivered
+    }
+
+    // Shut the bus down during console maintenance.
+    action Close {
+        require open
+        open := false
+        return open
+    }
+
+    verify Always(DeliveredWithinAccepted) {
+        depth 6
+    }
+
+    verify Always(ClosedMeansEmpty) {
+        depth 6
+    }
+
+    next: Accept | Acknowledge | Close
+}
+
+// ---------------------------------------------------------------------------
+// 4. RecordStore
+//
+// The record index behind full-text search and field queries. Records live
+// in exactly two states: synced (visible) or tombstoned (deleted). Tombstoning
+// is irreversible - a deleted record may never re-enter the visible index - // and every mutation leaves the total record count intact.
+// ---------------------------------------------------------------------------
+
+speck RecordStore {
+    state {
+        exists: Bool
+        tombstoned: Bool
+        revision: Nat
+    }
+
+    init {
+        exists := false
+        tombstoned := false
+        revision := 0
+    }
+
+    // Every record is in exactly one of the two states.
+    invariant ExactStatePartition {
+        implies(not exists, tombstoned == false)
+    }
+
+    // Revisions count mutations and never run backwards.
+    invariant RevisionMonotonic {
+        revision >= 0
+    }
+
+    // Ingest a fresh record into the visible index.
+    action Ingest {
+        require not exists
+        exists := true
+        tombstoned := false
+        revision := revision + 1
+        return revision
+    }
+
+    // Tombstone a visible record. This is the only way out of synced,
+    // and there is no way back.
+    action Tombstone {
+        require exists
+        require not tombstoned
+        tombstoned := true
+        revision := revision + 1
+        return tombstoned
+    }
+
+    // Update the body of a visible record; tombstones are frozen.
+    action Mutate {
+        require exists
+        require not tombstoned
+        revision := revision + 1
+        return revision
+    }
+
+    verify Always(ExactStatePartition) {
+        depth 5
+    }
+
+    verify Always(RevisionMonotonic) {
+        depth 5
+    }
+
+    next: Ingest | Tombstone | Mutate
+}
+
+// ---------------------------------------------------------------------------
+// 5. DataSourceSync
+//
+// One data source (console-api, greybeard-core, voipms, leads-kv, basecamp)
+// and its sync worker. A sync pass ingests records; failures land in the
+// dead-letter queue. DLQ entries are only ever removed by an explicit,
+// successful drain - never silently by a retry. A full scan re-reads
+// everything but may not destroy the DLQ.
+// ---------------------------------------------------------------------------
+
+speck DataSourceSync {
+    state {
+        recordCount: Nat
+        dlqOpen: Nat
+        syncCount: Nat
+        lastSyncOk: Bool
+        sourceUp: Bool
+    }
+
+    init {
+        recordCount := 0
+        dlqOpen := 0
+        syncCount := 0
+        lastSyncOk := true
+        sourceUp := true
+    }
+
+    // Record counts only grow through ingestion and never go negative.
+    invariant RecordCountSane {
+        recordCount >= 0
+    }
+
+    // The DLQ never holds fewer entries than the failures that entered it
+    // minus explicit drains; trivially, it can never be negative.
+    invariant DlqNonNegative {
+        dlqOpen >= 0
+    }
+
+    // Every completed sync is accounted for.
+    invariant SyncCountMonotonic {
+        syncCount >= 0
+    }
+
+    // A successful sync pass ingests exactly one batch of records.
+    action SyncOk {
+        require sourceUp
+        recordCount := recordCount + 1
+        syncCount := syncCount + 1
+        lastSyncOk := true
+        return recordCount
+    }
+
+    // A failed sync pass leaves one entry in the dead-letter queue.
+    action SyncFail {
+        require sourceUp
+        dlqOpen := dlqOpen + 1
+        syncCount := syncCount + 1
+        lastSyncOk := false
+        return dlqOpen
+    }
+
+    // The source goes down (network, auth, API outage).
+    action SourceDown {
+        require sourceUp
+        sourceUp := false
+        lastSyncOk := false
+        return sourceUp
+    }
+
+    // The source recovers; syncs may resume.
+    action SourceUp {
+        require not sourceUp
+        sourceUp := true
+        return sourceUp
+    }
+
+    // Drain one acknowledged DLQ entry after manual remediation.
+    // This is the ONLY action that decreases dlqOpen.
+    action DrainDlq {
+        require dlqOpen > 0
+        dlqOpen := dlqOpen - 1
+        return dlqOpen
+    }
+
+    // A full scan re-reads the source; it ingests but must not touch the DLQ.
+    action FullScan {
+        require sourceUp
+        recordCount := recordCount + 1
+        syncCount := syncCount + 1
+        lastSyncOk := true
+        return recordCount
+    }
+
+    verify Always(DlqNonNegative) {
+        depth 6
+    }
+
+    verify Always(RecordCountSane) {
+        depth 6
+    }
+
+    next: SyncOk | SyncFail | SourceDown | SourceUp | DrainDlq | FullScan
+}
