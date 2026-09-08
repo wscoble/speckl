@@ -266,6 +266,7 @@ export function sanitizeSMT(text: string): SanitizeResult {
   // Pass 1b: drop duplicate declarations — redeclaration of a constant, sort,
   // or function is an error in SMT-LIB2 (several generators can declare the
   // same name; first declaration wins).
+  const usesPushPop = /\(push\)/.test(text);
   const declaredOnce = new Set<string>();
   for (const it of items) {
     if (!it.isForm || !it.keep) continue;
@@ -274,6 +275,10 @@ export function sanitizeSMT(text: string): SanitizeResult {
     const name = formName(it.text);
     if (!name) continue;
     if (declaredOnce.has(name)) {
+      // Duplicates are only legal under push/pop isolation, which the Z3
+      // state-machine generator uses for per-verify sections. Track whether
+      // When the file uses push/pop isolation, re-declarations are legal - // keep them. Otherwise a duplicate is a generator bug.
+      if (usesPushPop) continue;
       it.keep = false;
       it.comment = `skipped duplicate declaration of ${name}`;
       dropped.push({ name, reason: it.comment });
@@ -307,7 +312,13 @@ export function sanitizeSMT(text: string): SanitizeResult {
         body = it.text.replace(/^\(\s*assert/, '');
       }
       const binders = extractBinders(body);
-      const idents = extractIdentifiers(body);
+      // Comments (`;` to end-of-line) are emitted by the generators as
+      // structure annotations - they are not SMT terms, so their words must
+      // not count as identifiers or trigger leak detection.
+      const bodyClean = body
+        .replace(/"[^"\\]*"/g, '""')
+        .replace(/;[^\n]*/g, ' ');
+      const idents = extractIdentifiers(bodyClean);
 
       // Structural malformations from leaky translation:
       //  - infix operators as siblings ("a <= b" inside a prefix form)
@@ -315,9 +326,11 @@ export function sanitizeSMT(text: string): SanitizeResult {
       //    "forall (select rms rm): ...") — valid SMT is always
       //    `(forall ((x Sort)) ...)` with a double-paren binder list
       //  - operators with no operands ("(+ )")
-      const noStrings = body.replace(/"[^"]*"/g, '""');
+      const noStrings = bodyClean;
       const infixLeak = /[\s](<=|>=|==|->|>|<|and|or|implies)[\s)]/.test(noStrings);
-      const forallSugar = /\b(?:forall|exists)(?!\s*\(\()/.test(noStrings);
+      // Trailing word boundary: identifiers like `exists_v` / `exists_0` are terms,
+      // not quantifier introductions - only flag the keyword form.
+      const forallSugar = /\b(?:forall|exists)\b(?!\s*\(\()/.test(noStrings);
       const emptyOp = /\(\s*(?:[+\-*/]|div|mod)\s*\)/.test(noStrings);
       // Double-wrapped operator applications — `((= a b))` — produced by the
       // escaped-infix fallback regexes running over already-converted forms.

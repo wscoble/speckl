@@ -65,7 +65,7 @@ export function generateZ3FromIR(ir: IR, options: Partial<Z3FromIROptions> = {})
 }
 
 /** True if the expression tree contains a parse-failure placeholder. */
-function containsParseFailure(e: IRExpr): boolean {
+export function containsParseFailure(e: IRExpr): boolean {
   if (e.kind === 'bool_lit' && (e as IRBoolLit).parseFailed) return true;
   const kids: IRExpr[] = [];
   const node = e as unknown as Record<string, unknown>;
@@ -312,7 +312,21 @@ function emitBMC(
  * Translate an IR expression tree to SMT-LIB2 s-expression form.
  * Walks the tree directly — no string manipulation.
  */
-function translateExpr(expr: IRExpr): string {
+interface TranslateOpts {
+  /** State-variable names that should receive the suffix (BMC step unrolling). */
+  stateVars?: Set<string>;
+  /** Suffix appended to state-variable identifiers, e.g. `_3`. */
+  suffix?: string;
+  /** Rename identifiers at emission (SMT reserved-word collision avoidance). */
+  rename?: (name: string) => string;
+}
+
+/**
+ * Translate an IR expression tree to SMT-LIB2 s-expression form.
+ * Walks the tree directly - no string manipulation.
+ * opts suffices state-variable references for per-step BMC instances.
+ */
+export function translateExpr(expr: IRExpr, opts: TranslateOpts = {}): string {
   switch (expr.kind) {
     case 'bool_lit':
       return expr.value ? 'true' : 'false';
@@ -322,8 +336,10 @@ function translateExpr(expr: IRExpr): string {
       return String(expr.value);
     case 'string_lit':
       return `"${expr.value.replace(/"/g, '""')}"`;
-    case 'ident':
-      return expr.name;
+    case 'ident': {
+      const name = opts.rename ? opts.rename(expr.name) : expr.name;
+      return opts.suffix && opts.stateVars?.has(name) ? `${name}${opts.suffix}` : name;
+    }
     case 'field': {
       // Collection constructor sugar: Map.empty / List.empty / Set.empty —
       // translate to a pre-declared constant (see header declarations).
@@ -338,25 +354,25 @@ function translateExpr(expr: IRExpr): string {
         return `(${record}_${expr.field} ${expr.target.name})`;
       }
       // Field access — only valid on record sorts; emit as a select
-      return `(select ${translateExpr(expr.target)} "${expr.field}")`;
+      return `(select ${translateExpr(expr.target, opts)} "${expr.field}")`;
     }
     case 'index':
-      return `(select ${translateExpr(expr.target)} ${translateExpr(expr.index)})`;
+      return `(select ${translateExpr(expr.target, opts)} ${translateExpr(expr.index, opts)})`;
     case 'binop':
-      return translateBinOp(expr);
+      return translateBinOp(expr, opts);
     case 'unop':
-      return translateUnOp(expr);
+      return translateUnOp(expr, opts);
     case 'call':
-      return translateCall(expr);
+      return translateCall(expr, opts);
     default:
       return 'undefined';
   }
 }
 
-function translateBinOp(expr: IRBinOp): string {
+function translateBinOp(expr: IRBinOp, opts: TranslateOpts = {}): string {
   const op = expr.op;
-  const l = translateExpr(expr.left);
-  const r = translateExpr(expr.right);
+  const l = translateExpr(expr.left, opts);
+  const r = translateExpr(expr.right, opts);
   switch (op) {
     case '+': return `(+ ${l} ${r})`;
     case '-': return `(- ${l} ${r})`;
@@ -376,8 +392,8 @@ function translateBinOp(expr: IRBinOp): string {
   }
 }
 
-function translateUnOp(expr: { op: string; operand: IRExpr }): string {
-  const inner = translateExpr(expr.operand);
+function translateUnOp(expr: { op: string; operand: IRExpr }, opts: TranslateOpts = {}): string {
+  const inner = translateExpr(expr.operand, opts);
   switch (expr.op) {
     case '!': return `(not ${inner})`;
     case '-': return `(- ${inner})`;
@@ -385,8 +401,10 @@ function translateUnOp(expr: { op: string; operand: IRExpr }): string {
   }
 }
 
-function translateCall(expr: { fn: string; args: IRExpr[] }): string {
-  const args = expr.args.map(translateExpr).join(' ');
+function translateCall(expr: { fn: string; args: IRExpr[] }, opts: TranslateOpts = {}): string {
+  const args = expr.args.map((a) => translateExpr(a, opts)).join(' ');
+  // implies is SpeckDL sugar for SMT-LIB2's right-leaning implication
+  if (expr.fn === 'implies' && args) return `(=> ${args})`;
   return `(${expr.fn} ${args})`;
 }
 

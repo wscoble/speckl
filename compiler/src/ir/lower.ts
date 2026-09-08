@@ -685,6 +685,9 @@ function lowerExpr(
         target: lowerExpr(e.object, diagnostics, speckName),
         index: lowerExpr(e.index, diagnostics, speckName),
       };
+    case 'parens':
+      // Parenthesized grouping - transparent in the IR.
+      return lowerExpr(e.expr, diagnostics, speckName);
     default:
       diagnostics.push({
         level: 'info',
@@ -738,6 +741,17 @@ function parseExprSafe(
     });
     return { kind: 'bool_lit', value: false, parseFailed: true };
   }
+}
+
+/**
+ * Parse a source expression string into a typed IRExpr, for callers outside
+ * the lower pass (e.g. the Z3 state-machine generator). Parse failure yields
+ * a bool_lit placeholder with parseFailed: true - callers should check
+ * containsParseFailure and fall back.
+ */
+export function parseStringToIRExpr(src: string): IRExpr {
+  const diagnostics: IRDiagnostic[] = [];
+  return parseExprSafe(src, diagnostics, '(inline)');
 }
 
 // ─────────────────────────────────────────────────────────────────────
