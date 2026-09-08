@@ -222,6 +222,8 @@ export interface VerifyCheck {
   verdict: 'pass' | 'violated' | 'contradictory' | 'unexpected' | 'error';
   /** degraded model - result is advisory, not a proof */
   advisory: boolean;
+  /** constructs the Z3 lowering skipped - the remediation path to a real proof */
+  skipped?: string[];
   detail?: string;
 }
 
@@ -326,6 +328,14 @@ export async function verifySpec(sessionDir: string, name: string): Promise<Veri
     const rel = f.slice(outDir.length + 1);
     const text = await readFile(f, 'utf8');
     const declared = parseDeclaredChecks(text);
+    // what the lowering dropped - this is the remediation path to a real proof
+    const skipped = [
+      ...new Set(
+        (text.match(/; skipped:[^\n]*/g) ?? []).map((s) =>
+          s.replace('; skipped:', '').trim(),
+        ),
+      ),
+    ].slice(0, 8);
     let zr: RunResult;
     try {
       zr = await run(Z3_BIN, [f], undefined, 60_000);
@@ -355,6 +365,7 @@ export async function verifySpec(sessionDir: string, name: string): Promise<Veri
         got,
         verdict,
         advisory,
+        skipped: skipped.length ? skipped : undefined,
         detail:
           verdict === 'violated' ? formatCounterexample(s!.raw) :
           verdict === 'error' ? (s?.errors.join('\n') || zr.stderr || zr.stdout) :
@@ -369,7 +380,9 @@ export async function verifySpec(sessionDir: string, name: string): Promise<Veri
       c.verdict === 'violated' ? 'VIOLATED' :
       c.verdict === 'contradictory' ? 'CONTRADICTORY (constraints unsatisfiable)' :
       c.verdict === 'error' ? 'SOLVER ERROR' : 'UNEXPECTED';
-    const adv = c.advisory ? ' [advisory - degraded model: counterexample may be spurious due to skipped constructs]' : '';
+    const adv = c.advisory
+      ? ` [advisory - model incomplete: ${c.skipped?.length ?? '?'} construct(s) skipped from SMT]`
+      : '';
     let line = `- ${mark}${adv}: ${c.check} - ${c.file} (expect ${c.expect}, got ${c.got})`;
     if (c.verdict === 'violated' && c.detail) {
       line += '\n' + c.detail.split('\n').map((l) => '  ' + l).join('\n');

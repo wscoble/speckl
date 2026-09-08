@@ -192,9 +192,9 @@ const VERDICT_STYLE = {
   unexpected: 'inl-warn',
 };
 
-/** Advisory results are warnings (orange), not failures (red). */
+/** Advisory results are neutral information (dim), not warnings. */
 function styleForCheck(c) {
-  if (c.verdict === 'violated' && c.advisory) return 'inl-advisory';
+  if (c.verdict === 'violated' && c.advisory) return 'inl-muted';
   return VERDICT_STYLE[c.verdict] ?? VERDICT_STYLE.unexpected;
 }
 
@@ -204,7 +204,9 @@ function verdictLabel(c) {
     case 'pass':
       return c.check.startsWith('Always') ? `✔ ${name}: proven within depth` : `✔ ${name}: consistent`;
     case 'violated':
-      return c.advisory ? `⚠ ${name}: possible violation (advisory - degraded model)` : `✘ ${name}: violated`;
+      return c.advisory
+        ? `◌ ${name}: not machine-provable (model incomplete)`
+        : `✘ ${name}: violated`;
     case 'contradictory':
       return `✘ ${name}: contradictory constraints`;
     case 'error':
@@ -212,6 +214,12 @@ function verdictLabel(c) {
     default:
       return `⚠ ${name}: unexpected solver result`;
   }
+}
+
+/** Remediation hint: what the lowering skipped, i.e. what to simplify for a real proof. */
+function remediation(c) {
+  if (!c.advisory || !c.skipped?.length) return null;
+  return `For a real proof, simplify or restructure: ${c.skipped.join('; ')}`;
 }
 
 class VerdictWidget extends WidgetType {
@@ -287,7 +295,12 @@ function buildDecorations(value, state) {
     const cls = styleForCheck(c);
     ranges.push(Decoration.line({ class: `cm-verdict-${c.verdict}` }).range(line.from));
     const label = verdictLabel(c);
-    const tooltip = [label, `solver: ${c.got} (expect ${c.expect})`, c.detail ?? ''].filter(Boolean).join('\n');
+    const tooltip = [
+      label,
+      `solver: ${c.got} (expect ${c.expect})`,
+      remediation(c),
+      c.detail ?? '',
+    ].filter(Boolean).join('\n');
     ranges.push(Decoration.widget({ widget: new VerdictWidget(label, cls + (value.stale ? ' stale' : ''), tooltip), side: 1 }).range(line.to));
   }
   return Decoration.set(ranges, true);
@@ -307,7 +320,12 @@ function verdictGutter() {
         if (cl && cl.number === lineNo) {
           const cls = styleForCheck(c);
           const label = verdictLabel(c);
-          const tooltip = [label, `solver: ${c.got} (expect ${c.expect})`, c.detail ?? ''].filter(Boolean).join('\n');
+          const tooltip = [
+            label,
+            `solver: ${c.got} (expect ${c.expect})`,
+            remediation(c),
+            c.detail ?? '',
+          ].filter(Boolean).join('\n');
           return new DotMarker(cls, tooltip);
         }
       }
