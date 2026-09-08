@@ -8,6 +8,9 @@ const state = {
   checks: [],
   streaming: false,
   currentAssistantEl: null,
+  autoTimer: null,
+  autoRunning: false,
+  dirty: false,
 };
 
 // ---------- SpeckDL syntax highlighting ----------
@@ -134,6 +137,52 @@ function annotateChecks(checks) {
 
 function clearAnnotations() {
   $('specInline').innerHTML = '';
+}
+
+function markAnnotationsStale() {
+  if ($('specInline').childNodes.length) $('specInline').classList.add('stale');
+}
+
+// live verification: re-run save+compile+verify shortly after the user stops typing,
+// wallaby-style. One run at a time; only runs when the text changed since the last run.
+const AUTO_VERIFY_DELAY = 1200;
+function scheduleAutoVerify() {
+  clearTimeout(state.autoTimer);
+  state.autoTimer = setTimeout(autoVerify, AUTO_VERIFY_DELAY);
+}
+
+async function autoVerify() {
+  if (!state.dirty) return;
+  if (state.autoRunning) {
+    scheduleAutoVerify(); // a run is in flight; re-check after it lands
+    return;
+  }
+  const name = $('specSelect').value || $('specEditor').value.match(/speck\s+(\w+)/)?.[1];
+  if (!name || !state.sessionId || !$('specEditor').value.trim()) return;
+  state.dirty = false;
+  state.autoRunning = true;
+  setLiveStatus('busy');
+  try {
+    await saveAndCompile(true);
+  } catch {
+    state.autoRunning = false;
+    setLiveStatus('err');
+  }
+}
+
+function setLiveStatus(s) {
+  const el = $('liveStatus');
+  if (!el) return;
+  const map = {
+    ok: ['live-ok', '● verified'],
+    fail: ['live-fail', '● failures'],
+    busy: ['live-busy', '⟳ verifying'],
+    err: ['live-fail', '● error'],
+    stale: ['live-stale', '● edited'],
+  };
+  const [cls, text] = map[s] ?? map.stale;
+  el.className = 'live ' + cls;
+  el.textContent = text;
 }
 
 function syncInlineScroll() {
@@ -381,47 +430,62 @@ async function openSpec(name) {
     $('specEditor').value = await res.text();
     $('specSelect').value = name;
     updateHighlight();
+    clearAnnotations();
+    state.dirty = true; // fresh spec, not yet verified in this view
+    setLiveStatus('stale');
+    scheduleAutoVerify();
   }
 }
 
-async function saveAndCompile() {
-  const name = $('specSelect').value || prompt('Spec name (PascalCase):');
+async function saveAndCompile(quiet) {
+  const name = $('specSelect').value || $('specEditor').value.match(/speck\s+(\w+)/)?.[1] || prompt('Spec name (PascalCase):');
   if (!name || !state.sessionId) return;
   const out = $('toolOutput');
-  out.textContent = 'compiling…';
-  out.className = 'output';
+  if (!quiet) {
+    out.textContent = 'compiling…';
+    out.className = 'output';
+  }
   const res = await fetch(`/api/spec/${state.sessionId}/${name}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content: $('specEditor').value }),
   });
   const data = await res.json();
-  out.textContent = data.report;
-  out.className = 'output ' + (data.ok ? 'pass' : 'fail');
+  if (!quiet) {
+    out.textContent = data.report;
+    out.className = 'output ' + (data.ok ? 'pass' : 'fail');
+  }
   await refreshSpecs();
   $('specSelect').value = name;
-  if (data.ok) await verify(); // wallaby-style: save gives you fresh inline verdicts
+  if (data.ok) await verify(quiet);
 }
 
-async function verify() {
+async function verify(quiet) {
   const name = $('specSelect').value || $('specEditor').value.match(/speck\s+(\w+)/)?.[1];
   if (!name || !state.sessionId) {
-    $('toolOutput').textContent = 'No spec selected or found in the editor.';
+    if (!quiet) $('toolOutput').textContent = 'No spec selected or found in the editor.';
     return;
   }
   const out = $('toolOutput');
-  out.textContent = `verifying ${name} (running z3)…`;
-  out.className = 'output warn';
+  if (!quiet) {
+    out.textContent = `verifying ${name} (running z3)…`;
+    out.className = 'output warn';
+  }
   const res = await fetch('/api/verify', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId: state.sessionId, name }),
   });
   const data = await res.json();
-  out.textContent = data.report;
-  out.className = 'output ' + (data.ok ? 'pass' : 'fail');
+  if (!quiet) {
+    out.textContent = data.report;
+    out.className = 'output ' + (data.ok ? 'pass' : 'fail');
+  }
   state.checks = data.checks ?? [];
   annotateChecks(state.checks);
+  $('specInline').classList.remove('stale');
+  state.autoRunning = false;
+  setLiveStatus(data.ok ? 'ok' : 'fail');
 }
 
 // ---------- boot ----------
@@ -442,7 +506,10 @@ $('saveBtn').addEventListener('click', saveAndCompile);
 $('verifyBtn').addEventListener('click', verify);
 $('specEditor').addEventListener('input', () => {
   updateHighlight();
-  clearAnnotations(); // verdicts are stale the moment you type
+  markAnnotationsStale(); // keep last verdicts visible, dimmed, until the solver catches up
+  state.dirty = true;
+  setLiveStatus('stale');
+  scheduleAutoVerify();
 });
 $('specEditor').addEventListener('scroll', syncHighlightScroll);
 $('specEditor').addEventListener('keydown', (e) => {

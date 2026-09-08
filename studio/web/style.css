@@ -145,6 +145,22 @@ span.inl-dot.inl-pass { background: var(--accent2); }
 span.inl-dot.inl-violated { background: var(--err); }
 span.inl-dot.inl-warn { background: var(--warn); }
 
+#specInline.stale .inl, #specInline.stale .inl-dot { opacity: 0.3; transition: opacity 0.3s; }
+
+/* live verification status pill */
+.live {
+  font: 11px var(--mono);
+  padding: 2px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  margin-left: auto;
+}
+.live-ok { color: var(--accent2); border-color: var(--accent2); }
+.live-fail { color: var(--err); border-color: var(--err); }
+.live-busy { color: var(--accent); border-color: var(--accent); }
+.live-stale { color: var(--warn); border-color: var(--warn); }
+
 /* SpeckDL tokens */
 .tk-comment { color: #5d6b7d; font-style: italic; }
 .tk-kw      { color: #c792ea; }
