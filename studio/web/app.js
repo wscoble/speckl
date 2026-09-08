@@ -275,11 +275,9 @@ function handleChatEvent(ev) {
         r.className = 'result';
         const first = String(ev.result).split('\n').find((l) => l.trim()) ?? '';
         r.textContent = '→ ' + first.slice(0, 120);
+        r.title = String(ev.result);
         last.appendChild(r);
       }
-      const out = $('toolOutput');
-      out.textContent = `[${ev.name}]\n${ev.result}`;
-      out.className = 'output' + (/ALL PASS/.test(ev.result) ? ' pass' : /VIOLATED|FAILURES|Error|error/.test(ev.result) ? ' fail' : '');
       break;
     }
     case 'error':
@@ -335,20 +333,15 @@ async function openSpec(name) {
 async function saveAndCompile(quiet) {
   const name = $('specSelect').value || editorText().match(/speck\s+(\w+)/)?.[1] || prompt('Spec name (PascalCase):');
   if (!name || !state.sessionId) return;
-  const out = $('toolOutput');
-  if (!quiet) {
-    out.textContent = 'compiling…';
-    out.className = 'output';
-  }
   const res = await fetch(`/api/spec/${state.sessionId}/${name}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content: editorText() }),
   });
   const data = await res.json();
-  if (!quiet) {
-    out.textContent = data.report;
-    out.className = 'output ' + (data.ok ? 'pass' : 'fail');
+  if (!data.ok) {
+    setLiveStatus('err');
+    $('liveStatus').title = data.report; // compile diagnostics live on the pill
   }
   await refreshSpecs();
   $('specSelect').value = name;
@@ -357,29 +350,22 @@ async function saveAndCompile(quiet) {
 
 async function verify(quiet) {
   const name = $('specSelect').value || editorText().match(/speck\s+(\w+)/)?.[1];
-  if (!name || !state.sessionId) {
-    if (!quiet) $('toolOutput').textContent = 'No spec selected or found in the editor.';
-    return;
-  }
-  const out = $('toolOutput');
-  if (!quiet) {
-    out.textContent = `verifying ${name} (running z3)…`;
-    out.className = 'output warn';
-  }
+  if (!name || !state.sessionId) return;
   const res = await fetch('/api/verify', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId: state.sessionId, name }),
   });
   const data = await res.json();
-  if (!quiet) {
-    out.textContent = data.report;
-    out.className = 'output ' + (data.ok ? 'pass' : 'fail');
-  }
   state.checks = data.checks ?? [];
   annotateChecks(state.checks);
   state.autoRunning = false;
   setLiveStatus(data.ok ? 'ok' : 'fail');
+  const pill = $('liveStatus');
+  const failed = data.checks.filter((c) => c.verdict !== 'pass');
+  pill.title = failed.length
+    ? failed.map((c) => `${c.verdict.toUpperCase()}${c.advisory ? ' (advisory)' : ''}: ${c.check}`).join('\n')
+    : '';
 }
 
 // ---------- boot ----------

@@ -165,11 +165,3 @@ span.inl-dot.inl-warn { background: var(--warn); }
 .tk-string  { color: #ecc48d; }
 .tk-num     { color: #f78c6c; }
 .tk-op      { color: #89a0b0; }
-.output {
-  margin: 0; height: 32%; overflow: auto;
-  border-top: 1px solid var(--border); background: var(--panel);
-  font: 12px/1.5 var(--mono); color: var(--dim); padding: 10px 14px; white-space: pre-wrap;
-}
-.output.pass { color: var(--accent2); }
-.output.fail { color: var(--err); }
-.output.warn { color: var(--warn); }
