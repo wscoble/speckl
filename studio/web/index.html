@@ -39,8 +39,11 @@
         <button id="saveBtn" title="Save and compile this spec">Save &amp; Compile</button>
         <button id="verifyBtn" title="Run Z3 verification">Verify</button>
       </div>
-      <textarea id="specEditor" spellcheck="false" placeholder="// SpeckDL spec source appears here when the assistant writes one,
+      <div id="editorWrap">
+        <pre id="specHighlight" aria-hidden="true"><code></code></pre>
+        <textarea id="specEditor" wrap="off" spellcheck="false" placeholder="// SpeckDL spec source appears here when the assistant writes one,
 // or select a spec above. You can edit and compile it yourself."></textarea>
+      </div>
       <pre id="toolOutput" class="output">// compile &amp; verification output</pre>
     </section>
   </main>

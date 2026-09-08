@@ -9,6 +9,64 @@ const state = {
   currentAssistantEl: null,
 };
 
+// ---------- SpeckDL syntax highlighting ----------
+const SPECKL_KEYWORDS = new Set((
+  'speck state init invariant action next verify constraint event type import interface ' +
+  'service oneof transition input output provenance review derives satisfies author source ' +
+  'bom require return emit Always Eventually always eventually forall in and or not implies ' +
+  'version hash via from clause ref depth license proto_package go_package event_suffix ' +
+  'k8s_group k8s_version'
+).split(' '));
+const SPECKL_TYPES = new Set(['Nat', 'Int', 'Real', 'Bool', 'String', 'Bytes', 'List', 'Set', 'Map']);
+
+const SPECKL_TOKEN_RE = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\\n]|\\.)*")|\b(\d+(?:\.\d+)?)\b|\b([A-Za-z_][A-Za-z0-9_]*'?)\b|([{}()\[\];:,.<>|=+\-*\/&!'])/g;
+
+function highlightSpeck(src) {
+  let out = '';
+  let last = 0;
+  SPECKL_TOKEN_RE.lastIndex = 0;
+  let m;
+  while ((m = SPECKL_TOKEN_RE.exec(src))) {
+    out += esc(src.slice(last, m.index));
+    const [full, comment, str, num, ident, op] = m;
+    if (comment !== undefined) out += `<span class="tk-comment">${esc(full)}</span>`;
+    else if (str !== undefined) out += `<span class="tk-string">${esc(full)}</span>`;
+    else if (num !== undefined) out += `<span class="tk-num">${esc(full)}</span>`;
+    else if (ident !== undefined) {
+      if (SPECKL_KEYWORDS.has(ident)) out += `<span class="tk-kw">${esc(full)}</span>`;
+      else if (SPECKL_TYPES.has(ident)) out += `<span class="tk-type">${esc(full)}</span>`;
+      else out += esc(full);
+    } else out += `<span class="tk-op">${esc(full)}</span>`;
+    last = m.index + full.length;
+  }
+  out += esc(src.slice(last));
+  return out + '\n'; // trailing newline keeps last line height consistent
+}
+
+const isSpecklSource = (s) => /\bspeck\s+[A-Za-z_]\w*\s*\{/.test(s);
+
+function updateHighlight() {
+  const ta = $('specEditor');
+  const code = $('specHighlight').firstElementChild;
+  code.innerHTML = ta.value ? highlightSpeck(ta.value) : '';
+  syncHighlightScroll();
+}
+
+function syncHighlightScroll() {
+  const ta = $('specEditor');
+  const pre = $('specHighlight');
+  pre.scrollTop = ta.scrollTop;
+  pre.scrollLeft = ta.scrollLeft;
+}
+
+// highlight SpeckDL code blocks inside rendered assistant messages
+function highlightChatCode(scopeEl) {
+  for (const codeEl of scopeEl.querySelectorAll('.body pre code')) {
+    const src = codeEl.textContent;
+    if (isSpecklSource(src)) codeEl.innerHTML = highlightSpeck(src);
+  }
+}
+
 // ---------- tiny markdown renderer ----------
 function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -84,6 +142,7 @@ function addMsg(kind, content) {
     div.textContent = content;
   } else if (kind === 'assistant') {
     div.innerHTML = `<div class="who">assistant</div><div class="body">${renderMd(content)}</div>`;
+    highlightChatCode(div);
   } else if (kind === 'toolcall') {
     div.innerHTML = content;
   } else if (kind === 'error') {
@@ -111,6 +170,7 @@ function ensureAssistantMsg() {
 function finalizeAssistantEls() {
   for (const el of document.querySelectorAll('.msg.assistant[data-raw]')) {
     el.innerHTML = `<div class="who">assistant</div><div class="body">${renderMd(el.dataset.raw)}</div>`;
+    highlightChatCode(el);
     delete el.dataset.raw;
   }
 }
@@ -238,6 +298,7 @@ async function openSpec(name) {
   if (res.ok) {
     $('specEditor').value = await res.text();
     $('specSelect').value = name;
+    updateHighlight();
   }
 }
 
@@ -294,10 +355,21 @@ $('sessionSelect').addEventListener('change', (e) => openSession(e.target.value)
 $('specSelect').addEventListener('change', (e) => openSpec(e.target.value));
 $('saveBtn').addEventListener('click', saveAndCompile);
 $('verifyBtn').addEventListener('click', verify);
+$('specEditor').addEventListener('input', updateHighlight);
+$('specEditor').addEventListener('scroll', syncHighlightScroll);
 $('specEditor').addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     e.preventDefault();
     saveAndCompile();
+  }
+  // Tab inserts spaces instead of leaving the editor
+  if (e.key === 'Tab' && !e.shiftKey) {
+    e.preventDefault();
+    const ta = e.target;
+    const { selectionStart: s, selectionEnd: en, value } = ta;
+    ta.value = value.slice(0, s) + '    ' + value.slice(en);
+    ta.selectionStart = ta.selectionEnd = s + 4;
+    updateHighlight();
   }
 });
 
