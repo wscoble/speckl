@@ -6,6 +6,11 @@ export interface SpeckNode {
   type: 'speck';
   name: string;
   members: MemberNode[];
+  // 1-based source line span of the whole speck block (header through closing
+  // brace). Attached by parseSpeck for editor tooling (folding, outlines).
+  // Undefined for ASTs produced by older callers that bypass parseSpeck.
+  startLine?: number;
+  endLine?: number;
   // Optional metadata from top-of-file directives (version:, author:, license:, proto_package:, go_package:).
   // Undefined when not specified in the source.
   version?: string;
@@ -244,7 +249,13 @@ export type ActionStatement =
   | { type: 'return'; expr: string }
   | { type: 'ifblock'; raw: string };
 
-export type MemberNode =
+/** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
+export interface LineSpan {
+  startLine?: number;
+  endLine?: number;
+}
+
+export type MemberNode = (
   | ImportNode
   | InputNode
   | OutputNode
@@ -265,7 +276,8 @@ export type MemberNode =
   | InitNode
   | ActionNode
   | ComponentNode
-  | ServiceNode;
+  | ServiceNode
+) & LineSpan;
 
 export interface TypeExpr {
   type: 'primitive' | 'record' | 'list' | 'set' | 'map' | 'ident';
@@ -365,6 +377,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
 
   let i = startIndex + 1;
   let braceCount = 1;
+  let speckEndLine = Math.min(lines.length, startIndex + 1);
 
   while (i < lines.length && braceCount > 0) {
     const rawLine = lines[i];
@@ -467,15 +480,21 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
 
     if (isBlockStarter && openCount > 0) {
       // Multi-line block: parse it and skip to its end
+      const blockStartLine = i + 1;
       const member = parseMemberBlock(lines, i);
-      if (member) {
-        members.push(member);
-      }
-      // Skip past this block if it spans multiple lines
       if (closeCount < openCount) {
         const endIdx = findBlockEnd(lines, i + 1, braceCount + openCount);
+        if (member) {
+          members.push(Object.assign(member, { startLine: blockStartLine, endLine: endIdx + 1 }));
+        }
+        speckEndLine = endIdx + 1;
+        // Skip past this block if it spans multiple lines
         i = endIdx + 1;
       } else {
+        if (member) {
+          members.push(Object.assign(member, { startLine: blockStartLine, endLine: blockStartLine }));
+        }
+        speckEndLine = i + 1;
         i++;
       }
       continue;
@@ -486,7 +505,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     if (line.startsWith('constraint ') || line.startsWith('verify ') || line.startsWith('verify:') || line.startsWith('constraint:')) {
       const member = parseMultiLineConstraintVerify(lines, i);
       if (member) {
-        members.push(member);
+        const constraintStartLine = i + 1;
         // Skip past the consumed continuation lines
         while (i + 1 < lines.length) {
           const nextLine = lines[i + 1].trim();
@@ -503,6 +522,8 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
           }
           i++;
         }
+        members.push(Object.assign(member, { startLine: constraintStartLine, endLine: i + 1 }));
+        speckEndLine = i + 1;
       }
       i++;
       continue;
@@ -511,18 +532,22 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     // Single-line: update brace count, then parse if still inside
     braceCount += openCount - closeCount;
     if (braceCount <= 0) {
+      speckEndLine = i + 1;
       i++;
       break;
     }
 
     const member = parseMember(line);
     if (member) {
-      members.push(member);
+      members.push(Object.assign(member, { startLine: i + 1, endLine: i + 1 }));
+      speckEndLine = i + 1;
     }
     i++;
   }
 
   return { type: 'speck', name, members,
+           startLine: startIndex + 1,
+           endLine: speckEndLine,
            protoPackage: metadata.protoPackage,
            goPackage: metadata.goPackage,
            eventSuffix: metadata.eventSuffix,

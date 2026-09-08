@@ -28,7 +28,10 @@ describe('printer round-trip', () => {
       const printed1 = printAST(ast1);
       const ast2: AST = parseSpeckContent(printed1);
       // Structural identity between the original and reparsed AST.
-      expect(stableStringify(ast2)).toEqual(stableStringify(ast1));
+      // startLine/endLine are editor-tooling metadata: they describe the
+      // source layout, not the semantics, and legitimately differ between
+      // the original and the printer's reformatted output.
+      expect(stableStringify(stripLineSpans(ast2))).toEqual(stableStringify(stripLineSpans(ast1)));
 
       // Fixed point: printing the reparsed AST is stable.
       const printed2 = printAST(ast2);
@@ -36,6 +39,23 @@ describe('printer round-trip', () => {
     });
   }
 });
+
+/**
+ * Remove editor-only position metadata (startLine/endLine) before AST
+ * comparison: the printer reformats source, so spans are not preserved.
+ */
+function stripLineSpans(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripLineSpans);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k === 'startLine' || k === 'endLine') continue;
+      out[k] = stripLineSpans(v);
+    }
+    return out;
+  }
+  return value;
+}
 
 function parseSpeckContent2(content: string): AST {
   return parseSpeckContent(content);
