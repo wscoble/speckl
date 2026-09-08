@@ -146,6 +146,10 @@ async function openSession(id) {
     else if (msg.role === 'assistant') addMsg('assistant', msg.content);
   }
   scrollChat();
+  // reopen the spec you were last looking at (or the first one)
+  const last = data.meta?.lastSpec;
+  const toOpen = (last && state.specs.includes(last)) ? last : state.specs[0];
+  if (toOpen) await openSpec(toOpen);
 }
 
 async function newSession() {

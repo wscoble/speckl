@@ -275,6 +275,7 @@ const server = createServer(async (req, res) => {
       if (req.method === 'PUT') {
         const body = await readBody(req);
         const result = await writeSpec(join(SESSIONS_DIR, id), name, String(body?.content ?? ''));
+        await sessions.setLastSpec(id, name);
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: result.ok, report: result.report }));
         return;

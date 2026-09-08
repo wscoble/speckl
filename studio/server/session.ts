@@ -8,6 +8,8 @@ export interface SessionMeta {
   title: string;
   created: string;
   updated: string;
+  /** last spec opened in this session - auto-reopened on load */
+  lastSpec?: string;
 }
 
 export class Sessions {
@@ -53,6 +55,13 @@ export class Sessions {
     meta.updated = new Date().toISOString();
     if (title && (meta.title === 'New conversation' || title.startsWith('New conversation'))) meta.title = title;
     else if (title) meta.title = title;
+    await this.saveMeta(meta);
+    return meta;
+  }
+
+  async setLastSpec(id: string, name: string) {
+    const meta = await this.loadMeta(id);
+    meta.lastSpec = name;
     await this.saveMeta(meta);
     return meta;
   }

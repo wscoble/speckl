@@ -120,6 +120,66 @@ const astFoldService = foldService.of((state, from) => {
   return null;
 });
 
+// ---------- hover guide: vertical connector through the hovered block ----------
+
+const setHoverFoldEffect = StateEffect.define();
+
+const hoverFoldField = StateField.define({
+  create: () => null,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setHoverFoldEffect)) return e.value;
+    if (tr.docChanged) return null;
+    return value;
+  },
+  provide: (f) =>
+    EditorView.decorations.compute([f], (state) => {
+      const hover = state.field(f);
+      if (!hover) return Decoration.none;
+      const ranges = [];
+      const startNo = state.doc.lineAt(hover.from).number;
+      const endNo = state.doc.lineAt(hover.to).number;
+      for (let n = startNo; n <= endNo; n++) {
+        const l = state.doc.line(n);
+        ranges.push(Decoration.line({ class: n === startNo ? 'cm-fold-head' : 'cm-fold-guide' }).range(l.from));
+      }
+      return Decoration.set(ranges, true);
+    }),
+});
+
+function hoverFoldHandlers() {
+  let current = null;
+  const setHover = (view, value) => {
+    if (current === value || (current && value && current.from === value.from && current.to === value.to)) return;
+    current = value;
+    view.dispatch({ effects: setHoverFoldEffect.of(value) });
+  };
+  return EditorView.domEventHandlers({
+    mousemove(event, view) {
+      const gutterEl = event.target?.closest?.('.cm-foldGutter .cm-gutterElement');
+      if (!gutterEl) {
+        setHover(view, null);
+        return false;
+      }
+      try {
+        const height = event.clientY - view.documentTop;
+        const block = view.lineBlockAtHeight(height);
+        const lineNo = view.state.doc.lineAt(block.from).number;
+        const range = view.state
+          .field(foldsField)
+          .find((r) => view.state.doc.lineAt(r.from).number === lineNo);
+        setHover(view, range ?? null);
+      } catch {
+        setHover(view, null);
+      }
+      return false;
+    },
+    mouseleave(event, view) {
+      setHover(view, null);
+      return false;
+    },
+  });
+}
+
 // ---------- verification annotations ----------
 
 const setChecksEffect = StateEffect.define();
@@ -246,7 +306,9 @@ function verdictGutter() {
       }
       return EMPTY_MARKER;
     },
-    lineMarkerChange: (tr) => tr.effects.some((e) => e.is(setChecksEffect)) || tr.docChanged,
+    lineMarkerChange: (u) =>
+      u.docChanged ||
+      u.transactions.some((t) => t.effects.some((e) => e.is(setChecksEffect))),
     initialSpacer: () => new DotMarker('inl-pass', ''),
   });
 }
@@ -256,8 +318,14 @@ function verdictGutter() {
 export function create(host, initialDoc, handlers) {
   const onChange = handlers?.onChange ?? (() => {});
   const onSave = handlers?.onSave ?? (() => {});
+  return createRaw(host, initialDoc, [
+    'lineNumbers', 'foldGutter', 'folds', 'hover', 'mode', 'history',
+    'verdicts', 'decorations', 'keymap', 'keymap-save', 'listener', 'theme', 'content',
+  ], { onChange, onSave });
+}
 
-  const theme = EditorView.theme({
+function buildTheme() {
+  return EditorView.theme({
     '&': { height: '100%', backgroundColor: 'var(--bg)', color: 'var(--text)' },
     '.cm-content': { fontFamily: 'var(--mono)', fontSize: '13px', lineHeight: '1.55', padding: '14px 0', caretColor: 'var(--text)' },
     '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--mono)', lineHeight: '1.55' },
@@ -267,37 +335,54 @@ export function create(host, initialDoc, handlers) {
     '.cm-selectionBackground, .cm-content ::selection': { backgroundColor: 'rgba(78, 161, 255, 0.35) !important' },
     '.cm-cursor': { borderLeftColor: 'var(--text)' },
     '.cm-foldGutter .cm-gutterElement': { color: 'var(--dim)', cursor: 'pointer' },
+    '.cm-foldPlaceholder': { background: 'none', border: 'none', color: 'var(--dim)', fontStyle: 'italic', margin: '0 4px' },
     '.cm-placeholder': { color: 'var(--dim)' },
   }, { dark: true });
+}
+
+/**
+ * Diagnostic constructor: builds an editor from named extension groups so a
+ * failing group can be bisected in a real browser. Not used by the app.
+ */
+export function createRaw(host, initialDoc, groups, handlers) {
+  const onChange = handlers?.onChange ?? (() => {});
+  const onSave = handlers?.onSave ?? (() => {});
+  const want = new Set(groups);
+  const exts = [];
+  if (want.has('lineNumbers')) exts.push(lineNumbers());
+  if (want.has('foldGutter')) exts.push(foldGutter({
+    markerDOM(open) {
+      const span = document.createElement('span');
+      span.className = 'cm-fold-btn';
+      span.textContent = open ? '-' : '+';
+      return span;
+    },
+  }));
+  if (want.has('folds')) exts.push(astFoldService, foldsField);
+  if (want.has('hover')) exts.push(hoverFoldField, hoverFoldHandlers());
+  if (want.has('mode')) exts.push(specklMode, specklHighlight);
+  if (want.has('history')) exts.push(history());
+  if (want.has('verdicts')) exts.push(verdictGutter(), checksField);
+  if (want.has('decorations')) exts.push(EditorView.decorations.compute([checksField], (state) => buildDecorations(state.field(checksField), state)));
+  if (want.has('keymap')) exts.push(keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]));
+  if (want.has('keymap-save')) exts.push(keymap.of([{
+    key: 'Mod-s',
+    preventDefault: true,
+    run: () => {
+      onSave();
+      return true;
+    },
+  }]));
+  if (want.has('listener')) exts.push(EditorView.updateListener.of((u) => {
+    if (u.docChanged) onChange(view.state.doc.toString());
+  }));
+  if (want.has('theme')) exts.push(buildTheme());
+  if (want.has('content')) exts.push(EditorView.contentAttributes.of({ spellcheck: 'false' }));
 
   const view = new EditorView({
     state: EditorState.create({
       doc: initialDoc ?? '',
-      extensions: [
-        lineNumbers(),
-        foldGutter(),
-        astFoldService,
-        specklMode,
-        specklHighlight,
-        history(),
-        verdictGutter(),
-        checksField,
-        EditorView.decorations.compute([checksField], (state) => buildDecorations(state.field(checksField), state)),
-        keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
-        EditorView.updateListener.of((u) => {
-          if (u.docChanged) onChange(view.state.doc.toString());
-        }),
-        keymap.of([{
-          key: 'Mod-s',
-          preventDefault: true,
-          run: () => {
-            onSave();
-            return true;
-          },
-        }]),
-        theme,
-        EditorView.contentAttributes.of({ spellcheck: 'false' }),
-      ],
+      extensions: exts,
     }),
     parent: host,
   });
