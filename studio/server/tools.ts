@@ -49,6 +49,123 @@ function fmtRun(label: string, r: RunResult): string {
   return `### ${label} (exit ${r.code})\n${out || '(no output)'}`;
 }
 
+// ---------- counterexample formatting ----------
+
+interface ParsedModel {
+  banner: string;
+  errors: string[];
+  vars: Map<string, string>;
+}
+
+/** Return the full balanced s-expression starting at the '(' at s[start]. */
+function readSexpr(s: string, start: number): string {
+  let depth = 0;
+  for (let i = start; i < s.length; i++) {
+    if (s[i] === '(') depth++;
+    else if (s[i] === ')') {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return s.slice(start);
+}
+
+/** Normalize a Z3 value: (- 1) → -1, records stay as-is. */
+function z3Value(raw: string): string {
+  const v = raw.trim().replace(/\s+/g, ' ');
+  const neg = v.match(/^\(\s*-\s+(-?[\d.]+)\s*\)$/);
+  if (neg) return '-' + neg[1];
+  return v;
+}
+
+function parseZ3Model(stdout: string): ParsedModel {
+  const banner = stdout.split('\n').find((l) => l.includes('Checking:'))?.trim() ?? '';
+  const errors = stdout
+    .split('\n')
+    .filter((l) => l.trim().startsWith('(error'))
+    .map((l) => l.trim());
+  const vars = new Map<string, string>();
+  const re = /\(define-fun\s+([\w'.!-]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stdout))) {
+    const sexpr = readSexpr(stdout, m.index);
+    // shape: (define-fun NAME () SORT VALUE?) - strip outer parens and header
+    const inner = sexpr.slice(1, -1).replace(/^define-fun\s+/, '');
+    const pm = inner.match(/^([\w'.!-]+)\s*\(\)\s*(\S+)\s*([\s\S]*)$/);
+    if (!pm) continue;
+    const value = z3Value(pm[3]);
+    if (value) vars.set(pm[1], value);
+  }
+  return { banner, errors, vars };
+}
+
+/**
+ * Render a solver counterexample as a per-step state table:
+ * variables down the side, BMC steps across the top. Filters helper
+ * symbols (speckl_*) and opaque uninterpreted-sort values that carry
+ * no readable meaning.
+ */
+function formatCounterexample(stdout: string): string {
+  const { banner, errors, vars } = parseZ3Model(stdout);
+
+  // group step-suffixed variables: phase_0, phase_1, ... → phase
+  const stepVars = new Map<string, Map<number, string>>();
+  const tail = new Map<string, { final?: string; post?: string }>(); // per-base unsuffixed/_post bindings
+  for (const [name, value] of vars) {
+    if (name.startsWith('speckl_')) continue;
+    if (value.includes('!val!')) continue; // opaque sort value - not readable
+    if (!/^[\w.+-]+$/.test(value)) continue; // formula definitions, records - not state
+    const sm = name.match(/^(.+)_(\d+)$/);
+    if (sm) {
+      const base = sm[1];
+      if (!stepVars.has(base)) stepVars.set(base, new Map());
+      stepVars.get(base)!.set(Number(sm[2]), value);
+    } else {
+      const base = name.replace(/_post$/, '');
+      if (!tail.has(base)) tail.set(base, {});
+      if (name.endsWith('_post')) tail.get(base)!.post = value;
+      else tail.get(base)!.final = value;
+    }
+  }
+
+  const hasFinal = [...tail.values()].some((t) => t.final !== undefined);
+  const hasPost = [...tail.values()].some((t) => t.post !== undefined);
+  const maxStep = Math.max(0, ...[...stepVars.values()].flatMap((m) => [...m.keys()]));
+  const cols: string[] = [];
+  for (let s = 0; s <= maxStep; s++) cols.push(String(s));
+  if (hasFinal) cols.push('final');
+  if (hasPost) cols.push('post');
+
+  // rows: base name → value per column (blank when absent)
+  const rows: Array<[string, string[]]> = [];
+  for (const [base, steps] of [...stepVars.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const vals = cols.map((c) => {
+      if (c === 'final') return tail.get(base)?.final ?? '';
+      if (c === 'post') return tail.get(base)?.post ?? '';
+      return steps.get(Number(c)) ?? '';
+    });
+    rows.push([base, vals]);
+  }
+
+  const nameW = Math.max(10, ...rows.map(([n]) => n.length));
+  const colW = Math.max(6, ...rows.flatMap(([, vs]) => vs.map((v) => v.length)), ...cols.map((c) => c.length));
+  const head = 'variable'.padEnd(nameW) + cols.map((c) => c.padStart(colW)).join('');
+  const body = rows
+    .map(([n, vs]) => n.padEnd(nameW) + vs.map((v) => v.padStart(colW)).join(''))
+    .slice(0, 30)
+    .join('\n');
+
+  const parts: string[] = [];
+  if (banner) parts.push(banner);
+  parts.push('The solver found a state sequence that breaks the property within the search depth.');
+  if (errors.length) parts.push(`Solver warnings (the emitted model may be incomplete):\n  ${errors.join('\n  ')}`);
+  if (rows.length) {
+    parts.push(`\nCounterexample trace - variable values per step:\n\n${head}\n${'-'.repeat(head.length)}\n${body}`);
+    if (rows.length > 30) parts.push(`… (${rows.length - 30} more variables)`);
+  }
+  return parts.join('\n');
+}
+
 // ---------- tools ----------
 
 export function listExamples(): string {
@@ -166,7 +283,7 @@ export async function verifySpec(sessionDir: string, name: string): Promise<Veri
       expect: note ? `${expect} ${note}` : expect,
       got,
       verdict,
-      detail: verdict === 'violated' ? zr.stdout : verdict === 'error' ? zr.stderr || zr.stdout : undefined,
+      detail: verdict === 'violated' ? formatCounterexample(zr.stdout) : verdict === 'error' ? zr.stderr || zr.stdout : undefined,
     });
   }
 
@@ -180,9 +297,8 @@ export async function verifySpec(sessionDir: string, name: string): Promise<Veri
     const advisory = /degraded/.test(f.expect) ? ' [advisory - degraded model: counterexample may be spurious due to skipped constructs]' : '';
     let line = `- ${mark}${advisory}: ${f.file} (expect ${f.expect}, got ${f.got})`;
     if (f.verdict === 'violated' && f.detail) {
-      // include a bounded counterexample trace
-      const trace = f.detail.split('\n').slice(0, 40).join('\n');
-      line += `\n  Counterexample (bounded):\n${trace.split('\n').map((l) => '  ' + l).join('\n')}`;
+      const trace = f.detail.split('\n').slice(0, 60).join('\n');
+      line += `\n${trace.split('\n').map((l) => '  ' + l).join('\n')}`;
     }
     if (f.verdict === 'error' && f.detail) line += `\n  ${f.detail.split('\n').slice(0, 20).join('\n  ')}`;
     return line;
