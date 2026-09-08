@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>speckl-studio</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">speckl<span>·studio</span></div>
+    <select id="sessionSelect" title="Session"></select>
+    <button id="newSession" title="Start a new conversation">＋ New</button>
+    <span class="spacer"></span>
+    <span id="modelBadge" class="badge"></span>
+  </header>
+
+  <main>
+    <section id="chatPane">
+      <div id="chatScroll">
+        <div id="chatLog"></div>
+        <div id="emptyState" class="empty">
+          <h2>Develop a behavior specification</h2>
+          <p>Describe a system's behavior - a rate limiter, a payment flow, a replication protocol - and the assistant will interview you, draft a SpeckDL spec, compile it, and verify it
+             with a real Z3 solver. Then it will push back: missing invariants, unintended
+             nondeterminism, edge cases you haven't covered.</p>
+          <p class="hint">Try: "I want a spec for a token-bucket rate limiter with burst support."</p>
+        </div>
+      </div>
+      <form id="chatForm">
+        <textarea id="chatInput" rows="3" placeholder="Describe the behavior you want to specify… (Enter to send, Shift+Enter for newline)"></textarea>
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+    </section>
+
+    <section id="specPane">
+      <div class="specToolbar">
+        <select id="specSelect"><option value=""> - spec - </option></select>
+        <button id="saveBtn" title="Save and compile this spec">Save &amp; Compile</button>
+        <button id="verifyBtn" title="Run Z3 verification">Verify</button>
+      </div>
+      <textarea id="specEditor" spellcheck="false" placeholder="// SpeckDL spec source appears here when the assistant writes one,
+// or select a spec above. You can edit and compile it yourself."></textarea>
+      <pre id="toolOutput" class="output">// compile &amp; verification output</pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
