@@ -292,7 +292,8 @@ speck SignalBus {
         nextSeq >= 1
     }
 
-    // A closed bus has nothing in flight.
+    // A closed bus has nothing in flight - guaranteed by Close's
+    // drain-before-close guard, not by wishful thinking.
     invariant ClosedMeansEmpty {
         implies(not open, accepted == delivered)
     }
@@ -313,9 +314,13 @@ speck SignalBus {
         return delivered
     }
 
-    // Shut the bus down during console maintenance.
+    // Shut the bus down during console maintenance. Closing requires an
+    // empty bus: every accepted signal must be acknowledged first, otherwise
+    // in-flight work would be stranded (Acknowledge can never run after
+    // the bus is closed).
     action Close {
         require open
+        require accepted == delivered
         open := false
         return open
     }

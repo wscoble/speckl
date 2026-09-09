@@ -357,7 +357,11 @@ export async function verifySpec(sessionDir: string, name: string): Promise<Veri
       const bmc = d?.bmc ?? !!s?.banner;
       const advisory = /degraded/.test(d?.note ?? '');
       const got = s?.result ?? (zr.code !== 0 ? `exit ${zr.code}` : 'unknown');
-      const verdict = s?.result ? verdictFor(d?.expect ?? 'unknown', got, bmc) : 'error';
+      // z3 skips malformed forms and keeps answering - results after a real
+      // solver error are unreliable. "model is not available" after unsat is
+      // benign (get-model on an unsat context).
+      const fatalErrors = (s?.errors ?? []).filter((e) => !e.includes('model is not available'));
+      const verdict = fatalErrors.length ? 'error' : s?.result ? verdictFor(d?.expect ?? 'unknown', got, bmc) : 'error';
       checks.push({
         file: rel,
         check,
@@ -368,7 +372,7 @@ export async function verifySpec(sessionDir: string, name: string): Promise<Veri
         skipped: skipped.length ? skipped : undefined,
         detail:
           verdict === 'violated' ? formatCounterexample(s!.raw) :
-          verdict === 'error' ? (s?.errors.join('\n') || zr.stderr || zr.stdout) :
+          verdict === 'error' ? (fatalErrors.join('\n') || s?.errors.join('\n') || zr.stderr || zr.stdout) :
           undefined,
       });
     }
