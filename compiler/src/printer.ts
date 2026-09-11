@@ -60,6 +60,8 @@ function printMember(member: MemberNode): string[] {
       }
       return [`constraint: ${member.expr}`];
     }
+    case 'invariant':
+      return [`invariant ${member.name} {`, `    ${member.expr}`, `}`];
     case 'verify':
       return [printVerify(member)];
     case 'state':
@@ -228,6 +230,9 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
         lines.push(`    return ${stmt.expr}`);
         break;
       case 'ifblock':
+        lines.push(String(stmt.raw));
+        break;
+      case 'forblock':
         lines.push(String(stmt.raw));
         break;
       default:

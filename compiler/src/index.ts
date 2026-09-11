@@ -7,9 +7,12 @@ import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
 import { generateTypeScriptStateMachine } from './generators/typescript-state-machine.js';
 import { generateProtobuf } from './generators/protobuf.js';
-import { generateZ3, Z3Options, parseInvariantsFromSource, parseNextFromSource } from './generators/z3.js';
+import { generateZ3, Z3Options, parseNextFromSource } from './generators/z3.js';
+import type { InvariantMemberNode } from './parser.js';
 import { generateZ3FromIR } from './generators/z3-from-ir.js';
 import { generateRust } from './generators/rust.js';
+import { generateGo } from './generators/go.js';
+import { generateElm } from './generators/elm.js';
 import { generateK8sCRD } from './generators/k8s-crd.js';
 import { generateProvenanceFromIR } from './generators/provenance-from-ir.js';
 import { lower } from './ir/lower.js';
@@ -21,7 +24,7 @@ import path from 'path';
 interface CompileOptions {
   outputDir: string;
   bomFormat: 'cdx' | 'spdx' | 'both';
-  target: 'typescript' | 'z3' | 'rust' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'all' | 'all-ir';
+  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'all' | 'all-ir';
   verifyDepth: number;
 }
 
@@ -44,7 +47,7 @@ async function main() {
           alias: 't',
           describe: 'Compilation target',
           type: 'string',
-          choices: ['typescript', 'z3', 'rust', 'protobuf', 'k8s', 'openapi', 'camel', 'all', 'all-ir'],
+          choices: ['typescript', 'z3', 'rust', 'go', 'protobuf', 'k8s', 'openapi', 'camel', 'elm', 'all', 'all-ir'],
           default: 'typescript' as const,
         })
         .option('verify-depth', {
@@ -109,9 +112,18 @@ async function main() {
   }
 
   // Rust
+  if (options.target === 'go' || options.target === 'all') {
+    // go backend
+    generateGo(ast, options.outputDir);
+  }
   if (options.target === 'rust' || options.target === 'all') {
     console.log('\nGenerating Rust state machine...');
     generateRust(ast, options.outputDir);
+  }
+
+  // Elm
+  if (options.target === 'elm' || options.target === 'all') {
+    generateElm(ast, options.outputDir);
   }
 
   // Protobuf
@@ -132,7 +144,16 @@ async function main() {
     generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
     console.log('\nGenerating Z3 SMT-LIB2 (AST-driven, state machine + transitions)...');
     for (const speck of ast.specks) {
-      const invariants = parseInvariantsFromSource(rawSource, speck.name);
+      // Invariants are first-class AST members now; wrap their expression in
+      // the statement shape the Z3 generator consumes. (Legacy raw-source
+      // scraping in parseInvariantsFromSource is retired.)
+      const invariants = speck.members
+        .filter((m): m is InvariantMemberNode => m.type === 'invariant')
+        .map((m) => ({
+          type: 'invariant' as const,
+          name: m.name,
+          statements: [{ type: 'require' as const, expr: m.expr }],
+        }));
       const nextNode = parseNextFromSource(rawSource, speck.name);
       (speck as any)._invariants = invariants;
       (speck as any)._next = nextNode;

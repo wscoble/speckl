@@ -6,6 +6,11 @@ export interface SpeckNode {
   type: 'speck';
   name: string;
   members: MemberNode[];
+  // 1-based source line span of the whole speck block (header through closing
+  // brace). Attached by parseSpeck for editor tooling (folding, outlines).
+  // Undefined for ASTs produced by older callers that bypass parseSpeck.
+  startLine?: number;
+  endLine?: number;
   // Optional metadata from top-of-file directives (version:, author:, license:, proto_package:, go_package:).
   // Undefined when not specified in the source.
   version?: string;
@@ -217,6 +222,16 @@ export interface InitNode {
   assignments: { name: string; expr: string }[];
 }
 
+// Component partition: declares which state vars and actions belong to a
+// named component. Used by composite backends (Elm modules, Go handler
+// groups). Members must exist in the speck; the compiler validates coverage.
+export interface ComponentNode {
+  type: 'component';
+  name: string;
+  stateVars: string[];
+  actions: string[];
+}
+
 export interface ActionNode {
   type: 'action';
   name: string;
@@ -234,7 +249,13 @@ export type ActionStatement =
   | { type: 'return'; expr: string }
   | { type: 'ifblock'; raw: string };
 
-export type MemberNode =
+/** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
+export interface LineSpan {
+  startLine?: number;
+  endLine?: number;
+}
+
+export type MemberNode = (
   | ImportNode
   | InputNode
   | OutputNode
@@ -254,7 +275,21 @@ export type MemberNode =
   | StateNode
   | InitNode
   | ActionNode
-  | ServiceNode;
+  | ComponentNode
+  | ServiceNode
+  | InvariantMemberNode
+) & LineSpan;
+
+/**
+ * Invariant block parsed as a first-class member (v0.3.2). The body is a
+ * single boolean expression in source form; downstream generators parse it
+ * with the typed expression parser rather than scraping raw source.
+ */
+export interface InvariantMemberNode {
+  type: 'invariant';
+  name: string;
+  expr: string;
+}
 
 export interface TypeExpr {
   type: 'primitive' | 'record' | 'list' | 'set' | 'map' | 'ident';
@@ -354,6 +389,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
 
   let i = startIndex + 1;
   let braceCount = 1;
+  let speckEndLine = Math.min(lines.length, startIndex + 1);
 
   while (i < lines.length && braceCount > 0) {
     const rawLine = lines[i];
@@ -424,7 +460,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     // Check for block-opening members (those that open braces on the same line)
     const blockStarters = ['state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
       'state {', 'init {', 'verify ', 'constraint ', 'input:', 'output:', 'service ', 'oneof ', 'transition ',
-      'state as ', 'type '];
+      'state as ', 'type ', 'component ', 'invariant '];
     const isBlockStarter = blockStarters.some(s => line.startsWith(s));
 
     // Handle single-line metadata members that aren't block-starters:
@@ -456,15 +492,21 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
 
     if (isBlockStarter && openCount > 0) {
       // Multi-line block: parse it and skip to its end
+      const blockStartLine = i + 1;
       const member = parseMemberBlock(lines, i);
-      if (member) {
-        members.push(member);
-      }
-      // Skip past this block if it spans multiple lines
       if (closeCount < openCount) {
         const endIdx = findBlockEnd(lines, i + 1, braceCount + openCount);
+        if (member) {
+          members.push(Object.assign(member, { startLine: blockStartLine, endLine: endIdx + 1 }));
+        }
+        speckEndLine = endIdx + 1;
+        // Skip past this block if it spans multiple lines
         i = endIdx + 1;
       } else {
+        if (member) {
+          members.push(Object.assign(member, { startLine: blockStartLine, endLine: blockStartLine }));
+        }
+        speckEndLine = i + 1;
         i++;
       }
       continue;
@@ -475,7 +517,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     if (line.startsWith('constraint ') || line.startsWith('verify ') || line.startsWith('verify:') || line.startsWith('constraint:')) {
       const member = parseMultiLineConstraintVerify(lines, i);
       if (member) {
-        members.push(member);
+        const constraintStartLine = i + 1;
         // Skip past the consumed continuation lines
         while (i + 1 < lines.length) {
           const nextLine = lines[i + 1].trim();
@@ -492,6 +534,8 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
           }
           i++;
         }
+        members.push(Object.assign(member, { startLine: constraintStartLine, endLine: i + 1 }));
+        speckEndLine = i + 1;
       }
       i++;
       continue;
@@ -500,18 +544,22 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     // Single-line: update brace count, then parse if still inside
     braceCount += openCount - closeCount;
     if (braceCount <= 0) {
+      speckEndLine = i + 1;
       i++;
       break;
     }
 
     const member = parseMember(line);
     if (member) {
-      members.push(member);
+      members.push(Object.assign(member, { startLine: i + 1, endLine: i + 1 }));
+      speckEndLine = i + 1;
     }
     i++;
   }
 
   return { type: 'speck', name, members,
+           startLine: startIndex + 1,
+           endLine: speckEndLine,
            protoPackage: metadata.protoPackage,
            goPackage: metadata.goPackage,
            eventSuffix: metadata.eventSuffix,
@@ -579,6 +627,12 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
   }
   if (firstLine.startsWith('action ')) {
     return parseActionBlockMultiline(lines, startIndex, startBraceCount);
+  }
+  if (firstLine.startsWith('invariant ')) {
+    return parseInvariantBlockMultiline(lines, startIndex, startBraceCount);
+  }
+  if (firstLine.startsWith('component ')) {
+    return parseComponentBlockMultiline(lines, startIndex, startBraceCount);
   }
   if (firstLine.startsWith('event ')) {
     return parseEventBlockMultiline(lines, startIndex, startBraceCount);
@@ -892,6 +946,16 @@ function parseMember(line: string): MemberNode | null {
     return parseActionHeader(line);
   }
 
+  // component <Name> { — block handled by parseMemberBlock; single-line form
+  // (component Board { state: a, b; actions: X }) parses lists inline
+  if (line.startsWith('component ')) {
+    const cm = line.match(/^component\s+(\w+)\s*\{(.*)\}\s*$/);
+    if (cm) {
+      return parseComponentBody(cm[1], cm[2]);
+    }
+    return { type: 'component', name: '', stateVars: [], actions: [] };
+  }
+
   // bom {
   if (line.startsWith('bom ')) {
     // Simplified - full BOM block parsing would need multi-line context
@@ -916,6 +980,10 @@ function parseStateBlock(inner: string): StateNode {
       let typeStr = withDefault[2].trim();
       const commentIdx = typeStr.indexOf('//');
       if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
+      // A declaration comma can survive comment stripping when a comment
+      // followed it (`signals: List<Foo>, // note`); strip it so the type
+      // parses as a generic, not an ident.
+      typeStr = typeStr.replace(/,\s*$/, '').trim();
       variables.push({
         name: withDefault[1],
         typeExpr: parseTypeExpr(typeStr),
@@ -929,6 +997,7 @@ function parseStateBlock(inner: string): StateNode {
       let typeStr = withoutDefault[2].trim();
       const commentIdx = typeStr.indexOf('//');
       if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
+      typeStr = typeStr.replace(/,\s*$/, '').trim();
       variables.push({
         name: withoutDefault[1],
         typeExpr: parseTypeExpr(typeStr),
@@ -945,11 +1014,19 @@ function parseInitBlock(inner: string): InitNode {
 
   const assignStrs = inner.split(/;|\n/).map(s => s.trim()).filter(Boolean);
 
-  for (const aStr of assignStrs) {
-    const match = aStr.match(/^(\w+)\s*:=\s*(.+)$/);
-    if (match) {
-      assignments.push({ name: match[1], expr: match[2].trim() });
+  for (let idx = 0; idx < assignStrs.length; idx++) {
+    const match = assignStrs[idx].match(/^(\w+)\s*:=\s*(.+)$/);
+    if (!match) continue;
+    let expr = match[2].trim();
+    // Multi-line expressions: record/map literals span several lines in the
+    // init block; join until braces/parens/brackets balance.
+    while (!isExpressionComplete(expr) && idx + 1 < assignStrs.length) {
+      idx++;
+      expr += ' ' + assignStrs[idx];
     }
+    // A trailing comma is the declaration separator, not part of the value.
+    expr = expr.replace(/,\s*$/, '').trim();
+    assignments.push({ name: match[1], expr });
   }
 
   return { type: 'init', assignments };
@@ -958,6 +1035,11 @@ function parseInitBlock(inner: string): InitNode {
 function parseActionHeader(line: string): ActionNode | null {
   // Greedy param capture: params may contain parenthesized types like
   // List(BuildStep), so `[^)]*` (first-paren truncation) is wrong.
+  // Strip a `returns (...)` clause before param parsing, otherwise the
+  // greedy paren capture swallows it into the parameter list.
+  line = line.replace(/\s+returns\s*\([^)]*\)/g, '');
+  // Strip a `: Type` return annotation (`action Foo(x: Nat): Bool {`).
+  line = line.replace(/\)\s*:\s*[A-Za-z][\w<>\[\]| ]*\s*\{\s*$/, ') {');
   const match = line.match(/^action\s+(\w+)\s*(?:\((.*)\))?\s*\{/);
   if (!match) return null;
 
@@ -1018,7 +1100,16 @@ function splitOnTopLevelCommas(s: string): string[] {
 
 function parseTypeExpr(expr: string): TypeExpr {
   expr = expr.trim();
-  
+
+  // Tolerate mismatched generic closers (`List<Foo]`, `Map(K, V]`): specs in
+  // the wild occasionally close a `(`/`<` generic with `]`. Repair before
+  // dispatching so these parse as the intended generic, not an ident.
+  const mismatched = expr.match(/^(List|Map|Set)\s*[(<]([\s\S]*)\]$/);
+  if (mismatched) expr = `${mismatched[1]}(${mismatched[2]})`;
+  // A stray trailing comma (state-block separator) must not turn a generic
+  // into an ident.
+  expr = expr.replace(/,\s*$/, '').trim();
+
   // Primitive types
   const primitives = ['Nat', 'Int', 'Real', 'Bool', 'String', 'Bytes'];
   if (primitives.includes(expr)) {
@@ -1390,20 +1481,39 @@ function exprIncomplete(text: string): boolean {
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-  // Init blocks separate fields with commas or newlines/semicolons.
-  // Strip trailing commas and join with semicolons.
-  const cleanedLines = innerLines.map(l => l.replace(/,+\s*$/, ''));
-  const inner = cleanedLines.reduce((acc, line, i) => {
-    if (i === 0) return line;
-    const prevLine = cleanedLines[i - 1];
-    const isNewVar = /^\w+\s*:/.test(line);
-    const prevIsContinuation = /[{(]\s*$/.test(prevLine);
-    if (isNewVar && !prevIsContinuation) {
-      return acc + '; ' + line;
+  // Group lines into statements: a `name := ...` line starts a new
+  // assignment; anything else (record/map literal field lines) continues
+  // the current one. Only declaration lines have their trailing comma
+  // stripped - field commas inside a multi-line literal are separators and
+  // must survive.
+  const stmts: string[] = [];
+  let cur: string | null = null;
+  for (const raw of innerLines) {
+    if (/^\w+\s*:=/.test(raw) || cur === null) {
+      if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
+      cur = raw;
+    } else {
+      cur += ' ' + raw;
     }
-    return acc + ' ' + line;
-  }, '');
-  return parseInitBlock(inner);
+  }
+  if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
+  return parseInitBlock(stmts.join('\n'));
+}
+
+/**
+ * Parse an `invariant Name { expr }` block into a first-class member.
+ */
+function parseInvariantBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InvariantMemberNode {
+  const firstLine = lines[startIndex].trim();
+  const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
+  const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
+  const body = lines
+    .slice(startIndex + 1, endIndex)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('//') && !l.startsWith('/*'))
+    .join(' ');
+  return { type: 'invariant', name, expr: body.trim() };
 }
 
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
@@ -1412,23 +1522,74 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   if (!header) return null;
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  // Keep blank lines as null to separate statements, filter only comments
-  const bodyLinesRaw = lines.slice(startIndex + 1, endIndex).map(l => {
+  // Keep blank lines as null to separate statements, filter only comments.
+  // Preserve indentation: it bounds colon-form if/else regions.
+  type BodyEntry = { text: string; indent: number } | null;
+  const bodyEntries: BodyEntry[] = lines.slice(startIndex + 1, endIndex).map(l => {
     const trimmed = l.trim();
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
-    return trimmed;
+    return { text: trimmed, indent: l.length - l.trimStart().length };
   });
+
+  // Pre-pass: lower colon-form if/else regions (`if cond:` / `else:`) into
+  // brace form so the brace scanner below captures the whole region as one
+  // ifblock. The then-branch is the run of deeper-indented lines after
+  // `if cond:`; an `else:` at the if's indent switches branches; a line at
+  // or below the if's indent ends the region.
+  const prePass: (string | null)[] = [];
+  {
+    let i = 0;
+    while (i < bodyEntries.length) {
+      const cur = bodyEntries[i];
+      if (cur && /^for\b[^{]*:\s*$/.test(cur.text)) {
+        // colon-form for loop: `for v in coll:` - brace it; go.ts lowers the
+        // range and body
+        const forIndent = cur.indent;
+        prePass.push(cur.text.replace(/:\s*$/, ' {'));
+        i++;
+        while (i < bodyEntries.length) {
+          const l2 = bodyEntries[i];
+          if (l2 === null) { prePass.push(null); i++; continue; }
+          if (l2.indent <= forIndent) break;
+          prePass.push(l2.text);
+          i++;
+        }
+        prePass.push('}');
+        continue;
+      }
+      if (!cur || !/^if\b[^{]*:\s*$/.test(cur.text) || cur.text.includes('{')) {
+        prePass.push(cur ? cur.text : null);
+        i++;
+        continue;
+      }
+      const ifIndent = cur.indent;
+      prePass.push(cur.text.replace(/:\s*$/, ' {'));
+      i++;
+      while (i < bodyEntries.length) {
+        const l2 = bodyEntries[i];
+        if (l2 === null) { prePass.push(null); i++; continue; }
+        if (l2.indent <= ifIndent) {
+          if (/^else\s*:\s*$/.test(l2.text)) { prePass.push('} else {'); i++; continue; }
+          break;
+        }
+        prePass.push(l2.text);
+        i++;
+      }
+      prePass.push('}');
+    }
+  }
   // Collapse consecutive nulls and strip trailing nulls
-  const bodyLines: (string | null)[] = [];
-  for (const line of bodyLinesRaw) {
-    if (line !== null || (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] !== null)) {
-      bodyLines.push(line);
+  const collapsed: (string | null)[] = [];
+  for (const line of prePass) {
+    if (line !== null || (collapsed.length > 0 && collapsed[collapsed.length - 1] !== null)) {
+      collapsed.push(line);
     }
   }
   // Remove trailing nulls
-  while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] === null) {
-    bodyLines.pop();
+  while (collapsed.length > 0 && collapsed[collapsed.length - 1] === null) {
+    collapsed.pop();
   }
+  const bodyLines = collapsed;
 
   const statements: ActionStatement[] = [];
   for (let i = 0; i < bodyLines.length; i++) {
@@ -1473,6 +1634,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (nextLine.startsWith('precondition:') || nextLine.startsWith('postcondition:') ||
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
+            nextLine.startsWith('if ') ||
             nextLine.includes(':=')) {
           break;
         }
@@ -1506,6 +1668,26 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         }
       }
       statements.push({ type: 'emit', event: eventName, fields });
+      continue;
+    }
+    // for v in coll { ... } - range loop captured as a forblock statement
+    if (stmt.startsWith('for ')) {
+      let braceDepth = 0;
+      let j = i;
+      const blockLines2: string[] = [];
+      while (j < bodyLines.length) {
+        const line = bodyLines[j];
+        if (line === null) { j++; continue; }
+        blockLines2.push(line);
+        for (const ch of line) {
+          if (ch === '{') braceDepth++;
+          else if (ch === '}') braceDepth--;
+        }
+        j++;
+        if (braceDepth === 0) break;
+      }
+      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
+      i = j - 1;
       continue;
     }
     // if condition { ... } else if condition { ... } else { ... }
@@ -1556,7 +1738,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       continue;
     }
     // assignment: target := expr (may span multiple lines)
-    const assignMatch = stmt.match(/^(\w+(?:\[.*?\])?)\s*:=\s*(.+)$/);
+    const assignMatch = stmt.match(/^([\w\[\]]+(?:\.\w+)?)\s*:=\s*(.+)$/);
     if (assignMatch) {
       let target = assignMatch[1];
       let expr = assignMatch[2].trim();
@@ -1575,6 +1757,27 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
 function parseEventBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): EventNode {
   const firstLine = lines[startIndex].trim();
   const header = parseEvent(firstLine);
+
+  // Handle single-line events: event Foo { a: Type, b: Type }
+  // extract fields from the first line itself
+  const inlineMatch = firstLine.match(/^event\s+(\w+)\s*\{(.*)\}\s*$/);
+  const inlineFields: { name: string; type: TypeExpr }[] = [];
+  if (inlineMatch && inlineMatch[2].trim()) {
+    const fieldStr = inlineMatch[2].trim();
+    for (const f of fieldStr.split(',')) {
+      const fm = f.trim().match(/^(\w+)\s*:\s*(.+)$/);
+      if (fm) {
+        inlineFields.push({ name: fm[1], type: { type: 'ident', name: fm[2].trim() } as TypeExpr });
+      }
+    }
+  }
+
+  // Single-line form: the braces balance on the header line itself, so the
+  // block walk below must not run - it would overrun into later members
+  // (their `state:` / `actions:` lines would leak in as event fields).
+  if (inlineMatch && firstLine.endsWith('}')) {
+    return { ...header, fields: inlineFields };
+  }
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
@@ -1603,7 +1806,7 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
     }
   }
 
-  return { ...header, fields };
+  return { ...header, fields: fields.length > 0 ? fields : inlineFields };
 }
 
 function parseInterfaceBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InterfaceNode {
@@ -2014,7 +2217,7 @@ function parseConstraintColonBlock(lines: string[], startIndex: number): Constra
     }
   }
 
-  const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
+  const joined = parts.join('\n').replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim();
   return { type: 'constraint', expr: joined };
 }
 
@@ -2305,6 +2508,12 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
     let expr = quotedMatch[3].trim();
     if (followsBrace) {
       if (expr.startsWith('{')) expr = expr.substring(1).trim();
+      // Single-line form: the braces balance on the header line itself
+      // (`constraint "name" { true }`) - the block walk below would overrun
+      // into later members (their content leaks in as constraint expr).
+      if (firstLine.endsWith('}')) {
+        return { type: 'constraint', name, expr: expr.replace(/}\s*$/, '').trim() };
+      }
       const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
       const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
       const inner = innerLines.join(' ');
@@ -2338,4 +2547,52 @@ function splitFields(s: string): string[] {
   const last = s.substring(start).trim();
   if (last) result.push(last);
   return result;
+}
+
+// ─── component partition parsing ─────────────────────────────────────
+
+function parseComponentBody(name: string, body: string): ComponentNode {
+  const stateVars: string[] = [];
+  const actions: string[] = [];
+  const stateM = body.match(/state:\s*([^;]*)(?:;|$)/);
+  if (stateM) {
+    stateVars.push(...stateM[1].split(',').map(s => s.trim()).filter(Boolean));
+  }
+  const actionM = body.match(/actions:\s*(.+)$/);
+  if (actionM) {
+    actions.push(...actionM[1].split(',').map(s => s.trim()).filter(Boolean));
+  }
+  return { type: 'component', name, stateVars, actions };
+}
+
+function parseComponentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ComponentNode {
+  const firstLine = lines[startIndex].trim();
+  const nameMatch = firstLine.match(/^component\s+(\w+)/);
+  const name = nameMatch ? nameMatch[1] : 'Component';
+
+  // collect lines until braces balance
+  let depth = startBraceCount - (firstLine.match(/}/g) || []).length;
+  const bodyLines: string[] = [];
+  let i = startIndex + 1;
+  while (i < lines.length && depth > 0) {
+    const raw = lines[i];
+    depth += (raw.match(/{/g) || []).length - (raw.match(/}/g) || []).length;
+    if (depth > 0) bodyLines.push(raw.trim());
+    i++;
+  }
+
+  const stateVars: string[] = [];
+  const actions: string[] = [];
+  for (const l of bodyLines) {
+    const sm = l.match(/^state:\s*(.+)$/);
+    if (sm) {
+      stateVars.push(...sm[1].replace(/;$/, '').split(',').map(s => s.trim()).filter(Boolean));
+      continue;
+    }
+    const am = l.match(/^actions:\s*(.+)$/);
+    if (am) {
+      actions.push(...am[1].replace(/;$/, '').split(',').map(s => s.trim()).filter(Boolean));
+    }
+  }
+  return { type: 'component', name, stateVars, actions };
 }

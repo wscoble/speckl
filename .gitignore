@@ -1,45 +1,39 @@
-# Dependencies
-node_modules/
 
-# Build output
-dist/
-out/
-out_fresh/
-compiler/out-tef/
-compiler/dist/
-compiler/lagrangia/target/
-
-# Test output
-test-output/
-compiler/test-output/
-
-# Rust build artifacts
-target/
-
-# Debug / scratch scripts
-dump-ir.mjs
-dump-tef-ir.mjs
-test-ast.mjs
-test-parser.mjs
-fix-z3-again.py
-.last-build
-typescript
-
-# IDE
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Tmp
 *.bak
-compiler/test-output-rust/
-
-# Internal / non-public
-reference-agent/
-.forgejo/
 bench-rust.mjs
 bench-rust.sh
+# Build output
+compiler/dist/
+compiler/lagrangia/target/
+compiler/out-tef/
+compiler/test-output/
+compiler/test-output-rust/
+# Debug / scratch scripts
+# Dependencies
+dist/
+.DS_Store
+dump-ir.mjs
+dump-tef-ir.mjs
+fix-z3-again.py
+.forgejo/
+# IDE
+.idea/
+# Internal / non-public
+.last-build
+node_modules/
+# OS
+out/
+out_fresh/
+reference-agent/
+result
+# Rust build artifacts
+*.swo
+*.swp
+target/
+test-ast.mjs
+test-output/
+# Test output
+test-parser.mjs
+Thumbs.db
+# Tmp
+typescript
