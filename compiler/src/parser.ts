@@ -651,6 +651,22 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
     if (eqMatch) {
       const aliasName = eqMatch[1];
       const rest = eqMatch[2].trim();
+      const restOpens = (rest.match(/\{/g) || []).length;
+      const restCloses = (rest.match(/\}/g) || []).length;
+      if (restOpens > 0 && restCloses >= restOpens) {
+        // The alias opens AND closes on the header line (e.g.
+        // `type CardComment = { cardId: Nat, actor: String, text: String }`).
+        // Parse the record inline - the multiline path scans from the next
+        // line and would swallow the rest of the speck.
+        const typeExpr = parseTypeExpr(rest);
+        return {
+          type: 'interface',
+          name: aliasName,
+          kind: 'record',
+          fields: typeExpr.fields ?? [],
+          methods: [],
+        } as unknown as MemberNode;
+      }
       // Replace the line with the interface form so parseInterfaceBlockMultiline
       // can do its job. The `rest` may be empty (block starts on next line) or
       // contain the opening brace.
