@@ -54,12 +54,12 @@ consistency-check them, and `Always(Name)` there emits `(Always Name)` garbage.
 - Implement `Always(Name)` BMC in `z3-from-ir.ts` (define per-step instances, assert negation) - the state-machine generator already has the reference implementation
 - Acceptance: `.ir.smt2` files carry real BMC checks for imperative invariants; no `references undeclared identifier(s): Always, <name>` skips
 
-### B-06 · Fix the 2 pre-existing GreybeardCore example failures
+### B-06 · ✅ DONE - Fix the 2 pre-existing GreybeardCore example failures
 `npm run verify` → `invalid sort declaration, sort already declared/defined`
 (line 7, both ast and ir variants). Pre-dates the proof work; likely a
 duplicate `declare-sort` emitted by two generators colliding.
 
-### B-07 · Parser: `next:` as a first-class member
+### B-07 · ✅ DONE - Parser: `next:` as a first-class member
 `next: A | B` is still scraped from raw source (`parseNextFromSource`).
 Parse it in `parseSpeck` (with line spans, like invariants) and retire the
 scraping. Note: `verify` blocks currently must precede `next:` or the parse
@@ -93,7 +93,7 @@ The studio re-verifies the whole file per edit. Verify only the speck under
 the cursor (compile once per file, per-speck Z3 sections already exist).
 Acceptance: editing a 500-line suite re-verifies in <500ms.
 
-### B-12 · Plugin/extension API (the stated product goal)
+### B-12 · ✅ v0.1 ALPHA SHIPPED - Plugin/extension API (the stated product goal)
 Extract the studio's tool contract - `write_spec` / `verify_spec` /
 `read_example` / `list_examples` - into a versioned, documented HTTP/JSON-RPC
 API (localhost, optional token) so external harnesses and GPTs can drive
@@ -166,6 +166,11 @@ immediately - no gate.
 ---
 
 ## Done (for context - do not redo)
+
+- B-06: GreybeardCore failures fixed (self-closing type-alias over-capture) - examples 144/144
+- B-07: `next:` first-class AST member; member order free; printer round-trips it
+- B-12 alpha: `speckl-serve` HTTP contract (sessions, write+compile, per-check
+  verify, AST folds) - `studio/serve.ts` + `studio/API.md`, running on :7343
 
 - Parser: invariant blocks + line spans as first-class members
 - Z3: typed IR translation, reserved-word renaming, push/pop isolation, sanitizer fixes

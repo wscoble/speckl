@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node server/index.ts",
     "dev": "node --watch server/index.ts",
-    "build:editor": "esbuild web/editor-src.js --bundle --outfile=web/vendor/cm.js --format=iife --global-name=SpecklEditor --minify --alias:@speckl/parser=${SPECKL_PARSER:-$HOME/Projects/speckl/compiler/src/parser.ts} --alias:fs=./web/shims/empty.js --alias:path=./web/shims/empty.js"
+    "build:editor": "esbuild web/editor-src.js --bundle --outfile=web/vendor/cm.js --format=iife --global-name=SpecklEditor --minify --alias:@speckl/parser=${SPECKL_PARSER:-$HOME/Projects/speckl/compiler/src/parser.ts} --alias:fs=./web/shims/empty.js --alias:path=./web/shims/empty.js",
+    "serve": "node serve.ts"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.11.0",
