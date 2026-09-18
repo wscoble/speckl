@@ -132,6 +132,39 @@ bug/proof-gap reports.
 
 ---
 
+## P3 - Promotion (YouTube, social, conferences)
+
+Strategy, scripts, and runbooks live in `promotion/` in this repo. Cadence
+and gates are defined in `promotion/STRATEGY.md` - the Show HN gate is the
+only hard dependency chain (B-06, B-12, landing page must land first).
+
+### B-18 · Record video 01 - "My AI caught its own design bug with a theorem prover"
+Script in `promotion/video-01-script.md`; runbook in `promotion/demo-runbook.md`.
+Deliverables: 8-10 min long-form + 4 shorts cut from it. No gate - start now.
+
+### B-19 · MEMOCODE 2026 tool presentation (deadline June 1, 2026)
+Lightest-lift conference appearance (ESWEEK, Barcelona). Requires the paper
+skeleton in `promotion/conference-talk.md` + a clean public artifact.
+
+### B-20 · ICFEM 2026 paper (deadline June 22, 2026)
+"Formal methods for and with AI" track; GreybeardConsole as the industrial
+case study. Full paper, LNCS format.
+
+### B-21 · SEFM 2026 tool paper (paper deadline June 30, 2026)
+Dedicated tool-paper track with mandatory artifact evaluation - pairs with
+B-15 (npm publish) so the artifact is `npm install speckl-compile`.
+
+### B-22 · Landing page + Show HN launch
+Gate: examples 144/144, one-command setup, `speckl-serve` alpha (B-12),
+embedded 60-90s demo. Kit in `promotion/social-launch-kit.md`.
+
+### B-23 · Weekly build-in-public cadence
+1 long-form video/week, 2-3 shorts, 1 thread/post alternating AI-builder and
+formal-methods audiences. Metrics in `promotion/STRATEGY.md`. Starts
+immediately - no gate.
+
+---
+
 ## Done (for context - do not redo)
 
 - Parser: invariant blocks + line spans as first-class members
