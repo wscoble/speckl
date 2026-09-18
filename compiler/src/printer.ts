@@ -141,11 +141,15 @@ function printMember(member: MemberNode): string[] {
       // comment surfaces the gap to round-trip tests.
       const lm = member as unknown as { type: string; key?: string; value?: unknown };
       if (lm.type === 'lifecycle_metadata') {
-        // The parser captures the raw text after `key:` — print strings as-is
+        // The parser captures the raw text after `key:` - print strings as-is
         // (re-quoted only for arrays/objects via JSON), everything else raw.
         const v = lm.value;
         const text = Array.isArray(v) ? JSON.stringify(v) : String(v);
         return [`${lm.key}: ${text}`];
+      }
+      if (lm.type === 'next') {
+        const actions = (lm as unknown as { actions?: string[] }).actions ?? [];
+        return [`next: ${actions.join(' | ')}`];
       }
       return [`// unprinted member: ${lm.type}`];
     }

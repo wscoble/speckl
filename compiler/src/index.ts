@@ -7,8 +7,8 @@ import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
 import { generateTypeScriptStateMachine } from './generators/typescript-state-machine.js';
 import { generateProtobuf } from './generators/protobuf.js';
-import { generateZ3, Z3Options, parseNextFromSource } from './generators/z3.js';
-import type { InvariantMemberNode } from './parser.js';
+import { generateZ3, Z3Options } from './generators/z3.js';
+import type { InvariantMemberNode, NextMemberNode } from './parser.js';
 import { generateZ3FromIR } from './generators/z3-from-ir.js';
 import { generateRust } from './generators/rust.js';
 import { generateGo } from './generators/go.js';
@@ -154,9 +154,13 @@ async function main() {
           name: m.name,
           statements: [{ type: 'require' as const, expr: m.expr }],
         }));
-      const nextNode = parseNextFromSource(rawSource, speck.name);
+      const nextMember = speck.members.find(
+        (m): m is NextMemberNode => m.type === 'next',
+      );
       (speck as any)._invariants = invariants;
-      (speck as any)._next = nextNode;
+      (speck as any)._next = nextMember
+        ? { type: 'next' as const, actions: nextMember.actions }
+        : null;
     }
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
     generateZ3(ast, options.outputDir, z3Options);

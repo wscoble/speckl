@@ -278,6 +278,7 @@ export type MemberNode = (
   | ComponentNode
   | ServiceNode
   | InvariantMemberNode
+  | NextMemberNode
 ) & LineSpan;
 
 /**
@@ -289,6 +290,12 @@ export interface InvariantMemberNode {
   type: 'invariant';
   name: string;
   expr: string;
+}
+
+/** `next: Action1 | Action2` - the nondeterministic action choice. */
+export interface NextMemberNode {
+  type: 'next';
+  actions: string[];
 }
 
 export interface TypeExpr {
@@ -836,6 +843,16 @@ function parseMember(line: string): MemberNode | null {
   if (line.startsWith('output:')) {
     const typeExpr = parseTypeExpr(line.substring(7).trim());
     return { type: 'output', typeExpr };
+  }
+  
+  // next: Action1 | Action2 | ... - nondeterministic action choice
+  if (line.startsWith('next:')) {
+    const actions = line
+      .substring(5)
+      .split('|')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return { type: 'next', actions };
   }
   
   // constraint Name: expr  (single-line named constraint)
