@@ -1,0 +1,50 @@
+speck ReviewGate {
+    // Minimal review gate: a change may only merge after tests pass and a
+    // reviewer approves. Exercises a real next: relation (BMC unrolls every
+    // action) and the generated machine's can()/serialize()/restore() API.
+    // stage: 0 = Idle, 1 = TestsGreen, 2 = AwaitingReview, 3 = Approved, 4 = Merged
+
+    state {
+        stage: Nat
+        testsPassed: Bool
+        approved: Bool
+    }
+
+    init {
+        stage := 0
+        testsPassed := false
+        approved := false
+    }
+
+    invariant MergeNeedsApproval {
+        stage < 4 or (approved and testsPassed)
+    }
+
+    action RunTests {
+        require stage == 0
+        testsPassed := true
+        stage := 1
+    }
+
+    action RequestReview {
+        require stage == 1
+        stage := 2
+    }
+
+    action Approve {
+        require stage == 2
+        approved := true
+        stage := 3
+    }
+
+    action Merge {
+        require stage == 3
+        stage := 4
+    }
+
+    next: RunTests | RequestReview | Approve | Merge
+
+    verify Always(MergeNeedsApproval) {
+        depth 8
+    }
+}

@@ -278,7 +278,26 @@ export type MemberNode = (
   | ComponentNode
   | ServiceNode
   | InvariantMemberNode
+  | NextMemberNode
 ) & LineSpan;
+
+/**
+ * `next:` transition relation: the disjunction of actions the system may
+ * take at each step (`next: A | B | C`, optionally spanning lines with a
+ * leading or trailing `|`). Parsed as a first-class member so every
+ * backend sees the same action list — previously the Z3 backend scraped it
+ * from raw source and could swallow trailing members into the last name.
+ */
+export interface NextMemberNode {
+  type: 'next';
+  /** Explicit alternatives; empty when `anyAction` is set. */
+  actions: string[];
+  /**
+   * `next: { }` — an empty block means "any declared action may fire",
+   * each constrained by its own guards. Consumers expand it to every action.
+   */
+  anyAction?: boolean;
+}
 
 /**
  * Invariant block parsed as a first-class member (v0.3.2). The body is a
@@ -397,6 +416,15 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
 
     if (!line || line.startsWith('//') || line.startsWith('/*')) {
       i++;
+      continue;
+    }
+
+    if (line.startsWith('next:')) {
+      const startLine = i + 1;
+      const { node, endIndex } = parseNextRelation(lines, i);
+      members.push(Object.assign(node, { startLine, endLine: endIndex + 1 }));
+      speckEndLine = endIndex + 1;
+      i = endIndex + 1;
       continue;
     }
 
@@ -2595,4 +2623,50 @@ function parseComponentBlockMultiline(lines: string[], startIndex: number, start
     }
   }
   return { type: 'component', name, stateVars, actions };
+}
+
+/** Strip a trailing `//` line comment (next: lines hold only identifiers). */
+function stripLineComment(l: string): string {
+  const c = l.indexOf('//');
+  return (c >= 0 ? l.slice(0, c) : l).trim();
+}
+
+/**
+ * Parse `next: A | B | ...` starting at `startIndex`. The relation continues
+ * onto following lines only while the text so far is empty or ends with `|`,
+ * or the next significant line starts with `|`. Every alternative must be a
+ * bare action identifier; anything else is a parse error rather than being
+ * silently folded into a name (which made the relation vacuous).
+ */
+export function parseNextRelation(lines: string[], startIndex: number): { node: NextMemberNode; endIndex: number } {
+  let text = stripLineComment(lines[startIndex].trim().slice('next:'.length));
+  let end = startIndex;
+  if (text.startsWith('{')) {
+    // Block form. Only the empty block (comments allowed) is defined: any action.
+    let body = text.slice(1);
+    while (!body.includes('}') && end + 1 < lines.length) {
+      end++;
+      body += ' ' + stripLineComment(lines[end].trim());
+    }
+    const close = body.indexOf('}');
+    if (close < 0 || body.slice(0, close).replace(/\/\*[\s\S]*?\*\//g, '').trim() !== '' || body.slice(close + 1).trim() !== '') {
+      throw new Error(`Parse error at line ${startIndex + 1}: next: { ... } must be empty (meaning any action); list alternatives as next: A | B`);
+    }
+    return { node: { type: 'next', actions: [], anyAction: true }, endIndex: end };
+  }
+  for (let j = startIndex + 1; j < lines.length; j++) {
+    const t = stripLineComment(lines[j].trim());
+    if (!t || t.startsWith('/*')) continue;
+    const needMore = text === '' || text.endsWith('|');
+    if (!needMore && !t.startsWith('|')) break;
+    text += ' ' + t;
+    end = j;
+  }
+  const actions = text.split('|').map(a => a.trim());
+  for (const a of actions) {
+    if (!/^[A-Za-z_]\w*$/.test(a)) {
+      throw new Error(`Parse error at line ${startIndex + 1}: next: alternative ${JSON.stringify(a)} is not an action name`);
+    }
+  }
+  return { node: { type: 'next', actions }, endIndex: end };
 }

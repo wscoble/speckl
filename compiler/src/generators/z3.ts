@@ -85,8 +85,10 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   const sourceInvariants = (speck as any)._invariants || [];
   const allInvariants = [...sourceInvariants, ...invariants];
   
-  // Parse next: transition relation
-  const nextNode = (speck as any)._next || parseNext(speck);
+  // next: transition relation (first-class AST member). An unknown action
+  // name used to be filtered out silently, which could leave only the
+  // stuttering step and turn every BMC obligation into a vacuous "proof".
+  const nextNode = nextRelation(speck, actions);
 
   const lines: string[] = [];
 
@@ -1618,52 +1620,20 @@ function parseInvariantBody(content: string): InvariantStatement[] {
 }
 
 /**
- * Parse next: transition relation from raw source
+ * The speck's `next:` relation, validated against its actions. Throws on an
+ * unknown action name: dropping it would weaken the transition relation and
+ * make BMC report properties as proven when they are not.
  */
-export function parseNextFromSource(source: string, speckName: string): NextNode | null {
-  const speckRegex = new RegExp(`speck\\s+${escapeRegex(speckName)}\\s*\\{`);
-  const speckMatch = source.match(speckRegex);
-  if (!speckMatch) return null;
-
-  const startIdx = speckMatch.index! + speckMatch[0].length;
-  let braceCount = 1;
-  let endIdx = startIdx;
-  for (let i = startIdx; i < source.length; i++) {
-    if (source[i] === '{') braceCount++;
-    if (source[i] === '}') {
-      braceCount--;
-      if (braceCount === 0) {
-        endIdx = i;
-        break;
-      }
-    }
+export function nextRelation(speck: SpeckNode, actions: ActionNode[]): NextNode | null {
+  const member = speck.members.find(m => m.type === 'next');
+  if (!member || member.type !== 'next') return null;
+  if (member.anyAction) return { type: 'next', actions: actions.map(a => a.name) };
+  const known = new Set(actions.map(a => a.name));
+  const unknown = member.actions.filter(a => !known.has(a));
+  if (unknown.length > 0) {
+    throw new Error(`${speck.name}: next: references unknown action(s): ${unknown.join(', ')}`);
   }
-
-  const body = source.substring(startIdx, endIdx);
-
-  // next: Action1 | Action2 | ... (can span multiple lines)
-  const nextMatch = body.match(/next:\s*(.+)/s);
-  if (!nextMatch) return null;
-
-  // The captured group contains everything from 'next' to end of speck body
-  // We need to extract just the action names before the next block starts
-  const rest = nextMatch[1];
-  // Stop at verify: block, or end of speck body
-  const endMarker = rest.match(/\n\s*(?:verify:|speck\s)/);
-  const nextContent = endMarker ? rest.substring(0, endMarker.index!) : rest;
-
-  const actions = nextContent
-    .replace(/\n/g, ' ')  // collapse newlines
-    .split('|')
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  return { type: 'next', actions };
-}
-
-function parseNext(speck: SpeckNode): NextNode | null {
-  // Parsed from source, not AST
-  return null;
+  return { type: 'next', actions: [...member.actions] };
 }
 
 function escapeRegex(s: string): string {

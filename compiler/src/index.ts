@@ -7,7 +7,7 @@ import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
 import { generateTypeScriptStateMachine } from './generators/typescript-state-machine.js';
 import { generateProtobuf } from './generators/protobuf.js';
-import { generateZ3, Z3Options, parseNextFromSource } from './generators/z3.js';
+import { generateZ3, Z3Options } from './generators/z3.js';
 import type { InvariantMemberNode } from './parser.js';
 import { generateZ3FromIR } from './generators/z3-from-ir.js';
 import { generateRust } from './generators/rust.js';
@@ -87,8 +87,6 @@ async function main() {
     fs.mkdirSync(options.outputDir, { recursive: true });
   }
   
-  const rawSource = fs.readFileSync(file, 'utf-8');
-
   const irAst = lower(ast, { filePath: file, resolveImports: false });
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
@@ -154,9 +152,7 @@ async function main() {
           name: m.name,
           statements: [{ type: 'require' as const, expr: m.expr }],
         }));
-      const nextNode = parseNextFromSource(rawSource, speck.name);
       (speck as any)._invariants = invariants;
-      (speck as any)._next = nextNode;
     }
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
     generateZ3(ast, options.outputDir, z3Options);

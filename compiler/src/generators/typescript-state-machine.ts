@@ -436,8 +436,10 @@ function emitSpeck(speck: SpeckNode): string {
     return `  ${v.name}!: ${tsType(v.typeExpr, speck.name, enumMap)};`;
   }).join('\n');
 
+  const runtimeApi = emitRuntimeApi(speck.name, className, actions, stateVars.map(v => v.name));
+
   const classBody = `
-${opaqueTypeDecls}export class ${className} {
+${opaqueTypeDecls}${runtimeApi.preamble}export class ${className} {
 ${statePropertiesNonNull}
   decisionLog: ${logType} = [];
 
@@ -446,6 +448,8 @@ ${initAssignments || '    // No init block defined'}
   }
 
 ${actionMethods}
+
+${runtimeApi.members}
 
 ${constraintChecks}
 
@@ -479,6 +483,104 @@ ${verifyChecks}
     `${classBody}`;
 
   return file;
+}
+
+/**
+ * Runtime API shared by every generated machine (used by agent hooks and any
+ * host that must ask "may this action fire now?" without firing it):
+ *  - `ACTIONS`: action name → ordered parameter names.
+ *  - `can(action, args)`: runs the action on a private copy of the state and
+ *    returns `true`, or the reason it is refused. `this` is never mutated.
+ *  - `serialize()` / `restore(snapshot)`: JSON-safe state round trip
+ *    (Map/Set preserved), bound to the speck name.
+ */
+function emitRuntimeApi(speckName: string, className: string, actions: ActionNode[], stateVarNames: string[]): { preamble: string; members: string } {
+  const actionsType = `${speckName}Action`;
+  const table = actions.map(a => `    ${a.name}: [${a.params.map(p => `'${p.name}'`).join(', ')}],`).join('\n');
+  const preamble =
+`/** JSON-safe snapshot of a ${className}, produced by serialize(). */
+export interface ${speckName}Snapshot {
+  speck: '${speckName}';
+  version: 1;
+  state: Record<string, unknown>;
+  decisionLog: unknown[];
+}
+
+function specklEncode(v: unknown): unknown {
+  if (v instanceof Map) return { $map: Array.from(v, ([k, x]) => [specklEncode(k), specklEncode(x)]) };
+  if (v instanceof Set) return { $set: Array.from(v, specklEncode) };
+  if (Array.isArray(v)) return v.map(specklEncode);
+  if (v !== null && typeof v === 'object') {
+    const o: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) o[k] = specklEncode(x);
+    return o;
+  }
+  return v;
+}
+
+function specklDecode(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(specklDecode);
+  if (v !== null && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    if (Array.isArray(o.$map)) return new Map((o.$map as unknown[][]).map(([k, x]) => [specklDecode(k), specklDecode(x)]));
+    if (Array.isArray(o.$set)) return new Set((o.$set as unknown[]).map(specklDecode));
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(o)) out[k] = specklDecode(x);
+    return out;
+  }
+  return v;
+}
+
+`;
+  const members =
+`  /** Action name → ordered parameter names (positional order of the method). */
+  static readonly ACTIONS = {
+${table}
+  } as const;
+
+  /** JSON-safe copy of the current state and decision log. */
+  serialize(): ${speckName}Snapshot {
+    const state: Record<string, unknown> = {};
+    for (const k of [${stateVarNames.map(n => `'${n}'`).join(', ')}] as const) {
+      state[k] = specklEncode((this as unknown as Record<string, unknown>)[k]);
+    }
+    return { speck: '${speckName}', version: 1, state, decisionLog: specklEncode(this.decisionLog) as unknown[] };
+  }
+
+  /** Rebuild a machine from serialize() output without re-running init. */
+  static restore(snapshot: ${speckName}Snapshot): ${className} {
+    if (!snapshot || snapshot.speck !== '${speckName}' || snapshot.version !== 1) {
+      throw new Error('restore: snapshot is not a ${speckName} v1 snapshot');
+    }
+    const m = Object.create(${className}.prototype) as ${className};
+    const state = snapshot.state ?? {};
+    for (const k of [${stateVarNames.map(n => `'${n}'`).join(', ')}] as const) {
+      if (!(k in state)) throw new Error(\`restore: snapshot is missing state variable \${k}\`);
+      (m as unknown as Record<string, unknown>)[k] = specklDecode(state[k]);
+    }
+    (m as unknown as { decisionLog: unknown }).decisionLog = specklDecode(snapshot.decisionLog ?? []);
+    return m;
+  }
+
+  /**
+   * May \`action\` fire now with \`args\` (keyed by parameter name)? Evaluates
+   * the action's guards and body against a private copy of the state, so
+   * this machine is never mutated. Returns true, or the refusal reason.
+   */
+  can(action: ${actionsType}, args: Record<string, unknown> = {}): true | string {
+    const params = (${className}.ACTIONS as Record<string, readonly string[]>)[action];
+    if (!params) return \`unknown action: \${String(action)}\`;
+    const missing = params.filter(p => !(p in args));
+    if (missing.length > 0) return \`missing argument(s): \${missing.join(', ')}\`;
+    const probe = ${className}.restore(this.serialize());
+    try {
+      (probe as unknown as Record<string, (...a: unknown[]) => unknown>)[action](...params.map(p => args[p]));
+      return true;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }`;
+  return { preamble: preamble + `export type ${actionsType} = keyof typeof ${className}.ACTIONS;\n\n`, members };
 }
 
 function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames: Set<string>, speckName: string, stateEnumName: string, knownStateValues: string[], enumMap: Map<string, string[]>): string {
