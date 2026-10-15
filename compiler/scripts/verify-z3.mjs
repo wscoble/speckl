@@ -6,8 +6,9 @@
 // For each examples/*.speckdl:
 //   1. Compile to SMT-LIB2 (both the AST-driven and IR-driven Z3 backends).
 //   2. Run the z3 binary on each emitted .smt2 / .ir.smt2 file.
-//   3. Compare the solver result against the generator's expectation marker
-//      (`; speckl-expect: sat` / `; speckl-expect: unsat`).
+//   3. Compare EVERY (check-sat) answer against the `; speckl-expect:` marker
+//      that precedes it. Each verify block is its own obligation; any one
+//      failing fails the file (earlier ones are never masked by later ones).
 //   4. On unexpected `sat` (a violated property), render a human-readable
 //      counterexample: a per-step state trace from the solver model.
 //
@@ -22,6 +23,7 @@ import { mkdtempSync, rmSync, readdirSync, readFileSync, mkdirSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { judge, modelQueryFor } from './lib/obligations.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const compilerDir = resolve(scriptDir, '..');
@@ -80,24 +82,6 @@ function runZ3(input) {
  */
 function stripGetModel(smt) {
   return smt.replace(/^\s*\(get-model\)\s*$/gm, '');
-}
-
-/** Classify z3 output: error / sat / unsat / unknown / no-result. */
-function solverResult(stdout, stderr) {
-  const combined = stdout + '\n' + stderr;
-  const errMatch = combined.match(/\(error "([^"]*)"\)/);
-  if (errMatch) return { kind: 'error', message: errMatch[1] };
-  const lines = stdout.split('\n').map(l => l.trim());
-  const results = lines.filter(l => l === 'sat' || l === 'unsat' || l === 'unknown');
-  if (results.length === 0) return { kind: 'no-result' };
-  const last = results[results.length - 1];
-  return { kind: last };
-}
-
-/** Read the last `; speckl-expect:` marker from an SMT file, if any. */
-function expectationOf(smt) {
-  const matches = [...smt.matchAll(/^;\s*speckl-expect:\s*(sat|unsat)/gm)];
-  return matches.length > 0 ? matches[matches.length - 1][1] : null;
 }
 
 /**
@@ -222,37 +206,29 @@ for (const file of exampleFiles) {
         results.push({ file, mode, smt: smtName, status: 'SKIP', detail: 'nothing to check (no check-sat)' });
         continue; // not a failure — nothing verifiable in this speck
       }
-      const expect = expectationOf(smt);
       const res = runZ3(stripGetModel(smt));
       if (res.error || res.status === null) {
         results.push({ file, mode, smt: smtName, status: 'Z3-TIMEOUT', detail: `exceeded ${Z3_TIMEOUT_SECONDS}s solver budget` });
         failed++;
         continue;
       }
-      const outcome = solverResult(res.stdout, res.stderr);
-
-      if (outcome.kind === 'error') {
-        results.push({ file, mode, smt: smtName, status: 'Z3-ERROR', detail: outcome.message });
-        failed++;
-      } else if (outcome.kind === 'no-result' || outcome.kind === 'unknown') {
-        results.push({ file, mode, smt: smtName, status: 'NO-RESULT', detail: `solver returned: ${outcome.kind}` });
-        failed++;
-      } else if (expect && outcome.kind !== expect) {
-        const detail = expect === 'unsat'
-          ? 'property VIOLATED — sat (expected unsat)'
-          : 'contradiction — unsat (expected sat)';
-        results.push({ file, mode, smt: smtName, status: 'VIOLATED', detail });
-        failed++;
-        if (expect === 'unsat') {
-          // Re-run with the model request intact to render the trace.
-          const rerun = runZ3(smt);
+      const verdict = judge(smt, res.stdout, res.stderr);
+      for (const o of verdict.obligations) {
+        const mark = o.ok ? '✓' : '✗';
+        const what = o.ok ? o.got : (o.expect === 'unsat' && o.got === 'sat' ? 'VIOLATED — sat (expected unsat)'
+          : o.expect === 'sat' && o.got === 'unsat' ? 'contradiction — unsat (expected sat)' : `got ${o.got}${o.expect ? ` (expected ${o.expect})` : ''}`);
+        console.log(`  ${mark} ${file} [${mode}] ${smtName} · ${o.label}: ${what}`);
+        if (!o.ok && o.expect === 'unsat' && o.got === 'sat') {
+          const rerun = runZ3(modelQueryFor(smt, o));
           for (const line of renderCounterexample(rerun.stdout, smt)) console.log(line);
         }
+      }
+      const n = verdict.obligations.length;
+      if (verdict.status === 'OK') {
+        results.push({ file, mode, smt: smtName, status: 'OK', detail: `${n}/${n} obligation(s) hold` });
       } else {
-        results.push({
-          file, mode, smt: smtName, status: 'OK',
-          detail: expect ? `${outcome.kind} (expected ${expect})` : outcome.kind,
-        });
+        results.push({ file, mode, smt: smtName, status: verdict.status, detail: verdict.detail });
+        failed++;
       }
     }
   }
