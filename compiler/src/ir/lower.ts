@@ -321,7 +321,24 @@ function lowerBehavior(
     }
   }
 
-  return { stateVars, init, actions, events };
+  const behavior: BehaviorFacet = { stateVars, init, actions, events };
+  const nextMember = speck.members.find(m => m.type === 'next');
+  if (nextMember && nextMember.type === 'next') {
+    const known = new Set(actions.map(a => a.name));
+    const names = nextMember.anyAction ? actions.map(a => a.name) : nextMember.actions;
+    for (const name of names) {
+      if (!known.has(name)) {
+        diagnostics.push({
+          level: 'error',
+          message: `next: references unknown action "${name}"`,
+          line: nextMember.startLine,
+          speck: speck.name,
+        });
+      }
+    }
+    behavior.next = [...names];
+  }
+  return behavior;
 }
 
 function lowerFormalSpec(

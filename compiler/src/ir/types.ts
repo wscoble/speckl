@@ -206,6 +206,13 @@ export interface BehaviorFacet {
   actions: IRAction[];
   /** Event definitions — what can be emitted. */
   events: IREvent[];
+  /**
+   * The `next:` transition relation: names of the actions the system may
+   * take at each step, in source order. Absent when the spec declares no
+   * `next:` (then no transition relation is implied). Every name resolves
+   * to an entry in `actions`; an unknown name is an error diagnostic.
+   */
+  next?: string[];
 }
 
 export interface IRStateVar {
