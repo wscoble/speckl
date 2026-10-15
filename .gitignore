@@ -37,3 +37,4 @@ test-parser.mjs
 Thumbs.db
 # Tmp
 typescript
+compiler/coverage/
