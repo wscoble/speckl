@@ -279,6 +279,7 @@ export type MemberNode = (
   | ServiceNode
   | InvariantMemberNode
   | NextMemberNode
+  | AgentMemberNode
 ) & LineSpan;
 
 /**
@@ -308,6 +309,53 @@ export interface InvariantMemberNode {
   type: 'invariant';
   name: string;
   expr: string;
+}
+
+/**
+ * `agent { }` block: maps tools onto actions, declares wait-states that
+ * await verified signals (HITL/HNTL), and optionally names Nat stage labels.
+ * Humans are signals, not actions — the block never names a human action.
+ */
+export interface AgentMemberNode {
+  type: 'agent';
+  /** Optional `stages <var> { Name = n ... }` map for Nat-backed stage enums. */
+  stages?: AgentStagesMap;
+  tools: AgentToolBinding[];
+  awaits: AgentAwaitSpec[];
+}
+
+export interface AgentStagesMap {
+  /** State variable the labels apply to (usually `stage`). */
+  variable: string;
+  /** Label → Nat value. */
+  labels: { name: string; value: number }[];
+}
+
+export interface AgentToolBinding {
+  /** Tool name exposed to the agent runtime (e.g. run_tests). */
+  name: string;
+  /** SpeckDL action this tool fires (e.g. RunTests). */
+  action: string;
+  /** `act` = side-effecting (refused while awaiting in both modes);
+   *  `observe` = read-only (allowed in `near` / HNTL while awaiting). */
+  effect: 'act' | 'observe';
+}
+
+export interface AgentAwaitSpec {
+  /** Stage label this wait applies to (resolved via stages map or enum). */
+  state: string;
+  /** Signal name a verifier must produce. */
+  signal: string;
+  /** `near` = HNTL (observe tools ok); `in` = HITL (nothing). */
+  mode: 'near' | 'in';
+  /** Allowed outcomes (e.g. approve, reject). */
+  outcomes: string[];
+  /** Claims the verifier must attest (name → type name). */
+  claims: { name: string; typeName: string }[];
+  /** outcome → target stage label. */
+  on: { outcome: string; target: string }[];
+  /** Optional timeout; may only resolve to a reject-class outcome. */
+  timeout?: { durationMs: number; durationText: string; outcome: string };
 }
 
 export interface TypeExpr {
@@ -488,7 +536,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     // Check for block-opening members (those that open braces on the same line)
     const blockStarters = ['state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
       'state {', 'init {', 'verify ', 'constraint ', 'input:', 'output:', 'service ', 'oneof ', 'transition ',
-      'state as ', 'type ', 'component ', 'invariant '];
+      'state as ', 'type ', 'component ', 'invariant ', 'agent {', 'agent '];
     const isBlockStarter = blockStarters.some(s => line.startsWith(s));
 
     // Handle single-line metadata members that aren't block-starters:
@@ -557,7 +605,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
               nextLine.startsWith('interface ') || nextLine.startsWith('provenance ') ||
               nextLine.startsWith('service ') || nextLine.startsWith('bom ') ||
               nextLine.startsWith('}') ||
-              nextLine.startsWith('next:') || nextLine.startsWith('invariant ')) {
+              nextLine.startsWith('next:') || nextLine.startsWith('invariant ') || nextLine.startsWith('agent ')) {
             break;
           }
           i++;
@@ -698,6 +746,9 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
   }
   if (firstLine.startsWith('service ')) {
     return parseServiceBlockMultiline(lines, startIndex, startBraceCount);
+  }
+  if (firstLine.startsWith('agent ') || firstLine === 'agent' || firstLine.startsWith('agent {')) {
+    return parseAgentBlockMultiline(lines, startIndex, startBraceCount);
   }
   if (firstLine.startsWith('provenance ')) {
     // Parse the provenance block body. Each clause is one of:
@@ -2669,4 +2720,194 @@ export function parseNextRelation(lines: string[], startIndex: number): { node: 
     }
   }
   return { node: { type: 'next', actions }, endIndex: end };
+}
+
+/**
+ * Parse `agent { ... }` into an AgentMemberNode.
+ * Body forms:
+ *   stages <var> { Name = n ... }
+ *   tool <name> -> <Action> effect act|observe
+ *   await <State> { signal ...; mode near|in; require outcome in {...};
+ *                   require claims { k: T }; on outcome -> Target;
+ *                   timeout <dur> -> reject }
+ */
+function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): AgentMemberNode {
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
+  const bodyLines = lines.slice(startIndex + 1, endIndex);
+  const tools: AgentToolBinding[] = [];
+  const awaits: AgentAwaitSpec[] = [];
+  let stages: AgentStagesMap | undefined;
+  let i = 0;
+
+  while (i < bodyLines.length) {
+    const raw = bodyLines[i];
+    const line = raw.trim();
+    if (!line || line.startsWith('//') || line.startsWith('/*')) {
+      i++;
+      continue;
+    }
+
+    // stages <var> { ... }
+    const stagesHeader = line.match(/^stages\s+(\w+)\s*\{/);
+    if (stagesHeader) {
+      const variable = stagesHeader[1];
+      const openOnLine = (raw.match(/{/g) || []).length;
+      const closeOnLine = (raw.match(/}/g) || []).length;
+      let inner: string[] = [];
+      if (closeOnLine >= openOnLine && openOnLine > 0) {
+        // single-line stages block — unlikely but handle
+        const m = line.match(/\{([^}]*)\}/);
+        inner = m ? [m[1]] : [];
+        i++;
+      } else {
+        const subEnd = findBlockEnd(bodyLines, i + 1, openOnLine);
+        inner = bodyLines.slice(i + 1, subEnd);
+        i = subEnd + 1;
+      }
+      const labels: { name: string; value: number }[] = [];
+      for (const il of inner) {
+        const t = il.trim();
+        if (!t || t.startsWith('//') || t === '}') continue;
+        const lm = t.match(/^(\w+)\s*=\s*(\d+)\s*,?$/);
+        if (!lm) {
+          throw new Error(`Parse error in agent stages: expected Name = n, got ${JSON.stringify(t)}`);
+        }
+        labels.push({ name: lm[1], value: parseInt(lm[2], 10) });
+      }
+      stages = { variable, labels };
+      continue;
+    }
+
+    // tool name -> Action effect act|observe
+    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_]\w*)\s+effect\s+(act|observe)\s*$/);
+    if (toolMatch) {
+      tools.push({ name: toolMatch[1], action: toolMatch[2], effect: toolMatch[3] as 'act' | 'observe' });
+      i++;
+      continue;
+    }
+
+    // await State { ... }
+    const awaitHeader = line.match(/^await\s+(\w+)\s*\{/);
+    if (awaitHeader) {
+      const state = awaitHeader[1];
+      const openOnLine = (raw.match(/{/g) || []).length;
+      const subEnd = findBlockEnd(bodyLines, i + 1, openOnLine);
+      const awaitInner = bodyLines.slice(i + 1, subEnd).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
+      i = subEnd + 1;
+
+      let signal = '';
+      let mode: 'near' | 'in' | '' = '';
+      let outcomes: string[] = [];
+      const claims: { name: string; typeName: string }[] = [];
+      const on: { outcome: string; target: string }[] = [];
+      let timeout: AgentAwaitSpec['timeout'];
+
+      let j = 0;
+      while (j < awaitInner.length) {
+        const al = awaitInner[j];
+
+        const sigM = al.match(/^signal\s+(\w+)\s*$/);
+        if (sigM) { signal = sigM[1]; j++; continue; }
+
+        const modeM = al.match(/^mode\s+(near|in)\s*$/);
+        if (modeM) { mode = modeM[1] as 'near' | 'in'; j++; continue; }
+
+        const outM = al.match(/^require\s+outcome\s+in\s*\{([^}]+)\}\s*$/);
+        if (outM) {
+          outcomes = outM[1].split(',').map(s => s.trim()).filter(Boolean);
+          for (const o of outcomes) {
+            if (!/^[A-Za-z_]\w*$/.test(o)) {
+              throw new Error(`Parse error in await ${state}: outcome ${JSON.stringify(o)} is not an identifier`);
+            }
+          }
+          j++;
+          continue;
+        }
+
+        // require claims { ... } — may span lines collected already as separate entries
+        if (al.startsWith('require claims')) {
+          let claimsText = al;
+          if (!claimsText.includes('{')) {
+            throw new Error(`Parse error in await ${state}: require claims must open a block`);
+          }
+          while (!claimsText.includes('}') && j + 1 < awaitInner.length) {
+            j++;
+            claimsText += ' ' + awaitInner[j];
+          }
+          const cm = claimsText.match(/^require\s+claims\s*\{([^}]*)\}\s*$/);
+          if (!cm) {
+            throw new Error(`Parse error in await ${state}: malformed require claims block`);
+          }
+          const body = cm[1].trim();
+          if (body) {
+            for (const part of body.split(',')) {
+              const p = part.trim();
+              if (!p) continue;
+              const pm = p.match(/^(\w+)\s*:\s*(\w+)$/);
+              if (!pm) {
+                throw new Error(`Parse error in await ${state}: claim must be name: Type, got ${JSON.stringify(p)}`);
+              }
+              claims.push({ name: pm[1], typeName: pm[2] });
+            }
+          }
+          j++;
+          continue;
+        }
+
+        const onM = al.match(/^on\s+(\w+)\s*->\s*(\w+)\s*$/);
+        if (onM) {
+          on.push({ outcome: onM[1], target: onM[2] });
+          j++;
+          continue;
+        }
+
+        const toM = al.match(/^timeout\s+(\S+)\s*->\s*(\w+)\s*$/);
+        if (toM) {
+          const durationMs = parseDurationToMs(toM[1]);
+          timeout = { durationMs, durationText: toM[1], outcome: toM[2] };
+          j++;
+          continue;
+        }
+
+        throw new Error(`Parse error in await ${state}: unexpected line ${JSON.stringify(al)}`);
+      }
+
+      if (!signal) throw new Error(`Parse error in await ${state}: missing signal`);
+      if (!mode) throw new Error(`Parse error in await ${state}: missing mode (near|in)`);
+      if (outcomes.length === 0) throw new Error(`Parse error in await ${state}: missing require outcome in {...}`);
+      if (on.length === 0) throw new Error(`Parse error in await ${state}: missing on outcome -> Target`);
+      for (const o of on) {
+        if (!outcomes.includes(o.outcome)) {
+          throw new Error(`Parse error in await ${state}: on ${o.outcome} is not in require outcome in {${outcomes.join(', ')}}`);
+        }
+      }
+      if (timeout && !outcomes.includes(timeout.outcome)) {
+        throw new Error(`Parse error in await ${state}: timeout outcome ${timeout.outcome} is not in require outcome in {...}`);
+      }
+
+      awaits.push({ state, signal, mode, outcomes, claims, on, timeout });
+      continue;
+    }
+
+    throw new Error(`Parse error in agent block: unexpected line ${JSON.stringify(line)}`);
+  }
+
+  return { type: 'agent', stages, tools, awaits };
+}
+
+/** Parse durations like `24h`, `30m`, `90s`, `500ms` into milliseconds. */
+export function parseDurationToMs(text: string): number {
+  const m = text.match(/^(\d+)(ms|s|m|h|d)$/);
+  if (!m) {
+    throw new Error(`Parse error: duration ${JSON.stringify(text)} must look like 24h, 30m, 90s, or 500ms`);
+  }
+  const n = parseInt(m[1], 10);
+  switch (m[2]) {
+    case 'ms': return n;
+    case 's': return n * 1000;
+    case 'm': return n * 60_000;
+    case 'h': return n * 3_600_000;
+    case 'd': return n * 86_400_000;
+    default: throw new Error(`Parse error: unknown duration unit in ${text}`);
+  }
 }

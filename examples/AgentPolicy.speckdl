@@ -1,0 +1,72 @@
+speck AgentPolicy {
+    // Speckl as agentic behavior rails: tools + hooks compiled from one spec.
+    // Stages are Nat (Z3 BMC-sound today); labels live in agent.stages.
+    // Humans are signals, not actions — the machine waits in AwaitingReview
+    // until a verified signal arrives (HITL/HNTL).
+
+    state {
+        stage: Nat
+        testsPassed: Bool
+    }
+
+    init {
+        stage := 0
+        testsPassed := false
+    }
+
+    invariant PrNeedsApproval {
+        stage != 5 or testsPassed
+    }
+
+    action RunTests {
+        require stage == 0
+        testsPassed := true
+        stage := 1
+    }
+
+    action RequestReview {
+        require stage == 1
+        stage := 2
+    }
+
+    action OpenPR {
+        require stage == 3
+        stage := 5
+    }
+
+    action ReadFile(path: String) {
+        return true
+    }
+
+    agent {
+        stages stage {
+            Idle = 0
+            TestsGreen = 1
+            AwaitingReview = 2
+            Approved = 3
+            Rejected = 4
+            PrOpened = 5
+        }
+
+        tool run_tests      -> RunTests       effect act
+        tool request_review -> RequestReview  effect act
+        tool open_pr        -> OpenPR         effect act
+        tool read_file      -> ReadFile       effect observe
+
+        await AwaitingReview {
+            signal review
+            mode near
+            require outcome in { approve, reject }
+            require claims { reviewer: String }
+            on approve -> Approved
+            on reject  -> Rejected
+            timeout 24h -> reject
+        }
+    }
+
+    next: RunTests | RequestReview | OpenPR | ReadFile
+
+    verify Always(PrNeedsApproval) {
+        depth 8
+    }
+}

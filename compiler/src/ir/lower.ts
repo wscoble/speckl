@@ -24,13 +24,14 @@ import {
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
   ProvenanceNode, ReviewNode, AuthorNode, SourceNode, DerivesNode,
   SatisfiesNode, BOMNode, TypeExpr, OneofNode, TransitionNode,
-  InputNode, OutputNode,
+  InputNode, OutputNode, AgentMemberNode,
 } from '../parser.js';
 import {
   IR, IRSpeck, IRFacets, IRImport,
   TypedSchemaFacet, IRType, IRRecordType, IREnumType, IRAliasType,
   IRFieldDef, IRTypeRef, IRService, IRServiceMethod,
   BehaviorFacet, IRStateVar, IRAssign, IRAction, IRParam, IRStmt, IREvent,
+  IRAgentConfig, IRAgentAwait,
   FormalSpecFacet, IRConstraint, IRVerify,
   IRExpr, IRBoolLit, IRIntLit, IRFloatLit, IRStringLit, IRIdent, IRBinOp, IRUnOp, IRCall, IRFieldAccess, IRIndexExpr,
   WireFormatFacet,
@@ -302,7 +303,14 @@ function lowerBehavior(
     } else if (m.type === 'action') {
       const a = m as ActionNode;
       const rawStmts = rawStatementsByAction.get(a.name) || [];
-      const stmts = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
+      let stmts: IRStmt[];
+      if (rawStmts.length > 0) {
+        stmts = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
+      } else {
+        // Synthetic __signal_* actions (and any AST-only actions) carry
+        // parser-shaped statements with string expressions.
+        stmts = a.statements.map(s => lowerParserActionStatement(s, diagnostics, speck.name));
+      }
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
@@ -338,7 +346,182 @@ function lowerBehavior(
     }
     behavior.next = [...names];
   }
+
+  const agentMember = speck.members.find((m): m is AgentMemberNode & { startLine?: number } => m.type === 'agent');
+  if (agentMember) {
+    behavior.agent = lowerAgent(agentMember, behavior, speck.name, diagnostics);
+  }
   return behavior;
+}
+
+/**
+ * Validate and lower an `agent { }` block. Injects synthetic `__signal_*`
+ * actions into behavior.actions / behavior.next so Z3 BMC covers the
+ * human-response edges; those actions are never exposed as tools.
+ */
+function lowerAgent(
+  agent: AgentMemberNode & { startLine?: number },
+  behavior: BehaviorFacet,
+  speckName: string,
+  diagnostics: IRDiagnostic[],
+): IRAgentConfig {
+  const actionNames = new Set(behavior.actions.map(a => a.name));
+  const stateVarNames = new Set(behavior.stateVars.map(v => v.name));
+  const labelToValue = new Map<string, number>();
+  let stageVar = 'stage';
+
+  if (agent.stages) {
+    stageVar = agent.stages.variable;
+    if (!stateVarNames.has(stageVar)) {
+      diagnostics.push({
+        level: 'error',
+        message: `agent stages: unknown state variable "${stageVar}"`,
+        line: agent.startLine,
+        speck: speckName,
+      });
+    }
+    for (const l of agent.stages.labels) {
+      if (labelToValue.has(l.name)) {
+        diagnostics.push({
+          level: 'error',
+          message: `agent stages: duplicate label "${l.name}"`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+      }
+      labelToValue.set(l.name, l.value);
+    }
+  }
+
+  const tools = [];
+  const seenToolNames = new Set<string>();
+  for (const t of agent.tools) {
+    if (seenToolNames.has(t.name)) {
+      diagnostics.push({ level: 'error', message: `agent: duplicate tool "${t.name}"`, line: agent.startLine, speck: speckName });
+    }
+    seenToolNames.add(t.name);
+    if (!actionNames.has(t.action)) {
+      diagnostics.push({
+        level: 'error',
+        message: `agent tool ${t.name}: unknown action "${t.action}"`,
+        line: agent.startLine,
+        speck: speckName,
+      });
+    }
+    if (t.effect !== 'act' && t.effect !== 'observe') {
+      diagnostics.push({ level: 'error', message: `agent tool ${t.name}: effect must be act or observe`, line: agent.startLine, speck: speckName });
+    }
+    tools.push({ name: t.name, action: t.action, effect: t.effect });
+  }
+
+  const awaits: IRAgentAwait[] = [];
+  const syntheticNames: string[] = [];
+
+  for (const a of agent.awaits) {
+    if (!labelToValue.has(a.state)) {
+      diagnostics.push({
+        level: 'error',
+        message: `agent await ${a.state}: unknown stage label (declare it in stages)`,
+        line: agent.startLine,
+        speck: speckName,
+      });
+      continue;
+    }
+    const awaitValue = labelToValue.get(a.state)!;
+    const rejectOutcomes = new Set(a.outcomes.filter(o => /reject/i.test(o)));
+    if (a.timeout) {
+      if (!a.outcomes.includes(a.timeout.outcome)) {
+        diagnostics.push({
+          level: 'error',
+          message: `agent await ${a.state}: timeout outcome "${a.timeout.outcome}" not in require outcome in {...}`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+      } else if (!rejectOutcomes.has(a.timeout.outcome) && a.timeout.outcome !== 'reject') {
+        // Plan: timeout may only resolve to a reject-class outcome.
+        diagnostics.push({
+          level: 'error',
+          message: `agent await ${a.state}: timeout may only resolve to a reject-class outcome (got "${a.timeout.outcome}")`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+      }
+    }
+
+    const syntheticActions: IRAgentAwait['syntheticActions'] = [];
+    for (const o of a.on) {
+      if (!labelToValue.has(o.target)) {
+        diagnostics.push({
+          level: 'error',
+          message: `agent await ${a.state}: on ${o.outcome} -> ${o.target}: unknown target stage`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+        continue;
+      }
+      const actionName = `__signal_${a.signal}_${o.outcome}`;
+      if (syntheticNames.includes(actionName)) {
+        diagnostics.push({
+          level: 'error',
+          message: `agent: duplicate synthetic action "${actionName}"`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+        continue;
+      }
+      if (actionNames.has(actionName) && !actionName.startsWith('__signal_')) {
+        diagnostics.push({
+          level: 'error',
+          message: `agent: synthetic action name collides with declared action "${actionName}"`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+        continue;
+      }
+      const targetValue = labelToValue.get(o.target)!;
+      syntheticActions.push({ outcome: o.outcome, actionName, targetValue, awaitValue });
+      syntheticNames.push(actionName);
+      // Synthetic bodies live on the AST (injectSignalActions) for Z3/TS agent
+      // machines. The IR only records metadata + next: membership so other
+      // backends (camel/go/…) do not grow __signal_* processors.
+    }
+
+    awaits.push({
+      state: a.state,
+      signal: a.signal,
+      mode: a.mode,
+      outcomes: [...a.outcomes],
+      claims: a.claims.map(c => ({ name: c.name, typeName: c.typeName })),
+      on: a.on.map(o => ({ outcome: o.outcome, target: o.target })),
+      timeout: a.timeout ? { ...a.timeout } : undefined,
+      syntheticActions,
+    });
+  }
+
+  // Append synthetic actions to next: so BMC covers signal edges (skip if
+  // the AST inject pass already extended next:).
+  if (syntheticNames.length > 0) {
+    if (behavior.next) {
+      const have = new Set(behavior.next);
+      const missing = syntheticNames.filter(n => !have.has(n));
+      if (missing.length > 0) behavior.next = [...behavior.next, ...missing];
+    } else {
+      diagnostics.push({
+        level: 'warning',
+        message: 'agent: next: is missing; synthetic signal actions will not be covered by BMC',
+        line: agent.startLine,
+        speck: speckName,
+      });
+    }
+  }
+
+  return {
+    stages: agent.stages
+      ? { variable: agent.stages.variable, labels: agent.stages.labels.map(l => ({ ...l })) }
+      : undefined,
+    tools,
+    awaits,
+  };
 }
 
 function lowerFormalSpec(
@@ -586,6 +769,48 @@ function lowerTypeExpr(t: TypeExpr): IRTypeRef {
 // ─────────────────────────────────────────────────────────────────────
 // Statement lower
 // ─────────────────────────────────────────────────────────────────────
+
+
+/** Lower a parser-shaped ActionStatement (string exprs) into IR. */
+function lowerParserActionStatement(
+  s: { type: string; target?: string; expr?: string; name?: string; event?: string; fields?: { name: string; value: string }[]; raw?: string },
+  diagnostics: IRDiagnostic[],
+  speckName: string,
+): IRStmt {
+  switch (s.type) {
+    case 'assign':
+      return {
+        kind: 'assign',
+        target: s.target || '',
+        value: parseExprSafe(s.expr || '0', diagnostics, speckName),
+      };
+    case 'require':
+    case 'precondition':
+    case 'postcondition':
+      return {
+        kind: s.type as 'require' | 'precondition' | 'postcondition',
+        value: parseExprSafe(s.expr || 'true', diagnostics, speckName),
+      };
+    case 'let':
+      return {
+        kind: 'let',
+        letName: s.name,
+        value: parseExprSafe(s.expr || '0', diagnostics, speckName),
+      };
+    case 'return':
+      return {
+        kind: 'return',
+        expr: parseExprSafe(s.expr || 'true', diagnostics, speckName),
+      };
+    default:
+      diagnostics.push({
+        level: 'warning',
+        message: `unsupported synthetic statement type: ${s.type}`,
+        speck: speckName,
+      });
+      return { kind: 'require', value: { kind: 'bool_lit', value: true } };
+  }
+}
 
 function lowerStatement(
   s: ActionStatement,

@@ -72,6 +72,8 @@ function printMember(member: MemberNode): string[] {
       return printAction(member);
     case 'next':
       return [member.anyAction ? 'next: { }' : `next: ${member.actions.join(' | ')}`];
+    case 'agent':
+      return printAgent(member);
     case 'event': {
       const lines = [`event ${member.name} {`];
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
@@ -287,4 +289,36 @@ function printType(t: TypeExpr | undefined): string {
     default:
       return 'Unknown';
   }
+}
+function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
+  const lines: string[] = ['agent {'];
+  if (member.stages) {
+    lines.push(`    stages ${member.stages.variable} {`);
+    for (const l of member.stages.labels) {
+      lines.push(`        ${l.name} = ${l.value}`);
+    }
+    lines.push('    }');
+  }
+  for (const t of member.tools) {
+    lines.push(`    tool ${t.name} -> ${t.action} effect ${t.effect}`);
+  }
+  for (const a of member.awaits) {
+    lines.push(`    await ${a.state} {`);
+    lines.push(`        signal ${a.signal}`);
+    lines.push(`        mode ${a.mode}`);
+    lines.push(`        require outcome in { ${a.outcomes.join(', ')} }`);
+    if (a.claims.length > 0) {
+      const body = a.claims.map(c => `${c.name}: ${c.typeName}`).join(', ');
+      lines.push(`        require claims { ${body} }`);
+    }
+    for (const o of a.on) {
+      lines.push(`        on ${o.outcome} -> ${o.target}`);
+    }
+    if (a.timeout) {
+      lines.push(`        timeout ${a.timeout.durationText} -> ${a.timeout.outcome}`);
+    }
+    lines.push('    }');
+  }
+  lines.push('}');
+  return lines;
 }
