@@ -70,6 +70,10 @@ async function acquireLock(stateFile) {
       return;
     } catch (e) {
       if (e && e.code !== 'EEXIST') throw e;
+      // Break a lock left behind by a crashed holder (older than 30s).
+      try {
+        if (Date.now() - fs.statSync(lp).mtimeMs > 30000) { fs.unlinkSync(lp); continue; }
+      } catch { /* raced with release; retry */ }
       if (Date.now() - start > 5000) throw new Error('state lock timeout');
       await new Promise(r => setTimeout(r, 10));
     }
@@ -78,7 +82,8 @@ async function acquireLock(stateFile) {
 
 function atomicWrite(file, data) {
   const tmp = file + '.tmp.' + process.pid;
-  fs.writeFileSync(tmp, data);
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
 }
 

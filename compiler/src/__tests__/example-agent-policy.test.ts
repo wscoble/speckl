@@ -77,19 +77,30 @@ describe('examples/AgentPolicy.speckdl', () => {
   });
 
   it.skipIf(!hasZ3)('z3 proves PrNeedsApproval to depth 8', () => {
-    expect(z3Verdicts(join(out, 'AgentPolicy.smt2'))).toEqual(['unsat']);
+    expect(z3Verdicts(join(out, 'AgentPolicy.smt2'))).toEqual(['unsat', 'unsat']);
   });
+
+  it.skipIf(!hasZ3)('weakening OpenPR to fire from AwaitingReview breaks HoldOnJudge', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-agent-weak2-'));
+    const weak = join(dir, 'AgentPolicy.speckdl');
+    const src = readFileSync(example, 'utf-8');
+    expect(src).toContain('require stage == 3\n        prFromApproved');
+    writeFileSync(weak, src.replace('require stage == 3\n        prFromApproved', 'require stage == 2\n        prFromApproved'));
+    compile(weak, 'z3', join(dir, 'out'));
+    // PrNeedsApproval still holds (tests passed), HoldOnJudge is violated.
+    expect(z3Verdicts(join(dir, 'out', 'AgentPolicy.smt2'))).toEqual(['unsat', 'sat']);
+  }, 60_000);
 
   it.skipIf(!hasZ3)('weakening OpenPR to skip approval yields a counterexample', () => {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-agent-weak-'));
     const weak = join(dir, 'AgentPolicy.speckdl');
     // OpenPR from Idle skips both tests and approval → PrOpened with testsPassed=false.
     writeFileSync(weak, readFileSync(example, 'utf-8').replace(
-      'require stage == 3\n        stage := 5',
-      'require stage == 0\n        stage := 5',
+      'require stage == 3\n        prFromApproved',
+      'require stage == 0\n        prFromApproved',
     ));
     compile(weak, 'z3', join(dir, 'out'));
-    expect(z3Verdicts(join(dir, 'out', 'AgentPolicy.smt2'))).toEqual(['sat']);
+    expect(z3Verdicts(join(dir, 'out', 'AgentPolicy.smt2'))).toEqual(['sat', 'sat']);
   }, 60_000);
 
   it('non-agent backends do not grow __signal_* camel processors', () => {
@@ -194,10 +205,14 @@ describe('agent hook process', () => {
     const results = await Promise.all([run('a'), run('b'), run('c')]);
     const allows = results.filter(r => r.status === 0);
     // Exactly one should win the pre (others may deny on pending conflict or lock); state must stay valid JSON.
-    expect(allows.length).toBeGreaterThanOrEqual(1);
+    expect(allows.length).toBe(1);
+    for (const r of results.filter(x => x.status !== 0)) expect(r.stdout).toContain('already pending');
     const snap = JSON.parse(readFileSync(state, 'utf-8'));
     expect(snap.machine.state.stage).toBe(0);
     expect(snap.specHash).toBeTruthy();
+    expect(results.map(r => r.status).filter(c => c === 0).length).toBe(1);
+    expect(['a', 'b', 'c']).toContain(snap.pending.call_id);
+    expect(existsSync(state + '.lock')).toBe(false);
   }, 20_000);
 });
 

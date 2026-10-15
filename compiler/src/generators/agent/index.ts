@@ -68,7 +68,7 @@ function emitAgentForSpeck(
   fs.writeFileSync(path.join(agentDir, 'signal.mjs'), emitSignalMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'cli.mjs'), emitCliVerifier());
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'file-drop.mjs'), emitFileDropVerifier());
-  fs.writeFileSync(path.join(agentDir, 'README.md'), buildAgentReadme(speck.name));
+  fs.writeFileSync(path.join(agentDir, 'README.md'), buildAgentReadme(speck.name, agent));
 
   // Make hook/signal executable-ish
   for (const bin of ['hook.mjs', 'signal.mjs']) {
@@ -79,8 +79,14 @@ function emitAgentForSpeck(
 }
 
 function transpileTsToMjs(tsPath: string, mjsPath: string): void {
-  // typescript is a devDependency of the compiler package.
-  const ts = require('typescript') as typeof import('typescript');
+  // typescript is a devDependency of the compiler package, so a published
+  // install may not have it. Fail with an actionable message, not a stack.
+  let ts: typeof import('typescript');
+  try {
+    ts = require('typescript') as typeof import('typescript');
+  } catch {
+    throw new Error('-t agent needs the "typescript" package to emit the .mjs machine; run: npm i typescript');
+  }
   const src = fs.readFileSync(tsPath, 'utf-8');
   const js = ts.transpileModule(src, {
     compilerOptions: {
@@ -268,7 +274,10 @@ function buildAgentsMd(
   return lines.join('\n');
 }
 
-function buildAgentReadme(speckName: string): string {
+function buildAgentReadme(speckName: string, agent: AgentMemberNode): string {
+  const first = agent.awaits[0];
+  const outcome = first?.outcomes[0] ?? 'approve';
+  const claimFlags = (first?.claims ?? []).map(c => ` --claim_${c.name} alice`).join('');
   return `# Agent runtime wiring (${speckName})
 
 This directory is produced by \`speckl-compile <spec> -t agent\`.
@@ -302,11 +311,12 @@ The spec never names a human action. It waits for a **verified signal**.
 \`\`\`
 # CLI verifier (low-assurance; evidence = local user + timestamp)
 node signal.mjs apply --state ./state.json --verifier cli \\
-  --outcome approve --as alice
+  --outcome ${outcome} --as alice${claimFlags}
 
 # File-drop verifier (ed25519-signed JSON; evidence = file sha256)
 node signal.mjs apply --state ./state.json --verifier file-drop \\
   --file ./inbox/review.json --pubkey ./keys/reviewer.pub
+# The signed JSON must name its signal: {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...}}
 \`\`\`
 
 Plug-in verifiers (JWT, OAuth, signed API, webhook) implement the same

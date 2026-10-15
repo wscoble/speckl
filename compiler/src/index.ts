@@ -189,6 +189,11 @@ async function main() {
   // Agent target (AGENTS.md + tools + hook + signal verifiers)
   if (options.target === 'agent' || options.target === 'all') {
     console.log('\nGenerating agent target (AGENTS.md, tools.json, hook, signals)...');
+    // Never emit rails from an agent block that failed validation.
+    const agentErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('agent'));
+    if (agentErrors.length > 0) {
+      throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
+    }
     generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
   }
 

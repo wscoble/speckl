@@ -304,12 +304,13 @@ function lowerBehavior(
       const a = m as ActionNode;
       const rawStmts = rawStatementsByAction.get(a.name) || [];
       let stmts: IRStmt[];
-      if (rawStmts.length > 0) {
-        stmts = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
-      } else {
-        // Synthetic __signal_* actions (and any AST-only actions) carry
-        // parser-shaped statements with string expressions.
+      if (rawStmts.length === 0 && a.name.startsWith('__signal_')) {
+        // Synthetic __signal_* actions (injected AST) carry parser-shaped
+        // statements with string expressions. Real actions keep the
+        // raw-statement path so existing backend output is unchanged.
         stmts = a.statements.map(s => lowerParserActionStatement(s, diagnostics, speck.name));
+      } else {
+        stmts = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
       }
       actions.push({
         name: a.name,
@@ -445,6 +446,19 @@ function lowerAgent(
           line: agent.startLine,
           speck: speckName,
         });
+      } else {
+        // A reject-named outcome must not lead where an accepting outcome
+        // leads, or a timeout could approve by another name.
+        const tTarget = a.on.find(o => o.outcome === a.timeout!.outcome)?.target;
+        const accepting = a.on.filter(o => !rejectOutcomes.has(o.outcome)).map(o => o.target);
+        if (tTarget !== undefined && accepting.includes(tTarget)) {
+          diagnostics.push({
+            level: 'error',
+            message: `agent await ${a.state}: timeout outcome "${a.timeout.outcome}" leads to ${tTarget}, which a non-reject outcome also reaches`,
+            line: agent.startLine,
+            speck: speckName,
+          });
+        }
       }
     }
 

@@ -47,7 +47,8 @@ function parseArgs(argv) {
 
 function atomicWrite(file, data) {
   const tmp = file + '.tmp.' + process.pid;
-  fs.writeFileSync(tmp, data);
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
 }
 
@@ -64,6 +65,10 @@ async function acquireLock(stateFile) {
       return;
     } catch (e) {
       if (e && e.code !== 'EEXIST') throw e;
+      // Break a lock left behind by a crashed holder (older than 30s).
+      try {
+        if (Date.now() - fs.statSync(lp).mtimeMs > 30000) { fs.unlinkSync(lp); continue; }
+      } catch { /* raced with release; retry */ }
       if (Date.now() - start > 5000) throw new Error('state lock timeout');
       await new Promise(r => setTimeout(r, 10));
     }
@@ -96,6 +101,7 @@ async function cmdInit(stateFile) {
     signalLog: [],
     awaitingSince: null,
   };
+  if (currentAwait(machine)) state.awaitingSince = new Date().toISOString();
   atomicWrite(stateFile, JSON.stringify(state, null, 2));
   process.stdout.write(JSON.stringify({ ok: true, state: stateFile }) + '\\n');
 }
@@ -148,7 +154,7 @@ async function cmdApply(args) {
     state.appliedEvidence.push(vs.evidence);
     state.signalLog.push({ ...vs, at: vs.at || new Date().toISOString() });
     state.awaitingSince = null;
-    state.pending = null;
+    // Leave state.pending alone: an in-flight observe tool (HNTL) still owns it.
     state.machine = machine.serialize();
     atomicWrite(args.state, JSON.stringify(state, null, 2));
     process.stdout.write(JSON.stringify({ ok: true, outcome: vs.outcome, evidence: vs.evidence }) + '\\n');
@@ -169,19 +175,25 @@ async function cmdTimeout(args) {
     if (!waiting.timeout) fail('no timeout configured for this await', 2);
 
     const outcome = waiting.timeout.outcome;
-    if (!/reject/i.test(outcome) && outcome !== 'reject') {
+    if (!/reject/i.test(outcome)) {
       fail('timeout may only resolve to a reject-class outcome', 2);
     }
-    if (state.awaitingSince) {
-      const elapsed = Date.now() - Date.parse(state.awaitingSince);
-      if (elapsed < waiting.timeout.durationMs) {
-        fail('timeout not yet elapsed (' + elapsed + 'ms < ' + waiting.timeout.durationMs + 'ms)', 2);
-      }
+    const since = Date.parse(state.awaitingSince || '');
+    if (!Number.isFinite(since)) {
+      // No recorded start (e.g. the machine began in the await state): start
+      // the clock now instead of firing immediately.
+      state.awaitingSince = new Date().toISOString();
+      atomicWrite(args.state, JSON.stringify(state, null, 2));
+      fail('timeout clock started now; not yet elapsed', 2);
+    }
+    const elapsed = Date.now() - since;
+    if (elapsed < waiting.timeout.durationMs) {
+      fail('timeout not yet elapsed (' + elapsed + 'ms < ' + waiting.timeout.durationMs + 'ms)', 2);
     }
 
     const on = waiting.on.find(o => o.outcome === outcome);
     if (!on) fail('no on-transition for timeout outcome ' + outcome, 2);
-    const evidence = 'timeout:' + waiting.signal + ':' + (state.awaitingSince || 'manual') + ':' + Date.now();
+    const evidence = 'timeout:' + waiting.signal + ':' + state.awaitingSince;
     if (state.appliedEvidence.includes(evidence)) fail('replay', 2);
 
     machine[on.action]();

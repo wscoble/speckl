@@ -144,9 +144,12 @@ export async function verify(opts, expect) {
     process.stderr.write('WARN: file-drop accepting UNSIGNED drop (--allow-unsigned); DEV ONLY\\n');
   }
 
-  const signal = payload.signal || expect.signal;
+  // The signed body must name its signal; never default it from the await,
+  // or one signed drop could answer any signal.
+  const signal = payload.signal;
+  if (!signal || typeof signal !== 'string') return { ok: false, reason: 'payload missing signal' };
   const outcome = payload.outcome;
-  const claims = payload.claims || {};
+  const claims = (payload.claims && typeof payload.claims === 'object') ? payload.claims : {};
   const subject = payload.subject || path.basename(file);
   const at = payload.at || new Date().toISOString();
   if (!outcome) return { ok: false, reason: 'payload missing outcome' };

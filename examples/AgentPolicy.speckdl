@@ -7,15 +7,23 @@ speck AgentPolicy {
     state {
         stage: Nat
         testsPassed: Bool
+        prFromApproved: Bool
     }
 
     init {
         stage := 0
         testsPassed := false
+        prFromApproved := false
     }
 
     invariant PrNeedsApproval {
         stage != 5 or testsPassed
+    }
+
+    // HoldOnJudge: a PR is only ever opened from Approved, i.e. after a
+    // verified approve signal. Ghost flag records where OpenPR fired from.
+    invariant HoldOnJudge {
+        stage != 5 or prFromApproved
     }
 
     action RunTests {
@@ -31,6 +39,7 @@ speck AgentPolicy {
 
     action OpenPR {
         require stage == 3
+        prFromApproved := stage == 3
         stage := 5
     }
 
@@ -67,6 +76,10 @@ speck AgentPolicy {
     next: RunTests | RequestReview | OpenPR | ReadFile
 
     verify Always(PrNeedsApproval) {
+        depth 8
+    }
+
+    verify Always(HoldOnJudge) {
         depth 8
     }
 }

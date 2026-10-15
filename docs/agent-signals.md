@@ -31,10 +31,25 @@ Documented shapes (not shipped):
 ## Replay protection
 
 Every `VerifiedSignal.evidence` id may be applied only once per state file.
+A signed file-drop body must name its `signal`; it is never defaulted.
+Evidence is scoped to one state file: a signed drop is not bound to a
+particular run, so keep drops single-use (move them out of the inbox) or add
+a nonce/expiry in a plug-in verifier if one run's approval must not carry
+over to another.
+
+## Who may record a signal
+
+`signal.mjs apply` is the human channel. The `cli` verifier trusts whoever runs
+it, so an agent that can run shell commands could approve itself. Use `cli`
+only where the agent cannot execute it, and prefer a signed verifier
+(`file-drop` or a plug-in) where it can.
 
 ## Timeout
 
-`timeout <dur> -> reject` may only resolve to a reject-class outcome. Fire with:
+`timeout <dur> -> reject` may only resolve to a reject-class outcome, and that
+outcome may not lead to a stage an accepting outcome also reaches (both are
+compile errors). The clock starts when the machine enters the wait state; if no
+start was recorded, `timeout` starts it instead of firing. Fire with:
 
 ```
 node signal.mjs timeout --state ./state.json
