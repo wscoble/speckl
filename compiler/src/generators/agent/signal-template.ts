@@ -5,7 +5,8 @@ export function emitSignalMjs(speckName: string): string {
 /**
  * Speckl signal tooling for ${speckName}.
  *
- *   node signal.mjs init  --state <file> [--dev]
+ *   node signal.mjs init  --state <file> --key <keyfile> [--dev]   (key created if missing)
+ *   All commands accept --key <keyfile> (or env SPECKL_STATE_KEY_FILE).
  *   node signal.mjs apply --state <file> --verifier file-drop|cli [verifier args...]
  *   node signal.mjs timeout --state <file>   # fire timeout → !-marked reject only
  *   node signal.mjs clear-pending --state <file> --verifier file-drop|cli [args...]
@@ -18,6 +19,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyState, append, sign, keyPathFrom, ensureKey, keyIdOf, genesis } from './state-integrity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.json'), 'utf-8'));
@@ -93,8 +95,32 @@ function currentAwait(machine) {
   return config.awaits.find(a => a.stateValue === stage) || null;
 }
 
-async function cmdInit(stateFile, dev) {
+let stateKey = null;
+function save(file, state) {
+  sign(state, stateKey);
+  atomicWrite(file, JSON.stringify(state, null, 2));
+}
+
+/** Read the state and refuse it unless spec hash, signature and log chain check out. */
+async function loadVerified(args) {
+  if (!fs.existsSync(args.state)) fail('state file missing: ' + args.state);
+  const state = JSON.parse(fs.readFileSync(args.state, 'utf-8'));
+  if (state.specHash !== config.specHash) fail('specHash mismatch', 2);
+  const { Machine, machine } = await loadMachine(state);
+  const v = verifyState(state, { keyPath: keyPathFrom(args.rest.key), Machine, config });
+  if (!v.ok) fail('state integrity: ' + v.reason, 2);
+  for (const w of v.warnings) process.stderr.write('WARN: ' + w + '\\n');
+  stateKey = v.key;
+  return { state, machine };
+}
+
+async function cmdInit(stateFile, dev, keyArg) {
   if (fs.existsSync(stateFile)) fail('state already exists: ' + stateFile);
+  const keyPath = keyPathFrom(keyArg);
+  if (!keyPath && !dev) {
+    fail('init needs a state key: --key <file> or SPECKL_STATE_KEY_FILE (created if missing; keep it unreadable by the agent). Only --dev states may be unsigned.');
+  }
+  stateKey = keyPath ? ensureKey(keyPath) : null;
   const mod = await import(pathToFileURL(path.join(__dirname, config.machineModule)).href);
   const Machine = mod[config.machineExport];
   const machine = new Machine();
@@ -103,6 +129,9 @@ async function cmdInit(stateFile, dev) {
     speck: config.speck,
     runId: crypto.randomBytes(16).toString('hex'),
     dev: dev === true,
+    keyId: stateKey ? keyIdOf(stateKey) : null,
+    log: [],
+    head: null,
     machine: machine.serialize(),
     pending: null,
     appliedEvidence: [],
@@ -111,12 +140,14 @@ async function cmdInit(stateFile, dev) {
     pendingLog: [],
     awaitingSince: null,
   };
+  state.head = genesis(state);
   if (currentAwait(machine)) state.awaitingSince = new Date().toISOString();
-  atomicWrite(stateFile, JSON.stringify(state, null, 2));
+  save(stateFile, state);
   if (state.dev) {
     process.stderr.write('WARN: DEV state: the cli verifier and unsigned drops are accepted; anyone who can run signal.mjs can approve\\n');
+    if (!stateKey) process.stderr.write('WARN: DEV state is unsigned (no state key); hand edits are only caught by the log chain\\n');
   }
-  process.stdout.write(JSON.stringify({ ok: true, state: stateFile, run: state.runId, dev: state.dev }) + '\\n');
+  process.stdout.write(JSON.stringify({ ok: true, state: stateFile, run: state.runId, dev: state.dev, signed: !!stateKey }) + '\\n');
 }
 
 async function loadVerifier(kind) {
@@ -171,9 +202,7 @@ async function cmdApply(args) {
 
   await acquireLock(args.state);
   try {
-    const state = JSON.parse(fs.readFileSync(args.state, 'utf-8'));
-    if (state.specHash !== config.specHash) fail('specHash mismatch', 2);
-    const { machine } = await loadMachine(state);
+    const { state, machine } = await loadVerified(args);
     const waiting = currentAwait(machine);
     if (!waiting) fail('machine is not in an await state', 2);
 
@@ -192,12 +221,13 @@ async function cmdApply(args) {
     if (can !== true) fail('synthetic transition refused: ' + can, 2);
     machine[on.action]();
 
+    append(state, { kind: 'signal', signal: vs.signal, outcome: vs.outcome, evidence: vs.evidence, nonce: vs.nonce });
     recordSignal(state, vs);
     state.signalLog.push({ ...vs, at: vs.at || new Date().toISOString() });
     state.awaitingSince = null;
     // Leave state.pending alone: an in-flight observe tool (HNTL) still owns it.
     state.machine = machine.serialize();
-    atomicWrite(args.state, JSON.stringify(state, null, 2));
+    save(args.state, state);
     process.stdout.write(JSON.stringify({ ok: true, outcome: vs.outcome, evidence: vs.evidence }) + '\\n');
   } finally {
     releaseLock();
@@ -208,9 +238,7 @@ async function cmdTimeout(args) {
   if (!args.state) fail('missing --state');
   await acquireLock(args.state);
   try {
-    const state = JSON.parse(fs.readFileSync(args.state, 'utf-8'));
-    if (state.specHash !== config.specHash) fail('specHash mismatch', 2);
-    const { machine } = await loadMachine(state);
+    const { state, machine } = await loadVerified(args);
     const waiting = currentAwait(machine);
     if (!waiting) fail('machine is not in an await state', 2);
     if (!waiting.timeout) fail('no timeout configured for this await', 2);
@@ -224,7 +252,7 @@ async function cmdTimeout(args) {
       // No recorded start (e.g. the machine began in the await state): start
       // the clock now instead of firing immediately.
       state.awaitingSince = new Date().toISOString();
-      atomicWrite(args.state, JSON.stringify(state, null, 2));
+      save(args.state, state);
       fail('timeout clock started now; not yet elapsed', 2);
     }
     const elapsed = Date.now() - since;
@@ -238,6 +266,7 @@ async function cmdTimeout(args) {
     if ((state.appliedEvidence || []).includes(evidence)) fail('replay', 2);
 
     machine[on.action]();
+    append(state, { kind: 'timeout', signal: waiting.signal, outcome, evidence });
     state.appliedEvidence = state.appliedEvidence || [];
     state.appliedEvidence.push(evidence);
     state.signalLog.push({
@@ -251,7 +280,7 @@ async function cmdTimeout(args) {
     });
     state.awaitingSince = null;
     state.machine = machine.serialize();
-    atomicWrite(args.state, JSON.stringify(state, null, 2));
+    save(args.state, state);
     process.stdout.write(JSON.stringify({ ok: true, outcome, evidence }) + '\\n');
   } finally {
     releaseLock();
@@ -263,8 +292,7 @@ async function cmdClearPending(args) {
   if (!args.verifier) fail('missing --verifier');
   await acquireLock(args.state);
   try {
-    const state = JSON.parse(fs.readFileSync(args.state, 'utf-8'));
-    if (state.specHash !== config.specHash) fail('specHash mismatch', 2);
+    const { state } = await loadVerified(args);
     if (!state.pending) fail('no pending tool call', 2);
     const expect = { signal: 'clear-pending', outcomes: ['clear'], claims: [] };
     const vs = await verifySignal(args, state, expect);
@@ -273,6 +301,7 @@ async function cmdClearPending(args) {
     if (vs.callId === undefined || String(vs.callId) !== String(state.pending.call_id)) {
       fail('call_id does not match the pending call (' + state.pending.call_id + ')', 2);
     }
+    append(state, { kind: 'clear', call_id: state.pending.call_id, evidence: vs.evidence, nonce: vs.nonce });
     recordSignal(state, vs);
     state.pendingLog = state.pendingLog || [];
     state.pendingLog.push({
@@ -288,7 +317,7 @@ async function cmdClearPending(args) {
     const cleared = state.pending.call_id;
     // Cleared as failed: the machine is not advanced.
     state.pending = null;
-    atomicWrite(args.state, JSON.stringify(state, null, 2));
+    save(args.state, state);
     process.stdout.write(JSON.stringify({ ok: true, cleared, evidence: vs.evidence }) + '\\n');
   } finally {
     releaseLock();
@@ -300,7 +329,7 @@ async function main() {
   try {
     if (args.cmd === 'init') {
       if (!args.state) fail('missing --state');
-      await cmdInit(args.state, args.rest.dev === true || args.rest.dev === 'true');
+      await cmdInit(args.state, args.rest.dev === true || args.rest.dev === 'true', args.rest.key);
     } else if (args.cmd === 'apply') await cmdApply(args);
     else if (args.cmd === 'timeout') await cmdTimeout(args);
     else if (args.cmd === 'clear-pending') await cmdClearPending(args);

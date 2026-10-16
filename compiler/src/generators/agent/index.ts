@@ -15,6 +15,7 @@ import { emitHookMjs } from './hook-template.js';
 import { emitSignalMjs } from './signal-template.js';
 import { emitCliVerifier, emitFileDropVerifier } from './verifier-templates.js';
 import { stripTypes } from './strip-types.js';
+import { emitStateIntegrityMjs } from './state-integrity-template.js';
 
 /** Default for `pending timeout` when the spec does not declare one. */
 export const DEFAULT_PENDING_TIMEOUT_MS = 10 * 60_000;
@@ -69,6 +70,7 @@ function emitAgentForSpeck(
   fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), buildAgentsMd(speck, agent, config, specHash));
   fs.writeFileSync(path.join(agentDir, 'hook.mjs'), emitHookMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'signal.mjs'), emitSignalMjs(speck.name));
+  fs.writeFileSync(path.join(agentDir, 'state-integrity.mjs'), emitStateIntegrityMjs());
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'cli.mjs'), emitCliVerifier());
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'file-drop.mjs'), emitFileDropVerifier());
   fs.writeFileSync(path.join(agentDir, 'README.md'), buildAgentReadme(speck.name, agent));
@@ -269,8 +271,8 @@ function buildAgentsMd(
   lines.push('## Hook contract');
   lines.push('');
   lines.push('```');
-  lines.push('node hook.mjs pre  --state <file>   # stdin: {tool,input,call_id}');
-  lines.push('node hook.mjs post --state <file>   # stdin: {tool,input,call_id,ok}');
+  lines.push('node hook.mjs pre  --state <file> [--key <file>]   # stdin: {tool,input,call_id}');
+  lines.push('node hook.mjs post --state <file> [--key <file>]   # stdin: {tool,input,call_id,ok}');
   lines.push('```');
   lines.push('');
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
@@ -278,6 +280,16 @@ function buildAgentsMd(
   lines.push('- Spec-hash mismatch denies.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
+  lines.push('');
+  lines.push('## Tamper-evident state');
+  lines.push('');
+  lines.push('The state file is not trusted as written. Every change is appended to a');
+  lines.push('hash-chained log; on load the hook and `signal.mjs` replay the log and check');
+  lines.push('that the machine, pending call, used nonces and applied evidence match it, and');
+  lines.push('verify an HMAC-SHA256 over the whole state. The key file (`--key` or');
+  lines.push('`SPECKL_STATE_KEY_FILE`) must be readable by the hook and signal tooling and');
+  lines.push('**not by the agent**. Any mismatch, a missing signature or a missing key denies');
+  lines.push('(exit 2). Editing `state.json` by hand (e.g. setting the stage) is refused.');
   lines.push('');
   lines.push('## Who may record a signal');
   lines.push('');
@@ -320,8 +332,14 @@ echo '{"tool":"run_tests","input":{},"call_id":"1","ok":true}' \\
 Initialize state once (prints the run id signed drops must carry):
 
 \`\`\`
-node signal.mjs init --state ./state.json          # production: signed verifiers only
-node signal.mjs init --state ./state.json --dev    # DEV ONLY: also allows the cli verifier
+# production: signed state + signed verifiers only. The key file is created if
+# missing; keep it (and SPECKL_STATE_KEY_FILE) out of the agent's reach.
+node signal.mjs init --state ./state.json --key /etc/speckl/state.key
+# DEV ONLY: also allows the cli verifier; without --key the state is unsigned
+node signal.mjs init --state ./state.json --dev
+
+# Pass the same key to every hook/signal call (or set SPECKL_STATE_KEY_FILE):
+export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 \`\`\`
 
 ## Signals (HITL / HNTL)

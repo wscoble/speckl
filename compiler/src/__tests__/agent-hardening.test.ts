@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { useStateKey, writeSigned } from './helpers/agent-state.js';
 
 const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const repoDir = join(compilerDir, '..');
@@ -37,6 +38,7 @@ function step(dir: string, state: string, tool: string, id: string): void {
   expect(hook(dir, 'post', state, { tool, input: {}, call_id: id, ok: true }).status).toBe(0);
 }
 
+useStateKey();
 let agentDir = '';
 let loopDir = '';
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
@@ -175,7 +177,7 @@ describe('signal.mjs guards', () => {
     const s = awaiting();
     const snap = JSON.parse(readFileSync(s, 'utf-8'));
     snap.awaitingSince = null;
-    writeFileSync(s, JSON.stringify(snap));
+    writeSigned(s, snap);
     const r = signal(agentDir, ['timeout', '--state', s]);
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('clock started');
@@ -194,7 +196,7 @@ describe('signal.mjs guards', () => {
     const s = awaiting(dir);
     const snap = JSON.parse(readFileSync(s, 'utf-8'));
     snap.awaitingSince = new Date(Date.now() - 48 * 3600_000).toISOString();
-    writeFileSync(s, JSON.stringify(snap));
+    writeSigned(s, snap);
     const r = signal(dir, ['timeout', '--state', s]);
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('!-marked reject');
@@ -205,7 +207,7 @@ describe('signal.mjs guards', () => {
     expect(signal(agentDir, ['init', '--state', s]).stderr).toContain('already exists');
     const snap = JSON.parse(readFileSync(s, 'utf-8'));
     snap.specHash = 'stale';
-    writeFileSync(s, JSON.stringify(snap));
+    writeSigned(s, snap);
     expect(signal(agentDir, ['apply', '--state', s, '--verifier', 'cli', '--outcome', 'approve', '--claim_reviewer', 'a']).stderr).toContain('specHash mismatch');
     expect(signal(agentDir, ['timeout', '--state', s]).stderr).toContain('specHash mismatch');
   });

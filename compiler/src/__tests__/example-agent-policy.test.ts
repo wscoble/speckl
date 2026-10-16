@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { useStateKey, writeSigned } from './helpers/agent-state.js';
 
 const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const example = join(compilerDir, '..', 'examples', 'AgentPolicy.speckdl');
@@ -41,6 +42,7 @@ function runSignal(agentDir: string, args: string[]): { status: number | null; s
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
+useStateKey();
 let out = '';
 let agentDir = '';
 
@@ -185,7 +187,7 @@ describe('agent hook process', () => {
     const state = freshState();
     const snap = JSON.parse(readFileSync(state, 'utf-8'));
     snap.specHash = 'deadbeef';
-    writeFileSync(state, JSON.stringify(snap));
+    writeSigned(state, snap);
     const r = runHook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: '1' });
     expect(r.status).toBe(2);
     expect(r.stdout).toContain('specHash mismatch');
@@ -308,7 +310,7 @@ describe('agent signals', () => {
     // Force awaitingSince into the past beyond 24h
     const snap = JSON.parse(readFileSync(state, 'utf-8'));
     snap.awaitingSince = new Date(Date.now() - 25 * 3600_000).toISOString();
-    writeFileSync(state, JSON.stringify(snap));
+    writeSigned(state, snap);
     const r = runSignal(agentDir, ['timeout', '--state', state]);
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout).outcome).toBe('reject');

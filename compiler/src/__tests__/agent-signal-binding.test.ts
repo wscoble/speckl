@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { useStateKey, writeSigned } from './helpers/agent-state.js';
 
 const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const example = join(compilerDir, '..', 'examples', 'AgentPolicy.speckdl');
@@ -35,7 +36,9 @@ function step(dir: string, state: string, tool: string, id: string): void {
   expect(hook(dir, 'post', state, { tool, input: {}, call_id: id, ok: true }).status).toBe(0);
 }
 const read = (s: string) => JSON.parse(readFileSync(s, 'utf-8'));
-const write = (s: string, v: unknown) => writeFileSync(s, JSON.stringify(v));
+// Fixture edits play the trusted operator, so they are re-signed.
+const write = (s: string, v: Record<string, unknown>) => writeSigned(s, v);
+useStateKey();
 
 let agentDir = '';
 let vetoDir = '';
@@ -235,7 +238,7 @@ describe('2. signed drops are bound to a run, an expiry and a nonce', () => {
     expect(read(s).signalLog[0].claims).toEqual({ reviewer: 'dana' });
   });
 
-  it('a state without a run id (pre-binding format) refuses signed drops', () => {
+  it('a state without a run id (older format) is refused with a migration hint', () => {
     const s = awaiting();
     const st = read(s);
     const args = drop(s, approve);
@@ -243,7 +246,17 @@ describe('2. signed drops are bound to a run, an expiry and a nonce', () => {
     write(s, st);
     const r = signal(agentDir, ['apply', '--state', s, ...args]);
     expect(r.status).toBe(2);
-    expect(r.stderr).toContain('state has no run id');
+    expect(r.stderr).toContain('predates tamper-evident state');
+    expect(r.stderr).toContain('signal.mjs init');
+  });
+
+  it('the file-drop verifier refuses when the caller has no run id', async () => {
+    const s = awaiting();
+    const args = drop(s, approve);
+    const mod = await import(join(agentDir, 'verifiers', 'file-drop.mjs'));
+    const r = await mod.verify({ file: args[args.indexOf('--file') + 1], pubkey: args[args.indexOf('--pubkey') + 1] },
+      { signal: 'review', outcomes: ['approve', 'reject'], claims: [] }, {});
+    expect(r.reason).toContain('state has no run id');
   });
 
   it('signal.mjs re-checks run and nonce returned by any verifier', () => {
@@ -251,18 +264,20 @@ describe('2. signed drops are bound to a run, an expiry and a nonce', () => {
     cpSync(agentDir, dir, { recursive: true });
     // A careless plug-in that returns whatever the caller says.
     writeFileSync(join(dir, 'verifiers', 'cli.mjs'), `export async function verify(o, e) {
-      return { ok: true, signal: { signal: e.signal, outcome: 'approve', claims: { reviewer: 'p' },
-        verifier: 'plug', subject: 'p', at: 'now', evidence: 'plug:' + o.ev, run: o.run, nonce: o.nonce } };
+      return { ok: true, signal: { signal: e.signal, outcome: o.outcome || 'approve', claims: { reviewer: 'p' },
+        verifier: 'plug', subject: 'p', at: 'now', evidence: 'plug:' + o.ev, run: o.run, nonce: o.nonce, callId: o.call_id } };
     }\n`);
     const s = awaiting(dir, true);
     const runId = read(s).runId;
     let r = signal(dir, ['apply', '--state', s, '--verifier', 'cli', '--run', 'elsewhere', '--nonce', 'n1', '--ev', '1']);
     expect(r.stderr).toContain('run mismatch');
-    const st = read(s); st.usedNonces = ['n1']; write(s, st);
+    // Burn nonce n1 and evidence plug:0 legitimately via clear-pending.
+    expect(hook(dir, 'pre', s, { tool: 'read_file', input: { path: 'x' }, call_id: 'r' }).status).toBe(0);
+    r = signal(dir, ['clear-pending', '--state', s, '--verifier', 'cli', '--outcome', 'clear', '--call_id', 'r', '--run', runId, '--nonce', 'n1', '--ev', '0']);
+    expect(r.status, r.stderr).toBe(0);
     r = signal(dir, ['apply', '--state', s, '--verifier', 'cli', '--run', runId, '--nonce', 'n1', '--ev', '2']);
     expect(r.stderr).toContain('nonce already used');
-    const st2 = read(s); st2.appliedEvidence = ['plug:3']; write(s, st2);
-    r = signal(dir, ['apply', '--state', s, '--verifier', 'cli', '--run', runId, '--nonce', 'n2', '--ev', '3']);
+    r = signal(dir, ['apply', '--state', s, '--verifier', 'cli', '--run', runId, '--nonce', 'n2', '--ev', '0']);
     expect(r.stderr).toContain('replay');
     expect(read(s).machine.state.stage).toBe(2);
   });
