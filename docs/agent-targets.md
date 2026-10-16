@@ -8,6 +8,7 @@ Compiles an `agent { }` block into:
   tools.json         tool names + JSON Schema + x-speckl
   hook.mjs           generic pre/post gate
   signal.mjs         init / apply / timeout / clear-pending
+  state-integrity.mjs  hash-chained log + HMAC check shared by hook and signal
   verifiers/         cli + file-drop
   <Speck>.ts|.mjs    machine with can()/serialize() + __signal_* actions
                      (.mjs is plain JavaScript; no TypeScript needed at runtime)
@@ -76,6 +77,9 @@ This session runs as written (it is executed by
 ```bash
 speckl-compile examples/AgentPolicy.speckdl -t agent -o out
 cd out/agent
+# The state key signs state.json; init creates it if missing. In production it
+# lives where the agent can't read it (see agent-signals.md, "Tamper-evident state").
+export SPECKL_STATE_KEY_FILE="$PWD/state.key"
 # --dev allows the low-assurance cli verifier below. DEV ONLY: anyone who can
 # run signal.mjs (an agent with a shell, too) can approve. Production omits
 # --dev and records signals with a signed verifier (see agent-signals.md).
@@ -94,4 +98,10 @@ echo '{"tool":"request_review","input":{},"call_id":"2","ok":true}' | node hook.
 node signal.mjs apply --state ./state.json --verifier cli \
   --outcome approve --as alice --claim_reviewer alice
 echo '{"tool":"open_pr","input":{},"call_id":"3"}' | node hook.mjs pre --state ./state.json
+
+# Hand-editing state.json is refused: the signature and log no longer match.
+cp state.json state.bak
+sed -i 's/"stage": 3/"stage": 5/' state.json
+! echo '{"tool":"read_file","input":{"path":"x"},"call_id":"4"}' | node hook.mjs pre --state ./state.json
+mv state.bak state.json
 ```

@@ -38,7 +38,7 @@ Documented shapes (not shipped):
 
 ## Signed drops are bound to a run
 
-`signal.mjs init` creates a random **run id** per state file and prints it.
+`signal.mjs init --key <file>` creates a random **run id** per state file and prints it.
 A signed drop must carry:
 
 ```json
@@ -66,6 +66,43 @@ that can run shell commands could approve itself. That is why it is **DEV
 ONLY**: refused unless the state was created with `signal.mjs init --dev`
 (and the verifier refuses on its own without that flag). Production states
 are created without `--dev` and accept only signed verifiers.
+
+## Tamper-evident state
+
+`state.json` is written only by `hook.mjs` and `signal.mjs`, and both refuse a
+state they can't verify. Two layers:
+
+1. **Hash-chained log.** Every change (`pre`, `post`, `expire`, `signal`,
+   `timeout`, `clear`) is appended to `state.log`. Each entry's hash covers
+   the previous one; the first links to a genesis hash over the run id, spec
+   hash, dev flag and key id. On load the log is replayed from a fresh
+   machine, and the stored machine, pending call, used nonces and applied
+   evidence must equal the replayed ones. Editing any of them, or truncating,
+   reordering or splicing the log, is detected.
+2. **HMAC-SHA256** over the whole canonical state (`state.mac`), with a 32-byte
+   key in a file (`--key <file>` or `SPECKL_STATE_KEY_FILE`). This also covers
+   fields the log can't derive (timestamps, audit logs) and stops anyone
+   without the key from rebuilding a consistent log.
+
+The hook and `signal.mjs` deny (exit 2) on a signature or chain mismatch, a
+missing signature, a key that doesn't match the state's key id, or a missing
+key for a non-dev state. If a key is configured, the signature is required
+even for dev states, so flipping `dev` can't downgrade a signed state.
+
+**Deploying the key.** `signal.mjs init --key <file>` creates the key (mode
+0600) if it doesn't exist. Put it where the hook and signal tooling can read
+it and the agent can't: for example run the hook as a separate user (or via
+a sudo rule / small daemon) that owns `/etc/speckl/state.key`, and set
+`SPECKL_STATE_KEY_FILE` only in that user's environment. If the agent can
+read the key, it can forge state; if it can write `state.json` without the
+key, it is caught.
+
+**Dev mode.** `init --dev` without a key makes an unsigned state. The hook
+warns on every call and checks only the log chain (which a determined editor
+can rebuild). Never use it where the agent can edit the state.
+
+**Old state files** (no `log`/run id) are refused with a message to
+re-create them with `signal.mjs init`.
 
 ## Stuck tool calls
 
