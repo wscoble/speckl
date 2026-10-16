@@ -63,17 +63,21 @@ Formal methods specs from a toggle switch through Raft consensus:
 | SQLitePager | SQLite page cache state machine |
 | SQLiteWAL | SQLite write-ahead log |
 | tef | Complex product spec with K8s CRDs |
+| ReviewGate | `next:` BMC + can()/serialize()/restore() |
+| AgentPolicy | agent { } → AGENTS.md, tools, hooks, HITL/HNTL signals |
 
 Browse all in [examples/](examples/).
 
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
+- [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
+- [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop, plug-ins; CLI is dev-only)
 - [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
 
 ## Status
 
-- 140 tests passing, CI green (incl. real-solver Z3 verification of all examples)
+- 256 tests passing, CI green (incl. real-solver Z3 verification of all examples)
 - Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust (generated-text tested)
 - Round-trip property tested: parse → print → parse is identity for all examples
 - Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments

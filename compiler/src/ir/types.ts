@@ -213,6 +213,40 @@ export interface BehaviorFacet {
    * to an entry in `actions`; an unknown name is an error diagnostic.
    */
   next?: string[];
+  /**
+   * Optional `agent { }` configuration: tool bindings, await/signal specs,
+   * and Nat stage labels. Synthetic `__signal_*` actions for signal outcomes
+   * are injected into `actions` / `next` by the lower pass.
+   */
+  agent?: IRAgentConfig;
+}
+
+export interface IRAgentConfig {
+  stages?: { variable: string; labels: { name: string; value: number }[] };
+  tools: IRAgentTool[];
+  awaits: IRAgentAwait[];
+  /** `pending timeout <dur>` if declared (runtime default applies otherwise). */
+  pendingTimeout?: { durationMs: number; durationText: string };
+}
+
+export interface IRAgentTool {
+  name: string;
+  action: string;
+  effect: 'act' | 'observe';
+}
+
+export interface IRAgentAwait {
+  state: string;
+  signal: string;
+  mode: 'near' | 'in';
+  outcomes: string[];
+  /** Outcomes marked `!` (reject). Timeouts may only resolve to one of these. */
+  rejects: string[];
+  claims: { name: string; typeName: string }[];
+  on: { outcome: string; target: string }[];
+  timeout?: { durationMs: number; durationText: string; outcome: string };
+  /** Synthetic action names generated for each on-outcome (and timeout if distinct). */
+  syntheticActions: { outcome: string; actionName: string; targetValue: number; awaitValue: number }[];
 }
 
 export interface IRStateVar {
