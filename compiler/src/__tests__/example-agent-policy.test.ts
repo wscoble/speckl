@@ -220,7 +220,8 @@ describe('agent signals', () => {
   function awaitState(): string {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-sig-'));
     const state = join(dir, 'state.json');
-    expect(runSignal(agentDir, ['init', '--state', state]).status).toBe(0);
+    // --dev: these cases use the DEV-only cli verifier.
+    expect(runSignal(agentDir, ['init', '--state', state, '--dev']).status).toBe(0);
     for (const [tool, id] of [['run_tests', '1'], ['request_review', '2']] as const) {
       expect(runHook(agentDir, 'pre', state, { tool, input: {}, call_id: id }).status).toBe(0);
       expect(runHook(agentDir, 'post', state, { tool, input: {}, call_id: id, ok: true }).status).toBe(0);
@@ -265,6 +266,9 @@ describe('agent signals', () => {
       claims: { reviewer: 'carol' },
       subject: 'carol',
       at: new Date().toISOString(),
+      run: JSON.parse(readFileSync(state, 'utf-8')).runId,
+      expires: new Date(Date.now() + 3600_000).toISOString(),
+      nonce: crypto.randomUUID(),
     };
     const body = Buffer.from(JSON.stringify(bodyObj));
     const file = join(dir, 'review.json');
@@ -289,7 +293,7 @@ describe('agent signals', () => {
     expect(bad.status).toBe(2);
     expect(bad.stderr).toMatch(/bad signature|verifier rejected/);
 
-    const wrongObj = { ...bodyObj, signal: 'deploy' };
+    const wrongObj = { ...bodyObj, signal: 'deploy', run: JSON.parse(readFileSync(state2, 'utf-8')).runId, nonce: crypto.randomUUID() };
     const wrongBody = Buffer.from(JSON.stringify(wrongObj));
     const wrongFile = join(dir, 'wrong.json');
     writeFileSync(wrongFile, wrongBody);

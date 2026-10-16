@@ -34,7 +34,7 @@ const MINIMAL = `speck Mini {
         await AwaitingReview {
             signal review
             mode near
-            require outcome in { approve, reject }
+            require outcome in { approve, reject! }
             require claims { reviewer: String }
             on approve -> Approved
             on reject -> Rejected

@@ -5,7 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { createRequire } from 'module';
+import { spawnSync } from 'child_process';
 import {
   AST, SpeckNode, ActionNode, AgentMemberNode, StateNode,
 } from '../../parser.js';
@@ -14,8 +14,11 @@ import { injectSignalActions, isSignalActionName, signalActionName } from './inj
 import { emitHookMjs } from './hook-template.js';
 import { emitSignalMjs } from './signal-template.js';
 import { emitCliVerifier, emitFileDropVerifier } from './verifier-templates.js';
+import { stripTypes } from './strip-types.js';
 
-const require = createRequire(import.meta.url);
+/** Default for `pending timeout` when the spec does not declare one. */
+export const DEFAULT_PENDING_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_PENDING_TIMEOUT_TEXT = '10m';
 
 export interface AgentGenerateOptions {
   outputDir: string;
@@ -78,23 +81,18 @@ function emitAgentForSpeck(
   console.log(`Generated agent target: ${agentDir}/`);
 }
 
-function transpileTsToMjs(tsPath: string, mjsPath: string): void {
-  // typescript is a devDependency of the compiler package, so a published
-  // install may not have it. Fail with an actionable message, not a stack.
-  let ts: typeof import('typescript');
-  try {
-    ts = require('typescript') as typeof import('typescript');
-  } catch {
-    throw new Error('-t agent needs the "typescript" package to emit the .mjs machine; run: npm i typescript');
-  }
-  const src = fs.readFileSync(tsPath, 'utf-8');
-  const js = ts.transpileModule(src, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-    },
-  }).outputText;
+/**
+ * Emit the machine as plain JavaScript so `-t agent` needs no TypeScript at
+ * compile time or runtime. The result is syntax-checked with the running
+ * Node so an unsupported construct fails the compile, not the hook.
+ */
+export function transpileTsToMjs(tsPath: string, mjsPath: string): void {
+  const js = stripTypes(fs.readFileSync(tsPath, 'utf-8'));
   fs.writeFileSync(mjsPath, js);
+  const r = spawnSync(process.execPath, ['--check', mjsPath], { encoding: 'utf-8' });
+  if (r.status !== 0) {
+    throw new Error(`-t agent: emitted JavaScript machine failed a syntax check (${mjsPath}):\n${r.stderr}`);
+  }
 }
 
 export interface AgentRuntimeConfig {
@@ -105,12 +103,16 @@ export interface AgentRuntimeConfig {
   stageVariable: string;
   stages: Record<string, number>;
   tools: { name: string; action: string; effect: 'act' | 'observe' }[];
+  /** In-flight tool calls older than this are cleared as failed. */
+  pendingTimeout: { durationMs: number; durationText: string };
   awaits: {
     state: string;
     stateValue: number;
     signal: string;
     mode: 'near' | 'in';
     outcomes: string[];
+    /** `!`-marked reject outcomes; the only legal timeout targets. */
+    rejects: string[];
     claims: { name: string; typeName: string }[];
     on: { outcome: string; target: string; targetValue: number; action: string }[];
     timeout?: { durationMs: number; durationText: string; outcome: string };
@@ -137,12 +139,16 @@ function buildConfig(
     stageVariable,
     stages,
     tools: agent.tools.map(t => ({ name: t.name, action: t.action, effect: t.effect })),
+    pendingTimeout: agent.pendingTimeout
+      ? { ...agent.pendingTimeout }
+      : { durationMs: DEFAULT_PENDING_TIMEOUT_MS, durationText: DEFAULT_PENDING_TIMEOUT_TEXT },
     awaits: agent.awaits.map(a => ({
       state: a.state,
       stateValue: labels.get(a.state) ?? -1,
       signal: a.signal,
       mode: a.mode,
       outcomes: [...a.outcomes],
+      rejects: [...(a.rejects ?? [])],
       claims: a.claims.map(c => ({ ...c })),
       on: a.on.map(o => ({
         outcome: o.outcome,
@@ -235,7 +241,7 @@ function buildAgentsMd(
       lines.push('');
       lines.push(`- Signal: \`${a.signal}\``);
       lines.push(`- Mode: **${a.mode}** (${a.mode === 'near' ? 'HNTL — observe tools allowed while waiting' : 'HITL — no tools while waiting'})`);
-      lines.push(`- Outcomes: ${a.outcomes.map(o => `\`${o}\``).join(', ')}`);
+      lines.push(`- Outcomes: ${a.outcomes.map(o => `\`${o}\`${(a.rejects ?? []).includes(o) ? ' (reject)' : ''}`).join(', ')}`);
       if (a.claims.length) {
         lines.push(`- Required claims: ${a.claims.map(c => `\`${c.name}: ${c.typeName}\``).join(', ')}`);
       }
@@ -243,7 +249,7 @@ function buildAgentsMd(
         lines.push(`- On \`${o.outcome}\` → \`${o.target}\``);
       }
       if (a.timeout) {
-        lines.push(`- Timeout \`${a.timeout.durationText}\` → \`${a.timeout.outcome}\` (reject-class only)`);
+        lines.push(`- Timeout \`${a.timeout.durationText}\` → \`${a.timeout.outcome}\` (must be a \`!\`-marked reject outcome)`);
       }
       lines.push('');
     }
@@ -270,6 +276,19 @@ function buildAgentsMd(
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
   lines.push('- Spec-hash mismatch denies.');
+  lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
+  lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
+  lines.push('');
+  lines.push('## Who may record a signal');
+  lines.push('');
+  lines.push('Signals are recorded with `signal.mjs`, never by the agent. Production must use a');
+  lines.push('**signed** verifier (`file-drop` or a plug-in); a signed drop is bound to this');
+  lines.push('run (`run`), expires (`expires`) and is single-use (`nonce`).');
+  lines.push('');
+  lines.push('> **DEV ONLY — `cli` verifier.** `--verifier cli` (and unsigned file drops) are');
+  lines.push('> refused unless the state file was created with `signal.mjs init --dev`. Anyone');
+  lines.push('> who can run a shell command can use them, so an agent with shell access could');
+  lines.push('> approve its own work. Never use `--dev` where the agent can run `signal.mjs`.');
   lines.push('');
   return lines.join('\n');
 }
@@ -298,10 +317,11 @@ echo '{"tool":"run_tests","input":{},"call_id":"1","ok":true}' \\
   | node hook.mjs post --state ./state.json
 \`\`\`
 
-Initialize state once:
+Initialize state once (prints the run id signed drops must carry):
 
 \`\`\`
-node signal.mjs init --state ./state.json
+node signal.mjs init --state ./state.json          # production: signed verifiers only
+node signal.mjs init --state ./state.json --dev    # DEV ONLY: also allows the cli verifier
 \`\`\`
 
 ## Signals (HITL / HNTL)
@@ -309,14 +329,29 @@ node signal.mjs init --state ./state.json
 The spec never names a human action. It waits for a **verified signal**.
 
 \`\`\`
-# CLI verifier (low-assurance; evidence = local user + timestamp)
-node signal.mjs apply --state ./state.json --verifier cli \\
-  --outcome ${outcome} --as alice${claimFlags}
-
 # File-drop verifier (ed25519-signed JSON; evidence = file sha256)
 node signal.mjs apply --state ./state.json --verifier file-drop \\
   --file ./inbox/review.json --pubkey ./keys/reviewer.pub
-# The signed JSON must name its signal: {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...}}
+# The signed JSON names its signal and is bound to this run:
+#   {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...},
+#    "run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}
+
+# CLI verifier — DEV ONLY (state must be created with init --dev). Whoever can
+# run this can approve, including an agent with shell access.
+node signal.mjs apply --state ./state.json --verifier cli \\
+  --outcome ${outcome} --as alice${claimFlags}
+\`\`\`
+
+## Stuck tool calls
+
+A \`pre\` with no matching \`post\` (e.g. the tool crashed) blocks later calls
+until it is cleared. It clears itself as failed after the pending timeout
+(state is not advanced), or sooner through a verified signal:
+
+\`\`\`
+node signal.mjs clear-pending --state ./state.json --verifier file-drop \\
+  --file ./inbox/clear.json --pubkey ./keys/reviewer.pub
+#   {"signal":"clear-pending","call_id":"<pending id>","run":"...","expires":"...","nonce":"..."}
 \`\`\`
 
 Plug-in verifiers (JWT, OAuth, signed API, webhook) implement the same

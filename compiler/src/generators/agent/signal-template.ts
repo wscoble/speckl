@@ -5,10 +5,16 @@ export function emitSignalMjs(speckName: string): string {
 /**
  * Speckl signal tooling for ${speckName}.
  *
- *   node signal.mjs init  --state <file>
- *   node signal.mjs apply --state <file> --verifier cli|file-drop [verifier args...]
- *   node signal.mjs timeout --state <file>   # fire timeout → reject-class only
+ *   node signal.mjs init  --state <file> [--dev]
+ *   node signal.mjs apply --state <file> --verifier file-drop|cli [verifier args...]
+ *   node signal.mjs timeout --state <file>   # fire timeout → !-marked reject only
+ *   node signal.mjs clear-pending --state <file> --verifier file-drop|cli [args...]
+ *
+ * This is the human channel; the agent must not be able to run it. The cli
+ * verifier (and unsigned drops) trust whoever runs them, so they are refused
+ * unless the state was created with --dev (DEV ONLY: self-approval risk).
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -87,7 +93,7 @@ function currentAwait(machine) {
   return config.awaits.find(a => a.stateValue === stage) || null;
 }
 
-async function cmdInit(stateFile) {
+async function cmdInit(stateFile, dev) {
   if (fs.existsSync(stateFile)) fail('state already exists: ' + stateFile);
   const mod = await import(pathToFileURL(path.join(__dirname, config.machineModule)).href);
   const Machine = mod[config.machineExport];
@@ -95,15 +101,22 @@ async function cmdInit(stateFile) {
   const state = {
     specHash: config.specHash,
     speck: config.speck,
+    runId: crypto.randomBytes(16).toString('hex'),
+    dev: dev === true,
     machine: machine.serialize(),
     pending: null,
     appliedEvidence: [],
+    usedNonces: [],
     signalLog: [],
+    pendingLog: [],
     awaitingSince: null,
   };
   if (currentAwait(machine)) state.awaitingSince = new Date().toISOString();
   atomicWrite(stateFile, JSON.stringify(state, null, 2));
-  process.stdout.write(JSON.stringify({ ok: true, state: stateFile }) + '\\n');
+  if (state.dev) {
+    process.stderr.write('WARN: DEV state: the cli verifier and unsigned drops are accepted; anyone who can run signal.mjs can approve\\n');
+  }
+  process.stdout.write(JSON.stringify({ ok: true, state: stateFile, run: state.runId, dev: state.dev }) + '\\n');
 }
 
 async function loadVerifier(kind) {
@@ -114,6 +127,42 @@ async function loadVerifier(kind) {
     return (await import(pathToFileURL(path.join(__dirname, 'verifiers', 'file-drop.mjs')).href));
   }
   fail('unknown verifier: ' + kind + ' (shipped: cli, file-drop; others are plug-ins)');
+}
+
+function verifierCtx(state) {
+  return {
+    runId: state.runId,
+    dev: state.dev === true,
+    now: Date.now(),
+    usedNonces: state.usedNonces || [],
+  };
+}
+
+/** Run a verifier with the dev gate and run/nonce/replay checks. */
+async function verifySignal(args, state, expect) {
+  if (args.verifier === 'cli' && state.dev !== true) {
+    fail('cli verifier is DEV ONLY: create the state with signal.mjs init --dev, or use a signed verifier (self-approval risk)', 2);
+  }
+  const ver = await loadVerifier(args.verifier);
+  const result = await ver.verify(args.rest, expect, verifierCtx(state));
+  if (result.ok === false) fail('verifier rejected: ' + result.reason, 2);
+  const vs = result.signal;
+  // Defense in depth for any verifier that binds to a run / nonce.
+  if (vs.run !== undefined && vs.run !== state.runId) fail('run mismatch', 2);
+  if (vs.nonce !== undefined && (state.usedNonces || []).includes(vs.nonce)) fail('nonce already used: ' + vs.nonce, 2);
+  if ((state.appliedEvidence || []).includes(vs.evidence)) {
+    fail('replay: evidence already applied: ' + vs.evidence, 2);
+  }
+  return vs;
+}
+
+function recordSignal(state, vs) {
+  state.appliedEvidence = state.appliedEvidence || [];
+  state.appliedEvidence.push(vs.evidence);
+  if (vs.nonce !== undefined) {
+    state.usedNonces = state.usedNonces || [];
+    state.usedNonces.push(vs.nonce);
+  }
 }
 
 async function cmdApply(args) {
@@ -128,11 +177,7 @@ async function cmdApply(args) {
     const waiting = currentAwait(machine);
     if (!waiting) fail('machine is not in an await state', 2);
 
-    const ver = await loadVerifier(args.verifier);
-    const result = await ver.verify(args.rest, waiting);
-    if (result.ok === false) fail('verifier rejected: ' + result.reason, 2);
-
-    const vs = result.signal;
+    const vs = await verifySignal(args, state, waiting);
     if (vs.signal !== waiting.signal) fail('wrong signal: expected ' + waiting.signal + ' got ' + vs.signal, 2);
     if (!waiting.outcomes.includes(vs.outcome)) fail('disallowed outcome: ' + vs.outcome, 2);
     for (const c of waiting.claims) {
@@ -140,10 +185,6 @@ async function cmdApply(args) {
         fail('missing claim: ' + c.name, 2);
       }
     }
-    if (state.appliedEvidence.includes(vs.evidence)) {
-      fail('replay: evidence already applied: ' + vs.evidence, 2);
-    }
-
     const on = waiting.on.find(o => o.outcome === vs.outcome);
     if (!on) fail('no on-transition for outcome ' + vs.outcome, 2);
 
@@ -151,7 +192,7 @@ async function cmdApply(args) {
     if (can !== true) fail('synthetic transition refused: ' + can, 2);
     machine[on.action]();
 
-    state.appliedEvidence.push(vs.evidence);
+    recordSignal(state, vs);
     state.signalLog.push({ ...vs, at: vs.at || new Date().toISOString() });
     state.awaitingSince = null;
     // Leave state.pending alone: an in-flight observe tool (HNTL) still owns it.
@@ -175,8 +216,8 @@ async function cmdTimeout(args) {
     if (!waiting.timeout) fail('no timeout configured for this await', 2);
 
     const outcome = waiting.timeout.outcome;
-    if (!/reject/i.test(outcome)) {
-      fail('timeout may only resolve to a reject-class outcome', 2);
+    if (!(waiting.rejects || []).includes(outcome)) {
+      fail('timeout may only resolve to a !-marked reject outcome', 2);
     }
     const since = Date.parse(state.awaitingSince || '');
     if (!Number.isFinite(since)) {
@@ -194,9 +235,10 @@ async function cmdTimeout(args) {
     const on = waiting.on.find(o => o.outcome === outcome);
     if (!on) fail('no on-transition for timeout outcome ' + outcome, 2);
     const evidence = 'timeout:' + waiting.signal + ':' + state.awaitingSince;
-    if (state.appliedEvidence.includes(evidence)) fail('replay', 2);
+    if ((state.appliedEvidence || []).includes(evidence)) fail('replay', 2);
 
     machine[on.action]();
+    state.appliedEvidence = state.appliedEvidence || [];
     state.appliedEvidence.push(evidence);
     state.signalLog.push({
       signal: waiting.signal,
@@ -216,15 +258,53 @@ async function cmdTimeout(args) {
   }
 }
 
+async function cmdClearPending(args) {
+  if (!args.state) fail('missing --state');
+  if (!args.verifier) fail('missing --verifier');
+  await acquireLock(args.state);
+  try {
+    const state = JSON.parse(fs.readFileSync(args.state, 'utf-8'));
+    if (state.specHash !== config.specHash) fail('specHash mismatch', 2);
+    if (!state.pending) fail('no pending tool call', 2);
+    const expect = { signal: 'clear-pending', outcomes: ['clear'], claims: [] };
+    const vs = await verifySignal(args, state, expect);
+    if (vs.signal !== 'clear-pending') fail('wrong signal: expected clear-pending got ' + vs.signal, 2);
+    if (vs.outcome !== 'clear') fail('disallowed outcome: ' + vs.outcome, 2);
+    if (vs.callId === undefined || String(vs.callId) !== String(state.pending.call_id)) {
+      fail('call_id does not match the pending call (' + state.pending.call_id + ')', 2);
+    }
+    recordSignal(state, vs);
+    state.pendingLog = state.pendingLog || [];
+    state.pendingLog.push({
+      call_id: state.pending.call_id,
+      tool: state.pending.tool,
+      since: state.pending.since,
+      cleared: 'signal',
+      verifier: vs.verifier,
+      subject: vs.subject,
+      evidence: vs.evidence,
+      at: new Date().toISOString(),
+    });
+    const cleared = state.pending.call_id;
+    // Cleared as failed: the machine is not advanced.
+    state.pending = null;
+    atomicWrite(args.state, JSON.stringify(state, null, 2));
+    process.stdout.write(JSON.stringify({ ok: true, cleared, evidence: vs.evidence }) + '\\n');
+  } finally {
+    releaseLock();
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   try {
     if (args.cmd === 'init') {
       if (!args.state) fail('missing --state');
-      await cmdInit(args.state);
+      await cmdInit(args.state, args.rest.dev === true || args.rest.dev === 'true');
     } else if (args.cmd === 'apply') await cmdApply(args);
     else if (args.cmd === 'timeout') await cmdTimeout(args);
-    else fail('usage: signal.mjs init|apply|timeout --state <file> ...');
+    else if (args.cmd === 'clear-pending') await cmdClearPending(args);
+    else fail('usage: signal.mjs init|apply|timeout|clear-pending --state <file> ...');
   } catch (e) {
     releaseLock();
     const msg = e instanceof Error ? e.message : String(e);

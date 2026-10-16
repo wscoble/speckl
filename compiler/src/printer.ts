@@ -302,11 +302,14 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
   for (const t of member.tools) {
     lines.push(`    tool ${t.name} -> ${t.action} effect ${t.effect}`);
   }
+  if (member.pendingTimeout) {
+    lines.push(`    pending timeout ${member.pendingTimeout.durationText}`);
+  }
   for (const a of member.awaits) {
     lines.push(`    await ${a.state} {`);
     lines.push(`        signal ${a.signal}`);
     lines.push(`        mode ${a.mode}`);
-    lines.push(`        require outcome in { ${a.outcomes.join(', ')} }`);
+    lines.push(`        require outcome in { ${a.outcomes.map(o => (a.rejects ?? []).includes(o) ? `${o}!` : o).join(', ')} }`);
     if (a.claims.length > 0) {
       const body = a.claims.map(c => `${c.name}: ${c.typeName}`).join(', ');
       lines.push(`        require claims { ${body} }`);

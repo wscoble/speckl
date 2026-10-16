@@ -9,6 +9,14 @@ export function emitHookMjs(speckName: string): string {
  *   node hook.mjs post --state <file>   # stdin JSON {tool,input,call_id,ok}
  *
  * exit 0 allow · exit 2 deny · exit 1 error (=deny)
+ *
+ * The hook never records human answers; signal.mjs does, through a verifier.
+ * Keep signal.mjs and any signing key out of the agent's reach: the cli
+ * verifier (DEV ONLY, state created with init --dev) trusts whoever runs it,
+ * so an agent with shell access could approve its own work.
+ *
+ * A pending call (pre without post) older than the pending timeout is
+ * cleared as failed and the state is not advanced.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -94,6 +102,30 @@ function loadState(stateFile) {
   return JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
 }
 
+function pendingTimeoutMs() {
+  const t = config.pendingTimeout && config.pendingTimeout.durationMs;
+  return typeof t === 'number' && t > 0 ? t : 600000;
+}
+
+/** 'expired' | 'live' | 'unstamped' for state.pending. */
+function pendingStatus(pending, now) {
+  const since = Date.parse(pending.since || '');
+  if (!Number.isFinite(since)) return 'unstamped';
+  return now - since >= pendingTimeoutMs() ? 'expired' : 'live';
+}
+
+function clearPendingAsFailed(state, reason) {
+  state.pendingLog = state.pendingLog || [];
+  state.pendingLog.push({
+    call_id: state.pending.call_id,
+    tool: state.pending.tool,
+    since: state.pending.since,
+    cleared: reason,
+    at: new Date().toISOString(),
+  });
+  state.pending = null;
+}
+
 function currentAwait(machine, cfg) {
   const stage = machine[cfg.stageVariable];
   return cfg.awaits.find(a => a.stateValue === stage) || null;
@@ -144,7 +176,23 @@ async function main() {
       }
       const binding = toolByName.get(tool);
       if (!binding) deny('unknown tool: ' + tool);
-      if (state.pending) deny('another tool call is already pending');
+      if (state.pending) {
+        const st = pendingStatus(state.pending, Date.now());
+        if (st === 'expired') {
+          // The earlier call never posted (crash/hang): clear it as failed
+          // without advancing, persist that, then judge this call fresh.
+          clearPendingAsFailed(state, 'timeout');
+          atomicWrite(args.state, JSON.stringify(state, null, 2));
+        } else {
+          if (st === 'unstamped') {
+            // Pending from an older state file: start its clock now.
+            state.pending.since = new Date().toISOString();
+            atomicWrite(args.state, JSON.stringify(state, null, 2));
+          }
+          deny('another tool call is already pending (' + state.pending.call_id + '); it clears as failed after '
+            + (config.pendingTimeout ? config.pendingTimeout.durationText : '10m') + ' or via signal.mjs clear-pending');
+        }
+      }
 
       const waiting = currentAwait(machine, config);
       if (waiting) {
@@ -159,7 +207,7 @@ async function main() {
       const can = machine.can(binding.action, input);
       if (can !== true) deny('can() refused: ' + can);
 
-      state.pending = { call_id: callId, tool, action: binding.action, input };
+      state.pending = { call_id: callId, tool, action: binding.action, input, since: new Date().toISOString() };
       state.machine = machine.serialize();
       atomicWrite(args.state, JSON.stringify(state, null, 2));
       allow();
@@ -177,6 +225,11 @@ async function main() {
     }
     if (state.pending.tool !== tool) {
       deny('post: tool does not match pending');
+    }
+    if (pendingStatus(state.pending, Date.now()) === 'expired') {
+      clearPendingAsFailed(state, 'timeout');
+      atomicWrite(args.state, JSON.stringify(state, null, 2));
+      deny('post: pending call expired; cleared as failed (state not advanced)');
     }
 
     if (!ok) {

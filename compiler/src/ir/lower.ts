@@ -418,6 +418,15 @@ function lowerAgent(
   const awaits: IRAgentAwait[] = [];
   const syntheticNames: string[] = [];
 
+  if (agent.pendingTimeout && agent.pendingTimeout.durationMs <= 0) {
+    diagnostics.push({
+      level: 'error',
+      message: `agent: pending timeout must be greater than zero (got ${agent.pendingTimeout.durationText})`,
+      line: agent.startLine,
+      speck: speckName,
+    });
+  }
+
   for (const a of agent.awaits) {
     if (!labelToValue.has(a.state)) {
       diagnostics.push({
@@ -429,7 +438,17 @@ function lowerAgent(
       continue;
     }
     const awaitValue = labelToValue.get(a.state)!;
-    const rejectOutcomes = new Set(a.outcomes.filter(o => /reject/i.test(o)));
+    const rejectOutcomes = new Set(a.rejects ?? []);
+    for (const o of a.outcomes) {
+      if (/reject|deny|denied|decline/i.test(o) && !rejectOutcomes.has(o)) {
+        diagnostics.push({
+          level: 'warning',
+          message: `agent await ${a.state}: outcome "${o}" looks like a rejection but is not marked; write "${o}!" in require outcome in {...} to make it a reject outcome`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+      }
+    }
     if (a.timeout) {
       if (!a.outcomes.includes(a.timeout.outcome)) {
         diagnostics.push({
@@ -438,28 +457,37 @@ function lowerAgent(
           line: agent.startLine,
           speck: speckName,
         });
-      } else if (!rejectOutcomes.has(a.timeout.outcome) && a.timeout.outcome !== 'reject') {
-        // Plan: timeout may only resolve to a reject-class outcome.
+      } else if (!rejectOutcomes.has(a.timeout.outcome)) {
+        // A timeout may only resolve to an outcome explicitly marked reject.
         diagnostics.push({
           level: 'error',
-          message: `agent await ${a.state}: timeout may only resolve to a reject-class outcome (got "${a.timeout.outcome}")`,
+          message: `agent await ${a.state}: timeout may only resolve to a reject outcome marked with ! (got "${a.timeout.outcome}"; write "${a.timeout.outcome}!" in require outcome in {...} if it really rejects)`,
           line: agent.startLine,
           speck: speckName,
         });
-      } else {
-        // A reject-named outcome must not lead where an accepting outcome
-        // leads, or a timeout could approve by another name.
-        const tTarget = a.on.find(o => o.outcome === a.timeout!.outcome)?.target;
-        const accepting = a.on.filter(o => !rejectOutcomes.has(o.outcome)).map(o => o.target);
-        if (tTarget !== undefined && accepting.includes(tTarget)) {
-          diagnostics.push({
-            level: 'error',
-            message: `agent await ${a.state}: timeout outcome "${a.timeout.outcome}" leads to ${tTarget}, which a non-reject outcome also reaches`,
-            line: agent.startLine,
-            speck: speckName,
-          });
-        }
       }
+    }
+    // A reject outcome must not lead where an accepting outcome leads, or a
+    // timeout (or any reject) could approve by another name.
+    for (const r of rejectOutcomes) {
+      const rTarget = a.on.find(o => o.outcome === r)?.target;
+      const accepting = a.on.filter(o => !rejectOutcomes.has(o.outcome)).map(o => o.target);
+      if (rTarget !== undefined && accepting.includes(rTarget)) {
+        diagnostics.push({
+          level: 'error',
+          message: `agent await ${a.state}: reject outcome "${r}" leads to ${rTarget}, which a non-reject outcome also reaches`,
+          line: agent.startLine,
+          speck: speckName,
+        });
+      }
+    }
+    if (rejectOutcomes.size === a.outcomes.length && a.outcomes.length > 0) {
+      diagnostics.push({
+        level: 'warning',
+        message: `agent await ${a.state}: every outcome is marked reject; nothing can approve`,
+        line: agent.startLine,
+        speck: speckName,
+      });
     }
 
     const syntheticActions: IRAgentAwait['syntheticActions'] = [];
@@ -505,6 +533,7 @@ function lowerAgent(
       signal: a.signal,
       mode: a.mode,
       outcomes: [...a.outcomes],
+      rejects: [...(a.rejects ?? [])],
       claims: a.claims.map(c => ({ name: c.name, typeName: c.typeName })),
       on: a.on.map(o => ({ outcome: o.outcome, target: o.target })),
       timeout: a.timeout ? { ...a.timeout } : undefined,
@@ -535,6 +564,7 @@ function lowerAgent(
       : undefined,
     tools,
     awaits,
+    ...(agent.pendingTimeout ? { pendingTimeout: { ...agent.pendingTimeout } } : {}),
   };
 }
 

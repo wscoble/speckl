@@ -42,20 +42,28 @@ let loopDir = '';
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
 const pubRaw = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
 
-function newState(dir = agentDir): string {
+// Most flows here exercise hook/signal logic with the DEV cli verifier, so
+// states default to --dev; production (non-dev) behavior has its own suite.
+function newState(dir = agentDir, dev = true): string {
   const state = join(mkdtempSync(join(tmpdir(), 'speckl-hard-')), 'state.json');
-  expect(signal(dir, ['init', '--state', state]).status).toBe(0);
+  expect(signal(dir, ['init', '--state', state, ...(dev ? ['--dev'] : [])]).status).toBe(0);
   return state;
 }
-function awaiting(dir = agentDir): string {
-  const s = newState(dir);
+function awaiting(dir = agentDir, dev = true): string {
+  const s = newState(dir, dev);
   step(dir, s, 'run_tests', '1');
   step(dir, s, 'request_review', '2');
   return s;
 }
-function drop(dir: string, name: string, body: object, sign = true): { file: string; pub: string } {
+/** Bind a body to the state in `dir` (run id, +1h expiry, fresh nonce) unless it sets them. */
+function bind(dir: string, body: object): object {
+  const st = join(dir, 'state.json');
+  const run = existsSync(st) ? JSON.parse(readFileSync(st, 'utf-8')).runId : 'no-state';
+  return { run, expires: new Date(Date.now() + 3600_000).toISOString(), nonce: crypto.randomUUID(), ...body };
+}
+function drop(dir: string, name: string, body: object, sign = true, bound = true): { file: string; pub: string } {
   const file = join(dir, name);
-  const buf = Buffer.from(JSON.stringify(body));
+  const buf = Buffer.from(JSON.stringify(bound ? bind(dir, body) : body));
   writeFileSync(file, buf);
   if (sign) writeFileSync(file + '.sig', crypto.sign(null, buf, privateKey));
   const pub = join(dir, 'reviewer.pub');
@@ -85,7 +93,7 @@ describe('file-drop verifier hardening', () => {
     step(loopDir, s, 'request_review', '3');
     const again = signal(loopDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file, '--pubkey', pub]);
     expect(again.status).toBe(2);
-    expect(again.stderr).toContain('replay');
+    expect(again.stderr).toMatch(/replay|nonce already used/);
   });
 
   it('missing claim in a signed drop is refused', () => {
@@ -189,7 +197,7 @@ describe('signal.mjs guards', () => {
     writeFileSync(s, JSON.stringify(snap));
     const r = signal(dir, ['timeout', '--state', s]);
     expect(r.status).toBe(2);
-    expect(r.stderr).toContain('reject-class');
+    expect(r.stderr).toContain('!-marked reject');
   });
 
   it('specHash mismatch blocks apply and timeout; init refuses to overwrite', () => {

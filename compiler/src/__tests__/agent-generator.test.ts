@@ -40,7 +40,11 @@ describe('generateAgent (in process)', () => {
     expect(md).toContain('### `AwaitingReview` (stage == 2)');
     expect(md).toContain('HNTL');
     expect(md).toContain('Required claims: `reviewer: String`');
-    expect(md).toContain('Timeout `24h` → `reject` (reject-class only)');
+    expect(md).toContain('Timeout `24h` → `reject` (must be a `!`-marked reject outcome)');
+    expect(md).toContain('Outcomes: `approve`, `reject` (reject)');
+    expect(md).toContain('DEV ONLY');
+    expect(md).toContain('approve its own work');
+    expect(md).toContain('pending call older than `10m`');
     expect(md).not.toContain('__signal_review_approve`');
   });
 
@@ -120,7 +124,7 @@ describe('agent { } lowering', () => {
     ['duplicate stage label', s => s.replace('Rejected = 4', 'Approved = 4'), /duplicate label "Approved"/],
     ['await on unknown stage', s => s.replace('await AwaitingReview {', 'await Limbo {'), /await Limbo: unknown stage label/],
     ['on → unknown target', s => s.replace('on reject  -> Rejected', 'on reject  -> Nowhere'), /unknown target stage/],
-    ['timeout to accept', s => s.replace('timeout 24h -> reject', 'timeout 24h -> approve'), /reject-class/],
+    ['timeout to accept', s => s.replace('timeout 24h -> reject', 'timeout 24h -> approve'), /reject outcome marked with !/],
     ['reject that approves', s => s.replace('on reject  -> Rejected', 'on reject  -> Approved'), /non-reject outcome also reaches/],
   ] as [string, (s: string) => string, RegExp][])('diagnoses %s', (_n, edit, re) => {
     expect(errors(edit(SRC)).some(m => re.test(m)), errors(edit(SRC)).join('\n')).toBe(true);
@@ -149,7 +153,7 @@ describe('agent { } parser errors', () => {
     ['bad stage line', s => s.replace('Idle = 0', 'Idle 0'), /expected Name = n/],
     ['missing signal', s => s.replace('signal review\n', ''), /missing signal/],
     ['missing mode', s => s.replace('mode near\n', ''), /missing mode/],
-    ['missing outcomes', s => s.replace('require outcome in { approve, reject }\n', ''), /missing require outcome|not in require outcome/],
+    ['missing outcomes', s => s.replace('require outcome in { approve, reject! }\n', ''), /missing require outcome|not in require outcome/],
     ['missing on', s => s.replace(/ *on approve -> Approved\n *on reject  -> Rejected\n/, ''), /missing on/],
     ['on outside outcomes', s => s.replace('on reject  -> Rejected', 'on maybe -> Rejected'), /on maybe is not in require outcome/],
     ['timeout outside outcomes', s => s.replace('timeout 24h -> reject', 'timeout 24h -> later'), /timeout outcome later/],

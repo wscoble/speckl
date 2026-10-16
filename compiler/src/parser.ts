@@ -322,6 +322,9 @@ export interface AgentMemberNode {
   stages?: AgentStagesMap;
   tools: AgentToolBinding[];
   awaits: AgentAwaitSpec[];
+  /** Optional `pending timeout <dur>`: an in-flight tool call older than this
+   *  is cleared as failed (state not advanced). Runtime default: 10m. */
+  pendingTimeout?: { durationMs: number; durationText: string };
 }
 
 export interface AgentStagesMap {
@@ -350,11 +353,14 @@ export interface AgentAwaitSpec {
   mode: 'near' | 'in';
   /** Allowed outcomes (e.g. approve, reject). */
   outcomes: string[];
+  /** Outcomes marked reject with a trailing `!` in `require outcome in {...}`
+   *  (e.g. `reject!`). Only these may be timeout targets. */
+  rejects: string[];
   /** Claims the verifier must attest (name → type name). */
   claims: { name: string; typeName: string }[];
   /** outcome → target stage label. */
   on: { outcome: string; target: string }[];
-  /** Optional timeout; may only resolve to a reject-class outcome. */
+  /** Optional timeout; may only resolve to a `!`-marked reject outcome. */
   timeout?: { durationMs: number; durationText: string; outcome: string };
 }
 
@@ -2727,7 +2733,8 @@ export function parseNextRelation(lines: string[], startIndex: number): { node: 
  * Body forms:
  *   stages <var> { Name = n ... }
  *   tool <name> -> <Action> effect act|observe
- *   await <State> { signal ...; mode near|in; require outcome in {...};
+ *   pending timeout <dur>
+ *   await <State> { signal ...; mode near|in; require outcome in { approve, reject! };
  *                   require claims { k: T }; on outcome -> Target;
  *                   timeout <dur> -> reject }
  */
@@ -2737,6 +2744,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
   let stages: AgentStagesMap | undefined;
+  let pendingTimeout: AgentMemberNode['pendingTimeout'];
   let i = 0;
 
   while (i < bodyLines.length) {
@@ -2786,6 +2794,15 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       continue;
     }
 
+    // pending timeout <dur>
+    const pendM = line.match(/^pending\s+timeout\s+(\S+)\s*$/);
+    if (pendM) {
+      if (pendingTimeout) throw new Error('Parse error in agent block: duplicate pending timeout');
+      pendingTimeout = { durationMs: parseDurationToMs(pendM[1]), durationText: pendM[1] };
+      i++;
+      continue;
+    }
+
     // await State { ... }
     const awaitHeader = line.match(/^await\s+(\w+)\s*\{/);
     if (awaitHeader) {
@@ -2798,6 +2815,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       let signal = '';
       let mode: 'near' | 'in' | '' = '';
       let outcomes: string[] = [];
+      let rejects: string[] = [];
       const claims: { name: string; typeName: string }[] = [];
       const on: { outcome: string; target: string }[] = [];
       let timeout: AgentAwaitSpec['timeout'];
@@ -2814,11 +2832,19 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
 
         const outM = al.match(/^require\s+outcome\s+in\s*\{([^}]+)\}\s*$/);
         if (outM) {
-          outcomes = outM[1].split(',').map(s => s.trim()).filter(Boolean);
-          for (const o of outcomes) {
-            if (!/^[A-Za-z_]\w*$/.test(o)) {
-              throw new Error(`Parse error in await ${state}: outcome ${JSON.stringify(o)} is not an identifier`);
+          const raw = outM[1].split(',').map(s => s.trim()).filter(Boolean);
+          outcomes = [];
+          rejects = [];
+          for (const r of raw) {
+            const om = r.match(/^([A-Za-z_]\w*)\s*(!?)$/);
+            if (!om) {
+              throw new Error(`Parse error in await ${state}: outcome ${JSON.stringify(r)} is not an identifier (mark reject outcomes as name!)`);
             }
+            if (outcomes.includes(om[1])) {
+              throw new Error(`Parse error in await ${state}: duplicate outcome ${om[1]}`);
+            }
+            outcomes.push(om[1]);
+            if (om[2]) rejects.push(om[1]);
           }
           j++;
           continue;
@@ -2885,14 +2911,16 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
         throw new Error(`Parse error in await ${state}: timeout outcome ${timeout.outcome} is not in require outcome in {...}`);
       }
 
-      awaits.push({ state, signal, mode, outcomes, claims, on, timeout });
+      awaits.push({ state, signal, mode, outcomes, rejects, claims, on, timeout });
       continue;
     }
 
     throw new Error(`Parse error in agent block: unexpected line ${JSON.stringify(line)}`);
   }
 
-  return { type: 'agent', stages, tools, awaits };
+  return pendingTimeout
+    ? { type: 'agent', stages, tools, awaits, pendingTimeout }
+    : { type: 'agent', stages, tools, awaits };
 }
 
 /** Parse durations like `24h`, `30m`, `90s`, `500ms` into milliseconds. */

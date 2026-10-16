@@ -1,22 +1,42 @@
 // Reference signal verifiers shipped with the agent target.
+//
+// Verifier interface (plug-ins implement the same):
+//   export async function verify(opts, expect, ctx) -> { ok: true, signal } | { ok: false, reason }
+//   opts   = verifier CLI options (--key value)
+//   expect = { signal, outcomes, claims } the caller is waiting for
+//   ctx    = { runId, dev, now, usedNonces } from the state file
+// signal = { signal, outcome, claims, verifier, subject, at, evidence,
+//            run?, expires?, nonce?, callId? }
 
 export function emitCliVerifier(): string {
   return `/**
- * CLI signal verifier (low-assurance).
- * Evidence = local user + timestamp. Suitable for demos / local gates,
- * not high-assurance production.
+ * CLI signal verifier — DEV ONLY.
+ *
+ * Trusts whoever runs it: evidence is a local user name + timestamp. Any
+ * process that can run a shell command can use it, so an agent with shell
+ * access could approve its own work. signal.mjs refuses it unless the state
+ * file was created with \`signal.mjs init --dev\`; this verifier also refuses
+ * on its own when ctx.dev is not true. Production must use a signed verifier.
  *
  * Options: --outcome <name> --as <subject> [--reviewer <id>] [--claim key=value]
+ *          [--claim_<key> <value>] [--call_id <id>]   (clear-pending)
  */
 import os from 'node:os';
 import crypto from 'node:crypto';
 
-export async function verify(opts, expect) {
-  const outcome = opts.outcome;
-  if (!outcome || typeof outcome !== 'string') {
+export const devOnly = true;
+
+export async function verify(opts, expect, ctx = {}) {
+  if (ctx.dev !== true) {
+    return { ok: false, reason: 'cli verifier is DEV ONLY (state was not created with init --dev); use a signed verifier' };
+  }
+  const outcomes = (expect && expect.outcomes) || [];
+  const outcome = typeof opts.outcome === 'string' ? opts.outcome
+    : (outcomes.length === 1 ? outcomes[0] : undefined);
+  if (!outcome) {
     return { ok: false, reason: 'cli verifier requires --outcome' };
   }
-  const subject = (opts.as || os.userInfo().username || 'local').toString();
+  const subject = (typeof opts.as === 'string' ? opts.as : (os.userInfo().username || 'local'));
   const claims = {};
   if (typeof opts.claim === 'string') {
     const eq = opts.claim.indexOf('=');
@@ -29,7 +49,7 @@ export async function verify(opts, expect) {
   }
   if (typeof opts.reviewer === 'string') claims.reviewer = opts.reviewer;
 
-  const at = new Date().toISOString();
+  const at = new Date(typeof ctx.now === 'number' ? ctx.now : Date.now()).toISOString();
   const evidence = 'cli:' + subject + ':' + outcome + ':' + at + ':' + crypto.randomBytes(8).toString('hex');
   return {
     ok: true,
@@ -37,10 +57,11 @@ export async function verify(opts, expect) {
       signal: expect.signal,
       outcome,
       claims,
-      verifier: 'cli',
+      verifier: 'cli-DEV',
       subject,
       at,
       evidence,
+      callId: typeof opts.call_id === 'string' ? opts.call_id : undefined,
     },
   };
 }
@@ -51,8 +72,13 @@ export function emitFileDropVerifier(): string {
   return `/**
  * File-drop signal verifier (ed25519).
  *
- * JSON body:
- *   { "signal": "...", "outcome": "...", "claims": {...}, "subject": "...", "at": "ISO-8601" }
+ * JSON body (all of signal/run/expires/nonce are required):
+ *   { "signal": "...", "outcome": "...", "claims": {...}, "subject": "...",
+ *     "at": "ISO-8601",
+ *     "run": "<run id printed by signal.mjs init>",
+ *     "expires": "ISO-8601",          // refused at or after this instant
+ *     "nonce": "<unique, 8-200 chars>", // single use per state file
+ *     "call_id": "..." }              // clear-pending only
  * Detached signature over the raw file bytes at <file>.sig
  * (64-byte raw, hex, or base64).
  *
@@ -60,7 +86,7 @@ export function emitFileDropVerifier(): string {
  *   --file <path>             required
  *   --pubkey <path>           required unless --allow-unsigned true
  *   --sig <path>              optional (default <file>.sig)
- *   --allow-unsigned true     DEV ONLY; default off
+ *   --allow-unsigned true     DEV ONLY; also needs a state created with init --dev
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,7 +121,7 @@ function ed25519PublicKey(raw32) {
   });
 }
 
-export async function verify(opts, expect) {
+export async function verify(opts, expect, ctx = {}) {
   const file = opts.file;
   if (!file || typeof file !== 'string') {
     return { ok: false, reason: 'file-drop verifier requires --file' };
@@ -112,11 +138,14 @@ export async function verify(opts, expect) {
   } catch {
     return { ok: false, reason: 'file is not JSON' };
   }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, reason: 'payload must be a JSON object' };
+  }
 
   if (!allowUnsigned) {
     const pubkeyPath = opts.pubkey;
     if (!pubkeyPath || typeof pubkeyPath !== 'string') {
-      return { ok: false, reason: 'file-drop requires --pubkey (unsigned drops are off by default; pass --allow-unsigned true only for local DEV)' };
+      return { ok: false, reason: 'file-drop requires --pubkey (unsigned drops are DEV ONLY: --allow-unsigned true with a state created by init --dev)' };
     }
     if (!fs.existsSync(pubkeyPath)) {
       return { ok: false, reason: 'pubkey not found: ' + pubkeyPath };
@@ -141,6 +170,9 @@ export async function verify(opts, expect) {
     }
     if (!ok) return { ok: false, reason: 'bad signature' };
   } else {
+    if (ctx.dev !== true) {
+      return { ok: false, reason: 'unsigned drops are DEV ONLY (state was not created with init --dev)' };
+    }
     process.stderr.write('WARN: file-drop accepting UNSIGNED drop (--allow-unsigned); DEV ONLY\\n');
   }
 
@@ -148,11 +180,30 @@ export async function verify(opts, expect) {
   // or one signed drop could answer any signal.
   const signal = payload.signal;
   if (!signal || typeof signal !== 'string') return { ok: false, reason: 'payload missing signal' };
-  const outcome = payload.outcome;
+
+  // Bind the drop to this run, an expiry, and a single-use nonce so an
+  // approval cannot be carried to another run or replayed.
+  if (typeof payload.run !== 'string' || !payload.run) return { ok: false, reason: 'payload missing run (run id from signal.mjs init)' };
+  if (!ctx.runId) return { ok: false, reason: 'state has no run id; re-create it with signal.mjs init' };
+  if (payload.run !== ctx.runId) return { ok: false, reason: 'run mismatch: drop is for run ' + payload.run };
+  if (typeof payload.expires !== 'string' || !payload.expires) return { ok: false, reason: 'payload missing expires' };
+  const exp = Date.parse(payload.expires);
+  if (!Number.isFinite(exp)) return { ok: false, reason: 'payload expires is not a valid ISO-8601 time' };
+  const now = typeof ctx.now === 'number' ? ctx.now : Date.now();
+  if (now >= exp) return { ok: false, reason: 'expired at ' + payload.expires };
+  const nonce = payload.nonce;
+  if (typeof nonce !== 'string' || nonce.length < 8 || nonce.length > 200) {
+    return { ok: false, reason: 'payload nonce must be a string of 8-200 chars' };
+  }
+  if ((ctx.usedNonces || []).includes(nonce)) return { ok: false, reason: 'nonce already used: ' + nonce };
+
+  const outcomes = (expect && expect.outcomes) || [];
+  const outcome = payload.outcome !== undefined ? payload.outcome
+    : (outcomes.length === 1 ? outcomes[0] : undefined);
+  if (!outcome || typeof outcome !== 'string') return { ok: false, reason: 'payload missing outcome' };
   const claims = (payload.claims && typeof payload.claims === 'object') ? payload.claims : {};
   const subject = payload.subject || path.basename(file);
-  const at = payload.at || new Date().toISOString();
-  if (!outcome) return { ok: false, reason: 'payload missing outcome' };
+  const at = payload.at || new Date(now).toISOString();
 
   const evidence = 'file:' + crypto.createHash('sha256').update(body).digest('hex');
   return {
@@ -165,6 +216,10 @@ export async function verify(opts, expect) {
       subject,
       at,
       evidence,
+      run: payload.run,
+      expires: payload.expires,
+      nonce,
+      callId: typeof payload.call_id === 'string' ? payload.call_id : undefined,
     },
   };
 }
