@@ -180,14 +180,19 @@ let failed = 0;
 // Acknowledged unchecked obligations (<examples>/.speckl-unchecked.json).
 // Listed obligations are reported as UNCHECKED, never as passed; an entry
 // that is now proven (or no longer declared) fails as stale.
-const baseline = loadBaseline(examplesDir);
+// Only the examples directory run carries a baseline; explicitly named
+// specs are verified with none (every unchecked obligation fails).
+const namedSpecs = process.argv.slice(2).some((a, i, all) => !a.startsWith('-') && !['--examples', '--depth'].includes(all[i - 1] ?? ''));
+const baseline = namedSpecs ? { path: null, entries: new Map() } : loadBaseline(examplesDir);
 if (baseline.path) console.log(`Unchecked-obligation baseline: ${baseline.path}\n`);
+const verifiedSpecs = new Set();
 
 for (const file of exampleFiles) {
   const filePath = join(examplesDir, file);
   const base = file.replace(/\.speckdl$/, '').replaceAll('/', '.');
 
   const specChecks = []; // every compiled SMT file for this spec, for obligation accounting
+  verifiedSpecs.add(file);
   for (const [mode, target] of [['ast', 'z3'], ['ir', 'all-ir']]) {
     const outDir = join(workDir, `${base}.${mode}`);
 
@@ -266,7 +271,7 @@ for (const file of exampleFiles) {
   }
 }
 for (const [file] of baseline.entries) {
-  if (!exampleFiles.includes(file)) {
+  if (!verifiedSpecs.has(file)) {
     results.push({ file, mode: 'obligation', status: 'STALE-BASELINE', detail: 'baseline names a spec that was not verified' });
     failed++;
   }
