@@ -1,0 +1,20 @@
+{
+  "conversation_id": "c-7d1e",
+  "generation_id": "g-31a9",
+  "model": "claude-opus-4-7-thinking-max",
+  "model_id": "claude-opus-4-7",
+  "hook_event_name": "preToolUse",
+  "cursor_version": "2.4.1",
+  "workspace_roots": [
+    "__PROJECT__"
+  ],
+  "user_email": null,
+  "transcript_path": null,
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "git push -u origin feature/greet",
+    "working_directory": "__PROJECT__"
+  },
+  "tool_use_id": "cu-5",
+  "cwd": "__PROJECT__"
+}

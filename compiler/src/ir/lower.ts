@@ -415,6 +415,8 @@ function lowerAgent(
     tools.push({ name: t.name, action: t.action, effect: t.effect });
   }
 
+  validateHarnesses(agent, behavior, speckName, diagnostics);
+
   const awaits: IRAgentAwait[] = [];
   const syntheticNames: string[] = [];
 
@@ -566,6 +568,65 @@ function lowerAgent(
     awaits,
     ...(agent.pendingTimeout ? { pendingTimeout: { ...agent.pendingTimeout } } : {}),
   };
+}
+
+/** Harness ids with a generated adapter (see generators/agent/harness-runtime.ts). */
+export const SUPPORTED_HARNESSES = ['claude-code', 'cursor'] as const;
+
+/**
+ * Check `harness <name> { map ... }` blocks: known harness, declared target
+ * tools, real action parameters, compilable patterns. Errors here stop
+ * `-t agent` (index.ts refuses diagnostics that start with "agent").
+ */
+function validateHarnesses(
+  agent: AgentMemberNode & { startLine?: number },
+  behavior: BehaviorFacet,
+  speckName: string,
+  diagnostics: IRDiagnostic[],
+): void {
+  const err = (message: string) => diagnostics.push({ level: 'error', message, line: agent.startLine, speck: speckName });
+  const toolToAction = new Map(agent.tools.map(t => [t.name, t.action]));
+  const paramsOf = new Map(behavior.actions.map(a => [a.name, a.params.map(p => p.name)]));
+  const seen = new Set<string>();
+  for (const h of agent.harnesses ?? []) {
+    if (!(SUPPORTED_HARNESSES as readonly string[]).includes(h.name)) {
+      err(`agent harness ${h.name}: unknown harness (supported: ${SUPPORTED_HARNESSES.join(', ')})`);
+    }
+    if (seen.has(h.name)) err(`agent harness ${h.name}: declared twice`);
+    seen.add(h.name);
+    if (h.rules.length === 0) {
+      diagnostics.push({
+        level: 'warning',
+        message: `agent harness ${h.name}: no map lines; every tool call will be denied`,
+        line: agent.startLine,
+        speck: speckName,
+      });
+    }
+    for (const r of h.rules) {
+      const where = `agent harness ${h.name} map ${r.tools.join('|')}`;
+      const action = toolToAction.get(r.target);
+      if (!action) {
+        err(`${where}: -> ${r.target} is not a declared tool`);
+        continue;
+      }
+      const params = paramsOf.get(action) ?? [];
+      const seenParams = new Set<string>();
+      for (const p of r.params) {
+        if (!params.includes(p.param)) {
+          err(`${where}: ${p.param} is not a parameter of ${action} (has: ${params.join(', ') || 'none'})`);
+        }
+        if (seenParams.has(p.param)) err(`${where}: ${p.param} is mapped twice`);
+        seenParams.add(p.param);
+      }
+      if (r.pattern !== undefined) {
+        try {
+          new RegExp('^(?:' + r.pattern + ')$');
+        } catch (e) {
+          err(`${where}: pattern "${r.pattern}" is not a valid regular expression (${e instanceof Error ? e.message : String(e)})`);
+        }
+      }
+    }
+  }
 }
 
 function lowerFormalSpec(

@@ -322,6 +322,17 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
     }
     lines.push('    }');
   }
+  for (const h of member.harnesses ?? []) {
+    lines.push(`    harness ${h.name} {`);
+    for (const r of h.rules) {
+      let l = `        map ${r.tools.join('|')}`;
+      if (r.field !== undefined) l += ` ${r.field} ~ "${(r.pattern ?? '').replace(/"/g, '\\"')}"`;
+      l += ` -> ${r.target}`;
+      if (r.params.length > 0) l += ` { ${r.params.map(p => `${p.param} = ${p.field}`).join(', ')} }`;
+      lines.push(l);
+    }
+    lines.push('    }');
+  }
   lines.push('}');
   return lines;
 }

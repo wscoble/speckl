@@ -1,0 +1,17 @@
+{
+  "session_id": "0f6a1c2e-5b7d-4e1a-9c3b-2d8e7f6a5b4c",
+  "transcript_path": "/home/user/.claude/projects/-demo/0f6a1c2e.jsonl",
+  "cwd": "__PROJECT__",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolBatch",
+  "tool_calls": [
+    {
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "git push origin feature/greet"
+      },
+      "tool_use_id": "toolu_14Push",
+      "tool_response": "The user doesn't want to proceed with this tool use."
+    }
+  ]
+}

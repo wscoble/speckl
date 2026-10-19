@@ -16,6 +16,8 @@ import { emitSignalMjs } from './signal-template.js';
 import { emitCliVerifier, emitFileDropVerifier } from './verifier-templates.js';
 import { stripTypes } from './strip-types.js';
 import { emitStateIntegrityMjs } from './state-integrity-template.js';
+import { emitAdapterMjs } from './adapter-template.js';
+import { buildHarnessHooks, HarnessRule } from './harness-runtime.js';
 
 /** Default for `pending timeout` when the spec does not declare one. */
 export const DEFAULT_PENDING_TIMEOUT_MS = 10 * 60_000;
@@ -74,6 +76,7 @@ function emitAgentForSpeck(
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'cli.mjs'), emitCliVerifier());
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'file-drop.mjs'), emitFileDropVerifier());
   fs.writeFileSync(path.join(agentDir, 'README.md'), buildAgentReadme(speck.name, agent));
+  if (config.harness) emitHarnessFiles(speck.name, agentDir, config.harness);
 
   // Make hook/signal executable-ish
   for (const bin of ['hook.mjs', 'signal.mjs']) {
@@ -107,6 +110,8 @@ export interface AgentRuntimeConfig {
   tools: { name: string; action: string; effect: 'act' | 'observe' }[];
   /** In-flight tool calls older than this are cleared as failed. */
   pendingTimeout: { durationMs: number; durationText: string };
+  /** Compiled `harness` blocks; present only when the spec declares one. */
+  harness?: Record<string, { rules: HarnessRule[] }>;
   awaits: {
     state: string;
     stateValue: number;
@@ -133,7 +138,7 @@ function buildConfig(
   const stages: Record<string, number> = {};
   for (const [k, v] of labels) stages[k] = v;
 
-  return {
+  const config: AgentRuntimeConfig = {
     speck: speck.name,
     specHash,
     machineModule: `./${speck.name}.mjs`,
@@ -161,6 +166,69 @@ function buildConfig(
       timeout: a.timeout ? { ...a.timeout } : undefined,
     })),
   };
+  if (agent.harnesses && agent.harnesses.length > 0) {
+    config.harness = compileHarnesses(agent, _actions);
+  }
+  return config;
+}
+
+/**
+ * Resolve each map rule's inputs: every parameter of the target action reads
+ * the tool_input field named in `{ param = field }`, else the same name.
+ */
+export function compileHarnesses(
+  agent: AgentMemberNode,
+  actions: ActionNode[],
+): Record<string, { rules: HarnessRule[] }> {
+  const toolToAction = new Map(agent.tools.map(t => [t.name, t.action]));
+  const paramsOf = new Map(actions.map(a => [a.name, (a.params ?? []).map(p => p.name)]));
+  const out: Record<string, { rules: HarnessRule[] }> = {};
+  for (const h of agent.harnesses ?? []) {
+    out[h.name] = {
+      rules: h.rules.map(r => {
+        const params = paramsOf.get(toolToAction.get(r.target) ?? '') ?? [];
+        const rule: HarnessRule = {
+          tools: [...r.tools],
+          target: r.target,
+          inputs: params.map(p => ({ param: p, field: r.params.find(x => x.param === p)?.field ?? p })),
+        };
+        if (r.field !== undefined) {
+          rule.field = r.field;
+          rule.pattern = r.pattern ?? '';
+        }
+        return rule;
+      }),
+    };
+  }
+  return out;
+}
+
+/**
+ * adapter.mjs plus reference hook wiring for each declared harness. The
+ * wiring assumes the compile ran from the project root and the state file
+ * sits next to agent/ (`-o .speckl` → .speckl/state.json);
+ * `adapter.mjs install` writes wiring for any layout.
+ */
+function emitHarnessFiles(speckName: string, agentDir: string, harness: Record<string, { rules: HarnessRule[] }>): void {
+  const names = Object.keys(harness);
+  const adapterPath = path.join(agentDir, 'adapter.mjs');
+  fs.writeFileSync(adapterPath, emitAdapterMjs(speckName, names));
+  const r = spawnSync(process.execPath, ['--check', adapterPath], { encoding: 'utf-8' });
+  if (r.status !== 0) {
+    throw new Error(`-t agent: emitted adapter failed a syntax check (${adapterPath}):\n${r.stderr}`);
+  }
+  try { fs.chmodSync(adapterPath, 0o755); } catch { /* ignore */ }
+  const rel = path.relative(process.cwd(), agentDir).split(path.sep).join('/');
+  const relative = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  const adapter = relative ? `${rel}/adapter.mjs` : adapterPath;
+  const state = relative ? path.posix.join(rel, '..', 'state.json') : path.join(agentDir, '..', 'state.json');
+  for (const name of names) {
+    const dir = path.join(agentDir, 'harness', name);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = name === 'cursor' ? 'hooks.json' : 'settings.json';
+    const hooks = buildHarnessHooks(name, { adapter, state, key: null, relative });
+    fs.writeFileSync(path.join(dir, file), JSON.stringify(hooks, null, 2) + '\n');
+  }
 }
 
 function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
@@ -252,6 +320,27 @@ function buildAgentsMd(
       }
       if (a.timeout) {
         lines.push(`- Timeout \`${a.timeout.durationText}\` → \`${a.timeout.outcome}\` (must be a \`!\`-marked reject outcome)`);
+      }
+      lines.push('');
+    }
+  }
+  if (config.harness) {
+    lines.push('## Harness wiring');
+    lines.push('');
+    lines.push('Each harness tool call is mapped onto a tool above (first match wins).');
+    lines.push('Calls that match no line are **denied**. A matched command must be one plain');
+    lines.push('command: `;`, `&`, `|`, backticks, `$`, `<`, `>` and newlines are refused.');
+    lines.push('The rails themselves (this directory, the state file, its key, `.claude/`,');
+    lines.push('`.cursor/`) are off limits to every tool. Make one tool call at a time.');
+    lines.push('');
+    for (const [name, h] of Object.entries(config.harness)) {
+      lines.push(`### ${name}`);
+      lines.push('');
+      lines.push('| Harness tool | When | Tool |');
+      lines.push('| --- | --- | --- |');
+      for (const r of h.rules) {
+        const when = r.field !== undefined ? `\`${r.field}\` matches \`${(r.pattern ?? '').replace(/\|/g, '\\|')}\`` : 'always';
+        lines.push(`| ${r.tools.map(t => `\`${t}\``).join(', ')} | ${when} | \`${r.target}\` |`);
       }
       lines.push('');
     }
@@ -377,8 +466,16 @@ Plug-in verifiers (JWT, OAuth, signed API, webhook) implement the same
 
 ## Adapters
 
-Claude Code / Cursor / etc. adapters are thin wrappers that translate their
-native hook JSON into this stdin contract. Speckl does not ship runtime-specific
-flags; keep adapters outside the compiler.
+${(agent.harnesses ?? []).length > 0
+    ? `\`adapter.mjs\` wires this hook into ${(agent.harnesses ?? []).map(h => h.name).join(' and ')}:
+
+\`\`\`
+node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>]
+\`\`\`
+
+Reference wiring is in \`harness/<name>/\`. See \`docs/harness-adapters.md\`.`
+    : `Declare a \`harness claude-code { ... }\` or \`harness cursor { ... }\` block in the
+spec's \`agent { }\` to generate an adapter (\`adapter.mjs\`) that maps that
+harness's hook JSON onto this contract. See \`docs/harness-adapters.md\`.`}
 `;
 }

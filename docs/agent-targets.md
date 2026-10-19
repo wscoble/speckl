@@ -15,7 +15,12 @@ Compiles an `agent { }` block into:
   agent-config.json  runtime config
   spec.sha256
   README.md
+  adapter.mjs        harness adapter (only with a `harness` block)
+  harness/           Claude Code / Cursor hook wiring (only with a `harness` block)
 ```
+
+To enforce the policy inside Claude Code or Cursor, declare a `harness` block;
+see [harness-adapters.md](harness-adapters.md).
 
 Included in `-t all`.
 

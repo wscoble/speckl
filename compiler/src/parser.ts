@@ -325,6 +325,34 @@ export interface AgentMemberNode {
   /** Optional `pending timeout <dur>`: an in-flight tool call older than this
    *  is cleared as failed (state not advanced). Runtime default: 10m. */
   pendingTimeout?: { durationMs: number; durationText: string };
+  /** Optional `harness <name> { map ... }` blocks: how a real agent
+   *  harness's tool calls (Claude Code, Cursor) map onto the spec's tools.
+   *  Absent when the block declares none. Unmapped harness tools are denied. */
+  harnesses?: AgentHarnessSpec[];
+}
+
+/** One `harness <name> { ... }` block inside `agent { }`. */
+export interface AgentHarnessSpec {
+  /** Harness id: `claude-code` or `cursor`. */
+  name: string;
+  rules: AgentHarnessRule[];
+}
+
+/**
+ * `map <Tool>[|<Tool>...] [<field> ~ "<regex>"] -> <spec_tool> [{ param = field, ... }]`
+ * First matching rule wins. The regex must match the whole field value.
+ */
+export interface AgentHarnessRule {
+  /** Harness tool names exactly as the harness reports them (Bash, Edit, mcp__x__y, Shell, ...). */
+  tools: string[];
+  /** Optional tool_input field the pattern is tested against (e.g. `command`). */
+  field?: string;
+  /** Regex source (JavaScript syntax), anchored as ^(?:...)$ at runtime. */
+  pattern?: string;
+  /** Spec tool (declared with `tool`) this call becomes. */
+  target: string;
+  /** Explicit action-parameter ← tool_input-field renames. */
+  params: { param: string; field: string }[];
 }
 
 export interface AgentStagesMap {
@@ -2745,6 +2773,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   const awaits: AgentAwaitSpec[] = [];
   let stages: AgentStagesMap | undefined;
   let pendingTimeout: AgentMemberNode['pendingTimeout'];
+  const harnesses: AgentHarnessSpec[] = [];
   let i = 0;
 
   while (i < bodyLines.length) {
@@ -2800,6 +2829,23 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       if (pendingTimeout) throw new Error('Parse error in agent block: duplicate pending timeout');
       pendingTimeout = { durationMs: parseDurationToMs(pendM[1]), durationText: pendM[1] };
       i++;
+      continue;
+    }
+
+    // harness <name> { map ... }
+    const harnessHeader = line.match(/^harness\s+([A-Za-z][\w-]*)\s*\{\s*$/);
+    if (harnessHeader) {
+      const openOnLine = (raw.match(/{/g) || []).length;
+      const subEnd = findBlockEnd(bodyLines, i + 1, openOnLine);
+      const inner = bodyLines.slice(i + 1, subEnd);
+      i = subEnd + 1;
+      const rules: AgentHarnessRule[] = [];
+      for (const il of inner) {
+        const t = il.trim();
+        if (!t || t.startsWith('//') || t === '}') continue;
+        rules.push(parseHarnessMapLine(t, harnessHeader[1]));
+      }
+      harnesses.push({ name: harnessHeader[1], rules });
       continue;
     }
 
@@ -2918,9 +2964,44 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
     throw new Error(`Parse error in agent block: unexpected line ${JSON.stringify(line)}`);
   }
 
-  return pendingTimeout
-    ? { type: 'agent', stages, tools, awaits, pendingTimeout }
-    : { type: 'agent', stages, tools, awaits };
+  const node: AgentMemberNode = { type: 'agent', stages, tools, awaits };
+  if (pendingTimeout) node.pendingTimeout = pendingTimeout;
+  if (harnesses.length > 0) node.harnesses = harnesses;
+  return node;
+}
+
+const HARNESS_MAP_RE = new RegExp(
+  '^map\\s+([A-Za-z_][\\w:.-]*(?:\\s*\\|\\s*[A-Za-z_][\\w:.-]*)*)'
+  + '(?:\\s+([A-Za-z_]\\w*)\\s*~\\s*"((?:[^"\\\\]|\\\\.)*)")?'
+  + '\\s*->\\s*([A-Za-z_][\\w-]*)'
+  + '\\s*(?:\\{([^}]*)\\})?\\s*$',
+);
+
+/** Parse one `map ...` line of a harness block. */
+export function parseHarnessMapLine(line: string, harness: string): AgentHarnessRule {
+  const m = line.match(HARNESS_MAP_RE);
+  if (!m) {
+    throw new Error(`Parse error in harness ${harness}: expected map <Tool>[|<Tool>] [<field> ~ "<regex>"] -> <tool> [{ param = field }], got ${JSON.stringify(line)}`);
+  }
+  const tools = m[1].split('|').map(s => s.trim());
+  const rule: AgentHarnessRule = { tools, target: m[4], params: [] };
+  if (m[2] !== undefined) {
+    rule.field = m[2];
+    // Only \" is an escape inside the quotes; everything else is regex source.
+    rule.pattern = m[3].replace(/\\"/g, '"');
+  }
+  if (m[5] !== undefined) {
+    for (const part of m[5].split(',')) {
+      const p = part.trim();
+      if (!p) continue;
+      const pm = p.match(/^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)$/);
+      if (!pm) {
+        throw new Error(`Parse error in harness ${harness}: input mapping must be param = field, got ${JSON.stringify(p)}`);
+      }
+      rule.params.push({ param: pm[1], field: pm[2] });
+    }
+  }
+  return rule;
 }
 
 /** Parse durations like `24h`, `30m`, `90s`, `500ms` into milliseconds. */
