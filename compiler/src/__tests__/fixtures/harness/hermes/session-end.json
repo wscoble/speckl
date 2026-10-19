@@ -1,0 +1,18 @@
+{
+  "hook_event_name": "on_session_end",
+  "tool_name": null,
+  "tool_input": null,
+  "session_id": "20261019_221241_a1b2c3",
+  "cwd": "__PROJECT__",
+  "profile": "default",
+  "extra": {
+    "task_id": "20261019_221241_a1b2c3",
+    "turn_id": "turn_0004",
+    "completed": true,
+    "failed": false,
+    "interrupted": false,
+    "turn_exit_reason": "text_response(stop)",
+    "model": "hermes-4-405b",
+    "platform": "cli"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "event": "PreToolUse",
+  "session_id": "20261019_7",
+  "matcher_context": "github__create_pull_request",
+  "tool_call_id": "toolu_01Goose0011",
+  "tool_name": "github__create_pull_request",
+  "tool_input": {
+    "owner": "acme",
+    "repo": "greet",
+    "title": "feat: greet"
+  },
+  "working_dir": "__PROJECT__"
+}

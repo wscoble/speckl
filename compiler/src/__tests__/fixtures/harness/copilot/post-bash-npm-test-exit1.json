@@ -1,0 +1,11 @@
+{
+  "sessionId": "b7e2c1d4-5a9f-4e3b-8c21-6d0f9e8a7b45",
+  "timestamp": 1792447968696,
+  "cwd": "__PROJECT__",
+  "toolName": "bash",
+  "toolArgs": "{\"command\": \"npm test\", \"description\": \"Run the test suite\", \"mode\": \"sync\", \"initial_wait\": 60}",
+  "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "> greet@1.0.0 test\n> node --test\n\n# pass 2\n# fail 1\n<exited with exit code 1>"
+  }
+}

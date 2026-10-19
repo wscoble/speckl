@@ -13,7 +13,9 @@ const viteNode = join(compilerDir, 'node_modules', 'vite-node', 'vite-node.mjs')
 describe('docs/harness-adapters.md quickstart', () => {
   it('runs as written', () => {
     const md = readFileSync(join(repoDir, 'docs', 'harness-adapters.md'), 'utf-8');
-    const block = md.split('## Quickstart')[1].match(/```bash\n([\s\S]*?)```/)![1];
+    const block = md.split('## Quickstart: Speckl + Claude Code')[1].match(/```bash\n([\s\S]*?)```/)![1];
+    // The Copilot / Goose / Hermes quickstart continues in the same project.
+    const block2 = md.split('## Quickstart: GitHub Copilot CLI, Goose and Hermes')[1].match(/```bash\n([\s\S]*?)```/)![1];
     const work = mkdtempSync(join(tmpdir(), 'speckl-quickstart-'));
     const home = mkdtempSync(join(tmpdir(), 'speckl-home-'));
     // speckl-compile is the repo compiler; curl serves the example from this
@@ -26,7 +28,7 @@ curl() {
   case "$url" in https://raw.githubusercontent.com/wscoble/speckl/main/examples/*) cp "${repoDir}/examples/\${url##*/}" "$out";; *) return 22;; esac
 }
 `;
-    const r = spawnSync('bash', ['-c', prelude + block], {
+    const r = spawnSync('bash', ['-c', prelude + block + block2], {
       cwd: work, encoding: 'utf-8', env: { ...process.env, HOME: home, SPECKL_STATE_KEY_FILE: '' },
     });
     expect(r.status, r.stderr + r.stdout).toBe(0);
@@ -36,6 +38,18 @@ curl() {
     const settings = JSON.parse(readFileSync(join(proj, '.claude', 'settings.json'), 'utf-8'));
     expect(settings.hooks.PreToolUse[0].hooks[0].onFailure).toBe('block');
     expect(readFileSync(join(proj, 'CLAUDE.md'), 'utf-8')).toContain('@.speckl/agent/AGENTS.md');
+    // Copilot, Goose and Hermes each denied the push.
+    expect(r.stderr).toContain('Speckl denied bash (spec tool open_pr)');
+    expect(r.stderr).toContain('Speckl denied shell (spec tool open_pr)');
+    expect(r.stderr).toContain('Speckl denied terminal (spec tool open_pr)');
+    const copilot = JSON.parse(readFileSync(join(proj, '.github', 'hooks', 'speckl.json'), 'utf-8'));
+    expect(copilot.hooks.preToolUse[0].bash).toMatch(/\|\| exit 2$/);
+    const goose = JSON.parse(readFileSync(join(proj, '.agents', 'plugins', 'speckl', 'hooks', 'hooks.json'), 'utf-8'));
+    expect(goose.hooks.PreToolUse[0].hooks[0].on_failure).toBe('block');
+    const hermes = readFileSync(join(home, '.hermes-greet', 'config.yaml'), 'utf-8');
+    expect(hermes).toContain('fail_closed: true');
+    const allow = JSON.parse(readFileSync(join(home, '.hermes-greet', 'shell-hooks-allowlist.json'), 'utf-8'));
+    expect(allow.approvals).toHaveLength(3);
     const state = JSON.parse(readFileSync(join(proj, '.speckl', 'state.json'), 'utf-8'));
     expect(state.pending.tool).toBe('run_tests');
   }, 90_000);

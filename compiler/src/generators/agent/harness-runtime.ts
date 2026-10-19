@@ -1,5 +1,6 @@
 // Harness adapter runtime: pure functions that turn a real agent harness's
-// hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI) into a call to the generic hook.mjs, and
+// hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI,
+// Goose, Hermes Agent) into a call to the generic hook.mjs, and
 // hook.mjs's verdict back into the harness's expected output.
 //
 // These functions are emitted verbatim into <out>/agent/adapter.mjs with
@@ -121,7 +122,7 @@ export function findProtectedMention(
   cwd: string,
   resolvePath: (base: string, p: string) => string,
 ): string | null {
-  const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits'];
+  const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits', 'file_text', 'new_str', 'old_str', 'before', 'after'];
   const norm = (p: string) => p.replace(/\\/g, '/');
   const prots = protectedPaths.map(p => ({ abs: norm(p.abs), rel: norm(p.rel) }));
   const checkString = (s: string): string | null => {
@@ -197,6 +198,26 @@ export function formatPre(harness: string, allow: boolean, message: string): Ada
       stderr: message + '\n',
     };
   }
+  // Copilot CLI denies on exit 2 whatever stdout says; the JSON carries the
+  // reason in both the CLI shape and the VS Code-compatible shape.
+  if (harness === 'copilot') {
+    if (allow) return { code: 0, stdout: '', stderr: '' };
+    return {
+      code: 2,
+      stdout: JSON.stringify({
+        permissionDecision: 'deny',
+        permissionDecisionReason: message,
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: message },
+      }) + '\n',
+      stderr: message + '\n',
+    };
+  }
+  // Goose and Hermes: exit 2 denies (reason from stderr), and so does a
+  // {"decision":"block"} line on stdout; exit 0 with empty stdout allows.
+  if (harness === 'goose' || harness === 'hermes') {
+    if (allow) return { code: 0, stdout: '', stderr: '' };
+    return { code: 2, stdout: JSON.stringify({ decision: 'block', reason: message }) + '\n', stderr: message + '\n' };
+  }
   // Gemini CLI parses stdout as JSON on exit 0; `{}` is "no decision".
   if (harness === 'gemini') {
     if (allow) return { code: 0, stdout: '{}\n', stderr: '' };
@@ -225,6 +246,16 @@ export function formatPost(harness: string, problem: string | null): AdapterOutp
       stderr: problem + '\n',
     };
   }
+  // Copilot CLI appends additionalContext to the tool result the model sees.
+  if (harness === 'copilot') {
+    if (!problem) return { code: 0, stdout: '', stderr: '' };
+    return { code: 0, stdout: JSON.stringify({ additionalContext: problem }) + '\n', stderr: problem + '\n' };
+  }
+  // Goose and Hermes post hooks are observers: their output is ignored, so
+  // a problem is logged on stderr and the hook exits 0.
+  if (harness === 'goose' || harness === 'hermes') {
+    return { code: 0, stdout: '', stderr: problem ? problem + '\n' : '' };
+  }
   if (!problem) return { code: 0, stdout: '', stderr: '' };
   return { code: 2, stdout: '', stderr: problem + '\n' };
 }
@@ -239,6 +270,39 @@ export function postSucceeded(harness: string, event: string, payload: Record<st
     // its exit status, so a shell call can never count as a success.
     if (toolName === 'Bash') return false;
     if (toolName === 'apply_patch') return typeof out === 'string' && /^Exit code: 0(\n|$)/.test(out);
+  }
+  if (harness === 'copilot') {
+    // postToolUse fires for successful calls only, with toolResult
+    // {resultType: "success", textResultForLlm}. A shell result ends with
+    // `<exited with exit code N>`; anything else (async, detached) is not a success.
+    const tr = (payload.toolResult ?? payload.tool_result) as Record<string, unknown> | undefined;
+    if (!tr || typeof tr !== 'object' || Array.isArray(tr)) return false;
+    if ((tr.resultType ?? tr.result_type) !== 'success') return false;
+    if (toolName === 'bash' || toolName === 'powershell') {
+      const text = tr.textResultForLlm ?? tr.text_result_for_llm;
+      return typeof text === 'string' && /<exited with exit code 0>\s*$/.test(text);
+    }
+    return true;
+  }
+  // Goose fires PostToolUse only when the tool result is not an error (a
+  // non-zero shell exit or a timeout is an error) and PostToolUseFailure otherwise.
+  if (harness === 'goose') return true;
+  if (harness === 'hermes') {
+    // post_tool_call fires for every outcome; extra.status is "ok" only when
+    // the result carries no error. A terminal call also needs exit_code 0.
+    const extra = payload.extra as Record<string, unknown> | undefined;
+    if (!extra || typeof extra !== 'object' || extra.status !== 'ok') return false;
+    let res: unknown = extra.result;
+    if (typeof res === 'string') {
+      try { res = JSON.parse(res); } catch { return toolName !== 'terminal'; }
+    }
+    if (res && typeof res === 'object' && !Array.isArray(res)) {
+      const o = res as Record<string, unknown>;
+      if (o.success === false) return false;
+      if (toolName === 'terminal') return o.exit_code === 0 && (o.error === undefined || o.error === null || o.error === '');
+      return true;
+    }
+    return toolName !== 'terminal';
   }
   if (harness === 'gemini') {
     if (!out || typeof out !== 'object' || Array.isArray(out)) return false;
@@ -269,22 +333,27 @@ export function harnessEventName(harness: string, event: string): string | null 
     cursor: { pre: 'preToolUse', post: 'postToolUse', 'post-failure': 'postToolUseFailure' },
     codex: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'Stop' },
     gemini: { pre: 'BeforeTool', post: 'AfterTool', 'turn-end': 'AfterAgent' },
+    copilot: { pre: 'preToolUse', post: 'postToolUse', 'post-failure': 'postToolUseFailure', 'turn-end': 'agentStop' },
+    goose: { pre: 'PreToolUse', post: 'PostToolUse', 'post-failure': 'PostToolUseFailure', 'turn-end': 'Stop' },
+    hermes: { pre: 'pre_tool_call', post: 'post_tool_call', 'turn-end': 'on_session_end' },
   };
   const h = names[harness];
   return h && h[event] ? h[event] : null;
 }
 
 /**
- * Harness-specific additions to tool_input before mapping. Codex apply_patch
- * carries the whole patch in `command`; expose the files it touches as
- * `files` and the first one as `path`.
+ * Harness-specific additions to tool_input before mapping. Codex and Copilot
+ * apply_patch carry the whole patch in one string; expose the files it
+ * touches as `files` and the first one as `path`.
  */
 export function normalizeToolInput(harness: string, toolName: unknown, input: Record<string, unknown>): Record<string, unknown> {
-  if (harness === 'codex' && toolName === 'apply_patch' && typeof input.command === 'string') {
+  // Copilot CLI apply_patch carries the same patch format in `input` (or `patch`).
+  const patch = harness === 'codex' ? input.command : harness === 'copilot' ? (input.input ?? input.patch) : undefined;
+  if (toolName === 'apply_patch' && typeof patch === 'string') {
     const files: string[] = [];
     const re = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(input.command)) !== null) files.push(m[1].trim());
+    while ((m = re.exec(patch)) !== null) files.push(m[1].trim());
     const out: Record<string, unknown> = { ...input, files };
     if (files.length > 0) out.path = files[0];
     return out;
@@ -293,12 +362,15 @@ export function normalizeToolInput(harness: string, toolName: unknown, input: Re
 }
 
 /**
- * The call id hook.mjs pairs pre and post with. Gemini CLI sends none, so
- * one is derived from the session and tool name (the same on BeforeTool and
- * AfterTool; hook.mjs holds a single pending call, so it cannot collide).
+ * The call id hook.mjs pairs pre and post with. Gemini CLI and Copilot CLI
+ * send none, so one is derived from the session and tool name (the same on
+ * the pre and post event; hook.mjs holds a single pending call, so it cannot
+ * collide). Goose and Hermes ids arrive as tool_use_id via normalizePayload.
  */
 export function harnessCallId(harness: string, payload: Record<string, unknown>): string | null {
-  if (harness === 'gemini') {
+  const given = payload.tool_use_id;
+  if (harness === 'copilot' && typeof given === 'string' && given !== '') return given;
+  if (harness === 'gemini' || harness === 'copilot') {
     if (typeof payload.tool_name !== 'string' || payload.tool_name === '') return null;
     const text = String(payload.session_id ?? '') + '\u0000' + payload.tool_name;
     let h = 0x811c9dc5;
@@ -306,10 +378,9 @@ export function harnessCallId(harness: string, payload: Record<string, unknown>)
       h ^= text.charCodeAt(i);
       h = Math.imul(h, 0x01000193) >>> 0;
     }
-    return 'gemini-' + h.toString(16).padStart(8, '0');
+    return harness + '-' + h.toString(16).padStart(8, '0');
   }
-  const id = payload.tool_use_id;
-  return typeof id === 'string' && id !== '' ? id : null;
+  return typeof given === 'string' && given !== '' ? given : null;
 }
 
 /** Where `install` writes each harness's wiring, relative to the project. */
@@ -319,8 +390,54 @@ export function harnessConfigFile(harness: string): string {
     cursor: '.cursor/hooks.json',
     codex: '.codex/hooks.json',
     gemini: '.gemini/settings.json',
+    copilot: '.github/hooks/speckl.json',
+    goose: '.agents/plugins/speckl/hooks/hooks.json',
+    // Relative to the Hermes profile directory (--hermes-home), not the project.
+    hermes: 'config.yaml',
   };
   return files[harness] || '';
+}
+
+/** Harness config directories no tool may touch: the base four plus those of each declared harness. */
+export function harnessProtectedDirs(harnesses: string[]): string[] {
+  const dirs = ['.claude', '.cursor', '.codex', '.gemini'];
+  const extra: Record<string, string[]> = {
+    copilot: ['.github/hooks'],
+    goose: ['.agents/plugins', '.config/goose'],
+    hermes: ['.hermes'],
+  };
+  for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
+  return dirs;
+}
+
+/**
+ * Bring a harness payload to the shape the rest of the adapter reads
+ * (hook_event_name, tool_name, tool_input, tool_use_id, cwd). Copilot CLI
+ * camelCase payloads use toolName/toolArgs/sessionId; its VS Code-compatible
+ * payloads use PascalCase event names. Goose sends `event`, `tool_call_id`
+ * and `working_dir`; Hermes puts the call id in `extra.tool_call_id`.
+ */
+export function normalizePayload(harness: string, payload: Record<string, unknown>): Record<string, unknown> {
+  const p: Record<string, unknown> = { ...payload };
+  if (harness === 'copilot') {
+    if (p.tool_name === undefined && p.toolName !== undefined) p.tool_name = p.toolName;
+    if (p.tool_input === undefined && p.toolArgs !== undefined) p.tool_input = p.toolArgs;
+    if (p.session_id === undefined && p.sessionId !== undefined) p.session_id = p.sessionId;
+    const pascal: Record<string, string> = {
+      PreToolUse: 'preToolUse', PostToolUse: 'postToolUse', PostToolUseFailure: 'postToolUseFailure', Stop: 'agentStop',
+    };
+    if (typeof p.hook_event_name === 'string' && pascal[p.hook_event_name]) p.hook_event_name = pascal[p.hook_event_name];
+  }
+  if (harness === 'goose') {
+    if (p.hook_event_name === undefined) p.hook_event_name = p.event === undefined ? null : p.event;
+    if (p.tool_use_id === undefined) p.tool_use_id = p.tool_call_id;
+    if (p.cwd === undefined && typeof p.working_dir === 'string') p.cwd = p.working_dir;
+  }
+  if (harness === 'hermes') {
+    const extra = p.extra && typeof p.extra === 'object' && !Array.isArray(p.extra) ? p.extra as Record<string, unknown> : {};
+    if (p.tool_use_id === undefined) p.tool_use_id = extra.tool_call_id;
+  }
+  return p;
 }
 
 /** Parse `--state x --key y --project z` flags. */
@@ -348,7 +465,7 @@ export function shellQuote(s: string): string {
  */
 export function buildHarnessHooks(
   harness: string,
-  paths: { adapter: string; state: string; key: string | null; relative: boolean; project?: string },
+  paths: { adapter: string; state: string; key: string | null; relative: boolean; project?: string; hermesHome?: string; outsideAllow?: boolean },
 ): Record<string, unknown> {
   const envDir = harness === 'claude-code' ? '${CLAUDE_PROJECT_DIR}/' : harness === 'gemini' ? '${GEMINI_PROJECT_DIR}/' : '';
   const pfx = (p: string) => (paths.relative ? envDir + p : p);
@@ -357,8 +474,54 @@ export function buildHarnessHooks(
     if (paths.key) parts.push('--key', shellQuote(paths.key));
     // Pin the project root when the harness only reports the session cwd.
     if (paths.project) parts.push('--project', shellQuote(paths.project));
+    if (paths.hermesHome) parts.push('--hermes-home', shellQuote(paths.hermesHome));
+    // A user-scope Goose plugin sees every session; calls from sessions
+    // outside the project are not this spec's to judge.
+    if (paths.outsideAllow) parts.push('--outside', 'allow');
     return parts.join(' ');
   };
+  if (harness === 'copilot') {
+    // Copilot CLI / cloud agent: .github/hooks/*.json, camelCase events.
+    // preToolUse denies on exit 2, a crash or any other non-zero exit; only a
+    // timeout lets the call through, so the adapter's own hook.mjs timeout
+    // (20s) stays well inside timeoutSec. `|| exit 2` also covers node missing.
+    const h = (event: string, block: boolean) => [{ type: 'command', bash: cmd(event) + (block ? ' || exit 2' : ''), timeoutSec: 30 }];
+    return {
+      version: 1,
+      hooks: { preToolUse: h('pre', true), postToolUse: h('post', false), postToolUseFailure: h('post-failure', false), agentStop: h('turn-end', false) },
+    };
+  }
+  if (harness === 'goose') {
+    // Goose plugin hooks/hooks.json. on_failure "block" turns a spawn error,
+    // timeout, signal or undecodable output on PreToolUse into a deny; the
+    // matcher is a regex (a bare "*" is invalid and skips the rule).
+    const hook = (event: string, block: boolean) => {
+      const h: Record<string, unknown> = { type: 'command', command: cmd(event) + (block ? ' || exit 2' : ''), timeout: 30 };
+      if (block) h.on_failure = 'block';
+      return h;
+    };
+    return {
+      hooks: {
+        PreToolUse: [{ matcher: '.*', hooks: [hook('pre', true)] }],
+        PostToolUse: [{ matcher: '.*', hooks: [hook('post', false)] }],
+        PostToolUseFailure: [{ matcher: '.*', hooks: [hook('post-failure', false)] }],
+        Stop: [{ hooks: [hook('turn-end', false)] }],
+      },
+    };
+  }
+  if (harness === 'hermes') {
+    // Hermes config.yaml `hooks:` block. Commands are split without a shell,
+    // so there is no `|| exit 2`; fail_closed on pre_tool_call blocks on a
+    // missing command, a timeout, a non-zero exit without a directive and
+    // non-JSON stdout instead.
+    return {
+      hooks: {
+        pre_tool_call: [{ command: cmd('pre'), timeout: 30, fail_closed: true }],
+        post_tool_call: [{ command: cmd('post'), timeout: 30 }],
+        on_session_end: [{ command: cmd('turn-end'), timeout: 30 }],
+      },
+    };
+  }
   if (harness === 'cursor') {
     const h = (event: string) => [{ command: cmd(event), timeout: 30, failClosed: true }];
     return {
@@ -409,13 +572,14 @@ export function mergeHarnessSettings(harness: string, existing: Record<string, u
     const e = entry as Record<string, unknown>;
     const cmds: string[] = [];
     if (e && typeof e.command === 'string') cmds.push(e.command);
+    if (e && typeof e.bash === 'string') cmds.push(e.bash);
     if (e && Array.isArray(e.hooks)) {
       for (const h of e.hooks as Record<string, unknown>[]) if (h && typeof h.command === 'string') cmds.push(h.command);
     }
     return cmds.some(c => c.includes('adapter.mjs') && c.includes(' ' + harness + ' '));
   };
   const merged: Record<string, unknown> = { ...existing };
-  if (harness === 'cursor') merged.version = (existing.version as number) || 1;
+  if (harness === 'cursor' || harness === 'copilot') merged.version = (existing.version as number) || 1;
   const hooks: Record<string, unknown[]> = { ...((existing.hooks as Record<string, unknown[]>) || {}) };
   const add = (ours.hooks || {}) as Record<string, unknown[]>;
   for (const ev of Object.keys(add)) {
@@ -426,10 +590,93 @@ export function mergeHarnessSettings(harness: string, existing: Record<string, u
   return merged;
 }
 
-/** `adapter.mjs install <harness> --project <dir> --state <file> [--key <file>]`. */
+/**
+ * The Hermes `hooks:` block as YAML, between marker comments so `install`
+ * can replace it later. Strings are JSON-quoted (valid YAML double-quoted
+ * scalars), so no YAML library is needed.
+ */
+export function hermesYaml(ours: Record<string, unknown>): string {
+  const lines = ['# >>> speckl hermes hooks (generated by adapter.mjs install hermes; do not edit)', 'hooks:'];
+  const hooks = (ours.hooks || {}) as Record<string, Record<string, unknown>[]>;
+  for (const ev of Object.keys(hooks)) {
+    lines.push('  ' + ev + ':');
+    for (const entry of hooks[ev]) {
+      let first = true;
+      for (const [k, v] of Object.entries(entry)) {
+        lines.push((first ? '    - ' : '      ') + k + ': ' + JSON.stringify(v));
+        first = false;
+      }
+    }
+  }
+  lines.push('# <<< speckl hermes hooks');
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * `install hermes --hermes-home <profile dir> ...`: writes the hooks block
+ * into <profile>/config.yaml and records first-use consent for exactly these
+ * commands in <profile>/shell-hooks-allowlist.json (an unapproved hook is
+ * skipped by Hermes, which would leave the agent without rails). Refuses to
+ * touch a config.yaml that already has a `hooks:` key of its own.
+ */
+export function installHermes(project: string, ours: Record<string, unknown>, hermesHome: string, deps: AdapterDeps): AdapterOutput {
+  const target = deps.resolvePath(hermesHome, 'config.yaml');
+  const block = hermesYaml(ours);
+  const text = deps.readFile(target);
+  const begin = '# >>> speckl hermes hooks';
+  const end = '# <<< speckl hermes hooks';
+  let next: string;
+  if (text === null || text.trim() === '') {
+    next = block;
+  } else if (text.includes(begin) && text.includes(end)) {
+    const a = text.indexOf(begin);
+    const b = text.indexOf('\n', text.indexOf(end));
+    next = text.slice(0, a) + block + (b === -1 ? '' : text.slice(b + 1));
+  } else if (/^hooks\s*:/m.test(text)) {
+    return {
+      code: 1,
+      stdout: block,
+      stderr: target + ' already has a hooks: block; not touching it. Merge the entries printed on stdout into it, then approve them (hermes hooks list).\n',
+    };
+  } else {
+    next = text + (text.endsWith('\n') ? '' : '\n') + block;
+  }
+  const allowPath = deps.resolvePath(hermesHome, 'shell-hooks-allowlist.json');
+  const allowText = deps.readFile(allowPath);
+  let allow: Record<string, unknown> = { approvals: [] };
+  if (allowText !== null && allowText.trim() !== '') {
+    try { allow = JSON.parse(allowText); } catch {
+      return { code: 1, stdout: '', stderr: allowPath + ' is not valid JSON; not touching it\n' };
+    }
+    if (!allow || typeof allow !== 'object' || Array.isArray(allow) || !Array.isArray(allow.approvals)) {
+      return { code: 1, stdout: '', stderr: allowPath + ' has no approvals list; not touching it\n' };
+    }
+  }
+  const isOurs = (e: unknown): boolean => {
+    const c = e && typeof e === 'object' ? (e as Record<string, unknown>).command : undefined;
+    return typeof c === 'string' && c.includes('adapter.mjs') && c.includes(' hermes ');
+  };
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  const approvals = (allow.approvals as unknown[]).filter(e => !isOurs(e));
+  const hooks = (ours.hooks || {}) as Record<string, { command: string }[]>;
+  for (const ev of Object.keys(hooks)) {
+    for (const h of hooks[ev]) approvals.push({ event: ev, command: h.command, approved_at: now, script_mtime_at_approval: null });
+  }
+  deps.writeFile(target, next);
+  deps.writeFile(allowPath, JSON.stringify({ ...allow, approvals }, null, 2) + '\n');
+  return {
+    code: 0,
+    stdout: 'Speckl hermes hooks written to ' + target + ' for project ' + project + '\n'
+      + 'Recorded consent for these ' + approvals.filter(isOurs).length + ' hook commands in ' + allowPath + ' (revoke with: hermes hooks revoke <command>)\n',
+    stderr: '',
+  };
+}
+
+/** `adapter.mjs install <harness> --project <dir> --state <file> [--key <file>] [--hermes-home <dir>]`. */
 export function installHarness(harness: string, flags: Record<string, string>, deps: AdapterDeps): AdapterOutput {
-  if (!flags.project || !flags.state) {
-    return { code: 1, stdout: '', stderr: 'usage: adapter.mjs install ' + harness + ' --project <dir> --state <file> [--key <file>]\n' };
+  if (!flags.project || !flags.state || (harness === 'hermes' && !flags['hermes-home'])) {
+    const extra = harness === 'hermes' ? ' --hermes-home <profile dir, e.g. ~/.hermes>' : '';
+    return { code: 1, stdout: '', stderr: 'usage: adapter.mjs install ' + harness + ' --project <dir> --state <file> [--key <file>]' + extra + '\n' };
   }
   const project = deps.resolvePath(deps.cwd, flags.project);
   const stateAbs = deps.resolvePath(deps.cwd, flags.state);
@@ -437,16 +684,39 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   const rel = (p: string) => deps.relativePath(project, p).replace(/\\/g, '/');
   const inside = (p: string) => !rel(p).startsWith('..') && !/^[A-Za-z]:|^\//.test(rel(p));
   // Codex runs hooks from the session cwd and Gemini sets GEMINI_PROJECT_DIR
-  // to it, so both get absolute paths (a session may start in a subdirectory).
-  const relative = harness !== 'codex' && harness !== 'gemini' && inside(deps.agentDir) && inside(stateAbs);
+  // to it, so both get absolute paths (a session may start in a subdirectory);
+  // so do Copilot, Goose and Hermes, which do not pin the project root at all.
+  const pinned = harness !== 'claude-code' && harness !== 'cursor';
+  const relative = !pinned && inside(deps.agentDir) && inside(stateAbs);
+  const hermesHome = harness === 'hermes' ? deps.resolvePath(deps.cwd, flags['hermes-home']) : undefined;
+  // Goose loads project plugins only when it starts in the project root;
+  // --plugins-dir ~/.agents/plugins installs a user-scope plugin that also
+  // covers sessions started in a subdirectory.
+  const pluginsDir = harness === 'goose' && flags['plugins-dir'] ? deps.resolvePath(deps.cwd, flags['plugins-dir']) : '';
+  let pluginName = 'speckl';
+  if (pluginsDir) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < project.length; i++) { h ^= project.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    pluginName = 'speckl-' + h.toString(16).padStart(8, '0');
+  }
   const ours = buildHarnessHooks(harness, {
     adapter: relative ? rel(deps.resolvePath(deps.agentDir, 'adapter.mjs')) : deps.resolvePath(deps.agentDir, 'adapter.mjs'),
     state: relative ? rel(stateAbs) : stateAbs,
     key: keyAbs,
     relative,
-    project: harness === 'codex' || harness === 'gemini' ? project : undefined,
+    project: pinned ? project : undefined,
+    hermesHome,
+    outsideAllow: pluginsDir !== '',
   });
-  const target = deps.resolvePath(project, harnessConfigFile(harness));
+  let warn = '';
+  if (keyAbs && inside(keyAbs)) warn = 'WARN: the state key is inside the project; keep it where the agent cannot read it\n';
+  if (!keyAbs) warn = 'WARN: no --key; hooks will use SPECKL_STATE_KEY_FILE from the harness environment\n';
+  if (hermesHome) {
+    const r = installHermes(project, ours, hermesHome, deps);
+    return { code: r.code, stdout: r.stdout, stderr: r.stderr + (r.code === 0 ? warn : '') };
+  }
+  const pluginDir = pluginsDir ? deps.resolvePath(pluginsDir, pluginName) : deps.resolvePath(project, '.agents/plugins/speckl');
+  const target = harness === 'goose' ? deps.resolvePath(pluginDir, 'hooks/hooks.json') : deps.resolvePath(project, harnessConfigFile(harness));
   const text = deps.readFile(target);
   let existing: Record<string, unknown> = {};
   if (text !== null && text.trim() !== '') {
@@ -459,9 +729,11 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   }
   const merged = mergeHarnessSettings(harness, existing, ours);
   deps.writeFile(target, JSON.stringify(merged, null, 2) + '\n');
-  let warn = '';
-  if (keyAbs && inside(keyAbs)) warn = 'WARN: the state key is inside the project; keep it where the agent cannot read it\n';
-  if (!keyAbs) warn = 'WARN: no --key; hooks will use SPECKL_STATE_KEY_FILE from the harness environment\n';
+  if (harness === 'goose') {
+    // The plugin manifest next to hooks/ makes the directory a Goose plugin.
+    const manifest = { name: pluginName, version: '1.0.0', description: 'Speckl rails for ' + project + ': every tool call is checked against the compiled policy (fail closed).' };
+    deps.writeFile(deps.resolvePath(pluginDir, 'plugin.json'), JSON.stringify(manifest, null, 2) + '\n');
+  }
   return { code: 0, stdout: 'Speckl ' + harness + ' hooks written to ' + target + '\n', stderr: warn };
 }
 
@@ -493,9 +765,7 @@ export function runAdapter(
     if (event === 'batch') return { code: 0, stdout: '', stderr: msg + '\n' };
     // A turn-end hook never blocks: on Gemini exit 2 would force a retry turn.
     if (event === 'turn-end') return { code: 0, stdout: harness === 'gemini' ? '{}\n' : '', stderr: msg + '\n' };
-    if (isPre || harnessEventName(harness, event) === null) {
-      return { code: 2, stdout: harness === 'cursor' ? formatPre('cursor', false, msg).stdout : '', stderr: msg + '\n' };
-    }
+    if (isPre || harnessEventName(harness, event) === null) return formatPre(harness, false, msg);
     return formatPost(harness, msg);
   };
   if (!harnesses[harness]) {
@@ -509,7 +779,7 @@ export function runAdapter(
   try {
     const parsed = JSON.parse(stdinText || '');
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail('hook payload is not a JSON object');
-    payload = parsed as Record<string, unknown>;
+    payload = normalizePayload(harness, parsed as Record<string, unknown>);
   } catch {
     return fail('hook payload is not JSON');
   }
@@ -533,11 +803,26 @@ export function runAdapter(
   if (env.SPECKL_STATE_KEY_FILE) protectedAbs.push(deps.resolvePath(projectDir, env.SPECKL_STATE_KEY_FILE));
   const stateDir = deps.dirname(stateAbs);
   if (stateDir !== projectDir && deps.resolvePath(stateDir, '.') !== deps.resolvePath(projectDir, '.')) protectedAbs.push(stateDir);
-  for (const d of ['.claude', '.cursor', '.codex', '.gemini']) protectedAbs.push(deps.resolvePath(projectDir, d));
+  for (const d of harnessProtectedDirs(Object.keys(harnesses))) protectedAbs.push(deps.resolvePath(projectDir, d));
+  if (flags['hermes-home']) protectedAbs.push(deps.resolvePath(projectDir, flags['hermes-home']));
   const protectedPaths = protectedAbs.map(abs => {
     const r = deps.relativePath(projectDir, abs).replace(/\\/g, '/');
     return { abs, rel: r.startsWith('..') ? '' : r };
   });
+
+  if (flags.outside === 'allow' && event !== 'turn-end') {
+    // A session outside the project is not this spec's to judge, except
+    // that no session may touch the rails.
+    const r = deps.relativePath(projectDir, callCwd).replace(/\\/g, '/');
+    if (r === '..' || r.startsWith('../') || /^[A-Za-z]:|^\//.test(r)) {
+      if (!isPre) return formatPost(harness, null);
+      const pin = parseToolInput(payload.tool_input);
+      if (!pin.ok) return fail(pin.reason);
+      const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
+      if (hit) return fail(String(payload.tool_name) + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
+      return formatPre(harness, true, '');
+    }
+  }
 
   if (event === 'turn-end') {
     // End of turn (Codex Stop, Gemini AfterAgent): a call that passed pre but
@@ -575,6 +860,23 @@ export function runAdapter(
 
   const toolName = payload.tool_name;
   const callId = harnessCallId(harness, payload);
+  if (harness === 'hermes' && event === 'post') {
+    // Hermes also reports calls a pre_tool_call hook blocked. Ours never
+    // reached hook.mjs; another hook's block leaves our pending call open,
+    // which is recorded as failed.
+    const extra = payload.extra as Record<string, unknown> | undefined;
+    if (extra && typeof extra === 'object' && extra.status === 'blocked') {
+      const text = deps.readFile(stateAbs);
+      let pending: Record<string, unknown> | null = null;
+      try {
+        const st = text ? JSON.parse(text) : null;
+        if (st && st.pending && typeof st.pending === 'object') pending = st.pending as Record<string, unknown>;
+      } catch { /* hook.mjs reports a broken state on the next call */ }
+      if (!pending || callId === null || pending.call_id !== callId || typeof pending.tool !== 'string') return formatPost(harness, null);
+      const r = interpretHook(deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: callId, ok: false }, stateAbs, keyAbs));
+      return formatPost(harness, r.allow ? null : 'Speckl could not record blocked call ' + callId + ': ' + r.reason);
+    }
+  }
   const pin0 = parseToolInput(payload.tool_input);
   if (!pin0.ok) return fail(pin0.reason);
   const pin = { ok: true, input: normalizeToolInput(harness, toolName, pin0.input) };
@@ -589,7 +891,7 @@ export function runAdapter(
     if (isPre) return fail(m.reason);
     return fail(label + ' ran without a Speckl mapping (' + m.reason + '); its pre hook should have denied it');
   }
-  if (callId === null) return fail('payload has no tool_use_id');
+  if (callId === null) return fail('payload has no tool_use_id (the harness sent no tool call id)');
 
   if (isPre) {
     const r = interpretHook(deps.runHook('pre', { tool: m.tool, input: m.input, call_id: callId }, stateAbs, keyAbs));
@@ -609,6 +911,6 @@ export function runAdapter(
 export const ADAPTER_FUNCTIONS = [
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
-  harnessConfigFile, parseAdapterFlags, shellQuote,
-  buildHarnessHooks, mergeHarnessSettings, installHarness, runAdapter,
+  harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
+  buildHarnessHooks, mergeHarnessSettings, hermesYaml, installHermes, installHarness, runAdapter,
 ];

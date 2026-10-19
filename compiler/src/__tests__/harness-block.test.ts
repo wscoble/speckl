@@ -107,7 +107,7 @@ describe('harness validation', () => {
         }`;
     const msgs = errorsOf(spec(bad)).map(d => `${d.level}: ${d.message}`);
     expect(msgs).toEqual(expect.arrayContaining([
-      'error: agent harness windsurf: unknown harness (supported: claude-code, cursor, codex, gemini)',
+      'error: agent harness windsurf: unknown harness (supported: claude-code, cursor, codex, gemini, copilot, goose, hermes)',
       expect.stringMatching(/^error: agent harness cursor map Shell: pattern "\(" is not a valid regular expression/),
       'error: agent harness cursor map Read: -> nope is not a declared tool',
       'error: agent harness cursor map Read: file is not a parameter of Look (has: path)',

@@ -1,0 +1,7 @@
+{
+  "sessionId": "b7e2c1d4-5a9f-4e3b-8c21-6d0f9e8a7b45",
+  "timestamp": 1792447998664,
+  "cwd": "__PROJECT__",
+  "toolName": "github-mcp-server-create_pull_request",
+  "toolArgs": "{\"owner\": \"acme\", \"repo\": \"greet\", \"title\": \"feat: greet\", \"head\": \"feat/greet\", \"base\": \"main\"}"
+}

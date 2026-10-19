@@ -31,7 +31,8 @@ Or without installing: `npx speckl spec.speckdl -t agent -o .speckl`.
 `speckl-compile` is the same CLI under its older name. Changes are listed in
 [CHANGELOG.md](CHANGELOG.md).
 
-For agent rails in Claude Code, Cursor, Codex CLI or Gemini CLI, see
+For agent rails in Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot
+CLI, Goose or Hermes Agent, see
 [docs/harness-adapters.md](docs/harness-adapters.md).
 
 ## Verification

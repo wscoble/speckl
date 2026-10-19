@@ -24,11 +24,17 @@ First npm release. The package was renamed from the unpublished
   harness's own tool calls onto spec tools. Unmapped calls are denied.
   - Generates `adapter.mjs` and reference wiring for Claude Code
     (`.claude/settings.json`), Cursor (`.cursor/hooks.json`), Codex CLI
-    (`.codex/hooks.json`) and Gemini CLI (`.gemini/settings.json`).
+    (`.codex/hooks.json`), Gemini CLI (`.gemini/settings.json`), GitHub
+    Copilot CLI (`.github/hooks/speckl.json`), Goose (a project or user
+    plugin under `.agents/plugins/`) and Hermes Agent (the profile's
+    `config.yaml` `hooks:` block plus its consent allowlist).
   - `adapter.mjs install` merges the wiring into an existing config.
   - Fails closed: hook crashes, timeouts, malformed output and adapter errors
     all block. The wiring sets `onFailure: "block"` (Claude Code) or
-    `failClosed: true` (Cursor), and adds `|| exit 2` for Codex and Gemini.
+    `failClosed: true` (Cursor), `on_failure: "block"` (Goose) or
+    `fail_closed: true` (Hermes), and adds `|| exit 2` for Codex, Gemini,
+    Copilot and Goose. Copilot CLI hook timeouts stay fail-open (documented,
+    not configurable).
   - Includes `docs/harness-adapters.md`, with an executed 10-minute quickstart.
 - `next:` is a first-class IR member (#3). The generated TypeScript machine
   gains `ACTIONS`, a side-effect-free `can(action, args)`, and
