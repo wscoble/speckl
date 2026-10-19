@@ -70,6 +70,8 @@ function printMember(member: MemberNode): string[] {
       return printInit(member);
     case 'action':
       return printAction(member);
+    case 'next':
+      return [member.anyAction ? 'next: { }' : `next: ${member.actions.join(' | ')}`];
     case 'event': {
       const lines = [`event ${member.name} {`];
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
