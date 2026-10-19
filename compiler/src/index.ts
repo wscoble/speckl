@@ -18,13 +18,15 @@ import { generateProvenanceFromIR } from './generators/provenance-from-ir.js';
 import { lower } from './ir/lower.js';
 import { generateCamel } from './generators/camel.js';
 import { OpenAPITarget } from './generators/openapi.js';
+import { generateAgent } from './generators/agent/index.js';
+import { injectSignalActions } from './generators/agent/inject-signals.js';
 import fs from 'fs';
 import path from 'path';
 
 interface CompileOptions {
   outputDir: string;
   bomFormat: 'cdx' | 'spdx' | 'both';
-  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'all' | 'all-ir';
+  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'agent' | 'all' | 'all-ir';
   verifyDepth: number;
 }
 
@@ -47,7 +49,7 @@ async function main() {
           alias: 't',
           describe: 'Compilation target',
           type: 'string',
-          choices: ['typescript', 'z3', 'rust', 'go', 'protobuf', 'k8s', 'openapi', 'camel', 'elm', 'all', 'all-ir'],
+          choices: ['typescript', 'z3', 'rust', 'go', 'protobuf', 'k8s', 'openapi', 'camel', 'elm', 'agent', 'all', 'all-ir'],
           default: 'typescript' as const,
         })
         .option('verify-depth', {
@@ -78,6 +80,9 @@ async function main() {
   console.log(`Compiling ${file}...`);
   
   const ast = parseSpeckFile(file);
+  // Synthetic __signal_* actions are injected only for Z3 BMC (and again
+  // inside the agent target). Other backends keep the source AST clean.
+  const astForProof = injectSignalActions(ast);
 
   const speckCount = ast.specks.length;
   const memberCount = ast.specks.reduce((sum, s) => sum + s.members.length, 0);
@@ -141,7 +146,7 @@ async function main() {
     console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
     generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
     console.log('\nGenerating Z3 SMT-LIB2 (AST-driven, state machine + transitions)...');
-    for (const speck of ast.specks) {
+    for (const speck of astForProof.specks) {
       // Invariants are first-class AST members now; wrap their expression in
       // the statement shape the Z3 generator consumes. (Legacy raw-source
       // scraping in parseInvariantsFromSource is retired.)
@@ -155,7 +160,7 @@ async function main() {
       (speck as any)._invariants = invariants;
     }
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
-    generateZ3(ast, options.outputDir, z3Options);
+    generateZ3(astForProof, options.outputDir, z3Options);
   }
 
   // IR-driven Z3 for the all-ir target (formal_spec facet only)
@@ -180,6 +185,18 @@ async function main() {
     }
   }
   
+
+  // Agent target (AGENTS.md + tools + hook + signal verifiers)
+  if (options.target === 'agent' || options.target === 'all') {
+    console.log('\nGenerating agent target (AGENTS.md, tools.json, hook, signals)...');
+    // Never emit rails from an agent block that failed validation.
+    const agentErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('agent'));
+    if (agentErrors.length > 0) {
+      throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
+    }
+    generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
+  }
+
   console.log(`\nCompilation complete. Output: ${options.outputDir}/`);
 }
 
