@@ -20,8 +20,9 @@ function compile(spec: string, target: string, out: string): void {
 }
 
 function z3Verdicts(smtFile: string): string[] {
-  const smt = readFileSync(smtFile, 'utf-8').replace(/\(get-model\)/g, '');
-  const r = spawnSync('z3', ['-smt2', '-in'], { input: smt, encoding: 'utf-8' });
+  // Raw file, as a user would run it: no (get-model) after unsat, so z3 exits 0.
+  const r = spawnSync('z3', [smtFile], { encoding: 'utf-8' });
+  if (r.status !== 0) throw new Error(`z3 exited ${r.status}: ${r.stdout}${r.stderr}`);
   return r.stdout.split('\n').map(l => l.trim()).filter(l => /^(un)?sat$/.test(l));
 }
 

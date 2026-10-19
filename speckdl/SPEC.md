@@ -208,9 +208,15 @@ Each Speck compiles to SMT-LIB2 (`.smt2`, state-machine-aware, and
 4. Bounded model checking for `verify` blocks: N copies of state, action
    transition predicates (guards, assignments, frames), stuttering, and the
    negated property.
-5. `(check-sat)` + `(get-model)` with an expectation marker:
-   `; speckl-expect: unsat` (property proven) or `; speckl-expect: sat`
-   (consistency check).
+5. `(check-sat)` with an expectation marker: `; speckl-expect: unsat`
+   (property proven) or `; speckl-expect: sat` (consistency check). Each
+   verify block's check is preceded by `; speckl-obligation: <verify name>`.
+   No `(get-model)` is emitted (z3 rejects it after `unsat` and exits 1); the
+   verify script requests counterexample models itself.
+6. Verify blocks that cannot be checked are declared, never dropped:
+   `; speckl-unchecked: <verify name>: <reason>`. The `.ir.smt2` backend does
+   not unroll transitions, so it declares every verify block this way and
+   leaves the proof to the `.smt2` backend.
 
 ### 3.2 The Verify Script
 
@@ -222,6 +228,17 @@ Z3 binary on each emitted file:
 - Unexpected `sat` against an `unsat` expectation → **VIOLATED**: the script
   prints a counterexample state trace (per-BMC-step variable bindings).
 - Unexpected `unsat` → contradictory constraints.
+- A check-sat with no expectation marker → failure.
+- **Fail closed on obligations.** Every verify block a spec declares must be
+  proven by some backend: a non-degraded `unsat` check under its
+  `speckl-obligation` key. A degraded check, a `speckl-unchecked` marker, or
+  a verify block with no actions to unroll leaves it **UNCHECKED**, and
+  UNCHECKED fails the run. It is never counted as passed.
+- **Baseline.** A spec directory may list known unchecked obligations in
+  `.speckl-unchecked.json` (`{ "<spec>.speckdl": { "<verify>": "<reason>" } }`).
+  Listed ones are reported as UNCHECKED (acknowledged) and do not fail the run;
+  an entry that is now proven or no longer declared fails as STALE-BASELINE.
+  `examples/.speckl-unchecked.json` is the repo's ratchet.
 
 Exit code is nonzero on failure. CI runs this for every example spec.
 
@@ -231,8 +248,8 @@ Constructs without a well-defined SMT translation (unresolved type unions,
 method calls like `List.empty` in unsupported positions, leaked source
 syntax) are dropped from the output with `; skipped:` comments instead of
 emitting invalid SMT. When any form is dropped, an `unsat` expectation is
-downgraded to a consistency check — the solver result is then advisory, not
-a proof.
+downgraded to a consistency check (`degraded: model incomplete`). The solver
+result is then advisory, not a proof, and the verify block is UNCHECKED.
 
 ### 3.4 Known Limitations
 

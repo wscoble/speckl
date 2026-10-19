@@ -8,7 +8,10 @@
 //   - Translate unary operators (!, -)
 //   - Translate identifier references
 //   - Handle nullable types (lift to underlying type)
-//   - Emit check-sat and get-model at the end
+//   - Emit check-sat at the end, without (get-model) (z3 errors on get-model
+//     after unsat; the verifier requests models itself)
+//   - Declare verify blocks as unchecked obligations: this backend does not
+//     unroll transitions, so it must never look like a proof
 
 import { describe, it, expect } from 'vitest';
 import path, { join } from 'path';
@@ -67,7 +70,7 @@ speck Counter {
     expect(smt).toContain('count is non-negative');
     // Must end with check-sat
     expect(smt).toContain('(check-sat)');
-    expect(smt).toContain('(get-model)');
+    expect(smt).not.toContain('(get-model)');
   });
 
   it('translates boolean literals', () => {
@@ -165,7 +168,7 @@ speck NullableZ3 {
     expect(smt).toContain('(declare-const maybe Int)');
   });
 
-  it('emits BMC for verifies with depth=2', () => {
+  it('declares verifies as unchecked obligations instead of a stuttering BMC', () => {
     const src = `
 speck BMCTest {
   state: {
@@ -178,9 +181,11 @@ speck BMCTest {
 `;
     const ir = lowerFromContent(src);
     const smt = runZ3(ir, 2);  // depth 2
-    expect(smt).toMatch(/count_0/);
-    expect(smt).toMatch(/count_2/);
-    expect(smt).toContain('count is bounded');
+    // The old stuttering unroll (frame-only steps, property asserted
+    // positively) proved nothing; it is gone.
+    expect(smt).not.toMatch(/count_0/);
+    expect(smt).toMatch(/^; speckl-unchecked: .+: IR backend does not unroll transitions; proof delegated to the AST backend$/m);
+    expect(smt).toContain('; --- Verifies (depth=2) ---');
   });
 
   it('produces valid SMT for TEF (real spec)', () => {

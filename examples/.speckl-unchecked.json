@@ -1,0 +1,46 @@
+{
+  "$comment": "Verify blocks Speckl cannot prove yet. Each is reported as UNCHECKED (never as passed). Delete an entry once its proof lands; stale entries fail verification. Without this file every entry below fails the run.",
+  "KafkaKRaft.speckdl": {
+    "TermMonotonicity": "post-state invariant, consistency check only",
+    "CommitSafety": "model incomplete — 67 form(s) skipped",
+    "LeaderCompleteness": "model incomplete — 67 form(s) skipped"
+  },
+  "OAuth2AuthorizationCode.speckdl": {
+    "NoTokenLeakage": "model incomplete — 725 form(s) skipped",
+    "StateCSRFProtection": "model incomplete — 725 form(s) skipped",
+    "AuthorizationCodeSingleUse": "model incomplete — 725 form(s) skipped",
+    "TokenValidityBounded": "model incomplete — 725 form(s) skipped",
+    "PKCECodeInterceptionPrevention": "model incomplete — 725 form(s) skipped",
+    "RedirectUriConsistency": "model incomplete — 725 form(s) skipped",
+    "ClientAuthenticationRequired": "model incomplete — 725 form(s) skipped"
+  },
+  "RetryHandler.speckdl": {
+    "unnamed#1": "no actions to unroll (BMC not run)",
+    "unnamed#2": "no actions to unroll (BMC not run)"
+  },
+  "SQLitePager.speckdl": {
+    "CommitAtomicity": "model incomplete — 49 form(s) skipped",
+    "RollbackSafety": "model incomplete — 49 form(s) skipped",
+    "JournalConsistency": "model incomplete — 49 form(s) skipped",
+    "PageCacheCoherence": "model incomplete — 49 form(s) skipped",
+    "LockProgression": "model incomplete — 49 form(s) skipped",
+    "ErrorRecovery": "model incomplete — 49 form(s) skipped"
+  },
+  "SQLiteWAL.speckdl": {
+    "ReadConsistency": "model incomplete — 131 form(s) skipped",
+    "WriteSerialization": "model incomplete — 131 form(s) skipped",
+    "CheckpointSafety": "model incomplete — 131 form(s) skipped",
+    "FrameOrdering": "model incomplete — 131 form(s) skipped",
+    "WalResetCondition": "model incomplete — 131 form(s) skipped",
+    "CommitIntegrity": "model incomplete — 131 form(s) skipped",
+    "LockDeadlockFree": "model incomplete — 131 form(s) skipped",
+    "CommitDurability": "model incomplete — 131 form(s) skipped",
+    "BackfillBound": "model incomplete — 131 form(s) skipped",
+    "ErrorBlocked": "model incomplete — 131 form(s) skipped"
+  },
+  "TigerBeetleLedger.speckdl": {
+    "AccountBalanceInvariant": "model incomplete — 76 form(s) skipped",
+    "NoOverdraft": "model incomplete — 76 form(s) skipped",
+    "TransferStateConsistency": "model incomplete — 76 form(s) skipped"
+  }
+}

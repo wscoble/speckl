@@ -6,6 +6,7 @@ import {
 import fs from 'fs';
 import path from 'path';
 import { sanitizeSMT } from './smt-sanitize.js';
+import { obligationKey } from './obligation-key.js';
 
 /**
  * Z3 SMT-LIB2 backend for SpeckDL.
@@ -255,6 +256,15 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   // Constraint invariants are handled via invariant define-fun above
   // plus the BMC unrolling below for verify blocks.
   // For non-verify specs (or verifies without actions), emit assertion of each invariant:
+  // Verify blocks with nothing to unroll are declared, not silently dropped:
+  // the verifier counts them as unchecked obligations (fail closed).
+  if (verifies.length > 0 && actions.length === 0) {
+    lines.push('');
+    verifies.forEach((v, i) => {
+      lines.push(`; speckl-unchecked: ${obligationKey(v.name, i)}: no actions to unroll (BMC not run)`);
+    });
+  }
+
   if (!bmcActive && allInvariants.length > 0) {
     lines.push('');
     lines.push('; --- Invariant Assertions ---');
@@ -283,7 +293,7 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   if (verifies.length > 0 && actions.length > 0) {
     lines.push('');
     lines.push('; --- Bounded Model Checking ---');
-    for (const v of verifies) {
+    for (const [vi, v] of verifies.entries()) {
       // Each verify is an independent query: z3 assertions accumulate across
       // check-sat calls, so a section's property-negation assert would leak
       // into every later section's solver context. Isolate with push/pop.
@@ -291,18 +301,19 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
       // section-local declarations, so declaredSteps cannot be shared.
       const declaredSteps = new Set<string>();
       lines.push('(push)');
-      emitBMC(lines, speck.name, v, allInvariants, actions, nextNode, stateVars, options, declaredSteps, initNode ?? null, varRename);
+      emitBMC(lines, speck.name, v, allInvariants, actions, nextNode, stateVars, options, declaredSteps, initNode ?? null, varRename, obligationKey(v.name, vi));
       lines.push('(pop)');
     }
   }
 
-  // Step 8: Check-sat and get-model (for simple assertions)
+  // Step 8: Check-sat (for simple assertions). No (get-model): requesting a
+  // model after an unsat answer is a z3 error (exit 1); the verifier asks for
+  // counterexample models itself.
   if (!bmcActive) {
     lines.push('');
     // Invariants are asserted directly; sat means they are mutually consistent.
     lines.push('; speckl-expect: sat');
     lines.push('(check-sat)');
-    lines.push('(get-model)');
   }
 
   // Sanitize: drop any form referencing undeclared identifiers/sorts.
@@ -1106,7 +1117,8 @@ function emitBMC(
   options: Z3Options,
   declaredSteps: Set<string> = new Set(),
   initNode: InitNode | null = null,
-  renameMap?: Map<string, string>
+  renameMap?: Map<string, string>,
+  key: string = verify.name
 ): void {
   const depth = verify.depth || options.verifyDepth;
   const temporalExpr = verify.temporalExpr;
@@ -1296,17 +1308,17 @@ function emitBMC(
       lines.push(`(echo "Checking: Always(${invariantName}) for ${depth} steps")`);
       // With the negation asserted: unsat proves the property, sat means a
       // counterexample was found. Degraded checks expect sat (consistency).
+      lines.push(`; speckl-obligation: ${key}`);
       lines.push(usesPostState
         ? '; speckl-expect: sat (degraded: post-state invariant, consistency check only)'
         : '; speckl-expect: unsat');
       lines.push('(check-sat)');
-      lines.push('(get-model)');
 
     } else {
       lines.push(`; Warning: invariant "${invariantName}" not found in spec`);
-      lines.push('; speckl-expect: sat');
+      lines.push(`; speckl-obligation: ${key}`);
+      lines.push('; speckl-expect: sat (degraded: invariant not found in spec, consistency check only)');
       lines.push('(check-sat)');
-      lines.push('(get-model)');
     }
   } else if (isEventually && invariantName) {
     // Eventually p = exists step up to depth where p holds
@@ -1331,16 +1343,17 @@ function emitBMC(
     lines.push(`(echo "Checking: Eventually(${invariantName})")`);
     // We asserted the property never holds within the bound;
     // unsat proves it eventually holds, sat means it may never hold.
+    lines.push(`; speckl-obligation: ${key}`);
     lines.push('; speckl-expect: unsat');
     lines.push('(check-sat)');
-    lines.push('(get-model)');
   } else {
     lines.push(`; Verification property: ${temporalExpr}`);
     // Free-form temporal expression: no invariant instance to negate, so the
     // result is only a consistency check — sat means the model is consistent.
-    lines.push('; speckl-expect: sat');
+    // The obligation itself is not lowered, so it is reported as unchecked.
+    lines.push(`; speckl-obligation: ${key}`);
+    lines.push('; speckl-expect: sat (degraded: temporal expression not lowered, consistency check only)');
     lines.push('(check-sat)');
-    lines.push('(get-model)');
   }
 }
 

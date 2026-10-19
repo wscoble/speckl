@@ -24,8 +24,9 @@ function compile(spec: string, target: string, out: string): string {
 }
 
 function z3Verdicts(smtFile: string): string[] {
-  const smt = readFileSync(smtFile, 'utf-8').replace(/\(get-model\)/g, '');
-  const r = spawnSync('z3', ['-smt2', '-in'], { input: smt, encoding: 'utf-8' });
+  // Raw file, as a user would run it: no (get-model) after unsat, so z3 exits 0.
+  const r = spawnSync('z3', [smtFile], { encoding: 'utf-8' });
+  if (r.status !== 0) throw new Error(`z3 exited ${r.status}: ${r.stdout}${r.stderr}`);
   return r.stdout.split('\n').map(l => l.trim()).filter(l => /^(un)?sat$/.test(l));
 }
 
@@ -131,7 +132,9 @@ describe('agent hook process', () => {
     const state = freshState();
     const r = runHook(agentDir, 'pre', state, { tool: 'open_pr', input: {}, call_id: '1' });
     expect(r.status).toBe(2);
-    expect(r.stdout).toMatch(/can\(\) refused|Guard failed/);
+    // The reason speaks the spec's stage names, not compiled numbers.
+    expect(r.stdout).toContain('can() refused: Guard failed: stage == Approved (stage is Idle)');
+    expect(r.stdout).not.toContain('this.stage');
   });
 
   it('happy path → allow and advance', () => {

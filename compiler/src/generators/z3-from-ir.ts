@@ -22,6 +22,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { sanitizeSMT } from './smt-sanitize.js';
+import { obligationKey } from './obligation-key.js';
 import {
   IR, IRSpeck, IRConstraint, IRVerify, IRStateVar, IRExpr, IRBinOp,
   IRFieldDef, IRTypeRef, IRBoolLit
@@ -237,75 +238,31 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
 
   lines.push('');
 
-  // 5. Verifies (bounded model checking)
+  // 5. Verifies. This backend does not unroll actions, so it cannot prove a
+  // verify block. Each one is declared as an unchecked obligation instead of
+  // being asserted as a stuttering trace (which proved nothing) or silently
+  // dropped. The verifier fails a spec unless another backend (the AST Z3
+  // generator) proves every obligation declared here.
   if (speck.facets.formal_spec.verifies.length > 0) {
-    lines.push(`; --- Verifies (BMC, depth=${verifyDepth}) ---`);
-    const declaredSteps = new Set<string>();
-    for (const v of speck.facets.formal_spec.verifies) {
-      // Skip parse-failure placeholders (see init/constraint handling).
-      if (containsParseFailure(v.temporalExpr)) {
-        lines.push(`; skipped verify "${v.name}": expression failed to parse`);
-        continue;
-      }
-      emitBMC(lines, v, stateVars, verifyDepth, declaredSteps);
+    lines.push(`; --- Verifies (depth=${verifyDepth}) ---`);
+    for (const [i, v] of speck.facets.formal_spec.verifies.entries()) {
+      const reason = containsParseFailure(v.temporalExpr)
+        ? 'expression failed to parse'
+        : 'IR backend does not unroll transitions; proof delegated to the AST backend';
+      lines.push(`; speckl-unchecked: ${obligationKey(v.name, i)}: ${reason}`);
     }
   }
 
   // 6. Check sat
   lines.push('');
   lines.push('; --- Check ---');
-  // Init + constraints + (degenerate, stuttering) BMC are asserted positively:
+  // Init + constraints are asserted positively:
   // sat means the spec is internally consistent, unsat means contradictory
   // constraints (or a generator bug).
   lines.push('; speckl-expect: sat');
   lines.push('(check-sat)');
-  lines.push('(get-model)');
 
   return lines.join('\n') + '\n';
-}
-
-/**
- * Emit bounded model checking for a verify block.
- * Unrolls the state machine to depth N and asserts the temporal property
- * must hold.
- */
-function emitBMC(
-  lines: string[],
-  verify: IRVerify,
-  stateVars: IRStateVar[],
-  depth: number,
-  declaredSteps: Set<string> = new Set()
-): void {
-  lines.push(`; verify "${verify.name}"`);
-  for (let i = 0; i <= depth; i++) {
-    // At each step, assert the postcondition of some action
-    // (this is a simplified BMC — the full version would unroll
-    // actions; here we just check the invariant holds at step i)
-    for (const v of stateVars) {
-      const prev = i > 0 ? `${v.name}_${i - 1}` : v.name;
-      const curr = `${v.name}_${i}`;
-      // Multiple verify blocks unroll the same steps — declare once.
-      if (!declaredSteps.has(curr)) {
-        declaredSteps.add(curr);
-        lines.push(`(declare-const ${curr} ${z3Sort(v.type)})`);
-      }
-      // Frame: if not transitioning, state stays the same
-      if (i > 0) {
-        lines.push(`(assert (= ${prev} ${curr}))`);
-      }
-    }
-  }
-  // The verify property must hold at depth N
-  const finalState = translateExpr(verify.temporalExpr).replace(
-    /\b([a-zA-Z_][a-zA-Z0-9_]*)\b/g,
-    (_match, name) => {
-      if (stateVars.some((v) => v.name === name)) {
-        return `${name}_${depth}`;
-      }
-      return name;
-    }
-  );
-  lines.push(`(assert ${finalState})`);
 }
 
 /**
