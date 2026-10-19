@@ -20,7 +20,7 @@ First npm release. The package was renamed from the unpublished
     the loop.
   - State is tamper-evident: an HMAC-signed, hash-chained log.
   - One call in flight, with a pending timeout and `clear-pending`.
-- **Harness adapters** (#5, #6). A `harness <name> { map ... }` block maps a
+- **Harness adapters** (#5, #6, #9). A `harness <name> { map ... }` block maps a
   harness's own tool calls onto spec tools. Unmapped calls are denied.
   - Generates `adapter.mjs` and reference wiring for Claude Code
     (`.claude/settings.json`), Cursor (`.cursor/hooks.json`), Codex CLI
