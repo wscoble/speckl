@@ -1,4 +1,4 @@
-# Harness adapters (Claude Code, Cursor)
+# Harness adapters (Claude Code, Cursor, Codex CLI, Gemini CLI)
 
 `hook.mjs` only enforces a policy if the agent harness calls it before and
 after every tool call. A `harness` block in the spec's `agent { }` makes
@@ -9,6 +9,8 @@ after every tool call. A `harness` block in the spec's `agent { }` makes
   adapter.mjs                      maps the harness's hook JSON onto hook.mjs
   harness/claude-code/settings.json  reference .claude/settings.json hooks
   harness/cursor/hooks.json          reference .cursor/hooks.json hooks
+  harness/codex/hooks.json           reference .codex/hooks.json hooks
+  harness/gemini/settings.json       reference .gemini/settings.json hooks
 ```
 
 `node adapter.mjs install <harness> ...` merges the wiring into the project's
@@ -140,6 +142,41 @@ Answers:
 - **Cursor** allow: `{"permission":"allow"}`. Deny: `{"permission":"deny",
   "user_message", "agent_message"}` and exit 2 (both mean block).
 
+| Codex CLI event | Adapter | hook.mjs |
+| --- | --- | --- |
+| `PreToolUse` | `pre` | `pre` with `call_id: tool_use_id`; `apply_patch` input gains `files` and `path` (first file) |
+| `PostToolUse` | `post` | `post`; **`Bash` is always `ok: false`**, `apply_patch` needs `Exit code: 0`, MCP needs `isError` false |
+| `Stop` | `turn-end` | `post` with `ok: false` for a call still pending (declined at the approval prompt) |
+
+| Gemini CLI event | Adapter | hook.mjs |
+| --- | --- | --- |
+| `BeforeTool` | `pre` | `pre`; Gemini sends no call id, so the adapter derives one from `session_id` + `tool_name` |
+| `AfterTool` | `post` | `post`; `ok: false` on `tool_response.error`, and for `run_shell_command` on an `Exit Code:` / `Signal:` / `Error:` line or a backgrounded command |
+| `AfterAgent` | `turn-end` | `post` with `ok: false` for a call still pending (cancelled confirmation) |
+
+- **Codex** allow: exit 0, no output (Codex's own approval flow applies). Deny:
+  exit 2, reason on stderr. Post problems go to the model as
+  `hookSpecificOutput.additionalContext` with exit 0. An exit 2 there would
+  replace the tool output.
+- **Gemini** allow: exit 0 and `{}`. Deny: exit 2, reason on stderr (sent to
+  the model as the tool error). Post problems go out as `additionalContext`.
+  The `AfterAgent` hook always exits 0, because exit 2 there forces a retry turn.
+
+**Codex Bash calls never count as a success.** Codex gives `PostToolUse` the
+command's output text without its exit status (`codex-rs/core/src/tools/context.rs`,
+`ExecCommandToolOutput::post_tool_use_response`). A failing `npm test` would
+look exactly like a passing one. So Speckl still allows or denies Bash calls,
+but every one is recorded as not successful and never advances the policy.
+The adapter tells the model so. Run gated steps (tests, review requests, PRs)
+through MCP tools, whose results carry `isError`. See the `harness codex` block
+in `examples/ClaudeCodePolicy.speckdl`.
+
+Install for these two writes absolute paths and `--project <root>`. Codex runs
+hooks from the session cwd, and Gemini sets `GEMINI_PROJECT_DIR` to it, so a
+session started in a subdirectory would otherwise resolve the rails wrong.
+Codex also only runs project hooks after you review and trust them (`/hooks`).
+Gemini fingerprints project hooks and asks again when they change.
+
 ### Fail closed
 
 Both harnesses let a call through when a hook fails unless told otherwise
@@ -154,9 +191,17 @@ Cursor: crashes, timeouts and non-zero exits other than 2 fail open). So:
   (Claude Code v2.1.295 or later), so a missing node, a bad path or a timeout of
   the adapter itself blocks. The Cursor wiring sets `"failClosed": true` on
   every hook.
-- `compiler/src/__tests__/example-claude-code-policy.test.ts` replaces hook.mjs
-  with a crash, `exit 1`, garbage output, `SIGKILL` and a hang, and checks that
-  each blocks in both harnesses.
+- Codex and Gemini have no fail-closed switch. Any exit code other than 2 lets
+  the call through. The adapter therefore always exits 2 on error, and the
+  generated pre command ends in `|| exit 2`. That way a missing `node` (exit
+  127) or a crash before the adapter decides also blocks. What remains open is
+  the harness killing the adapter at its own timeout (30 s, above the adapter's
+  20 s hook budget).
+- `compiler/src/__tests__/example-claude-code-policy.test.ts` and
+  `example-codex-gemini-policy.test.ts` replace hook.mjs with a crash,
+  `exit 1`, garbage output, `SIGKILL` and a hang, and check that each blocks
+  in all four harnesses. The Codex and Gemini tests also run the wiring
+  without `node` on `PATH`.
 
 ### Stuck calls
 
@@ -179,6 +224,14 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
 - Cursor can also load Claude Code hooks ("third-party hooks"). Wire one
   harness per project, or Cursor may call the Claude Code adapter with Cursor
   tool names, which it will deny.
+- Codex: hosted tools (web search) don't go through hooks, and
+  `write_stdin` to a running session doesn't re-run `PreToolUse`. A command
+  started in the background (`Process running with session ID`) gets no
+  `PostToolUse` until it finishes. Until then it stays pending and later calls
+  are refused, or `Stop` clears it as failed.
+- Gemini: the derived call id relies on one call in flight (Speckl refuses
+  parallel calls). Gemini's edit tools may correct their own arguments, which
+  is why the id doesn't include them.
 - Cursor documents MCP tool names as `MCP:<tool_name>` for matchers; check the
   Hooks output channel for the exact `tool_name` your build sends before
   writing `map` lines for MCP tools. Cursor runs `preToolUse` in cloud agents,
@@ -193,3 +246,12 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   `preToolUse` / `postToolUse` / `postToolUseFailure` payloads, `permission`
   output, exit code 2, `failClosed`, project hooks run from the project root).
   Checked 2026-10-19.
+- Codex hooks: <https://learn.chatgpt.com/docs/hooks> (hook locations,
+  PreToolUse / PostToolUse / Stop payloads, `permissionDecision`, exit code 2,
+  timeout in seconds, tool coverage, trust). Source: `openai/codex`
+  `codex-rs/hooks/src/events/pre_tool_use.rs`, `codex-rs/core/src/tools/context.rs`.
+  Checked 2026-10-19 against `@openai/codex` 0.163.0.
+- Gemini CLI hooks: <https://geminicli.com/docs/hooks/reference/> and
+  <https://geminicli.com/docs/hooks/> (BeforeTool / AfterTool / AfterAgent,
+  regex matchers, timeout in ms, exit code 2, `GEMINI_PROJECT_DIR`). Shell
+  tool output format checked in the `@google/gemini-cli` 0.64.0 bundle.

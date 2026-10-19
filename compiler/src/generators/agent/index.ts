@@ -225,10 +225,15 @@ function emitHarnessFiles(speckName: string, agentDir: string, harness: Record<s
   for (const name of names) {
     const dir = path.join(agentDir, 'harness', name);
     fs.mkdirSync(dir, { recursive: true });
-    const file = name === 'cursor' ? 'hooks.json' : 'settings.json';
+    const file = name === 'cursor' || name === 'codex' ? 'hooks.json' : 'settings.json';
     const hooks = buildHarnessHooks(name, { adapter, state, key: null, relative });
     fs.writeFileSync(path.join(dir, file), JSON.stringify(hooks, null, 2) + '\n');
   }
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listWords(words: string[]): string {
+  return words.length <= 2 ? words.join(' and ') : words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
 }
 
 function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
@@ -331,7 +336,8 @@ function buildAgentsMd(
     lines.push('Calls that match no line are **denied**. A matched command must be one plain');
     lines.push('command: `;`, `&`, `|`, backticks, `$`, `<`, `>` and newlines are refused.');
     lines.push('The rails themselves (this directory, the state file, its key, `.claude/`,');
-    lines.push('`.cursor/`) are off limits to every tool. Make one tool call at a time.');
+    lines.push('`.cursor/`, `.codex/`, `.gemini/`) are off limits to every tool. Make one tool');
+    lines.push('call at a time.');
     lines.push('');
     for (const [name, h] of Object.entries(config.harness)) {
       lines.push(`### ${name}`);
@@ -467,7 +473,7 @@ Plug-in verifiers (JWT, OAuth, signed API, webhook) implement the same
 ## Adapters
 
 ${(agent.harnesses ?? []).length > 0
-    ? `\`adapter.mjs\` wires this hook into ${(agent.harnesses ?? []).map(h => h.name).join(' and ')}:
+    ? `\`adapter.mjs\` wires this hook into ${listWords((agent.harnesses ?? []).map(h => h.name))}:
 
 \`\`\`
 node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>]

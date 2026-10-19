@@ -13,7 +13,8 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *       stdin: the harness's own hook JSON. Maps the call through the spec's
  *       harness block, runs hook.mjs, and answers in the harness's format.
  *   node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>]
- *       merges the hook wiring into .claude/settings.json or .cursor/hooks.json.
+ *       merges the hook wiring into .claude/settings.json, .cursor/hooks.json,
+ *       .codex/hooks.json or .gemini/settings.json.
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
  * errors deny (Claude Code: exit 2 + stderr; Cursor: permission "deny", exit 2).
@@ -69,8 +70,9 @@ async function main() {
     out = runAdapter(argv, process.env, stdinText, config, deps);
   } catch (e) {
     const msg = 'Speckl adapter error: ' + (e instanceof Error ? e.message : String(e));
-    // Fail closed. A batch hook must not stop the agent loop.
-    out = argv[1] === 'batch' ? { code: 0, stdout: '', stderr: msg + '\\n' } : { code: 2, stdout: '', stderr: msg + '\\n' };
+    // Fail closed. A batch or turn-end hook must not stop the agent loop.
+    const quiet = argv[1] === 'batch' || argv[1] === 'turn-end';
+    out = quiet ? { code: 0, stdout: argv[0] === 'gemini' ? '{}\\n' : '', stderr: msg + '\\n' } : { code: 2, stdout: '', stderr: msg + '\\n' };
   }
   if (out.stdout) process.stdout.write(out.stdout);
   if (out.stderr) process.stderr.write(out.stderr);

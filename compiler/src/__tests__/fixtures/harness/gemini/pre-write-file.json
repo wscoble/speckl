@@ -1,0 +1,12 @@
+{
+  "session_id": "7c1f4e2a-93b0-4d5e-a8c6-0f2d9b71e345",
+  "transcript_path": "/home/dev/.gemini/tmp/5f0e9a/chats/session-2026-10-19T22-12-7c1f4e2a.json",
+  "cwd": "__PROJECT__",
+  "hook_event_name": "BeforeTool",
+  "timestamp": "2026-10-19T22:12:41.204Z",
+  "tool_name": "write_file",
+  "tool_input": {
+    "file_path": "__PROJECT__/src/app.js",
+    "content": "export const greet = (name) => `hi ${name}`;\n"
+  }
+}

@@ -1,5 +1,5 @@
 // Harness adapter runtime: pure functions that turn a real agent harness's
-// hook payload (Claude Code, Cursor) into a call to the generic hook.mjs, and
+// hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI) into a call to the generic hook.mjs, and
 // hook.mjs's verdict back into the harness's expected output.
 //
 // These functions are emitted verbatim into <out>/agent/adapter.mjs with
@@ -197,8 +197,13 @@ export function formatPre(harness: string, allow: boolean, message: string): Ada
       stderr: message + '\n',
     };
   }
-  // Claude Code: exit 0 with no output leaves the normal permission flow in
-  // charge (Speckl never auto-approves); exit 2 blocks and shows stderr.
+  // Gemini CLI parses stdout as JSON on exit 0; `{}` is "no decision".
+  if (harness === 'gemini') {
+    if (allow) return { code: 0, stdout: '{}\n', stderr: '' };
+    return { code: 2, stdout: '', stderr: message + '\n' };
+  }
+  // Claude Code and Codex: exit 0 with no output leaves the normal permission
+  // flow in charge (Speckl never auto-approves); exit 2 blocks and shows stderr.
   if (allow) return { code: 0, stdout: '', stderr: '' };
   return { code: 2, stdout: '', stderr: message + '\n' };
 }
@@ -209,6 +214,17 @@ export function formatPost(harness: string, problem: string | null): AdapterOutp
     if (!problem) return { code: 0, stdout: '{}\n', stderr: '' };
     return { code: 0, stdout: JSON.stringify({ additional_context: problem }) + '\n', stderr: problem + '\n' };
   }
+  // Codex / Gemini: exit 2 on a post hook replaces or hides the tool result,
+  // so problems go to the agent as additionalContext with exit 0.
+  if (harness === 'codex' || harness === 'gemini') {
+    const ev = harness === 'codex' ? 'PostToolUse' : 'AfterTool';
+    if (!problem) return { code: 0, stdout: harness === 'gemini' ? '{}\n' : '', stderr: '' };
+    return {
+      code: 0,
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: ev, additionalContext: problem } }) + '\n',
+      stderr: problem + '\n',
+    };
+  }
   if (!problem) return { code: 0, stdout: '', stderr: '' };
   return { code: 2, stdout: '', stderr: problem + '\n' };
 }
@@ -216,7 +232,25 @@ export function formatPost(harness: string, problem: string | null): AdapterOutp
 /** Did the tool succeed? Only an explicit success counts (post-failure, interrupts and non-zero exits do not). */
 export function postSucceeded(harness: string, event: string, payload: Record<string, unknown>): boolean {
   if (event !== 'post') return false;
+  const toolName = payload.tool_name;
   let out: unknown = harness === 'cursor' ? payload.tool_output : payload.tool_response;
+  if (harness === 'codex') {
+    // Codex hands PostToolUse the Bash command's output text only, without
+    // its exit status, so a shell call can never count as a success.
+    if (toolName === 'Bash') return false;
+    if (toolName === 'apply_patch') return typeof out === 'string' && /^Exit code: 0(\n|$)/.test(out);
+  }
+  if (harness === 'gemini') {
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return false;
+    const r = out as Record<string, unknown>;
+    if (r.error !== undefined && r.error !== null && r.error !== false) return false;
+    if (toolName === 'run_shell_command') {
+      const text = typeof r.llmContent === 'string' ? r.llmContent : '';
+      if (!/^Output:/.test(text)) return false;
+      if (/^(Exit Code|Signal|Error):/m.test(text)) return false;
+    }
+    return true;
+  }
   if (typeof out === 'string') {
     try { out = JSON.parse(out); } catch { return true; }
   }
@@ -233,9 +267,60 @@ export function harnessEventName(harness: string, event: string): string | null 
   const names: Record<string, Record<string, string>> = {
     'claude-code': { pre: 'PreToolUse', post: 'PostToolUse', 'post-failure': 'PostToolUseFailure', batch: 'PostToolBatch' },
     cursor: { pre: 'preToolUse', post: 'postToolUse', 'post-failure': 'postToolUseFailure' },
+    codex: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'Stop' },
+    gemini: { pre: 'BeforeTool', post: 'AfterTool', 'turn-end': 'AfterAgent' },
   };
   const h = names[harness];
   return h && h[event] ? h[event] : null;
+}
+
+/**
+ * Harness-specific additions to tool_input before mapping. Codex apply_patch
+ * carries the whole patch in `command`; expose the files it touches as
+ * `files` and the first one as `path`.
+ */
+export function normalizeToolInput(harness: string, toolName: unknown, input: Record<string, unknown>): Record<string, unknown> {
+  if (harness === 'codex' && toolName === 'apply_patch' && typeof input.command === 'string') {
+    const files: string[] = [];
+    const re = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(input.command)) !== null) files.push(m[1].trim());
+    const out: Record<string, unknown> = { ...input, files };
+    if (files.length > 0) out.path = files[0];
+    return out;
+  }
+  return input;
+}
+
+/**
+ * The call id hook.mjs pairs pre and post with. Gemini CLI sends none, so
+ * one is derived from the session and tool name (the same on BeforeTool and
+ * AfterTool; hook.mjs holds a single pending call, so it cannot collide).
+ */
+export function harnessCallId(harness: string, payload: Record<string, unknown>): string | null {
+  if (harness === 'gemini') {
+    if (typeof payload.tool_name !== 'string' || payload.tool_name === '') return null;
+    const text = String(payload.session_id ?? '') + '\u0000' + payload.tool_name;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return 'gemini-' + h.toString(16).padStart(8, '0');
+  }
+  const id = payload.tool_use_id;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
+/** Where `install` writes each harness's wiring, relative to the project. */
+export function harnessConfigFile(harness: string): string {
+  const files: Record<string, string> = {
+    'claude-code': '.claude/settings.json',
+    cursor: '.cursor/hooks.json',
+    codex: '.codex/hooks.json',
+    gemini: '.gemini/settings.json',
+  };
+  return files[harness] || '';
 }
 
 /** Parse `--state x --key y --project z` flags. */
@@ -256,17 +341,22 @@ export function shellQuote(s: string): string {
 
 /**
  * Hook entries for one harness. Paths are either absolute or
- * project-relative; Claude Code commands use ${CLAUDE_PROJECT_DIR}, Cursor
- * project hooks run from the project root.
+ * project-relative; Claude Code commands use ${CLAUDE_PROJECT_DIR}, Gemini
+ * ${GEMINI_PROJECT_DIR}; Cursor project hooks run from the project root.
+ * Codex and Gemini run hooks from the session cwd, so `install` writes
+ * absolute paths for them.
  */
 export function buildHarnessHooks(
   harness: string,
-  paths: { adapter: string; state: string; key: string | null; relative: boolean },
+  paths: { adapter: string; state: string; key: string | null; relative: boolean; project?: string },
 ): Record<string, unknown> {
-  const pfx = (p: string) => (paths.relative && harness === 'claude-code' ? '${CLAUDE_PROJECT_DIR}/' + p : p);
+  const envDir = harness === 'claude-code' ? '${CLAUDE_PROJECT_DIR}/' : harness === 'gemini' ? '${GEMINI_PROJECT_DIR}/' : '';
+  const pfx = (p: string) => (paths.relative ? envDir + p : p);
   const cmd = (event: string) => {
     const parts = ['node', shellQuote(pfx(paths.adapter)), harness, event, '--state', shellQuote(pfx(paths.state))];
     if (paths.key) parts.push('--key', shellQuote(paths.key));
+    // Pin the project root when the harness only reports the session cwd.
+    if (paths.project) parts.push('--project', shellQuote(paths.project));
     return parts.join(' ');
   };
   if (harness === 'cursor') {
@@ -274,6 +364,27 @@ export function buildHarnessHooks(
     return {
       version: 1,
       hooks: { preToolUse: h('pre'), postToolUse: h('post'), postToolUseFailure: h('post-failure') },
+    };
+  }
+  if (harness === 'codex' || harness === 'gemini') {
+    // Neither harness has a fail-closed switch: any exit other than 2 lets
+    // the call through. `|| exit 2` turns a failure to start the adapter
+    // (node missing, exit 127) into a block.
+    const ms = harness === 'gemini';
+    const hook = (event: string, block: boolean) => {
+      const h: Record<string, unknown> = { type: 'command', command: cmd(event) + (block ? ' || exit 2' : ''), timeout: ms ? 30000 : 30 };
+      if (ms) h.name = 'speckl-' + event;
+      return h;
+    };
+    const ev = harnessEventName;
+    // Gemini matchers are regular expressions; Codex also accepts "*".
+    const any = ms ? '.*' : '*';
+    return {
+      hooks: {
+        [ev(harness, 'pre') as string]: [{ matcher: any, hooks: [hook('pre', true)] }],
+        [ev(harness, 'post') as string]: [{ matcher: any, hooks: [hook('post', false)] }],
+        [ev(harness, 'turn-end') as string]: [{ hooks: [hook('turn-end', false)] }],
+      },
     };
   }
   const group = (event: string, extra: Record<string, unknown>, matcher: boolean) => {
@@ -325,16 +436,17 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   const keyAbs = flags.key ? deps.resolvePath(deps.cwd, flags.key) : null;
   const rel = (p: string) => deps.relativePath(project, p).replace(/\\/g, '/');
   const inside = (p: string) => !rel(p).startsWith('..') && !/^[A-Za-z]:|^\//.test(rel(p));
-  const relative = inside(deps.agentDir) && inside(stateAbs);
+  // Codex runs hooks from the session cwd and Gemini sets GEMINI_PROJECT_DIR
+  // to it, so both get absolute paths (a session may start in a subdirectory).
+  const relative = harness !== 'codex' && harness !== 'gemini' && inside(deps.agentDir) && inside(stateAbs);
   const ours = buildHarnessHooks(harness, {
     adapter: relative ? rel(deps.resolvePath(deps.agentDir, 'adapter.mjs')) : deps.resolvePath(deps.agentDir, 'adapter.mjs'),
     state: relative ? rel(stateAbs) : stateAbs,
     key: keyAbs,
     relative,
+    project: harness === 'codex' || harness === 'gemini' ? project : undefined,
   });
-  const target = harness === 'cursor'
-    ? deps.resolvePath(project, '.cursor/hooks.json')
-    : deps.resolvePath(project, '.claude/settings.json');
+  const target = deps.resolvePath(project, harnessConfigFile(harness));
   const text = deps.readFile(target);
   let existing: Record<string, unknown> = {};
   if (text !== null && text.trim() !== '') {
@@ -379,6 +491,8 @@ export function runAdapter(
   const fail = (reason: string): AdapterOutput => {
     const msg = 'Speckl: ' + reason;
     if (event === 'batch') return { code: 0, stdout: '', stderr: msg + '\n' };
+    // A turn-end hook never blocks: on Gemini exit 2 would force a retry turn.
+    if (event === 'turn-end') return { code: 0, stdout: harness === 'gemini' ? '{}\n' : '', stderr: msg + '\n' };
     if (isPre || harnessEventName(harness, event) === null) {
       return { code: 2, stdout: harness === 'cursor' ? formatPre('cursor', false, msg).stdout : '', stderr: msg + '\n' };
     }
@@ -405,7 +519,9 @@ export function runAdapter(
   if (!flags.state) return fail('missing --state');
 
   const projectDir = flags.project
-    || (harness === 'cursor' ? env.CURSOR_PROJECT_DIR : env.CLAUDE_PROJECT_DIR)
+    || (harness === 'cursor' ? env.CURSOR_PROJECT_DIR
+      : harness === 'gemini' ? env.GEMINI_PROJECT_DIR
+        : harness === 'claude-code' ? env.CLAUDE_PROJECT_DIR : undefined)
     || (typeof payload.cwd === 'string' ? payload.cwd : '')
     || deps.cwd;
   const stateAbs = deps.resolvePath(projectDir, flags.state);
@@ -417,11 +533,28 @@ export function runAdapter(
   if (env.SPECKL_STATE_KEY_FILE) protectedAbs.push(deps.resolvePath(projectDir, env.SPECKL_STATE_KEY_FILE));
   const stateDir = deps.dirname(stateAbs);
   if (stateDir !== projectDir && deps.resolvePath(stateDir, '.') !== deps.resolvePath(projectDir, '.')) protectedAbs.push(stateDir);
-  protectedAbs.push(deps.resolvePath(projectDir, '.claude'), deps.resolvePath(projectDir, '.cursor'));
+  for (const d of ['.claude', '.cursor', '.codex', '.gemini']) protectedAbs.push(deps.resolvePath(projectDir, d));
   const protectedPaths = protectedAbs.map(abs => {
     const r = deps.relativePath(projectDir, abs).replace(/\\/g, '/');
     return { abs, rel: r.startsWith('..') ? '' : r };
   });
+
+  if (event === 'turn-end') {
+    // End of turn (Codex Stop, Gemini AfterAgent): a call that passed pre but
+    // never reported (declined, cancelled) is recorded as failed so the next
+    // call is not refused as parallel. hook.mjs re-verifies the state.
+    const quiet = harness === 'gemini' ? '{}\n' : '';
+    const text = deps.readFile(stateAbs);
+    let pending: Record<string, unknown> | null = null;
+    try {
+      const st = text ? JSON.parse(text) : null;
+      if (st && st.pending && typeof st.pending === 'object') pending = st.pending as Record<string, unknown>;
+    } catch { /* hook.mjs reports a broken state on the next call */ }
+    if (!pending || typeof pending.tool !== 'string' || pending.call_id === undefined) return { code: 0, stdout: quiet, stderr: '' };
+    const r = deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: pending.call_id, ok: false }, stateAbs, keyAbs);
+    if (r.status !== 0) return { code: 0, stdout: quiet, stderr: 'Speckl: could not clear the pending call: ' + interpretHook(r).reason + '\n' };
+    return { code: 0, stdout: quiet, stderr: 'Speckl cleared pending call ' + String(pending.call_id) + ' (no result reported); recorded as failed\n' };
+  }
 
   if (event === 'batch') {
     const calls = Array.isArray(payload.tool_calls) ? payload.tool_calls as Record<string, unknown>[] : [];
@@ -441,9 +574,10 @@ export function runAdapter(
   }
 
   const toolName = payload.tool_name;
-  const callId = payload.tool_use_id;
-  const pin = parseToolInput(payload.tool_input);
-  if (!pin.ok) return fail(pin.reason);
+  const callId = harnessCallId(harness, payload);
+  const pin0 = parseToolInput(payload.tool_input);
+  if (!pin0.ok) return fail(pin0.reason);
+  const pin = { ok: true, input: normalizeToolInput(harness, toolName, pin0.input) };
   const label = typeof toolName === 'string' ? toolName : '(no tool_name)';
 
   if (isPre) {
@@ -455,7 +589,7 @@ export function runAdapter(
     if (isPre) return fail(m.reason);
     return fail(label + ' ran without a Speckl mapping (' + m.reason + '); its pre hook should have denied it');
   }
-  if (typeof callId !== 'string' || callId === '') return fail('payload has no tool_use_id');
+  if (callId === null) return fail('payload has no tool_use_id');
 
   if (isPre) {
     const r = interpretHook(deps.runHook('pre', { tool: m.tool, input: m.input, call_id: callId }, stateAbs, keyAbs));
@@ -464,6 +598,9 @@ export function runAdapter(
   }
   const ok = postSucceeded(harness, event, payload);
   const r = interpretHook(deps.runHook('post', { tool: m.tool, input: m.input, call_id: callId, ok }, stateAbs, keyAbs));
+  if (r.allow && harness === 'codex' && toolName === 'Bash') {
+    return formatPost(harness, 'Speckl recorded ' + label + ' (spec tool ' + m.tool + ') as not successful: Codex does not report a Bash exit status, so a shell call never advances the policy. Use the tool mapped for this step instead.');
+  }
   if (r.allow) return formatPost(harness, null);
   return formatPost(harness, 'Speckl could not record ' + label + ' (spec tool ' + m.tool + '): ' + r.reason);
 }
@@ -471,6 +608,7 @@ export function runAdapter(
 /** Functions emitted into adapter.mjs, in order. */
 export const ADAPTER_FUNCTIONS = [
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
-  formatPre, formatPost, postSucceeded, harnessEventName, parseAdapterFlags, shellQuote,
+  formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
+  harnessConfigFile, parseAdapterFlags, shellQuote,
   buildHarnessHooks, mergeHarnessSettings, installHarness, runAdapter,
 ];
