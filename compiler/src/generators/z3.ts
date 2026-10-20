@@ -850,8 +850,10 @@ function convertToPrefix(expr: string): string {
   expr = wrapNotOperator(expr);
   expr = convertOp(expr, '=>', '=>');
   expr = convertOp(expr, 'distinct', 'distinct');
-  expr = convertOp(expr, 'and', 'and');
+  // Split on the loosest operator first: `or` before `and`, so
+  // `a or b and c` is (or a (and b c)), the usual precedence.
   expr = convertOp(expr, 'or', 'or');
+  expr = convertOp(expr, 'and', 'and');
   // Equality/relational operators are placeholder-tokenized (__EQ__ etc.) by
   // the time this runs — convert them here so parenthesized operands become
   // proper prefix forms instead of falling through to the escaped-infix

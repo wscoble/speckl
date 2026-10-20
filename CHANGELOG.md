@@ -65,6 +65,16 @@ First npm release. The package was renamed from the unpublished
   digest snapshot.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
+### Changed
+
+- **`and` binds tighter than `or`** (#17). `a or b and c` now means
+  `a or (b and c)` in the typed expression parser (used by the IR and by the
+  AST Z3 backend) and in the AST Z3 legacy translator. Before, both read it
+  as `(a or b) and c`, while the TypeScript, Go and Elm generators already
+  used the usual reading. None of the bundled examples mixes the two without
+  parentheses, so their output is unchanged. The precedence table is now in
+  SPEC.md section 2.9.
+
 ### Removed
 
 - **Elm `component` blocks** (#13). The component path in the Elm generator

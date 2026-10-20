@@ -14,7 +14,8 @@ import {
 const PREC = {
   LOWEST: 0,
   IMPLIES: 0.5,  // implies (lowest binary operator, right-associative)
-  LOGICAL: 1,    // or, and, ||, &&
+  OR: 1,         // or, ||
+  AND: 1.5,      // and, && (binds tighter than or)
   EQUALITY: 2,   // ==, !=
   COMPARISON: 3, // <, >, <=, >=
   SET: 4,        // in, notIn
@@ -30,14 +31,16 @@ function precOf(type: TokenType, value?: string): number {
   if (type === TokenType.IDENT) {
     switch (value) {
       case 'implies': return PREC.IMPLIES;
-      case 'or': case 'and': return PREC.LOGICAL;
+      case 'or': return PREC.OR;
+      case 'and': return PREC.AND;
       case 'in': case 'notIn': return PREC.SET;
       case 'not': return PREC.PREFIX;
       case 'union': return PREC.ADDITIVE;
     }
   }
   switch (type) {
-    case TokenType.DBLPIPE: case TokenType.DBLAMP: return PREC.LOGICAL;
+    case TokenType.DBLPIPE: return PREC.OR;
+    case TokenType.DBLAMP: return PREC.AND;
     case TokenType.EQ: case TokenType.NEQ: return PREC.EQUALITY;
     case TokenType.LT: case TokenType.GT:
     case TokenType.LTE: case TokenType.GTE: return PREC.COMPARISON;
