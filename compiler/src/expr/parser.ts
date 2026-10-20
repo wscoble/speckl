@@ -93,6 +93,16 @@ export class ExpressionParser {
     return this.expr(PREC.LOWEST);
   }
 
+  /** Like parse(), but throws if any input is left over. */
+  parseComplete(): Expr {
+    const e = this.expr(PREC.LOWEST);
+    const rest = this.current();
+    if (rest.type !== TokenType.EOF) {
+      throw new Error(`Unexpected ${rest.type} ('${rest.value}') at ${rest.line}:${rest.col}: trailing input not parsed`);
+    }
+    return e;
+  }
+
   /** Parse expression with given minimum precedence. */
   private expr(minPrec: number): Expr {
     const tok = this.advance();
@@ -429,4 +439,15 @@ export class ExpressionParser {
 export function parseExpression(src: string): Expr {
   const tokens = new Tokenizer(src).tokenize();
   return new ExpressionParser(tokens).parse();
+}
+
+/**
+ * Parse a whole SpeckDL expression string, failing on leftover input.
+ * parseExpression() stops at the first token it cannot continue with, so
+ * `P implies Q` comes back as `P`; callers that must not lose the tail (the
+ * Z3 backend) use this instead.
+ */
+export function parseExpressionComplete(src: string): Expr {
+  const tokens = new Tokenizer(src).tokenize();
+  return new ExpressionParser(tokens).parseComplete();
 }

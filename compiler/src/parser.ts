@@ -604,6 +604,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
       // Multi-line block: parse it and skip to its end
       const blockStartLine = i + 1;
       const member = parseMemberBlock(lines, i);
+      if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (closeCount < openCount) {
         const endIdx = findBlockEnd(lines, i + 1, braceCount + openCount);
         if (member) {
@@ -626,6 +627,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     // (e.g. constraint Name: forall r in [0..4]:, verify: always(implies(\n  ...\n)))
     if (line.startsWith('constraint ') || line.startsWith('verify ') || line.startsWith('verify:') || line.startsWith('constraint:')) {
       const member = parseMultiLineConstraintVerify(lines, i);
+      if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (member) {
         const constraintStartLine = i + 1;
         // Skip past the consumed continuation lines
@@ -678,6 +680,16 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
            license: metadata.license,
            k8sGroup: metadata.k8sGroup,
            k8sVersion: metadata.k8sVersion };
+}
+
+/**
+ * A `verify` line no form recognises is an error. It used to be dropped
+ * without a word, so the property was never checked and verification still
+ * passed.
+ */
+function unsupportedVerify(line: string, index: number): Error {
+  return new Error(`Parse error at line ${index + 1}: unsupported verify form "${line}" `
+    + '(use verify Always(InvariantName) { depth N }, verify "name" { expr } or verify: expr)');
 }
 
 function findBlockEnd(lines: string[], startIndex: number, startBraceCount: number): number {

@@ -4,7 +4,7 @@
 // value when downstream code re-exports it.
 export { Tokenizer, TokenType, tokenize } from './tokenizer.js';
 export type { Token } from './tokenizer.js';
-export { ExpressionParser, parseExpression } from './parser.js';
+export { ExpressionParser, parseExpression, parseExpressionComplete } from './parser.js';
 export * from './ast.js';
 export * from './stmt-ast.js';
 export { parseActionStatements } from './stmt-parser.js';
