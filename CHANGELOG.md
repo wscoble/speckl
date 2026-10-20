@@ -108,10 +108,18 @@ First npm release. The package was renamed from the unpublished
   Java form calls `SpecklRuntime.untranslated("<source>")`. An action
   containing such a statement throws `UnsupportedOperationException` before
   it reads or writes state. It used to skip the check or apply only part of
-  its effects. 60 of the 88 example processors fail closed this way today.
+  its effects. 62 of the 88 example processors fail closed this way today.
   The causes are spec forms the IR does not lower yet: `if` blocks, record
   literals, set literals and algebra, scalar type aliases, and dotted
   assignments.
+- **Parameterless actions had empty bodies in the IR** (#16). The IR found
+  action bodies by scanning the source for `action Name(`, so `action Approve {`
+  lowered with no statements. Every IR backend then saw an action with no
+  guard and no effect, for example a Camel processor that never checked its
+  `require`. This affected ToggleSwitch, TwoPhaseCommit, ReviewGate,
+  AgentPolicy and ClaudeCodePolicy. Bodies now come from the parser's line
+  range for each action. This also stops two specks in one file from sharing
+  the last same-named action's body.
 - **IR backends acted on truncated expressions** (#14). The IR's expression
   parser stopped at the first token it could not use (`P implies Q` became
   `P`, `x := a union {b}` swallowed the next statement, record constructors
