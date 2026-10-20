@@ -72,6 +72,10 @@ First npm release. The package was renamed from the unpublished
 
 ### Changed
 
+- **CI runs on GitHub-hosted runners** (#23). The self-hosted runner had stopped picking up jobs, so `ci.yml` now uses `ubuntu-latest`. It cancels a superseded run on the same ref and has two jobs:
+  - **build-and-test:** `npm ci`, build, `tsc --noEmit`, `npm test`, `npm run verify` against z3 5.1.0 (pinned by SHA-256 and cached), and coverage with its floors.
+  - **compile-targets:** installs and caches JDK 21, Go 1.23, stable Rust, protoc 28.3 and Elm 0.19.1, then runs `npm run test:compile`.
+
 - **`and` binds tighter than `or`** (#17). `a or b and c` now means
   `a or (b and c)` in the typed expression parser (used by the IR and by the
   AST Z3 backend) and in the AST Z3 legacy translator. Before, both read it
