@@ -1,5 +1,5 @@
 {
-  "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java) has no entries: all examples compile.",
+  "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java), Rust and Kubernetes have no entries: all examples compile.",
   "typescript": {
     "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(12,15): error TS2304: Cannot find name 'TokenType'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
@@ -21,23 +21,6 @@
     "tef": "./tef.go:305:73: syntax error: unexpected type, expected )",
     "TigerBeetleLedger": "./tiger_beetle_ledger.go:42:12: syntax error: unexpected name notIn, expected )",
     "TwoPhaseCommit": "./two_phase_commit.go:38:10: syntax error: unexpected name in, expected )"
-  },
-  "rust": {
-    "AccountLedger": "error: unknown start of token: \\",
-    "AgentPolicy": "error[E0425]: cannot find value `PrNeedsApproval` in this scope",
-    "ClaudeCodePolicy": "error: `and` is not a logical operator",
-    "KafkaKRaft": "error: expected type, found `=`",
-    "OAuth2AuthorizationCode": "error: expected one of `!`, `(`, `+`, `,`, `::`, `:`, `<`, `=`, or `>`, found `{`",
-    "Paxos": "error: mismatched closing delimiter: `}`",
-    "PreconditionTest": "error[E0425]: cannot find type `Boolean` in this scope",
-    "Raft": "error: `or` is not a logical operator",
-    "RetryHandler": "error: expected `{`, found keyword `return`",
-    "ReviewGate": "error[E0425]: cannot find value `MergeNeedsApproval` in this scope",
-    "SQLitePager": "error: `or` is not a logical operator",
-    "SQLiteWAL": "error: mismatched closing delimiter: `}`",
-    "tef": "error: expected identifier, found keyword `continue`",
-    "TigerBeetleLedger": "error: unexpected token: `...`",
-    "TwoPhaseCommit": "error: mismatched closing delimiter: `}`"
   },
   "elm": {
     "AccountLedger": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
