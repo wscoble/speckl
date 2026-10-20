@@ -211,6 +211,20 @@ speck ClaudeCodePolicy {
             map exec command ~ "git commit -m \"[^\"]*\"" -> request_review
             map exec command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
         }
+
+        // Cline (CLI 3.x and the VS Code extension). run_commands maps only
+        // when it carries a single plain command; a shell result counts as a
+        // success only when every command entry reports success: true.
+        harness cline {
+            map editor -> edit_code { path = path }
+            map apply_patch -> edit_code { path = path }
+            map read_files|search_codebase -> inspect
+            map run_commands command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map run_commands command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map run_commands command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map run_commands command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map run_commands command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
     }
 
     next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect

@@ -1,0 +1,20 @@
+{
+  "clineVersion": "0.0.0",
+  "hookName": "PreToolUse",
+  "timestamp": "1792455544129",
+  "taskId": "1792455544000",
+  "workspaceRoots": [
+    "__PROJECT__"
+  ],
+  "userId": "u-1",
+  "model": {
+    "provider": "unknown",
+    "slug": "unknown"
+  },
+  "preToolUse": {
+    "toolName": "read_files",
+    "parameters": {
+      "files": "[\".speckl/state.json\"]"
+    }
+  }
+}

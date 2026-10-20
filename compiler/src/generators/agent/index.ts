@@ -17,7 +17,7 @@ import { emitCliVerifier, emitFileDropVerifier } from './verifier-templates.js';
 import { stripTypes } from './strip-types.js';
 import { emitStateIntegrityMjs } from './state-integrity-template.js';
 import { emitAdapterMjs } from './adapter-template.js';
-import { buildHarnessHooks, harnessConfigFile, harnessProtectedDirs, hermesYaml, pluginFiles, HarnessRule } from './harness-runtime.js';
+import { buildHarnessHooks, harnessConfigFile, harnessProtectedDirs, hermesYaml, pluginFiles, clineScripts, HarnessRule } from './harness-runtime.js';
 
 /** Default for `pending timeout` when the spec does not declare one. */
 export const DEFAULT_PENDING_TIMEOUT_MS = 10 * 60_000;
@@ -231,6 +231,11 @@ function emitHarnessFiles(speckName: string, agentDir: string, harness: Record<s
       // Reference copy of the plugin `install` writes (with absolute paths and
       // --project); relative paths here resolve from the plugin's install location.
       for (const [f, text] of Object.entries(pluginFiles(name, hooks))) fs.writeFileSync(path.join(dir, f), text);
+      continue;
+    }
+    if (name === 'cline') {
+      // Reference copies of the executable .clinerules/hooks/ scripts.
+      for (const [f, text] of Object.entries(clineScripts(hooks))) fs.writeFileSync(path.join(dir, f), text, { mode: 0o755 });
       continue;
     }
     fs.writeFileSync(path.join(dir, file), name === 'hermes' ? hermesYaml(hooks) : JSON.stringify(hooks, null, 2) + '\n');
