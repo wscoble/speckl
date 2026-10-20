@@ -62,8 +62,7 @@ First npm release. The package was renamed from the unpublished
 
 - **Elm `component` blocks** (#13). The component path in the Elm generator
   and parser had no users. A `component` block is now a parse error
-  ("component blocks are no longer supported") instead of silently
-  generating code. The Go generator's `COND-GUARD` debug print and the unused
+  ("component blocks are no longer supported"). The Go generator's `COND-GUARD` debug print and the unused
   `lowerParserActionStatement` are gone too. Generated output for all
   examples is byte-identical, and the coverage floor rises to 88% lines and
   statements, 86% branches and 97% functions.
