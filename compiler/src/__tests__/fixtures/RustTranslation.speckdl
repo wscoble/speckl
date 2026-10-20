@@ -1,0 +1,110 @@
+// Fixture for the Rust target: one action per translatable form, plus
+// forms that must fail closed. Compiled with cargo by compiles-rust.test.ts.
+speck RustTranslation {
+    interface Phase {
+        Draft
+        Review
+        Done
+    }
+
+    type Account = {
+        owner: String,
+        balance: Int,
+        phase: Phase
+    }
+
+    state {
+        phase: Phase
+        count: Nat
+        delta: Int
+        ratio: Real
+        label: String
+        open: Bool
+        accounts: Map(String, Account)
+        balances: Map(Nat, Int)
+        seen: List(Nat)
+        tags: Set(String)
+        owner: Option(String)
+        type: Nat
+        ticket: Ticket
+        meta: { createdBy: String, revision: Nat }
+    }
+
+    init {
+        phase := Draft
+        count := 0
+        delta := -1
+        ratio := 0.5
+        label := "start"
+        open := true
+        tags := emptySet()
+        owner := nil
+        type := count + 1
+    }
+
+    event Moved {
+        from: Nat,
+        to: Nat,
+        note: String
+    }
+
+    invariant CountBounded {
+        count <= 1000 and type >= 0
+    }
+
+    constraint: ratio >= 0.0 and label != ""
+
+    verify Always(CountBounded) { depth 3 }
+
+    verify "progress" { eventually(count > 0) }
+
+    action Advance(step: Nat) {
+        require phase == Draft
+        require step > 0 and step <= 10
+        count := count + step
+        delta := delta - step
+        ratio := ratio * 2.0 + count
+        label := label + "-" + count
+        phase := Review
+        emit Moved { from: count - step, to: count, note: label }
+        postcondition: count >= old(count)
+    }
+
+    action Credit(who: String, amount: Int) {
+        require has(accounts, who)
+        require who in accounts.keys
+        let a := accounts[who]
+        require a.phase != Done
+        balances[count] := amount
+        seen := append(seen, count)
+        seen[0] := count
+        open := amount <= 100 or -amount > 5
+        owner := who
+    }
+
+    action Check(id: Nat) {
+        require id in seen
+        require id notIn balances.keys
+        require length(label) >= 1 implies open
+        require owner != nil
+        require contains(tags, "x") or tags == emptySet()
+        return max(id, count)
+    }
+
+    action Reset() {
+        tags := emptySet()
+        count := 0
+        owner := nil
+    }
+
+    action Unsupported(id: Nat) {
+        require count >= 0
+        seen := seen union { id }
+        if id > 100 {
+            open := false
+        }
+        count := count + 1
+    }
+
+    next: Advance | Credit | Check | Reset | Unsupported
+}

@@ -7,7 +7,7 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
 ```
 .speckdl spec ──→ TypeScript          ← typed, importable state machine classes  ✓ tested
               ├── Z3 SMT-LIB2         ← formal verification (bounded model checking)  ✓ verified in CI
-              ├── Rust                ← state machine structs and enums  ✓ generated (text-tested)
+              ├── Rust                ← state machine crate  ✓ cargo check on every example
               ├── Protobuf            ← message definitions  ✓ tested
               ├── K8s CRDs            ← Kubernetes custom resources  ✓ tested
               ├── OpenAPI 3.1         ← REST API surface  ✓ tested
@@ -131,10 +131,10 @@ Browse all in [examples/](examples/).
 ## Status
 
 - About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
-- Compile tests run against every example (see [Compile tests](#compile-tests)). Camel and Kubernetes CRDs pass for all 16 examples. The other targets have known failures recorded in `examples/.speckl-compile-baseline.json`.
+- Compile tests run against every example (see [Compile tests](#compile-tests)). Camel, Rust and Kubernetes CRDs pass for all 16 examples. The other targets have known failures recorded in `examples/.speckl-compile-baseline.json`.
 - `npm run verify` compiles every example and checks it with Z3. Today: 48 of 79 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
 - CI (`.github/workflows/ci.yml`) runs on a self-hosted runner, which is not currently picking up jobs. Until it is, the checks above are run locally before merging.
-- Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust (generated-text tested)
+- Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust, Camel
 - Round-trip property tested: parse → print → parse is identity for all examples
 - Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments
 - Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed. Today 3 of 34 example verify blocks are proven (AgentPolicy ×2, ReviewGate); the other 31 are listed in `examples/.speckl-unchecked.json`
