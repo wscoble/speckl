@@ -16,10 +16,10 @@ export default defineConfig({
       // fails `npm run coverage`. Raise it as coverage improves; never lower
       // it to make a change pass.
       thresholds: {
-        lines: 80,
-        statements: 80,
-        branches: 85,
-        functions: 95,
+        lines: 88,
+        statements: 88,
+        branches: 86,
+        functions: 97,
       },
     },
   },
