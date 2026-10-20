@@ -62,6 +62,19 @@ Each generated `.smt2` file carries a `; speckl-expect:` marker declaring what t
 
 Requires the `z3` binary (`pacman -S z3`, `apt-get install z3`, or set `Z3_BIN`).
 
+## Compile tests
+
+Generated code is fed to real compilers. `src/__tests__/compiles-*.test.ts` compiles the output for every example:
+
+| Target | Checked with | Toolchain |
+|---|---|---|
+| Camel (Java) | `javac --release 21` against Camel 4.8.0 and Jakarta CDI/Inject APIs | JDK 21+, plus the pinned jars |
+
+The jars are pinned by SHA-256 in `compiler/scripts/fetch-compile-deps.mjs`. `node scripts/fetch-compile-deps.mjs` downloads them once into `compiler/.cache/compile-deps`, or into `$SPECKL_COMPILE_DEPS_DIR` if set. The tests themselves never use the network.
+
+- `npm test` runs these tests when the toolchain is present. If it is missing, it prints a warning and the test group's name reads `SKIPPED: <reason>`.
+- `npm run test:compile` fetches the pinned files if they are missing, then runs only the compile tests. Here a missing toolchain is a **failure**. Use it before a release or in CI.
+
 ## Quick Start
 
 ```bash
@@ -108,6 +121,7 @@ Browse all in [examples/](examples/).
 ## Status
 
 - About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
+- Every example's generated Camel project compiles with `javac` (see [Compile tests](#compile-tests)).
 - `npm run verify` compiles every example and checks it with Z3. Today: 48 of 79 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
 - CI (`.github/workflows/ci.yml`) runs on a self-hosted runner, which is not currently picking up jobs. Until it is, the checks above are run locally before merging.
 - Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust (generated-text tested)

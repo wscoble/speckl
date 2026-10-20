@@ -278,6 +278,8 @@ export interface IRStmt {
   kind: 'assign' | 'let' | 'require' | 'precondition' | 'postcondition' | 'emit' | 'return' | 'if';
   // For 'assign'
   target?: string;
+  /** For `m[k] := v` (target `m[...]`): the key expression `k`. */
+  targetIndex?: IRExpr;
   // For 'let'
   letName?: string;
   // For 'emit'
