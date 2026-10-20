@@ -336,3 +336,102 @@ describe('Kiro wiring (real-format payloads through .kiro/hooks/speckl.json; not
     } finally { writeFileSync(cfg, goodCfg); }
   }, 60_000);
 });
+
+describe('Windsurf / Devin Desktop wiring (real-format payloads through .devin/hooks.json; not live-tested)', () => {
+  let ctx: ReturnType<typeof setup>;
+  let hooks: Record<string, { command: string; powershell?: string }[]>;
+  beforeAll(() => {
+    ctx = setup('windsurf');
+    hooks = JSON.parse(readFileSync(join(ctx.project, '.devin', 'hooks.json'), 'utf-8')).hooks;
+  }, 60_000);
+  // Cascade runs `bash -c <command>` from the workspace root, payload on stdin.
+  const bash = (command: string, payload: string, env: Record<string, string> = {}) => {
+    const r = spawnSync('/bin/bash', ['-c', command], { cwd: ctx.project, input: payload, encoding: 'utf-8', env: { ...process.env, SPECKL_STATE_KEY_FILE: '', ...env } });
+    return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+  };
+  const send = (name: string, env: Record<string, string> = {}) => {
+    const text = fixtureText('windsurf', name, ctx.project);
+    const ev = JSON.parse(text).agent_action_name as string;
+    return bash(hooks[ev][0].command, text, env);
+  };
+  const allow = (name: string) => { const r = send(name); expect(r.status, r.stderr).toBe(0); expect(r.stdout).toBe(''); };
+  const deny = (name: string, re: RegExp) => { const r = send(name); expect(r.status).toBe(2); expect(r.stdout).toBe(''); expect(r.stderr).toMatch(re); };
+  const posted = (name: string) => { const r = send(name); expect(r.status, r.stderr).toBe(0); expect(r.stdout).toBe(''); };
+
+  it('writes the same hooks to .devin/hooks.json and the legacy .windsurf/hooks.json', () => {
+    expect(readFileSync(join(ctx.project, '.windsurf', 'hooks.json'), 'utf-8')).toBe(readFileSync(join(ctx.project, '.devin', 'hooks.json'), 'utf-8'));
+    expect(hooks.pre_run_command[0].command).toMatch(/^\[ "\$\(node \S+adapter\.mjs windsurf pre .*--project \S+\)" = '\{"decision":"allow"\}' \] \|\| exit 2$/);
+    expect(hooks.pre_run_command[0].powershell).toMatch(/exit 2$/);
+    expect(ctx.inst.stdout).toContain('Restricted Mode');
+  });
+
+  it('walks write → terminal test (never counts) → MCP test → MCP review → HNTL → approval → MCP PR', () => {
+    allow('pre-write');
+    posted('post-write');
+    expect(stateOf(ctx.project).pending).toBeNull();
+    allow('pre-run-npm-test');
+    const t = send('post-run-npm-test');
+    expect(t.status).toBe(2);
+    expect(t.stderr).toMatch(/Cascade does not report a command's exit status/);
+    expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
+    deny('pre-mcp-request-review', /can\(\) refused/);
+    allow('pre-mcp-run-tests');
+    posted('post-mcp-run-tests');
+    expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 1, testsPassed: true });
+    allow('pre-mcp-request-review');
+    posted('post-mcp-request-review');
+    expect(stateOf(ctx.project).machine.state.stage).toBe(2);
+    deny('pre-mcp-create-pr', /HNTL/);
+    allow('pre-read');
+    posted('post-read');
+    deny('pre-read-state', /Speckl-protected path/);
+    deny('pre-write-hooks', /Speckl-protected path/);
+    deny('pre-unmapped', /unmapped harness tool "mcp__web__fetch"/);
+    deny('pre-run-chained', /shell control characters/);
+    deny('pre-run-elsewhere', /sets cwd "\/tmp"/);
+    approve(ctx);
+    // A call that never reports is recorded as failed on the next prompt.
+    allow('pre-mcp-create-pr');
+    const p = send('pre-user-prompt');
+    expect(p).toMatchObject({ status: 0, stdout: '' });
+    expect(stateOf(ctx.project).pending).toBeNull();
+    allow('pre-mcp-create-pr');
+    posted('post-mcp-create-pr');
+    expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 5, prFromApproved: true });
+  }, 120_000);
+
+  it('crash, exit 1, malformed output, SIGKILL, timeout, broken adapter, corrupt config, bad payloads and missing node all exit 2; the prompt hook never blocks', () => {
+    const hook = join(ctx.project, '.speckl', 'agent', 'hook.mjs');
+    const good = readFileSync(hook, 'utf-8');
+    try {
+      for (const [name, body] of Object.entries(BROKEN_HOOK)) {
+        writeFileSync(hook, body);
+        const r = send('pre-read', { SPECKL_HOOK_TIMEOUT_MS: '700' });
+        expect(r.status, `${name}: ${r.stderr}`).toBe(2);
+        expect(r.stderr, name).toMatch(/Speckl denied read_code/);
+      }
+    } finally { writeFileSync(hook, good); }
+    const a = join(ctx.project, '.speckl', 'agent', 'adapter.mjs');
+    copyFileSync(a, a + '.good');
+    try {
+      for (const [name, body] of Object.entries(BROKEN_ADAPTER)) {
+        writeFileSync(a, body);
+        expect(send('pre-read').status, name).toBe(2);
+        expect(send('pre-user-prompt').status, name).toBe(0);
+      }
+    } finally { copyFileSync(a + '.good', a); }
+    expect(send('pre-read', { PATH: '/nonexistent' }).status).toBe(2);
+    for (const bad of ['', 'not json', '[]', '{"agent_action_name":"post_read_code"}']) {
+      expect(bash(hooks.pre_read_code[0].command, bad).status, bad).toBe(2);
+    }
+    const cfg = join(ctx.project, '.speckl', 'agent', 'agent-config.json');
+    const goodCfg = readFileSync(cfg, 'utf-8');
+    try {
+      writeFileSync(cfg, '{corrupt');
+      const r = send('pre-read');
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('Speckl adapter error');
+      expect(send('pre-user-prompt')).toMatchObject({ status: 0, stdout: '' });
+    } finally { writeFileSync(cfg, goodCfg); }
+  }, 60_000);
+});

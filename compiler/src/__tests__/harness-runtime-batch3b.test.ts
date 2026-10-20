@@ -260,3 +260,82 @@ describe('kiro', () => {
     expect(runAdapter(argv('kiro', 'turn-end'), {}, 'garbage', kconfig, d)).toMatchObject({ code: 0, stdout: '' });
   });
 });
+
+describe('windsurf', () => {
+  const wrules: HarnessRule[] = [
+    { tools: ['run_command'], field: 'command', pattern: 'npm test', target: 'run_tests', inputs: [] },
+    { tools: ['write_code'], target: 'edit_code', inputs: [{ param: 'path', field: 'file_path' }] },
+  ];
+  const wconfig = { harness: { windsurf: { rules: wrules } } };
+  it('events, config files, protected paths', () => {
+    expect(['pre', 'post', 'post-failure', 'turn-end'].map(e => harnessEventName('windsurf', e))).toEqual(['pre_tool', 'post_tool', null, 'pre_user_prompt']);
+    expect(harnessConfigFile('windsurf')).toBe('.devin/hooks.json');
+    expect(harnessProtectedDirs(['windsurf']).slice(4)).toEqual(['.devin', '.windsurf']);
+  });
+  it('normalizes every tool event to a synthetic tool name and input', () => {
+    const n = (ev: string, info: unknown) => normalizePayload('windsurf', { agent_action_name: ev, trajectory_id: 't', tool_info: info });
+    expect(n('pre_read_code', { file_path: '/p/a' })).toMatchObject({ hook_event_name: 'pre_tool', tool_name: 'read_code', tool_input: { file_path: '/p/a' }, session_id: 't' });
+    expect(n('post_write_code', { file_path: '/p/a', edits: [] })).toMatchObject({ hook_event_name: 'post_tool', tool_name: 'write_code' });
+    expect(n('pre_run_command', { command_line: 'npm test', cwd: '/p', command: 'spoof' }).tool_input).toEqual({ command_line: 'npm test', cwd: '/p', command: 'npm test' });
+    expect(n('pre_run_command', { cwd: '/p', command: 'spoof' }).tool_input).toEqual({ cwd: '/p' });
+    expect(n('pre_mcp_tool_use', { mcp_server_name: 'ci', mcp_tool_name: 'run_tests', mcp_tool_arguments: { a: 1 } })).toMatchObject({ tool_name: 'mcp__ci__run_tests', tool_input: { a: 1 } });
+    expect(n('post_mcp_tool_use', { mcp_server_name: 'ci', mcp_tool_name: 'x' }).tool_input).toEqual({});
+    expect(n('pre_mcp_tool_use', { mcp_tool_name: 'x' }).tool_name).toBeNull();
+    expect(n('pre_user_prompt', { user_prompt: 'hi' })).toMatchObject({ hook_event_name: 'pre_user_prompt' });
+    expect(n('pre_user_prompt', {}).tool_name).toBeUndefined();
+    expect(normalizePayload('windsurf', {}).hook_event_name).toBeNull();
+    expect(harnessCallId('windsurf', n('pre_read_code', {}))).toBe(harnessCallId('windsurf', n('post_read_code', {})));
+  });
+  it('postSucceeded: reads, writes and MCP calls count; a terminal command never does', () => {
+    for (const t of ['read_code', 'write_code', 'mcp__ci__run_tests']) expect(postSucceeded('windsurf', 'post', { tool_name: t })).toBe(true);
+    expect(postSucceeded('windsurf', 'post', { tool_name: 'run_command' })).toBe(false);
+    expect(postSucceeded('windsurf', 'post', { tool_name: null })).toBe(false);
+    expect(postSucceeded('windsurf', 'post', {})).toBe(false);
+  });
+  it('builds pre hooks that need an explicit allow and block on Windows; turn-end never blocks', () => {
+    const h = buildHarnessHooks('windsurf', { adapter: '/a.mjs', state: '/s', key: null, relative: false, project: '/p' }) as any;
+    expect(Object.keys(h.hooks)).toEqual(['pre_read_code', 'pre_write_code', 'pre_run_command', 'pre_mcp_tool_use', 'post_read_code', 'post_write_code', 'post_run_command', 'post_mcp_tool_use', 'pre_user_prompt']);
+    expect(h.hooks.pre_run_command[0]).toEqual({
+      command: '[ "$(node /a.mjs windsurf pre --state /s --project /p)" = \'{"decision":"allow"}\' ] || exit 2',
+      powershell: "[Console]::Error.WriteLine('Speckl: the generated Cascade hooks support macOS and Linux only; blocking.'); exit 2",
+      show_output: false,
+    });
+    expect(h.hooks.post_run_command[0]).toEqual({ command: 'node /a.mjs windsurf post --state /s --project /p', show_output: false });
+    expect(h.hooks.pre_user_prompt[0].command).toBe('node /a.mjs windsurf turn-end --state /s --project /p || true');
+  });
+  it('install merges into .devin/hooks.json and .windsurf/hooks.json, keeping other hooks', () => {
+    const mine = { command: 'python3 log.py', show_output: true };
+    const d = fakeDeps({ '/p/.devin/hooks.json': JSON.stringify({ hooks: { pre_run_command: [mine] } }) });
+    const r = installHarness('windsurf', { project: '.', state: '.speckl/state.json', key: '/k' }, d);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain('/p/.devin/hooks.json and /p/.windsurf/hooks.json');
+    expect(r.stdout).toContain('Restricted Mode');
+    expect(installHarness('windsurf', { project: '.', state: '.speckl/state.json', key: '/k' }, d).code).toBe(0);
+    const devin = JSON.parse(d.files['/p/.devin/hooks.json']);
+    expect(devin.hooks.pre_run_command).toHaveLength(2);
+    expect(devin.hooks.pre_run_command[0]).toEqual(mine);
+    expect(JSON.parse(d.files['/p/.windsurf/hooks.json']).hooks.pre_write_code).toHaveLength(1);
+    for (const bad of ['{nope', '[]']) {
+      const d2 = fakeDeps({ '/p/.windsurf/hooks.json': bad });
+      const r2 = installHarness('windsurf', { project: '.', state: '.speckl/state.json' }, d2);
+      expect(r2.code).toBe(1);
+      expect(r2.stderr).toMatch(/\.windsurf\/hooks\.json is not (valid JSON|a JSON object)/);
+      expect(d2.files['/p/.devin/hooks.json']).toBeUndefined();
+    }
+  });
+  it('runAdapter: a terminal command is recorded as not successful with a note; cwd elsewhere is denied', () => {
+    const d = fakeDeps();
+    const send = (ev: string, info: unknown, adapterEv = ev.startsWith('pre') ? 'pre' : 'post') => runAdapter(argv('windsurf', adapterEv), {}, JSON.stringify({ agent_action_name: ev, trajectory_id: 't', tool_info: info }), wconfig, d);
+    expect(send('pre_run_command', { command_line: 'npm test', cwd: '/p' })).toEqual({ code: 0, stdout: '{"decision":"allow"}\n', stderr: '' });
+    const post = send('post_run_command', { command_line: 'npm test', cwd: '/p' });
+    expect(post.code).toBe(2);
+    expect(post.stderr).toMatch(/Cascade does not report a command's exit status/);
+    expect(d.calls.at(-1).msg.ok).toBe(false);
+    expect(send('post_write_code', { file_path: '/p/a' })).toEqual({ code: 0, stdout: '', stderr: '' });
+    const out = send('pre_run_command', { command_line: 'npm test', cwd: '/elsewhere' });
+    expect(out).toMatchObject({ code: 2, stdout: '' });
+    expect(out.stderr).toMatch(/sets cwd "\/elsewhere"/);
+    expect(send('pre_user_prompt', {}, 'pre').code).toBe(2);
+    expect(send('pre_user_prompt', {}, 'turn-end')).toEqual({ code: 0, stdout: '', stderr: '' });
+  });
+});

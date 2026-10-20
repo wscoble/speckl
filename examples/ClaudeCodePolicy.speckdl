@@ -238,6 +238,24 @@ speck ClaudeCodePolicy {
             map execute_bash|shell command ~ "git commit -m \"[^\"]*\"" -> request_review
             map execute_bash|shell command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
         }
+
+        // Windsurf / Devin Desktop Cascade hooks. Each hook event is one kind
+        // of action (read_code, write_code, run_command, mcp__<server>__<tool>).
+        // Cascade reports no exit status for a terminal command, so a
+        // run_command never advances the policy: tests and pushes must go
+        // through MCP tools to count.
+        harness windsurf {
+            map write_code -> edit_code { path = file_path }
+            map read_code -> read_file { path = file_path }
+            map mcp__ci__run_tests -> run_tests
+            map mcp__ci__request_review -> request_review
+            map mcp__github__create_pull_request -> open_pr
+            map run_command command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map run_command command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map run_command command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map run_command command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map run_command command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
     }
 
     next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect

@@ -1,6 +1,6 @@
 // Harness adapter runtime: pure functions that turn a real agent harness's
 // hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI,
-// Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro) into a call to the generic
+// Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro, Windsurf) into a call to the generic
 // hook.mjs, and hook.mjs's verdict back into the harness's expected output.
 // Pi, OpenCode and OpenClaw have in-process plugin APIs instead of command
 // hooks; `install` writes a small generated plugin (pluginSource) that pipes
@@ -228,10 +228,10 @@ export function formatPre(harness: string, allow: boolean, message: string): Ada
     if (allow) return { code: 0, stdout: JSON.stringify({ decision: 'allow' }) + '\n', stderr: '' };
     return { code: 2, stdout: JSON.stringify({ decision: 'block', reason: message }) + '\n', stderr: message + '\n' };
   }
-  // Kiro: exit 2 blocks and sends stderr to the model; stdout is ignored.
-  // The generated command allows only when the adapter prints exactly
-  // {"decision":"allow"}, so a broken adapter that exits 0 still blocks.
-  if (harness === 'kiro') {
+  // Kiro and Windsurf: exit 2 blocks and sends stderr to the model; stdout
+  // is ignored. The generated command allows only when the adapter prints
+  // exactly {"decision":"allow"}, so a broken adapter that exits 0 still blocks.
+  if (harness === 'kiro' || harness === 'windsurf') {
     if (allow) return { code: 0, stdout: JSON.stringify({ decision: 'allow' }) + '\n', stderr: '' };
     return { code: 2, stdout: '', stderr: message + '\n' };
   }
@@ -387,6 +387,13 @@ export function postSucceeded(harness: string, event: string, payload: Record<st
     }
     return true;
   }
+  if (harness === 'windsurf') {
+    // Cascade runs post_read_code / post_mcp_tool_use only after a
+    // successful read or MCP call, and post_write_code after the write.
+    // post_run_command carries the command line and cwd only, without an
+    // exit status, so a terminal command never counts as a success.
+    return toolName !== 'run_command' && typeof toolName === 'string' && toolName !== '';
+  }
   if (harness === 'kiro') {
     // Kiro sends tool_response with no success flag: prose such as
     // "Output:\n...\nExit Code: 0", "Created the file." or "Replaced text in
@@ -477,6 +484,9 @@ export function harnessEventName(harness: string, event: string): string | null 
     openclaw: { pre: 'before_tool_call', post: 'after_tool_call', 'turn-end': 'session_end' },
     cline: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'TaskComplete' },
     kiro: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'Stop' },
+    // pre_tool / post_tool stand for every pre_* / post_* tool event
+    // (normalizePayload); turn-end runs on the next pre_user_prompt.
+    windsurf: { pre: 'pre_tool', post: 'post_tool', 'turn-end': 'pre_user_prompt' },
   };
   const h = names[harness];
   return h && h[event] ? h[event] : null;
@@ -531,7 +541,7 @@ export function harnessCallId(harness: string, payload: Record<string, unknown>)
   const given = payload.tool_use_id;
   if (harness === 'copilot' && typeof given === 'string' && given !== '') return given;
   if (harness === 'cline' && typeof given === 'string' && given !== '') return given;
-  if (harness === 'gemini' || harness === 'copilot' || harness === 'cline' || harness === 'kiro') {
+  if (harness === 'gemini' || harness === 'copilot' || harness === 'cline' || harness === 'kiro' || harness === 'windsurf') {
     if (typeof payload.tool_name !== 'string' || payload.tool_name === '') return null;
     const text = String(payload.session_id ?? '') + '\u0000' + payload.tool_name;
     let h = 0x811c9dc5;
@@ -562,6 +572,8 @@ export function harnessConfigFile(harness: string): string {
     // Executable hook scripts named after the event (clineScripts).
     cline: '.clinerules/hooks/PreToolUse',
     kiro: '.kiro/hooks/speckl.json',
+    // install also writes the legacy .windsurf/hooks.json for older releases.
+    windsurf: '.devin/hooks.json',
   };
   return files[harness] || '';
 }
@@ -578,6 +590,7 @@ export function harnessProtectedDirs(harnesses: string[]): string[] {
     openclaw: ['.openclaw'],
     cline: ['.clinerules/hooks', '.cline'],
     kiro: ['.kiro/hooks', '.kiro/agents', '.kiro/settings'],
+    windsurf: ['.devin', '.windsurf'],
   };
   for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
   return dirs;
@@ -652,6 +665,32 @@ export function normalizePayload(harness: string, payload: Record<string, unknow
     // CLI 2.x agent hooks use camelCase event names.
     const legacy: Record<string, string> = { preToolUse: 'PreToolUse', postToolUse: 'PostToolUse', stop: 'Stop' };
     if (typeof p.hook_event_name === 'string' && legacy[p.hook_event_name]) p.hook_event_name = legacy[p.hook_event_name];
+  }
+  if (harness === 'windsurf') {
+    // {agent_action_name, trajectory_id, execution_id, timestamp, model_name,
+    // tool_info}. Each event names one kind of action, so the tool name is
+    // synthetic: read_code, write_code, run_command, or mcp__<server>__<tool>.
+    const name = typeof p.agent_action_name === 'string' ? p.agent_action_name : '';
+    const kind = /^(pre|post)_(read_code|write_code|run_command|mcp_tool_use)$/.exec(name);
+    if (p.hook_event_name === undefined) p.hook_event_name = kind ? kind[1] + '_tool' : (name || null);
+    const info = obj(p.tool_info);
+    if (kind && p.tool_name === undefined) {
+      if (kind[2] === 'mcp_tool_use') {
+        const server = typeof info.mcp_server_name === 'string' ? info.mcp_server_name : '';
+        const tool = typeof info.mcp_tool_name === 'string' ? info.mcp_tool_name : '';
+        p.tool_name = server && tool ? 'mcp__' + server + '__' + tool : null;
+      } else p.tool_name = kind[2];
+    }
+    if (kind && p.tool_input === undefined) {
+      if (kind[2] === 'mcp_tool_use') p.tool_input = info.mcp_tool_arguments === undefined ? {} : info.mcp_tool_arguments;
+      else if (kind[2] === 'run_command') {
+        const t: Record<string, unknown> = { ...info };
+        delete t.command;
+        if (typeof info.command_line === 'string') t.command = info.command_line;
+        p.tool_input = t;
+      } else p.tool_input = p.tool_info;
+    }
+    if (p.session_id === undefined) p.session_id = p.trajectory_id;
   }
   if (harness === 'cline') {
     // CLI / SDK: {hookName: "tool_call"|"tool_result"|"agent_end"|..., taskId,
@@ -777,6 +816,25 @@ export function buildHarnessHooks(
     if (paths.project) argv.push('--project', paths.project);
     if (paths.outsideAllow) argv.push('--outside', 'allow');
     return { plugin: harness, argv, relative: paths.relative };
+  }
+  if (harness === 'windsurf') {
+    // Cascade hooks (.devin/hooks.json, legacy .windsurf/hooks.json): run
+    // with `bash -c`; only exit 2 blocks a pre_* hook (stderr goes to the
+    // agent), so the pre command exits 2 unless the adapter printed exactly
+    // {"decision":"allow"}. On Windows Cascade runs `powershell` instead
+    // (or `command` through PowerShell, where this sh syntax would fail
+    // open), so the pre hooks' `powershell` command always blocks.
+    const allowCmd = (event: string) => '[ "$(' + cmd(event) + ')" = \'{"decision":"allow"}\' ] || exit 2';
+    const winBlock = "[Console]::Error.WriteLine('Speckl: the generated Cascade hooks support macOS and Linux only; blocking.'); exit 2";
+    const pre = [{ command: allowCmd('pre'), powershell: winBlock, show_output: false }];
+    const post = [{ command: cmd('post'), show_output: false }];
+    return {
+      hooks: {
+        pre_read_code: pre, pre_write_code: pre, pre_run_command: pre, pre_mcp_tool_use: pre,
+        post_read_code: post, post_write_code: post, post_run_command: post, post_mcp_tool_use: post,
+        pre_user_prompt: [{ command: cmd('turn-end') + ' || true', show_output: false }],
+      },
+    };
   }
   if (harness === 'kiro') {
     // .kiro/hooks/speckl.json (IDE 1.x and CLI V3). Only exit 2 blocks a
@@ -1237,14 +1295,30 @@ export function installHarness(harness: string, flags: Record<string, string>, d
       return { code: 1, stdout: '', stderr: target + ' is not a JSON object; not touching it\n' };
     }
   }
+  const extraTargets: { path: string; settings: Record<string, unknown> }[] = [];
+  if (harness === 'windsurf') {
+    // Older Windsurf releases read only .windsurf/hooks.json; current ones read
+    // it only when .devin/hooks.json is absent or empty, so both get the hooks.
+    const legacy = deps.resolvePath(project, '.windsurf/hooks.json');
+    const lt = deps.readFile(legacy);
+    let le: Record<string, unknown> = {};
+    if (lt !== null && lt.trim() !== '') {
+      try { le = JSON.parse(lt); } catch { return { code: 1, stdout: '', stderr: legacy + ' is not valid JSON; not touching it\n' }; }
+      if (!le || typeof le !== 'object' || Array.isArray(le)) return { code: 1, stdout: '', stderr: legacy + ' is not a JSON object; not touching it\n' };
+    }
+    extraTargets.push({ path: legacy, settings: mergeHarnessSettings(harness, le, ours) });
+  }
   const merged = mergeHarnessSettings(harness, existing, ours);
   deps.writeFile(target, JSON.stringify(merged, null, 2) + '\n');
+  for (const x of extraTargets) deps.writeFile(x.path, JSON.stringify(x.settings, null, 2) + '\n');
   if (harness === 'goose') {
     // The plugin manifest next to hooks/ makes the directory a Goose plugin.
     const manifest = { name: pluginName, version: '1.0.0', description: 'Speckl rails for ' + project + ': every tool call is checked against the compiled policy (fail closed).' };
     deps.writeFile(deps.resolvePath(pluginDir, 'plugin.json'), JSON.stringify(manifest, null, 2) + '\n');
   }
-  return { code: 0, stdout: 'Speckl ' + harness + ' hooks written to ' + target + '\n', stderr: warn };
+  const also = extraTargets.length ? ' and ' + extraTargets.map(x => x.path).join(', ') : '';
+  const note = harness === 'windsurf' ? 'Cascade does not run hooks while the workspace is in Restricted Mode: trust the workspace.\n' : '';
+  return { code: 0, stdout: 'Speckl ' + harness + ' hooks written to ' + target + also + '\n' + note, stderr: warn };
 }
 
 /**
@@ -1430,9 +1504,9 @@ export function runAdapter(
     // OpenCode bash and OpenClaw exec take a workdir, Kiro shell tools a cwd: a mapped command run
     // elsewhere (`npm test` in another checkout) would advance the policy
     // on someone else's result, so only the project root is accepted.
-    const wdField = harness === 'kiro' ? 'cwd' : 'workdir';
+    const wdField = harness === 'kiro' || harness === 'windsurf' ? 'cwd' : 'workdir';
     const wd = pin.input[wdField];
-    if ((harness === 'opencode' || harness === 'openclaw' || harness === 'kiro') && wd !== undefined && wd !== null && wd !== '') {
+    if ((harness === 'opencode' || harness === 'openclaw' || harness === 'kiro' || harness === 'windsurf') && wd !== undefined && wd !== null && wd !== '') {
       if (typeof wd !== 'string' || deps.resolvePath(callCwd, wd) !== deps.resolvePath(projectDir, '.')) {
         return fail(label + ' sets ' + wdField + ' ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')');
       }
@@ -1452,6 +1526,9 @@ export function runAdapter(
   }
   const ok = postSucceeded(harness, event, payload);
   const r = interpretHook(deps.runHook('post', { tool: m.tool, input: m.input, call_id: callId, ok }, stateAbs, keyAbs));
+  if (r.allow && harness === 'windsurf' && toolName === 'run_command') {
+    return formatPost(harness, 'Speckl recorded ' + label + ' (spec tool ' + m.tool + ') as not successful: Cascade does not report a command\'s exit status, so a terminal command never advances the policy. Use the tool mapped for this step (an MCP tool) instead.');
+  }
   if (r.allow && harness === 'codex' && toolName === 'Bash') {
     return formatPost(harness, 'Speckl recorded ' + label + ' (spec tool ' + m.tool + ') as not successful: Codex does not report a Bash exit status, so a shell call never advances the policy. Use the tool mapped for this step instead.');
   }

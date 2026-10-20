@@ -1,0 +1,10 @@
+{
+  "agent_action_name": "pre_read_code",
+  "trajectory_id": "traj-5d1e8c",
+  "execution_id": "exec-01",
+  "timestamp": "2026-10-20T00:40:12.345Z",
+  "model_name": "Claude Sonnet 4",
+  "tool_info": {
+    "file_path": "__PROJECT__/.speckl/state.json"
+  }
+}
