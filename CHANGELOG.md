@@ -60,6 +60,17 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
+- **IR backends acted on truncated expressions** (#14). The IR's expression
+  parser stopped at the first token it could not use (`P implies Q` became
+  `P`, `x := a union {b}` swallowed the next statement, record constructors
+  became their type name) in AccountLedger, Paxos, Raft, RetryHandler,
+  SQLiteWAL and tef. Expressions and statements now parse in full or become
+  explicit placeholders that carry their source: skipped with the source in
+  IR Z3, a throwing expression in TypeScript, and a marked fail-closed
+  `false` in Camel. Infix `implies` is now an operator. `n-1` is a
+  subtraction. An operator after a call keeps its precedence
+  (`a <= f(x) && c`). RetryHandler's `30s` is now `30` (seconds), because
+  SpeckDL has no duration literals.
 - **Vacuous BMC proofs** (#3). The Z3 backend scraped `next:` from raw source
   and read past it into `verify` blocks, so BMC only stuttered and every
   `Always` obligation "proved". Multi-line relations lost alternatives
