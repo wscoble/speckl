@@ -161,41 +161,42 @@ function extractActionStatements(
   const lines = rawSource.split('\n');
   const out = new Map<string, ActionStatement[]>();
 
-  // Find each `action Name(...) { ... }` block.
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i].trim();
-    const m = line.match(/^action\s+(\w+)\s*\(/);
-    if (m) {
-      const name = m[1];
-      // Find the opening brace.
-      let j = i;
-      while (j < lines.length && !lines[j].includes('{')) j++;
-      if (j >= lines.length) { i++; continue; }
-      // Collect lines until the matching closing brace.
-      const bodyLines: string[] = [];
-      j++;
-      let depth = 1;
-      while (j < lines.length && depth > 0) {
-        const l = lines[j];
-        if (l.includes('{')) depth++;
-        if (l.includes('}')) {
-          depth--;
-          if (depth === 0) break;
-        }
-        bodyLines.push(l);
-        j++;
-      }
-      // Parse the body.
-      const stmts = parseActionStatements(bodyLines);
-      out.set(name, stmts);
-      i = j + 1;
-    } else {
-      i++;
-    }
+  // Each action's body is located from the parser's own line range for that
+  // action node, so the IR sees exactly the actions the AST has. A raw-source
+  // scan for `action Name(` used to miss parameterless actions
+  // (`action Approve {`), which then lowered with no statements at all.
+  for (const m of speck.members) {
+    if (m.type !== 'action') continue;
+    const { startLine, endLine } = m as { startLine?: number; endLine?: number };
+    if (!startLine || !endLine) continue;
+    out.set((m as ActionNode).name, parseActionStatements(actionBodyLines(lines, startLine, endLine)));
   }
 
   return out;
+}
+
+/**
+ * Body lines of an action spanning 1-based source lines [startLine, endLine]:
+ * everything after the opening `{` and before the closing `}`.
+ */
+function actionBodyLines(lines: string[], startLine: number, endLine: number): string[] {
+  let open = startLine - 1;
+  while (open < endLine - 1 && !lines[open].includes('{')) open++;
+  const close = endLine - 1;
+  if (open >= close) {
+    // Single-line action: `action Name { stmt }`.
+    const l = lines[open] ?? '';
+    const body = l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
+    return body.trim() ? [body] : [];
+  }
+  const body = lines.slice(open + 1, close);
+  // Text after `{` on the header line, or before `}` on the closing line.
+  const head = lines[open].slice(lines[open].indexOf('{') + 1);
+  if (head.trim()) body.unshift(head);
+  const closeLine = lines[close];
+  const tail = closeLine.slice(0, closeLine.lastIndexOf('}'));
+  if (tail.trim()) body.push(tail);
+  return body;
 }
 
 // ─────────────────────────────────────────────────────────────────────

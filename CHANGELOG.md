@@ -76,6 +76,14 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
+- **Parameterless actions had empty bodies in the IR** (#16). The IR found
+  action bodies by scanning the source for `action Name(`, so `action Approve {`
+  lowered with no statements. Every IR backend then saw an action with no
+  guard and no effect, for example a Camel processor that never checked its
+  `require`. This affected ToggleSwitch, TwoPhaseCommit, ReviewGate,
+  AgentPolicy and ClaudeCodePolicy. Bodies now come from the parser's line
+  range for each action. This also stops two specks in one file from sharing
+  the last same-named action's body.
 - **IR backends acted on truncated expressions** (#14). The IR's expression
   parser stopped at the first token it could not use (`P implies Q` became
   `P`, `x := a union {b}` swallowed the next statement, record constructors
