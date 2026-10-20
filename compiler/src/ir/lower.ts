@@ -18,6 +18,7 @@
 //   - Expressions are typed trees, not strings.
 //   - Provenance is always populated.
 
+import { expandTypeAliases } from '../aliases.js';
 import { exprToSource } from '../expr/print.js';
 import { readFileSync } from 'fs';
 import {
@@ -59,6 +60,7 @@ export interface LowerOptions {
 }
 
 export function lower(ast: AST, options: LowerOptions): IR {
+  ast = expandTypeAliases(ast);
   const fileMetadata = extractFileMetadata(ast, options);
   const diagnostics: IRDiagnostic[] = [];
 
@@ -240,6 +242,13 @@ function lowerTypedSchema(
             speck: speck.name,
           });
         }
+        break;
+      }
+      case 'type_alias': {
+        // References were already expanded (expandTypeAliases); the alias
+        // stays in the schema as a named type for generators that emit
+        // one (OpenAPI components, k8s, Camel).
+        types.set(m.name, { kind: 'alias', name: m.name, target: lowerTypeExpr(m.target) });
         break;
       }
       case 'event': {

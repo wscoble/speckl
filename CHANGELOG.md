@@ -32,10 +32,19 @@ First npm release. The package was renamed from the unpublished
   | Go | 4/16 |
   | Rust | 16/16 |
   | Elm | 0/16 |
-  | Protobuf | 7/16 |
+  | Protobuf | 10/16 |
   | OpenAPI | 15/16 |
   | Camel | 16/16 |
   | k8s | 16/16 |
+- **Type aliases** (#24). `type ServerId = String`, `type Ids = List(ServerId)`
+  and `type Maybe = ServerId | null` are now parsed (they were silently dropped)
+  and expanded to their targets before any backend runs, so protoc, OpenAPI,
+  TypeScript, Go, Rust, Elm, Camel and Z3 see ordinary types. The IR also keeps
+  each alias as a named type, and OpenAPI emits it as a component.
+  - `type State = A | B | C` on one line declares an enum.
+  - `type X = { a: Nat, b: Value }` on one line is a record with only those
+    fields (it used to absorb the members after it).
+  - `Option(T)` is read as the nullable `T | null`.
 - **Agent rails type-check** (#25). The generated TypeScript machine inlined
   only the first invariant a `verify Always(Inv)` named (invariants were
   folded into one member when deduplicated), so `-t agent` output for

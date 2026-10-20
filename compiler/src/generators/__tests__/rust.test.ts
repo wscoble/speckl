@@ -232,10 +232,10 @@ speck Edge {
     // Keywords: raw identifiers, or a suffix where raw is not allowed.
     expect(lib).toContain('pub self_: u64,');
     expect(lib).toContain('pub r#continue: i64,');
-    // The parser drops scalar aliases (type Amount = Int), so Amount is a
-    // placeholder; an inline record nests.
-    expect(lib).toContain('/// SPECKL-UNRESOLVED: type Amount is not declared in this spec (or is an alias the parser dropped).');
-    expect(lib).toContain('pub cost: Amount,');
+    // A scalar alias (type Amount = Int) resolves to its target (#24), so
+    // no placeholder is emitted for it; an inline record nests.
+    expect(lib).not.toContain('SPECKL-UNRESOLVED: type Amount');
+    expect(lib).toContain('pub cost: i64,');
     expect(lib).toContain('pub struct PartsRecord {\n    pub head: PartsRecordHeadRecord,\n}');
     expect(lib).toContain('pub struct PartsRecordHeadRecord {\n    pub depth: u64,\n}');
     // An event lives in mod events, so it may share a type's name.

@@ -82,6 +82,8 @@ function printMember(member: MemberNode): string[] {
     }
     case 'interface':
       return printInterface(member);
+    case 'type_alias':
+      return [`type ${member.name} = ${printType(member.target)}`];
     case 'service': {
       const lines = [`service ${member.name} {`];
       for (const rpc of member.rpcs) {

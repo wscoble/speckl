@@ -1,16 +1,16 @@
 {
   "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java), Rust and Kubernetes have no entries: all examples compile.",
   "typescript": {
-    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(12,15): error TS2304: Cannot find name 'TokenType'.",
+    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(179,108): error TS2339: Property 'or' does not exist on type 'string'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
-    "Raft": "Raft.ts(11,9): error TS2304: Cannot find name 'Term'.",
+    "Raft": "Raft.ts(115,5): error TS7052: Element implicitly has an 'any' type because type 'Map<string, ServerState>' has no index signature. Did you mean to call 'get'?",
     "RetryHandler": "RetryHandler.ts(124,12): error TS2304: Cannot find name 'maxRetries'.",
     "SQLiteWAL": "SQLiteWAL.ts(264,32): error TS1005: ';' expected.",
-    "tef": "TEF.ts(301,22): error TS1005: ',' expected."
+    "tef": "TEF.ts(294,22): error TS1005: ',' expected."
   },
   "go": {
     "AccountLedger": "./account_ledger.go:36:14: syntax error: unexpected name notIn, expected )",
-    "KafkaKRaft": "./kafka_k_raft.go:55:34: syntax error: unexpected name union at end of statement",
+    "KafkaKRaft": "./kafka_k_raft.go:57:34: syntax error: unexpected name union at end of statement",
     "OAuth2AuthorizationCode": "./o_auth_2_authorization_code.go:50:14: syntax error: unexpected name in, expected )",
     "Paxos": "./paxos.go:46:7: syntax error: unexpected {, expected expression",
     "PreconditionTest": "./handlers.go:17:46: undefined: PreconditionTestMachine",
@@ -42,11 +42,8 @@
   },
   "protobuf": {
     "AccountLedger": "account_ledger.proto: \"PendingTransfer\" is not defined.",
-    "KafkaKRaft": "kafka_k_raft.proto:14:9: Expected field name.",
-    "OAuth2AuthorizationCode": "o_auth2_authorization_code.proto:12:3: \"AccessToken\" is not defined.",
     "Paxos": "paxos.proto: \"Ballot\" is not defined.",
     "PreconditionTest": "precondition_test.proto:12:3: \"Integer\" is not defined.",
-    "Raft": "raft.proto:12:3: \"Term\" is not defined.",
     "tef": "tef.proto:311:22: \"CreateCustomerRequest\" is not defined.",
     "TigerBeetleLedger": "tiger_beetle_ledger.proto: \"Account\" is not defined.",
     "TwoPhaseCommit": "two_phase_commit.proto:15:12: \"Message\" is not defined."
