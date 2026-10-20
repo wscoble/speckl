@@ -101,8 +101,8 @@ export function compileSpec(file: string, options: CompileOptions): void {
     console.log('\nGenerating Z3 SMT-LIB2 (AST-driven, state machine + transitions)...');
     for (const speck of astForProof.specks) {
       // Invariants are first-class AST members now; wrap their expression in
-      // the statement shape the Z3 generator consumes. (Legacy raw-source
-      // scraping in parseInvariantsFromSource is retired.)
+      // the statement shape the Z3 generator consumes. (The legacy raw-source
+      // invariant scraper has been removed.)
       const invariants = speck.members
         .filter((m): m is InvariantMemberNode => m.type === 'invariant')
         .map((m) => ({
