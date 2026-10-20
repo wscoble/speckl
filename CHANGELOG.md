@@ -132,6 +132,10 @@ First npm release. The package was renamed from the unpublished
   error that names the supported forms.
 - `verify-z3` checks every `(check-sat)` obligation against its own
   `speckl-expect` marker, not only the last one per file (#2).
+- **Docs** (#18). `speckl verify --help` now lists `--examples <dir>` and
+  explains when the unchecked baseline applies, along with `--depth` and
+  `--keep`. The README Status section has the real test and verify numbers
+  and says the self-hosted CI runner is not currently picking up jobs.
 
 ### Known issues (tracked for the next release)
 
