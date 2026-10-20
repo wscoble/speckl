@@ -1,0 +1,122 @@
+speck ClaudeCodePolicy {
+    // AgentPolicy, wired into Claude Code and Cursor through their hooks.
+    // The agent may edit and test freely. It may not commit for review until
+    // the tests pass, and it may not push or open a PR until a human approves.
+    // Any edit after that throws the approval away. Tool calls that match no
+    // `map` line are denied.
+
+    state {
+        stage: Nat
+        testsPassed: Bool
+        prFromApproved: Bool
+    }
+
+    init {
+        stage := 0
+        testsPassed := false
+        prFromApproved := false
+    }
+
+    invariant PrNeedsGreenTests {
+        stage != 5 or testsPassed
+    }
+
+    invariant PrNeedsApproval {
+        stage != 5 or prFromApproved
+    }
+
+    // Editing resets the run: tests and any approval no longer apply.
+    action EditCode(path: String) {
+        require stage != 2 and stage != 5
+        testsPassed := false
+        prFromApproved := false
+        stage := 0
+    }
+
+    action RunTests {
+        require stage == 0 or stage == 1
+        testsPassed := true
+        stage := 1
+    }
+
+    action RequestReview {
+        require stage == 1 and testsPassed
+        stage := 2
+    }
+
+    action OpenPR {
+        require stage == 3
+        prFromApproved := stage == 3
+        stage := 5
+    }
+
+    action ReadFile(path: String) {
+        return true
+    }
+
+    action Inspect {
+        return true
+    }
+
+    agent {
+        stages stage {
+            Idle = 0
+            TestsGreen = 1
+            AwaitingReview = 2
+            Approved = 3
+            Rejected = 4
+            PrOpened = 5
+        }
+
+        tool edit_code      -> EditCode       effect act
+        tool run_tests      -> RunTests       effect act
+        tool request_review -> RequestReview  effect act
+        tool open_pr        -> OpenPR         effect act
+        tool read_file      -> ReadFile       effect observe
+        tool inspect        -> Inspect        effect observe
+
+        await AwaitingReview {
+            signal review
+            mode near
+            require outcome in { approve, reject! }
+            require claims { reviewer: String }
+            on approve -> Approved
+            on reject  -> Rejected
+            timeout 24h -> reject
+        }
+
+        harness claude-code {
+            map Edit|Write|MultiEdit|NotebookEdit -> edit_code { path = file_path }
+            map Read -> read_file { path = file_path }
+            map Grep|Glob|LS|TodoWrite -> inspect
+            map Bash command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map Bash command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map Bash command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map Bash command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map Bash command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+            map Bash command ~ "gh pr create( .*)?" -> open_pr
+        }
+
+        harness cursor {
+            map Write|Delete -> edit_code { path = file_path }
+            map Read -> read_file { path = file_path }
+            map Grep|Glob|LS -> inspect
+            map Shell command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map Shell command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map Shell command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map Shell command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map Shell command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+            map Shell command ~ "gh pr create( .*)?" -> open_pr
+        }
+    }
+
+    next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect
+
+    verify Always(PrNeedsGreenTests) {
+        depth 8
+    }
+
+    verify Always(PrNeedsApproval) {
+        depth 8
+    }
+}
