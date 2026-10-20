@@ -30,7 +30,7 @@ First npm release. The package was renamed from the unpublished
   | TypeScript | 10/16 |
   | Agent rails (incl. all 13 harness adapters) | 2/2 |
   | Go | 4/16 |
-  | Rust | 1/16 |
+  | Rust | 16/16 |
   | Elm | 0/16 |
   | Protobuf | 7/16 |
   | OpenAPI | 15/16 |
