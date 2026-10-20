@@ -12,6 +12,11 @@ First npm release. The package was renamed from the unpublished
 
 ### Added
 
+- **Compile tests** (#20). `src/__tests__/compiles-*.test.ts` compiles
+  every example's generated code with a real toolchain, starting with
+  `javac` for Camel against pinned Camel 4.8.0 and Jakarta jars. `npm test`
+  skips a missing toolchain with a visible reason. `npm run test:compile`
+  fetches the pinned jars and fails if a toolchain is missing.
 - **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
   `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
   `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with
@@ -65,6 +70,16 @@ First npm release. The package was renamed from the unpublished
   digest snapshot.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
+### Changed
+
+- **`and` binds tighter than `or`** (#17). `a or b and c` now means
+  `a or (b and c)` in the typed expression parser (used by the IR and by the
+  AST Z3 backend) and in the AST Z3 legacy translator. Before, both read it
+  as `(a or b) and c`, while the TypeScript, Go and Elm generators already
+  used the usual reading. None of the bundled examples mixes the two without
+  parentheses, so their output is unchanged. The precedence table is now in
+  SPEC.md section 2.9.
+
 ### Removed
 
 - **Elm `component` blocks** (#13). The component path in the Elm generator
@@ -76,6 +91,27 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
+- **Camel output did not compile** (#20). Processors used state variables
+  as bare Java names instead of the injected state bean, `return x` was
+  emitted inside `void process()`, untranslated set algebra and inline
+  records were pasted in as Java, and type aliases or generic primitives
+  (`List<long>`) produced invalid types. Only 2 of 16 examples' Camel projects
+  compiled, and only because their processors were empty. Now:
+  - all 16 compile with `javac`;
+  - processors read and write state through the state bean;
+  - parameters come from message headers;
+  - `return x` sets the reply body;
+  - events go through `SpecklRuntime.emit`;
+  - postconditions are checked after the effects.
+
+  Expressions are translated with their types. Anything without a typed
+  Java form calls `SpecklRuntime.untranslated("<source>")`. An action
+  containing such a statement throws `UnsupportedOperationException` before
+  it reads or writes state. It used to skip the check or apply only part of
+  its effects. 62 of the 88 example processors fail closed this way today.
+  The causes are spec forms the IR does not lower yet: `if` blocks, record
+  literals, set literals and algebra, scalar type aliases, and dotted
+  assignments.
 - **Parameterless actions had empty bodies in the IR** (#16). The IR found
   action bodies by scanning the source for `action Name(`, so `action Approve {`
   lowered with no statements. Every IR backend then saw an action with no
@@ -95,6 +131,17 @@ First npm release. The package was renamed from the unpublished
   subtraction. An operator after a call keeps its precedence
   (`a <= f(x) && c`). RetryHandler's `30s` is now `30` (seconds), because
   SpeckDL has no duration literals.
+- **Z3 arithmetic grouped right to left** (#19). The AST Z3 backend's
+  fallback string translator, used for quantified invariants (`forall`), `let`
+  sugar, post-state invariants and expressions the typed parser cannot read,
+  split each operator at its first occurrence. So `stage - 1 - 1 == stage` was
+  translated as `stage - (1 - 1) == stage` and **proved**, although it is
+  false. A leading unary minus took the whole rest of the expression
+  (`- s - 1` became `-(s - 1)`). Subtraction, `*`, `/` and `%` are now
+  left-associative. `*`/`/`/`%` are translated (`div`/`mod`) instead of
+  leaking as infix, and unary minus applies to its operand only. No bundled
+  example hit this: every generated file and every verify result is
+  unchanged. The typed path was already correct.
 - **Vacuous BMC proofs** (#3). The Z3 backend scraped `next:` from raw source
   and read past it into `verify` blocks, so BMC only stuttered and every
   `Always` obligation "proved". Multi-line relations lost alternatives
@@ -130,6 +177,10 @@ First npm release. The package was renamed from the unpublished
   error that names the supported forms.
 - `verify-z3` checks every `(check-sat)` obligation against its own
   `speckl-expect` marker, not only the last one per file (#2).
+- **Docs** (#18). `speckl verify --help` now lists `--examples <dir>` and
+  explains when the unchecked baseline applies, along with `--depth` and
+  `--keep`. The README Status section has the real test and verify numbers
+  and says the self-hosted CI runner is not currently picking up jobs.
 
 ### Known issues (tracked for the next release)
 

@@ -882,6 +882,7 @@ function lowerStatement(
       return {
         kind: 'assign',
         target: s.target.kind === 'plain' ? s.target.name : `${s.target.mapName}[...]`,
+        ...(s.target.kind === 'map_index' ? { targetIndex: lowerExpr(s.target.index, diagnostics, speckName) } : {}),
         value: lowerExpr(s.expr, diagnostics, speckName),
       };
     case 'let':

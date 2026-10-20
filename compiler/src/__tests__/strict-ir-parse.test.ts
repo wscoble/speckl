@@ -233,14 +233,19 @@ describe('IR backends say what they could not translate', () => {
     expect(ts).toContain('// SPECKL-UNTRANSLATED statement (not lowered): transitionProductPhase(x, flag)');
   });
 
-  it('Camel marks the fail-closed placeholder and the skipped statement with the source', () => {
+  it('Camel fails closed with the source: the action throws before touching state', () => {
     const out = mkdtempSync(join(tmpdir(), 'speckl-strict-'));
     generateCamel(ir, { outputDir: out });
     const java = readTree(out);
-    expect(java).toContain('false /* SPECKL-UNTRANSLATED: Customer { name: "a" } */');
-    expect(java).toContain('false /* SPECKL-UNTRANSLATED: forall r in [0..4]: r <= x */');
-    expect(java).toContain('// SPECKL-UNTRANSLATED statement, skipped: transitionProductPhase(x, flag)');
-    // The old rendering referenced an undeclared `forall` identifier.
+    expect(java).toContain('SpecklRuntime.untranslated("let c := Customer { name: \\"a\\" }");');
+    expect(java).toContain('SpecklRuntime.untranslated("require forall r in [0..4]: r <= x");');
+    expect(java).toContain('SpecklRuntime.untranslated("transitionProductPhase(x, flag)");');
+    // One guard at the top refuses the whole action before any effect.
+    expect(java).toMatch(/public void process\(Exchange exchange\) throws Exception \{\n\s+\/\/ This action cannot run[^\n]*\n\s+SpecklRuntime\.untranslated\("\w+: 3 untranslated statements, first: let c := Customer/);
+    // The translatable statement still goes through the state bean.
+    expect(java).toMatch(/State\.setX\(\(\w+State\.getX\(\) \+ 1L\)\);/);
+    // The old renderings: a fail-closed `false` inside the code, and an undeclared `forall`.
+    expect(java).not.toContain('false /* SPECKL-UNTRANSLATED');
     expect(java).not.toMatch(/\(!\(forall\)\)/);
   });
 
@@ -249,7 +254,8 @@ describe('IR backends say what they could not translate', () => {
     const out = mkdtempSync(join(tmpdir(), 'speckl-strict-'));
     generateCamel(ir2, { outputDir: out });
     const java = readTree(out);
-    expect(java).toContain('SPECKL-UNTRANSLATED: Rec { note: "* / evil" } */');
+    expect(java).toContain('// SPECKL-UNTRANSLATED: let c := Rec { note: "* / evil" }');
+    expect(java).toContain('SpecklRuntime.untranslated("let c := Rec { note: \\"*/ evil\\" }");');
   });
 });
 

@@ -14,7 +14,7 @@
 // Tests run against the existing parser-compatible specs (ToggleSwitch,
 // RetryHandler) and inline simple specs.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import path, { join } from 'path';
 import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -322,6 +322,117 @@ speck TestSpec {
         join(speckDir, 'src', 'main', 'java', 'testspec', 'camel', 'TestSpecRoutes.java')
       );
       expect(routes).toContain('platform-http:/start');
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+});
+// ─────────────────────────────────────────────────────────────────────
+// Processor bodies: state through the bean, typed translation, fail closed
+// (fixture also compiled with javac in compiles-java.test.ts)
+// ─────────────────────────────────────────────────────────────────────
+
+describe('Camel target — processor bodies', () => {
+  const fixture = join(REPO, 'compiler', 'src', '__tests__', 'fixtures', 'CamelTranslation.speckdl');
+  const { outDir, speckDir } = compileCamelFromExample(path.relative(join(REPO, 'examples'), fixture));
+  const javaDir = join(speckDir, 'src', 'main', 'java', 'cameltranslation', 'camel');
+  const proc = (name: string) => readFileSafe(join(javaDir, 'processor', `${name}Processor.java`));
+  const state = readFileSafe(join(javaDir, 'CamelTranslationState.java'));
+  afterAll(() => rmSync(outDir, { recursive: true, force: true }));
+
+  it('reads and writes state only through the injected state bean', () => {
+    const p = proc('Advance');
+    expect(p).toContain('@Inject\n    CamelTranslationState camelTranslationState;');
+    expect(p).toContain('camelTranslationState.setCount((camelTranslationState.getCount() + step));');
+    expect(p).toContain('if (!((camelTranslationState.getPhase() == cameltranslation.camel.model.Phase.Draft))) {');
+    // No bare state names: `count = ...` or `phase == ...`.
+    expect(p).not.toMatch(/^\s+count = /m);
+    expect(p).not.toMatch(/\(phase ==/);
+  });
+
+  it('takes parameters from message headers with their Java types', () => {
+    expect(proc('Credit')).toContain('String owner = exchange.getIn().getHeader("owner", String.class);');
+    expect(proc('Credit')).toContain('long amount = exchange.getIn().getHeader("amount", Long.class);');
+  });
+
+  it('translates maps, lists, records, lets and builtins with their types', () => {
+    const p = proc('Credit');
+    expect(p).toContain('camelTranslationState.getAccounts().containsKey(owner)');
+    expect(p).toContain('camelTranslationState.getAccounts().keySet().contains(owner)');
+    expect(p).toContain('cameltranslation.camel.model.Account a = camelTranslationState.getAccounts().get(owner);');
+    expect(p).toContain('(a.getPhase() != cameltranslation.camel.model.Phase.Done)');
+    expect(p).toContain('camelTranslationState.getBalances().put(camelTranslationState.getCount(), amount);');
+    expect(p).toContain('SpecklRuntime.append(camelTranslationState.getSeen(), camelTranslationState.getCount())');
+    expect(p).not.toContain('untranslated(');
+  });
+
+  it('turns `return x` into the reply body and a bare return (process() is void)', () => {
+    const p = proc('Check');
+    expect(p).toContain('exchange.getMessage().setBody(Math.min(id, camelTranslationState.getCount()));\n        return;');
+    expect(p).not.toMatch(/return [^;]/);
+    expect(p).toContain('(!camelTranslationState.getBalances().keySet().contains(id))');
+    expect(p).toContain('(!(((long) camelTranslationState.getLabel().length()) >= 1L) || camelTranslationState.getOpen())');
+  });
+
+  it('emits events through SpecklRuntime with arguments in field order', () => {
+    expect(proc('Advance')).toContain('SpecklRuntime.emit(exchange, new cameltranslation.camel.event.Moved((camelTranslationState.getCount() - step), camelTranslationState.getCount(), camelTranslationState.getLabel()));');
+  });
+
+  it('checks postconditions after the effects', () => {
+    const p = proc('Advance');
+    expect(p.indexOf('Postcondition failed: count >= step')).toBeGreaterThan(p.indexOf('setPhase('));
+  });
+
+  it('types empty collections and enum variants from the target', () => {
+    expect(state).toContain('this.phase = cameltranslation.camel.model.Phase.Draft;');
+    expect(state).toContain('this.ratio = 0.5d;');
+    expect(proc('Reset')).toContain('camelTranslationState.setCount(0L);');
+    expect(state).toMatch(/private java\.util\.Map<String, cameltranslation\.camel\.model\.Account> accounts = new java\.util\.LinkedHashMap<String, cameltranslation\.camel\.model\.Account>\(\);/);
+  });
+
+  it('refuses an action with an untranslated statement before it touches state', () => {
+    const p = proc('Unsupported');
+    const guard = p.indexOf('SpecklRuntime.untranslated("Unsupported: 2 untranslated statements, first: seen := seen union { id }");');
+    expect(guard).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(p.indexOf('getHeader('));
+    expect(p).toContain('// SPECKL-UNTRANSLATED: seen := seen union { id }');
+    expect(p).toContain('SpecklRuntime.untranslated("if id > 100 { open := false }");');
+    const rt = readFileSafe(join(javaDir, 'SpecklRuntime.java'));
+    expect(rt).toContain('throw new UnsupportedOperationException("SPECKL-UNTRANSLATED: " + source);');
+  });
+
+  it('a fully translated action has no guard', () => {
+    for (const a of ['Advance', 'Credit', 'Check', 'Reset']) expect(proc(a)).not.toContain('SpecklRuntime.untranslated');
+  });
+});
+
+describe('Camel target — Java-safe names and shapes', () => {
+  it('renames Java keywords, avoids shadowing and skips a duplicate empty constructor', () => {
+    const { outDir, speckDir } = compileCamelFromString(`
+speck Kw {
+  state {
+    count: Nat
+  }
+  event Ping {
+  }
+  action Go(new: Nat) {
+    let class := new + 1
+    count := class
+    emit Ping {}
+  }
+  next: Go
+}
+`);
+    try {
+      const base = join(speckDir, 'src', 'main', 'java', 'kw', 'camel');
+      const p = readFileSafe(join(base, 'processor', 'GoProcessor.java'));
+      expect(p).toContain('long new_ = exchange.getIn().getHeader("new", Long.class);');
+      expect(p).toContain('long class_ = (new_ + 1L);');
+      expect(p).toContain('kwState.setCount(class_);');
+      const ev = readFileSafe(join(base, 'event', 'Ping.java'));
+      expect(ev.match(/public Ping\(/g)?.length).toBe(1);
+      const routes = readFileSafe(join(base, 'KwRoutes.java'));
+      expect(routes).not.toContain('import kw.camel.processor');
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

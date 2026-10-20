@@ -193,6 +193,26 @@ import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 Version pinning is optional for local development and required for Specks
 with `review: manual` or `review: hybrid`.
 
+### 2.9 Expression Operators
+
+Binary operators, from loosest to tightest binding:
+
+| Operators | Notes |
+|---|---|
+| `implies` | right-associative: `a implies b implies c` is `a implies (b implies c)` |
+| `or`, `\|\|` | |
+| `and`, `&&` | binds tighter than `or`: `a or b and c` is `a or (b and c)` |
+| `==`, `!=` | |
+| `<`, `>`, `<=`, `>=` | |
+| `in`, `notIn` | |
+| `+`, `-`, `union`, `\` | |
+| `*`, `/`, `%` | |
+| `not`, unary `-` | prefix |
+| `f(x)`, `x.y`, `x[y]` | postfix |
+
+All other binary operators are left-associative. Use parentheses to mix
+`and` and `or` readably.
+
 ---
 
 ## 3. Verification

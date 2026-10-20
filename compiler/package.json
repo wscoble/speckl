@@ -50,6 +50,7 @@
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "test": "vitest run",
+    "test:compile": "node scripts/test-compile.mjs",
     "verify": "node scripts/verify-z3.mjs",
     "prepublishOnly": "npm test",
     "dev": "tsc --watch",
