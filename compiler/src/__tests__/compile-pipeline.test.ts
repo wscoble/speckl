@@ -29,10 +29,16 @@ function walk(dir: string): string[] {
   }).sort();
 }
 
-/** File contents with the run-specific parts (output dir, wall-clock timestamps) masked. */
+/**
+ * File contents with the run-specific parts masked: the output dir, the
+ * checkout location (generators embed the absolute spec path) and
+ * wall-clock timestamps. Digests must match on any machine (CI included).
+ */
+const repoDir = path.resolve(compilerDir, '..');
 function normalized(out: string, file: string): string {
   return readFileSync(file, 'utf-8')
     .split(out).join('<OUT>')
+    .split(repoDir).join('<REPO>')
     .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, '<TIME>');
 }
 
