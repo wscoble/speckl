@@ -36,7 +36,7 @@ First npm release. The package was renamed from the unpublished
   | OpenAPI | 15/16 |
   | Camel | 16/16 |
   | k8s | 16/16 |
-- **Agent rails type-check** (#AGENT). The generated TypeScript machine inlined
+- **Agent rails type-check** (#25). The generated TypeScript machine inlined
   only the first invariant a `verify Always(Inv)` named (invariants were
   folded into one member when deduplicated), so `-t agent` output for
   AgentPolicy and ClaudeCodePolicy failed `tsc` with
