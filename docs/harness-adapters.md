@@ -1,4 +1,4 @@
-# Harness adapters (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw)
+# Harness adapters (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro, Windsurf)
 
 `hook.mjs` only enforces a policy if the agent harness calls it before and
 after every tool call. A `harness` block in the spec's `agent { }` makes
@@ -18,6 +18,10 @@ after every tool call. A `harness` block in the spec's `agent { }` makes
   harness/opencode/speckl.js         reference .opencode/plugins/speckl.js plugin
   harness/openclaw/index.js          reference .openclaw/plugins/speckl/ plugin
   harness/openclaw/openclaw.plugin.json, package.json
+  harness/cline/PreToolUse, PostToolUse, TaskComplete, TaskCancel, TaskError
+                                     reference .clinerules/hooks/ scripts
+  harness/kiro/speckl.json           reference .kiro/hooks/speckl.json hooks
+  harness/windsurf/hooks.json        reference .devin/hooks.json (and .windsurf/hooks.json)
 ```
 
 `node adapter.mjs install <harness> ...` merges the wiring into the project's
@@ -28,6 +32,19 @@ in-process. For them `install` writes a small generated plugin that runs
 `node adapter.mjs <harness> <event> ...` for every tool call and allows the
 call only when the adapter exits 0 **and** prints `{"decision":"allow"}`.
 It never overwrites a plugin file it did not write.
+
+Cline runs executable files named after the event from `.clinerules/hooks/`;
+`install cline` writes five small `sh` scripts there that pipe the payload to
+the adapter and turn anything but an explicit allow into a cancel. Kiro and
+Windsurf (Devin Desktop) run hook commands from JSON files, as the others do.
+
+> **Not live-tested: Kiro, Windsurf and the Cline VS Code extension.** Their
+> wiring is built and tested against payloads taken from their documentation
+> and source (see Sources and `compiler/src/__tests__/fixtures/harness/README.md`),
+> run through the exact commands the harness would run. None of the three was
+> run end to end: Kiro and Windsurf need a signed-in IDE or account, and the
+> Cline extension needs VS Code. The Cline **CLI** (3.0.73) was run live (see
+> Live runs).
 
 ## Declaring the mapping
 
@@ -199,6 +216,36 @@ in print mode), `opencode`, or OpenClaw with
 project (`openclaw agent exec --cwd .`). Approve from your own terminal with
 `signal.mjs apply` as above.
 
+## Quickstart: Cline, Kiro and Windsurf
+
+Same project and policy as above (steps 1 to 4). This session runs as written
+too (the same test executes it).
+
+```bash
+# 5. Wire the harnesses. Cline (CLI and VS Code) runs .clinerules/hooks/<Event>;
+#    Kiro reads .kiro/hooks/*.json; Windsurf / Devin Desktop reads
+#    .devin/hooks.json (install also writes the legacy .windsurf/hooks.json).
+node .speckl/agent/adapter.mjs install cline --project . --state .speckl/state.json --key "$KEY"
+node .speckl/agent/adapter.mjs install kiro --project . --state .speckl/state.json --key "$KEY"
+node .speckl/agent/adapter.mjs install windsurf --project . --state .speckl/state.json --key "$KEY"
+
+# 6. Dry run with what each harness sends before a push. Cline gets a
+#    {"cancel":true,...} line (exit 0, as Cline reads stdout); Kiro and
+#    Windsurf get exit 2 with the reason on stderr.
+echo '{"hookName":"tool_call","taskId":"t1","workspaceRoots":["'"$PWD"'"],"tool_call":{"id":"k1","name":"run_commands","input":{"commands":["git push -u origin main"]}}}' \
+  | .clinerules/hooks/PreToolUse | grep -q '"cancel":true'
+KIRO="node .speckl/agent/adapter.mjs kiro pre --state .speckl/state.json --key $KEY --project $PWD"
+! echo '{"hook_event_name":"PreToolUse","session_id":"s6","cwd":"'"$PWD"'","tool_name":"execute_bash","tool_input":{"command":"git push -u origin main","cwd":"'"$PWD"'"}}' | $KIRO
+WS="node .speckl/agent/adapter.mjs windsurf pre --state .speckl/state.json --key $KEY --project $PWD"
+! echo '{"agent_action_name":"pre_run_command","trajectory_id":"w1","tool_info":{"command_line":"git push -u origin main","cwd":"'"$PWD"'"}}' | $WS
+```
+
+Then start the agent in the project: `cline "..."` or the Cline extension
+(hooks are on by default), Kiro IDE or `kiro-cli` (hooks in `.kiro/hooks/`
+load at session start), or Windsurf / Devin Desktop with the workspace
+trusted (hooks do not run in Restricted Mode). Approve from your own terminal
+with `signal.mjs apply` as above.
+
 ## What the adapter does
 
 | Claude Code event | Adapter | hook.mjs |
@@ -313,6 +360,44 @@ Goose and Hermes report a working directory but no project root.
   the tool result (Pi, OpenCode) or logged (OpenClaw's `after_tool_call` is
   observe-only).
 
+| Cline hook file | Adapter | hook.mjs |
+| --- | --- | --- |
+| `PreToolUse` (CLI `hookName: "tool_call"`, VS Code `"PreToolUse"`) | `pre` | `pre` with `tool: tool_call.name`, `input: tool_call.input`, `call_id: tool_call.id`. The VS Code extension sends only `preToolUse: {toolName, parameters}` with every value as a string: JSON-looking values are parsed back and the call id is derived from `taskId` + tool name. `run_commands` exposes a single plain command as `command`; several commands map to nothing (deny) |
+| `PostToolUse` (`tool_result` / `PostToolUse`) | `post` | `post`; `ok: true` only with no `error` and, for an output array (`run_commands`, `read_files`), every entry `success: true`. A failing command is `{success: false}` inside an otherwise successful result. VS Code sends `String(output)` (`[object Object]`), so a `run_commands` result there never counts |
+| `TaskComplete`, `TaskCancel`, `TaskError` (`agent_end` / `agent_abort` / `agent_error`) | `turn-end` | `post` with `ok: false` for a call still pending |
+
+| Kiro trigger | Adapter | hook.mjs |
+| --- | --- | --- |
+| `PreToolUse` (CLI 2.x `preToolUse`) | `pre` | `pre`; Kiro sends no call id, so one is derived from `session_id` + `tool_name`. A shell `cwd` other than the project root is denied |
+| `PostToolUse` | `post` | `post`. Kiro IDE often sends an empty `tool_input`; then the pending call (same derived id) supplies the spec tool and input. `tool_response` has no success flag: a shell call needs a final `Exit Code: 0`; other tools count unless the text starts like an error (`Error`, `Failed`, `Cannot`, ...) |
+| `Stop` | `turn-end` | `post` with `ok: false` for a call still pending |
+
+| Windsurf / Devin Desktop event | Adapter | hook.mjs |
+| --- | --- | --- |
+| `pre_read_code`, `pre_write_code`, `pre_run_command`, `pre_mcp_tool_use` | `pre` | `pre` with a synthetic tool name (`read_code`, `write_code`, `run_command`, `mcp__<server>__<tool>`) and `tool_info` as input (`command_line` as `command`; MCP: `mcp_tool_arguments`). Call id derived from `trajectory_id` + tool name. A `run_command` `cwd` other than the project root is denied |
+| `post_read_code`, `post_write_code`, `post_mcp_tool_use` | `post` | `post` with `ok: true` (Cascade runs them after a successful read or MCP call and after the write) |
+| `post_run_command` | `post` | `post`; **always `ok: false`**: Cascade reports the command line and cwd, not the exit status. The adapter tells the agent (exit 2, stderr) |
+| `pre_user_prompt` | `turn-end` | `post` with `ok: false` for a call still pending; always exits 0 |
+
+- **Cline** allow: `{"cancel":false}`. Deny: `{"cancel":true,"errorMessage"}`;
+  Cline then **cancels the whole task**, not only the call (the reason is in
+  the task's hook status). Post problems come back as `{"cancel":false,
+  "contextModification"}`, which Cline adds to the conversation. A post never
+  cancels.
+- **Kiro** allow: exit 0. Deny: exit 2, reason on stderr only (Kiro passes
+  stderr to the model and ignores stdout). Post problems exit 1 with the reason
+  on stderr, which Kiro shows the user as a warning. `Stop` always exits 0 with
+  no output (exit 1 or a `block` decision there asks Kiro to keep going).
+- **Windsurf** allow: exit 0. Deny: exit 2, reason on stderr (the agent sees
+  it). Post problems also exit 2 so the agent sees them; post hooks cannot block.
+
+**Windsurf terminal commands never count as a success**, for the same reason as
+Codex Bash: `post_run_command` has no exit status, so a failing `npm test`
+looks like a passing one. Run gated steps through MCP tools (`mcp__ci__run_tests`
+in the `harness windsurf` block of `examples/ClaudeCodePolicy.speckdl`). The
+MCP test tool must fail the call (an MCP error) when tests fail: Cascade runs
+`post_mcp_tool_use` only for a successful call and its result text is not read.
+
 Install for Codex and Gemini writes absolute paths and `--project <root>`. Codex runs
 hooks from the session cwd, and Gemini sets `GEMINI_PROJECT_DIR` to it, so a
 session started in a subdirectory would otherwise resolve the rails wrong.
@@ -361,6 +446,35 @@ Cursor: crashes, timeouts and non-zero exits other than 2 fail open). So:
   throws stops it; an OpenClaw `before_tool_call` handler that throws or
   passes its `timeoutMs` (set to 30 s) blocks. What the plugin cannot cover is
   the plugin not loading at all; see Limits.
+- **Cline** treats a hook timeout, a crash, any exit code and unparsable
+  output as "continue" (CLI: `sdk/packages/core/src/hooks/subprocess-runner.ts`;
+  VS Code: `HookProcess.ts`, a non-zero exit without JSON is logged and
+  allowed). Only a `{"cancel":true}` line blocks. The generated `PreToolUse`
+  script therefore prints `{"cancel":false}` only when the adapter exits 0
+  with exactly that line, passes the adapter's own cancel through, and prints
+  a cancel for anything else: a crash, a non-zero exit, a kill, a missing
+  `node` (exit 127), empty or extra output. It runs the adapter under
+  `timeout 25` when `timeout` exists, inside Cline's 30 s (VS Code) and 120 s
+  (CLI) hook timeouts.
+- **Kiro**: only exit 2 blocks a `PreToolUse` call; other exits warn and
+  proceed, and a timeout is not documented as blocking. The generated pre
+  command is `[ "$(node adapter.mjs kiro pre ...)" = '{"decision":"allow"}' ] || exit 2`:
+  the adapter prints `{"decision":"allow"}` on allow (stdout is captured, so
+  Kiro sees none), and anything else, including an adapter that exits 0 with
+  no output, exits 2. `timeout` is 30 s, above the adapter's 20 s hook budget.
+- **Windsurf** uses the same `[ "$(...)" = ... ] || exit 2` form under
+  `bash -c` (only exit 2 blocks; other exits proceed). On Windows Cascade runs
+  the `powershell` command instead, and would run `command` through PowerShell
+  if `powershell` were missing, where the sh syntax would fail open; the
+  generated pre hooks' `powershell` command therefore always blocks with a
+  message.
+- `example-cline-kiro-windsurf-policy.test.ts` runs the installed Cline scripts
+  with `/bin/sh` and the Kiro / Windsurf commands with `sh -c` / `bash -c`,
+  replacing hook.mjs (crash, `exit 1`, garbage, `SIGKILL`, hang) and
+  adapter.mjs (crash, `exit 1`, empty `exit 0`, allow then `exit 1`, garbage,
+  `SIGKILL`, and for Cline a hang past `timeout 25`), corrupting the config,
+  removing `node` from `PATH` and sending malformed payloads: every case blocks
+  (Cline: cancels), and no turn-end hook ever blocks.
 - `example-pi-opencode-openclaw-policy.test.ts` imports each installed plugin
   with a stand-in host API and runs crash / `exit 1` / empty / allow-less /
   garbage / `SIGKILL` / missing `node` / unserialisable payload (and a hang for
@@ -462,6 +576,34 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   `node` on `PATH`, so the missing-`node` case is only covered in the
   in-process test.
 
+- Cline: **a Speckl deny cancels the whole task**, not only the call; the
+  agent cannot retry it in the same task. Cline's own plugin hooks
+  (`beforeTool` in SDK plugins) fail open by default and are not used. The
+  hook scripts are `sh`; on Windows Cline looks for `<Event>.ps1`, which
+  `install` does not write, so **Windows has no rails**. If the system has
+  no `timeout` command (stock macOS), an adapter that hangs is killed by
+  Cline's own timeout, which lets the call through (hook.mjs itself is still
+  bounded at 20 s). Hooks in `~/Documents/Cline/Hooks` or `~/.cline/hooks`
+  also run; Speckl only protects the project's `.clinerules/hooks` and
+  `.cline`. Cline CLI runs tool calls one at a time in the observed runs; a
+  parallel call would be refused as pending, which cancels the task.
+- Kiro: derived from documentation and published captures, **not run**. A
+  `PostToolUse` that is not ours (another session, an empty input that does
+  not match the pending call) is reported as a warning and records nothing;
+  the call stays pending until `Stop`. Success of non-shell tools is inferred
+  from the result text. Kiro runs every `PreToolUse` hook even after one
+  blocks, and other hooks run alongside Speckl's. Global hooks in
+  `~/.kiro/hooks/` are not protected. The commands use `sh` syntax; Kiro on
+  Windows is not covered. `read_file` maps need a `path` field; a call
+  without one is denied.
+- Windsurf / Devin Desktop: derived from the documentation, **not run**.
+  Hooks do not run in Restricted Mode (untrusted workspaces): no rails there.
+  `pre_read_code` may name a directory that Cascade then reads recursively;
+  only the directory path itself is checked against the protected paths.
+  Terminal commands never advance the policy (above). User, system and cloud
+  hooks (`~/.codeium/windsurf/hooks.json`, `/etc/devin/hooks.json`) also run
+  and are not protected. Windows blocks every tool call (above).
+
 ## Sources
 
 - Claude Code hooks reference: <https://code.claude.com/docs/en/hooks>
@@ -528,6 +670,40 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   `agent-tool-definition-adapter.after-tool-call.fires-once.test.ts`).
   Checked 2026-10-19.
 
+- Cline hooks: `cline/cline` commit 8248643 (2026-10-19). CLI / SDK:
+  `sdk/packages/core/src/hooks/hook-file-hooks.ts` (payload with `tool_call`
+  / `tool_result` and the legacy `preToolUse` / `postToolUse` fields, cancel
+  handling), `hook-file-config.ts` (file names per event),
+  `subprocess-runner.ts` (timeout and errors continue),
+  `sdk/packages/shared/src/storage/paths.ts` (`resolveHooksConfigSearchPaths`:
+  `~/Documents/Cline/Hooks`, `~/.cline/hooks`, `<ws>/.clinerules/hooks`,
+  `<ws>/.cline/hooks`), `sdk/packages/core/src/extensions/tools/schemas.ts`
+  (`run_commands`, `editor`, `read_files`, `apply_patch` inputs). VS Code:
+  `apps/vscode/src/sdk/hooks-adapter.ts` (string `parameters`,
+  `String(output)`, `success: !isError`), `src/core/hooks/hook-factory.ts`
+  (30 s timeout, common fields), `src/core/hooks/utils.ts` and `HookProcess.ts`
+  (`.clinerules/hooks` + `~/Documents/Cline/Hooks`, `.ps1` on Windows, the
+  file is run directly). Docs: <https://docs.cline.bot/customization/plugins>,
+  <https://docs.cline.bot/sdk/plugins>. Checked 2026-10-19; live against npm
+  `cline` 3.0.73.
+- Kiro hooks: <https://kiro.dev/docs/hooks.md> (`.kiro/hooks/*.json` `version:
+  "v1"`, fields, `timeout` in seconds), <https://kiro.dev/docs/hooks/types.md>
+  (`PreToolUse` exit 0 / 2 / other, `Stop` exit 1 and `decision` continue the
+  turn, tool IDs, MCP event example), <https://kiro.dev/docs/hooks/actions.md>,
+  <https://kiro.dev/docs/ide/whats-new-v1/hooks.md> and
+  <https://kiro.dev/docs/cli/v3/hooks-migration.md> (camelCase CLI 2.x triggers).
+  Payload details from the empirical captures in awslabs/aidlc-workflows,
+  <https://awslabs.github.io/aidlc-workflows/reference/kiro-ide-hook-payload/>
+  (IDE 1.0.165 to 1.2.37: refusal only via stderr + exit 2, stdout ignored,
+  empty PostToolUse `tool_input`, prose `tool_response`, shell and `fs_write`
+  inputs). Checked 2026-10-19.
+- Windsurf / Devin Desktop Cascade hooks:
+  <https://docs.windsurf.com/windsurf/cascade/hooks> (mirror on docs.devin.ai):
+  `.devin/hooks.json` with legacy `.windsurf/hooks.json`, user and system
+  locations, `command` via `bash -c`, `powershell` on Windows, `show_output`,
+  common fields, every event's `tool_info`, exit 2 blocks pre hooks only,
+  Restricted Mode. Checked 2026-10-19.
+
 ### Live runs (2026-10-19)
 
 No credentials were used. Goose 1.55.0 (release binary) ran `goose run` against
@@ -560,3 +736,20 @@ without `--approve` skipped the project extension (see Limits); the
 `--plugins-dir` install covered it. A plugin replaced with a syntax error
 stopped Pi at startup but let OpenCode and OpenClaw run the call unchecked
 (see Limits).
+
+Cline CLI 3.0.73 (npm `cline`) ran headless (`cline --json "..."`,
+provider `openai-compatible` pointed at the same mock server) with the scripts
+`install cline` wrote in `.clinerules/hooks/`. The run captured the payload
+shape used for the `cli-*` fixtures; then the walk: the edit and the failing
+`npm test` ran (the test was recorded as failed, its result entry `success:
+false` under a top-level `success: true`), the early commit was cancelled,
+and in a second task the edit, green test, `git add` and commit advanced the
+policy to review. Reading `.speckl/state.json`, editing
+`.clinerules/hooks/PreToolUse`, `npm test; true`, a two-command
+`run_commands` and an unmapped `fetch_web_content` were each cancelled before
+running, and every cancel ended the task (`finishReason: "aborted"`). With
+`node` missing from `PATH`, or hook.mjs crashing, exiting 1, printing a bad
+allow, killed, or hanging (20 s), a corrupt `agent-config.json`, or
+adapter.mjs printing garbage or hanging (25 s, `timeout`), the first call was
+cancelled and never ran. Kiro, Windsurf and the Cline VS Code extension were
+not run.

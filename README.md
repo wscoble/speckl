@@ -32,7 +32,7 @@ Or without installing: `npx speckl spec.speckdl -t agent -o .speckl`.
 [CHANGELOG.md](CHANGELOG.md).
 
 For agent rails in Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot
-CLI, Goose, Hermes Agent, Pi, OpenCode or OpenClaw, see
+CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro or Windsurf, see
 [docs/harness-adapters.md](docs/harness-adapters.md).
 
 ## Verification
