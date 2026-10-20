@@ -604,6 +604,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
       // Multi-line block: parse it and skip to its end
       const blockStartLine = i + 1;
       const member = parseMemberBlock(lines, i);
+      if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (closeCount < openCount) {
         const endIdx = findBlockEnd(lines, i + 1, braceCount + openCount);
         if (member) {
@@ -626,6 +627,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     // (e.g. constraint Name: forall r in [0..4]:, verify: always(implies(\n  ...\n)))
     if (line.startsWith('constraint ') || line.startsWith('verify ') || line.startsWith('verify:') || line.startsWith('constraint:')) {
       const member = parseMultiLineConstraintVerify(lines, i);
+      if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (member) {
         const constraintStartLine = i + 1;
         // Skip past the consumed continuation lines
@@ -678,6 +680,16 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
            license: metadata.license,
            k8sGroup: metadata.k8sGroup,
            k8sVersion: metadata.k8sVersion };
+}
+
+/**
+ * A `verify` line no form recognises is an error. It used to be dropped
+ * without a word, so the property was never checked and verification still
+ * passed.
+ */
+function unsupportedVerify(line: string, index: number): Error {
+  return new Error(`Parse error at line ${index + 1}: unsupported verify form "${line}" `
+    + '(use verify Always(InvariantName) { depth N }, verify "name" { expr } or verify: expr)');
 }
 
 function findBlockEnd(lines: string[], startIndex: number, startBraceCount: number): number {
@@ -935,30 +947,9 @@ function parseMember(line: string): MemberNode | null {
     return { type: 'output', typeExpr };
   }
   
-  // constraint Name: expr  (single-line named constraint)
-  if (line.startsWith('constraint ')) {
-    const match = line.match(/^constraint\s+(\w+):\s*(.+)$/);
-    if (match) {
-      return { type: 'constraint', name: match[1], expr: match[2].trim() };
-    }
-    return null; // multi-line constraint block (handled by parseMemberBlock)
-  }
-  
-  // constraint: expr  (unnamed, single-line)
-  if (line.startsWith('constraint:')) {
-    return { type: 'constraint', expr: line.substring(11).trim() };
-  }
-  
-  // verify Always(Name) { depth N } or verify Always(Name) (single-line forms)
-  if (line.startsWith('verify ')) {
-    return parseVerifySingleLine(line);
-  }
-  
-  // verify: expr  (old unnamed single-line)
-  if (line.startsWith('verify:')) {
-    return { type: 'verify', name: 'unnamed', temporalExpr: line.substring(7).trim() };
-  }
-  
+  // constraint/verify lines never reach here: parseSpeck handles them
+  // (parseMultiLineConstraintVerify / parseMemberBlock) before calling us.
+
   // interface:
   if (line.startsWith('interface ')) {
     return parseInterface(line);
@@ -2531,50 +2522,6 @@ function parseVerifyBlockMultiline(lines: string[], startIndex: number, startBra
   }
   
   return { type: 'verify', name, temporalExpr, depth };
-}
-
-/**
- * Parse a single-line verify statement: verify Always(Name) { depth N }
- */
-function parseVerifySingleLine(line: string): VerifyNode | null {
-  // Form: verify "quoted name" depth N { expr } (single-line)
-  const quotedMatch = line.match(/^verify\s+"([^"]+)"\s*(?:depth\s+(\d+)\s*)?\{\s*(.*)\}\s*$/);
-  if (quotedMatch) {
-    const name = quotedMatch[1];
-    const depth = quotedMatch[2] ? parseInt(quotedMatch[2], 10) : undefined;
-    let body = quotedMatch[3].trim();
-    // If depth wasn't before the brace, check inside body
-    const depthInBody = body.match(/^\s*depth\s+(\d+)\s*,?\s*/);
-    let actualDepth = depth;
-    if (!actualDepth && depthInBody) {
-      actualDepth = parseInt(depthInBody[1], 10);
-      body = body.substring(depthInBody[0].length);
-    }
-    return { type: 'verify', name, temporalExpr: body, depth: actualDepth };
-  }
-
-  // verify Always(Name) { depth N }
-  const fullMatch = line.match(/^verify\s+((?:Always|always|Eventually|eventually)\s*\(\s*(\w+)\s*\))\s*\{\s*depth\s+(\d+)\s*\}/);
-  if (fullMatch) {
-    return {
-      type: 'verify',
-      name: fullMatch[2],
-      temporalExpr: fullMatch[1].trim(),
-      depth: parseInt(fullMatch[3], 10),
-    };
-  }
-  
-  // verify Always(Name) (no depth, no braces — just a statement)
-  const simpleMatch = line.match(/^verify\s+((?:Always|always|Eventually|eventually)\s*\(\s*(\w+)\s*\))\s*$/);
-  if (simpleMatch) {
-    return {
-      type: 'verify',
-      name: simpleMatch[2],
-      temporalExpr: simpleMatch[1].trim(),
-    };
-  }
-  
-  return null;
 }
 
 /**

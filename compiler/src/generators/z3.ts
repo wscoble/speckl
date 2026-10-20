@@ -80,7 +80,6 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
   const constraints = members.filter(m => m.type === 'constraint') as ConstraintNode[];
   const verifies = members.filter(m => m.type === 'verify') as VerifyNode[];
 
-  // Parse invariants from the raw speck body (handled by parseInvariantsFromSource)
   // Also extract invariants from parsed constraint nodes
   const invariants = extractInvariantsFromConstraints(constraints);
   const sourceInvariants = (speck as any)._invariants || [];
@@ -1357,11 +1356,6 @@ function emitBMC(
   }
 }
 
-function extractInvariantName(temporalExpr: string): string | null {
-  const match = temporalExpr.match(/(?:Always|always|Eventually|eventually)\s*\(\s*(\w+)\s*\)/);
-  return match ? match[1] : null;
-}
-
 function emitInvariantInstance(lines: string[], inv: InvariantNode, stateVars: StateVar[], step: number, renameMap?: Map<string, string>): void {
   lines.push(`(define-fun ${inv.name}_${step} () Bool`);
   lines.push('  (and');
@@ -1491,69 +1485,6 @@ function isEnglishLanguageConstraint(expr: string): boolean {
   return false;
 }
 
-function parseInvariants(speck: SpeckNode): InvariantNode[] {
-  // Legacy stub — returns empty, new code uses extractInvariantsFromConstraints
-  return [];
-}
-
-/**
- * Parse invariants from the raw .speckdl source content.
- * This function is called with the raw file content and the speck name
- * to find and parse invariant blocks that the main parser doesn't handle yet.
- */
-export function parseInvariantsFromSource(source: string, speckName: string): InvariantNode[] {
-  const invariants: InvariantNode[] = [];
-
-  // Find the speck block for this name
-  const speckRegex = new RegExp(`speck\\s+${escapeRegex(speckName)}\\s*\\{`);
-  const speckMatch = source.match(speckRegex);
-  if (!speckMatch) return invariants;
-
-  // Extract the speck body
-  const startIdx = speckMatch.index! + speckMatch[0].length;
-  let braceCount = 1;
-  let endIdx = startIdx;
-  for (let i = startIdx; i < source.length; i++) {
-    if (source[i] === '{') braceCount++;
-    if (source[i] === '}') {
-      braceCount--;
-      if (braceCount === 0) {
-        endIdx = i;
-        break;
-      }
-    }
-  }
-
-  const body = source.substring(startIdx, endIdx);
-
-  // Find invariant blocks using brace counting (handles nested { })
-  const invPattern = /invariant\s+(\w+)\s*\{/g;
-  let match;
-  while ((match = invPattern.exec(body)) !== null) {
-    const name = match[1];
-    // Find matching close brace
-    const blockStart = match.index + match[0].length;
-    let braceDepth = 1;
-    let blockEnd = blockStart;
-    for (let i = blockStart; i < body.length; i++) {
-      if (body[i] === '{') braceDepth++;
-      if (body[i] === '}') {
-        braceDepth--;
-        if (braceDepth === 0) {
-          blockEnd = i;
-          break;
-        }
-      }
-    }
-    const content = body.substring(blockStart, blockEnd);
-
-    const statements = parseInvariantBody(content);
-    invariants.push({ type: 'invariant', name, statements });
-  }
-
-  return invariants;
-}
-
 function parseInvariantBody(content: string): InvariantStatement[] {
   const statements: InvariantStatement[] = [];
   const lines = content.split('\n');
@@ -1647,8 +1578,4 @@ export function nextRelation(speck: SpeckNode, actions: ActionNode[]): NextNode 
     throw new Error(`${speck.name}: next: references unknown action(s): ${unknown.join(', ')}`);
   }
   return { type: 'next', actions: [...member.actions] };
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

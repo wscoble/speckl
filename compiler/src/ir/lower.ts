@@ -42,7 +42,7 @@ import {
   FileMetadata, IRDiagnostic,
 } from './types.js';
 import { Expr, ActionStatement } from '../expr/index.js';
-import { parseActionStatements, parseExpression } from '../expr/index.js';
+import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -1094,11 +1094,16 @@ function parseExprSafe(
  * Parse a source expression string into a typed IRExpr, for callers outside
  * the lower pass (e.g. the Z3 state-machine generator). Parse failure yields
  * a bool_lit placeholder with parseFailed: true - callers should check
- * containsParseFailure and fall back.
+ * containsParseFailure and fall back. Leftover input is a parse failure.
  */
 export function parseStringToIRExpr(src: string): IRExpr {
-  const diagnostics: IRDiagnostic[] = [];
-  return parseExprSafe(src, diagnostics, '(inline)');
+  // The whole string must parse. A prefix parse (`P implies Q` read as `P`)
+  // looked like success and let the Z3 backend prove the wrong property.
+  try {
+    return lowerExpr(parseExpressionComplete(src), [], '(inline)');
+  } catch {
+    return { kind: 'bool_lit', value: false, parseFailed: true };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
