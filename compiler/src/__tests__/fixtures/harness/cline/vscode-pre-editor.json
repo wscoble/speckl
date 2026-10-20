@@ -1,0 +1,21 @@
+{
+  "clineVersion": "0.0.0",
+  "hookName": "PreToolUse",
+  "timestamp": "1792455544129",
+  "taskId": "1792455544000",
+  "workspaceRoots": [
+    "__PROJECT__"
+  ],
+  "userId": "u-1",
+  "model": {
+    "provider": "unknown",
+    "slug": "unknown"
+  },
+  "preToolUse": {
+    "toolName": "editor",
+    "parameters": {
+      "path": "src/app.js",
+      "new_text": "module.exports = () => 1;\n"
+    }
+  }
+}

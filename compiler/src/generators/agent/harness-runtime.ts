@@ -1,6 +1,6 @@
 // Harness adapter runtime: pure functions that turn a real agent harness's
 // hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI,
-// Goose, Hermes Agent, Pi, OpenCode, OpenClaw) into a call to the generic
+// Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro, Windsurf) into a call to the generic
 // hook.mjs, and hook.mjs's verdict back into the harness's expected output.
 // Pi, OpenCode and OpenClaw have in-process plugin APIs instead of command
 // hooks; `install` writes a small generated plugin (pluginSource) that pipes
@@ -46,7 +46,8 @@ export interface AdapterDeps {
   /** Absolute path of the adapter's own directory (<out>/agent). */
   agentDir: string;
   readFile(p: string): string | null;
-  writeFile(p: string, text: string): void;
+  /** Write a file (creating directories); `mode` (e.g. 0o755) also chmods it. */
+  writeFile(p: string, text: string, mode?: number): void;
 }
 
 export interface AdapterOutput { code: number; stdout: string; stderr: string }
@@ -125,7 +126,7 @@ export function findProtectedMention(
   cwd: string,
   resolvePath: (base: string, p: string) => string,
 ): string | null {
-  const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits', 'file_text', 'new_str', 'old_str', 'before', 'after', 'oldString', 'newString'];
+  const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits', 'file_text', 'new_str', 'old_str', 'before', 'after', 'oldString', 'newString', 'old_text', 'new_text'];
   const norm = (p: string) => p.replace(/\\/g, '/');
   const prots = protectedPaths.map(p => ({ abs: norm(p.abs), rel: norm(p.rel) }));
   const checkString = (s: string): string | null => {
@@ -227,6 +228,20 @@ export function formatPre(harness: string, allow: boolean, message: string): Ada
     if (allow) return { code: 0, stdout: JSON.stringify({ decision: 'allow' }) + '\n', stderr: '' };
     return { code: 2, stdout: JSON.stringify({ decision: 'block', reason: message }) + '\n', stderr: message + '\n' };
   }
+  // Kiro and Windsurf: exit 2 blocks and sends stderr to the model; stdout
+  // is ignored. The generated command allows only when the adapter prints
+  // exactly {"decision":"allow"}, so a broken adapter that exits 0 still blocks.
+  if (harness === 'kiro' || harness === 'windsurf') {
+    if (allow) return { code: 0, stdout: JSON.stringify({ decision: 'allow' }) + '\n', stderr: '' };
+    return { code: 2, stdout: '', stderr: message + '\n' };
+  }
+  // Cline file hooks: only a {"cancel":true} JSON line on stdout blocks
+  // (the exit code is ignored); the generated wrapper script turns anything
+  // but an exact {"cancel":false} into a cancel.
+  if (harness === 'cline') {
+    if (allow) return { code: 0, stdout: JSON.stringify({ cancel: false }) + '\n', stderr: '' };
+    return { code: 2, stdout: JSON.stringify({ cancel: true, errorMessage: message }) + '\n', stderr: message + '\n' };
+  }
   // Gemini CLI parses stdout as JSON on exit 0; `{}` is "no decision".
   if (harness === 'gemini') {
     if (allow) return { code: 0, stdout: '{}\n', stderr: '' };
@@ -265,6 +280,19 @@ export function formatPost(harness: string, problem: string | null): AdapterOutp
   if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
     if (!problem) return { code: 0, stdout: '', stderr: '' };
     return { code: 0, stdout: JSON.stringify({ additionalContext: problem }) + '\n', stderr: problem + '\n' };
+  }
+  // Cline PostToolUse: contextModification is added to the conversation;
+  // a cancel would stop the whole task, so a post problem never cancels.
+  if (harness === 'cline') {
+    const body: Record<string, unknown> = { cancel: false };
+    if (problem) body.contextModification = problem;
+    return { code: 0, stdout: JSON.stringify(body) + '\n', stderr: problem ? problem + '\n' : '' };
+  }
+  // Kiro PostToolUse output never reaches the agent; a non-zero exit shows
+  // stderr to the user as a warning (the tool already ran).
+  if (harness === 'kiro') {
+    if (!problem) return { code: 0, stdout: '', stderr: '' };
+    return { code: 1, stdout: '', stderr: problem + '\n' };
   }
   // Goose and Hermes post hooks are observers: their output is ignored, so
   // a problem is logged on stderr and the hook exits 0.
@@ -359,6 +387,66 @@ export function postSucceeded(harness: string, event: string, payload: Record<st
     }
     return true;
   }
+  if (harness === 'windsurf') {
+    // Cascade runs post_read_code / post_mcp_tool_use only after a
+    // successful read or MCP call, and post_write_code after the write.
+    // post_run_command carries the command line and cwd only, without an
+    // exit status, so a terminal command never counts as a success.
+    return toolName !== 'run_command' && typeof toolName === 'string' && toolName !== '';
+  }
+  if (harness === 'kiro') {
+    // Kiro sends tool_response with no success flag: prose such as
+    // "Output:\n...\nExit Code: 0", "Created the file." or "Replaced text in
+    // src/a.js", or (CLI) an object. A shell call needs a final exit code 0;
+    // any other tool counts unless the result reads as an error. Inferred
+    // from the text: see docs/harness-adapters.md, Limits.
+    const shell = ['execute_bash', 'execute_pwsh', 'execute_cmd', 'shell'].includes(String(toolName));
+    if (typeof out === 'string') {
+      if (shell) {
+        const codes = out.match(/Exit (?:Code|Status):\s*(-?\d+)/gi);
+        return !!codes && /:\s*0$/.test(codes[codes.length - 1]);
+      }
+      return out.trim() !== '' && !/^\s*(error|failed|failure|tool .* failed|cannot|could not|unable to)\b/i.test(out);
+    }
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return false;
+    const o = out as Record<string, unknown>;
+    if (o.success === false || o.is_error === true || o.isError === true) return false;
+    if (o.error !== undefined && o.error !== null && o.error !== '') return false;
+    if (shell) {
+      const code = o.exit_status !== undefined ? o.exit_status : o.exit_code !== undefined ? o.exit_code : o.exitCode;
+      return code === 0 || code === '0';
+    }
+    return true;
+  }
+  if (harness === 'cline') {
+    // CLI: tool_result {output, error}; a failed run_commands entry is
+    // {success: false, error} inside output without a tool error, so every
+    // entry must say success: true. VS Code: postToolUse {result, success}
+    // where result is String(output) ("[object Object]" for run_commands,
+    // so a shell call there never counts as a success).
+    const ok = (o: unknown): boolean => {
+      if (Array.isArray(o)) return o.length > 0 && o.every(e => !!e && typeof e === 'object' && !Array.isArray(e) && (e as Record<string, unknown>).success === true);
+      if (o && typeof o === 'object') {
+        const r = o as Record<string, unknown>;
+        if (r.success === false || r.isError === true) return false;
+        if (r.error !== undefined && r.error !== null && r.error !== '') return false;
+        return true;
+      }
+      return toolName !== 'run_commands';
+    };
+    const tr = payload.tool_result as Record<string, unknown> | undefined;
+    if (tr && typeof tr === 'object' && !Array.isArray(tr)) {
+      if (tr.error !== undefined && tr.error !== null && tr.error !== '') return false;
+      return ok(tr.output);
+    }
+    const pt = payload.postToolUse as Record<string, unknown> | undefined;
+    if (!pt || typeof pt !== 'object' || pt.success !== true) return false;
+    let res: unknown = pt.result;
+    if (typeof res === 'string') {
+      try { res = JSON.parse(res); } catch { return toolName !== 'run_commands'; }
+    }
+    return ok(res);
+  }
   if (harness === 'gemini') {
     if (!out || typeof out !== 'object' || Array.isArray(out)) return false;
     const r = out as Record<string, unknown>;
@@ -394,6 +482,11 @@ export function harnessEventName(harness: string, event: string): string | null 
     pi: { pre: 'tool_call', post: 'tool_result', 'turn-end': 'agent_end' },
     opencode: { pre: 'tool.execute.before', post: 'tool.execute.after', 'post-failure': 'message.part.updated', 'turn-end': 'session.idle' },
     openclaw: { pre: 'before_tool_call', post: 'after_tool_call', 'turn-end': 'session_end' },
+    cline: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'TaskComplete' },
+    kiro: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'Stop' },
+    // pre_tool / post_tool stand for every pre_* / post_* tool event
+    // (normalizePayload); turn-end runs on the next pre_user_prompt.
+    windsurf: { pre: 'pre_tool', post: 'post_tool', 'turn-end': 'pre_user_prompt' },
   };
   const h = names[harness];
   return h && h[event] ? h[event] : null;
@@ -411,11 +504,26 @@ export function normalizeToolInput(harness: string, toolName: unknown, input: Re
     : harness === 'copilot' ? (input.input ?? input.patch)
       : harness === 'openclaw' ? input.input
         : harness === 'opencode' ? input.patchText : undefined;
-  if (toolName === 'apply_patch' && typeof patch === 'string') {
+  if (harness === 'cline' && toolName === 'run_commands') {
+    // {commands: ["npm test"]} (or command / cmd): a single plain command is
+    // exposed as `command`; several commands, or structured {command, args}
+    // entries, leave `command` unset so no command map line matches.
+    const out: Record<string, unknown> = { ...input };
+    delete out.command;
+    const list = Array.isArray(input.commands) ? input.commands
+      : typeof input.commands === 'string' ? [input.commands]
+        : typeof input.command === 'string' ? [input.command]
+          : typeof input.cmd === 'string' ? [input.cmd] : [];
+    if (list.length === 1 && typeof list[0] === 'string') out.command = list[0];
+    return out;
+  }
+  const clinePatch = harness === 'cline' ? input.input : undefined;
+  if (toolName === 'apply_patch' && typeof (patch ?? clinePatch) === 'string') {
+    const text = (patch ?? clinePatch) as string;
     const files: string[] = [];
     const re = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(patch)) !== null) files.push(m[1].trim());
+    while ((m = re.exec(text)) !== null) files.push(m[1].trim());
     const out: Record<string, unknown> = { ...input, files };
     if (files.length > 0) out.path = files[0];
     return out;
@@ -432,7 +540,8 @@ export function normalizeToolInput(harness: string, toolName: unknown, input: Re
 export function harnessCallId(harness: string, payload: Record<string, unknown>): string | null {
   const given = payload.tool_use_id;
   if (harness === 'copilot' && typeof given === 'string' && given !== '') return given;
-  if (harness === 'gemini' || harness === 'copilot') {
+  if (harness === 'cline' && typeof given === 'string' && given !== '') return given;
+  if (harness === 'gemini' || harness === 'copilot' || harness === 'cline' || harness === 'kiro' || harness === 'windsurf') {
     if (typeof payload.tool_name !== 'string' || payload.tool_name === '') return null;
     const text = String(payload.session_id ?? '') + '\u0000' + payload.tool_name;
     let h = 0x811c9dc5;
@@ -460,6 +569,11 @@ export function harnessConfigFile(harness: string): string {
     pi: '.pi/extensions/speckl.js',
     opencode: '.opencode/plugins/speckl.js',
     openclaw: '.openclaw/plugins/speckl/index.js',
+    // Executable hook scripts named after the event (clineScripts).
+    cline: '.clinerules/hooks/PreToolUse',
+    kiro: '.kiro/hooks/speckl.json',
+    // install also writes the legacy .windsurf/hooks.json for older releases.
+    windsurf: '.devin/hooks.json',
   };
   return files[harness] || '';
 }
@@ -474,6 +588,9 @@ export function harnessProtectedDirs(harnesses: string[]): string[] {
     pi: ['.pi'],
     opencode: ['.opencode', 'opencode.json', 'opencode.jsonc'],
     openclaw: ['.openclaw'],
+    cline: ['.clinerules/hooks', '.cline'],
+    kiro: ['.kiro/hooks', '.kiro/agents', '.kiro/settings'],
+    windsurf: ['.devin', '.windsurf'],
   };
   for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
   return dirs;
@@ -543,7 +660,110 @@ export function normalizePayload(harness: string, payload: Record<string, unknow
     if (p.tool_use_id === undefined) p.tool_use_id = ev.toolCallId !== undefined ? ev.toolCallId : ctx.toolCallId;
     if (p.session_id === undefined) p.session_id = ctx.sessionId;
   }
+  if (harness === 'kiro') {
+    // {hook_event_name, cwd, session_id, tool_name, tool_input[, tool_response]};
+    // CLI 2.x agent hooks use camelCase event names.
+    const legacy: Record<string, string> = { preToolUse: 'PreToolUse', postToolUse: 'PostToolUse', stop: 'Stop' };
+    if (typeof p.hook_event_name === 'string' && legacy[p.hook_event_name]) p.hook_event_name = legacy[p.hook_event_name];
+  }
+  if (harness === 'windsurf') {
+    // {agent_action_name, trajectory_id, execution_id, timestamp, model_name,
+    // tool_info}. Each event names one kind of action, so the tool name is
+    // synthetic: read_code, write_code, run_command, or mcp__<server>__<tool>.
+    const name = typeof p.agent_action_name === 'string' ? p.agent_action_name : '';
+    const kind = /^(pre|post)_(read_code|write_code|run_command|mcp_tool_use)$/.exec(name);
+    if (p.hook_event_name === undefined) p.hook_event_name = kind ? kind[1] + '_tool' : (name || null);
+    const info = obj(p.tool_info);
+    if (kind && p.tool_name === undefined) {
+      if (kind[2] === 'mcp_tool_use') {
+        const server = typeof info.mcp_server_name === 'string' ? info.mcp_server_name : '';
+        const tool = typeof info.mcp_tool_name === 'string' ? info.mcp_tool_name : '';
+        p.tool_name = server && tool ? 'mcp__' + server + '__' + tool : null;
+      } else p.tool_name = kind[2];
+    }
+    if (kind && p.tool_input === undefined) {
+      if (kind[2] === 'mcp_tool_use') p.tool_input = info.mcp_tool_arguments === undefined ? {} : info.mcp_tool_arguments;
+      else if (kind[2] === 'run_command') {
+        const t: Record<string, unknown> = { ...info };
+        delete t.command;
+        if (typeof info.command_line === 'string') t.command = info.command_line;
+        p.tool_input = t;
+      } else p.tool_input = p.tool_info;
+    }
+    if (p.session_id === undefined) p.session_id = p.trajectory_id;
+  }
+  if (harness === 'cline') {
+    // CLI / SDK: {hookName: "tool_call"|"tool_result"|"agent_end"|..., taskId,
+    // workspaceRoots, tool_call|tool_result: {id, name, input, ...},
+    // preToolUse|postToolUse: {toolName, parameters}}. VS Code: hookName
+    // "PreToolUse"|"PostToolUse"|..., preToolUse|postToolUse only, with every
+    // parameter value as a string (JSON for non-strings).
+    const names: Record<string, string> = {
+      tool_call: 'PreToolUse', tool_result: 'PostToolUse', agent_end: 'TaskComplete', agent_abort: 'TaskComplete', agent_error: 'TaskComplete',
+      PreToolUse: 'PreToolUse', PostToolUse: 'PostToolUse', TaskComplete: 'TaskComplete', TaskCancel: 'TaskComplete', TaskError: 'TaskComplete',
+    };
+    if (p.hook_event_name === undefined) p.hook_event_name = typeof p.hookName === 'string' ? (names[p.hookName] || p.hookName) : null;
+    const call = obj(p.tool_call !== undefined ? p.tool_call : p.tool_result);
+    const legacy = obj(p.preToolUse !== undefined ? p.preToolUse : p.postToolUse);
+    if (p.tool_name === undefined) p.tool_name = call.name !== undefined ? call.name : legacy.toolName;
+    if (p.tool_input === undefined) {
+      if (call.input !== undefined) p.tool_input = call.input;
+      else if (legacy.parameters && typeof legacy.parameters === 'object' && !Array.isArray(legacy.parameters)) {
+        const params: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(legacy.parameters as Record<string, unknown>)) {
+          let x: unknown = v;
+          if (typeof v === 'string' && /^\s*[[{]/.test(v)) { try { x = JSON.parse(v); } catch { x = v; } }
+          params[k] = x;
+        }
+        p.tool_input = params;
+      }
+    }
+    if (p.tool_use_id === undefined && typeof call.id === 'string') p.tool_use_id = call.id;
+    if (p.session_id === undefined) p.session_id = p.taskId;
+    const roots = Array.isArray(p.workspaceRoots) ? p.workspaceRoots : [];
+    if (p.cwd === undefined && typeof roots[0] === 'string') p.cwd = roots[0];
+  }
   return p;
+}
+
+/**
+ * Cline hook scripts for `.clinerules/hooks/`, by file name. Cline runs a
+ * file named after the event and blocks only on a {"cancel": true} JSON line
+ * (a crash, a timeout or a non-zero exit lets the call through), so the
+ * PreToolUse wrapper prints {"cancel":false} only when the adapter exits 0
+ * with exactly that, passes the adapter's own cancel through, and cancels on
+ * anything else. `timeout 25` (when available) keeps the adapter inside
+ * Cline's own hook timeout (30 s in VS Code, 120 s in the CLI).
+ */
+export function clineScripts(ours: Record<string, unknown>): Record<string, string> {
+  const cmds = (ours.commands || {}) as Record<string, string>;
+  const head = [
+    '#!/bin/sh',
+    '# Generated by speckl adapter.mjs install cline; do not edit (rerun install).',
+    'T=""; command -v timeout >/dev/null 2>&1 && T="timeout 25"',
+  ];
+  const pre = [
+    ...head,
+    '# Anything other than an explicit allow from the adapter cancels the call.',
+    'out=$($T ' + cmds.pre + ')',
+    'st=$?',
+    'last=$(printf "%s\\n" "$out" | tail -n 1)',
+    'if [ "$st" -eq 0 ] && [ "$last" = \'{"cancel":false}\' ]; then printf \'%s\\n\' \'{"cancel":false}\'; exit 0; fi',
+    'case "$last" in \'{"cancel":true,\'*) printf \'%s\\n\' "$last"; exit 0 ;; esac',
+    'printf \'%s\\n\' \'{"cancel":true,"errorMessage":"Speckl: the adapter failed (exit \'"$st"\'), so the tool call is blocked. Check node and the .speckl files."}\'',
+    'exit 0',
+  ];
+  const post = [
+    ...head,
+    'out=$($T ' + cmds.post + ')',
+    'last=$(printf "%s\\n" "$out" | tail -n 1)',
+    'case "$last" in \'{"cancel":false}\'|\'{"cancel":false,"contextModification":"\'*\'"}\') printf \'%s\\n\' "$last"; exit 0 ;; esac',
+    'printf \'%s\\n\' \'{"cancel":false,"contextModification":"Speckl: the adapter failed to record this tool result; the policy did not advance."}\'',
+    'exit 0',
+  ];
+  const end = [...head, '$T ' + cmds['turn-end'] + ' >/dev/null', 'exit 0'];
+  const j = (l: string[]) => l.join('\n') + '\n';
+  return { PreToolUse: j(pre), PostToolUse: j(post), TaskComplete: j(end), TaskCancel: j(end), TaskError: j(end) };
 }
 
 /** Parse `--state x --key y --project z` flags. */
@@ -596,6 +816,44 @@ export function buildHarnessHooks(
     if (paths.project) argv.push('--project', paths.project);
     if (paths.outsideAllow) argv.push('--outside', 'allow');
     return { plugin: harness, argv, relative: paths.relative };
+  }
+  if (harness === 'windsurf') {
+    // Cascade hooks (.devin/hooks.json, legacy .windsurf/hooks.json): run
+    // with `bash -c`; only exit 2 blocks a pre_* hook (stderr goes to the
+    // agent), so the pre command exits 2 unless the adapter printed exactly
+    // {"decision":"allow"}. On Windows Cascade runs `powershell` instead
+    // (or `command` through PowerShell, where this sh syntax would fail
+    // open), so the pre hooks' `powershell` command always blocks.
+    const allowCmd = (event: string) => '[ "$(' + cmd(event) + ')" = \'{"decision":"allow"}\' ] || exit 2';
+    const winBlock = "[Console]::Error.WriteLine('Speckl: the generated Cascade hooks support macOS and Linux only; blocking.'); exit 2";
+    const pre = [{ command: allowCmd('pre'), powershell: winBlock, show_output: false }];
+    const post = [{ command: cmd('post'), show_output: false }];
+    return {
+      hooks: {
+        pre_read_code: pre, pre_write_code: pre, pre_run_command: pre, pre_mcp_tool_use: pre,
+        post_read_code: post, post_write_code: post, post_run_command: post, post_mcp_tool_use: post,
+        pre_user_prompt: [{ command: cmd('turn-end') + ' || true', show_output: false }],
+      },
+    };
+  }
+  if (harness === 'kiro') {
+    // .kiro/hooks/speckl.json (IDE 1.x and CLI V3). Only exit 2 blocks a
+    // PreToolUse call (stderr goes to the model); any other exit or a
+    // timeout lets it run, so the pre command exits 2 unless the adapter
+    // printed exactly {"decision":"allow"} (a crash, a missing node or an
+    // empty exit 0 all block), and the adapter's own 20 s hook.mjs timeout stays
+    // inside the 30 s hook timeout. No matcher: every tool, MCP included.
+    // Stop must exit 0 with no output (exit 1 or a block decision asks
+    // Kiro to keep going).
+    const h = (name: string, trigger: string, event: string, block: boolean) => ({
+      name, description: 'Speckl rails (generated by adapter.mjs install kiro; rerun install to change)', trigger,
+      action: { type: 'command', command: block ? '[ "$(' + cmd(event) + ')" = \'{"decision":"allow"}\' ] || exit 2' : cmd(event) }, timeout: 30, enabled: true,
+    });
+    return { version: 'v1', hooks: [h('speckl-pre', 'PreToolUse', 'pre', true), h('speckl-post', 'PostToolUse', 'post', false), h('speckl-stop', 'Stop', 'turn-end', false)] };
+  }
+  if (harness === 'cline') {
+    // Command lines for the hook scripts clineScripts writes; stdin passes through.
+    return { commands: { pre: cmd('pre'), post: cmd('post'), 'turn-end': cmd('turn-end') } };
   }
   if (harness === 'copilot') {
     // Copilot CLI / cloud agent: .github/hooks/*.json, camelCase events.
@@ -695,6 +953,14 @@ export function mergeHarnessSettings(harness: string, existing: Record<string, u
     }
     return cmds.some(c => c.includes('adapter.mjs') && c.includes(' ' + harness + ' '));
   };
+  if (harness === 'kiro') {
+    // v1 document: {version, hooks: [{name, trigger, action: {command}}]}.
+    const cmdOf = (e: unknown) => (e && typeof e === 'object' && (e as Record<string, unknown>).action && typeof (e as Record<string, unknown>).action === 'object'
+      ? ((e as Record<string, unknown>).action as Record<string, unknown>).command : undefined);
+    const mine = (e: unknown) => { const c = cmdOf(e); return typeof c === 'string' && c.includes('adapter.mjs') && c.includes(' kiro '); };
+    const prev = Array.isArray(existing.hooks) ? (existing.hooks as unknown[]).filter(e => !mine(e)) : [];
+    return { ...existing, version: 'v1', hooks: [...prev, ...((ours.hooks || []) as unknown[])] };
+  }
   const merged: Record<string, unknown> = { ...existing };
   if (harness === 'cursor' || harness === 'copilot') merged.version = (existing.version as number) || 1;
   const hooks: Record<string, unknown[]> = { ...((existing.hooks as Record<string, unknown[]>) || {}) };
@@ -996,6 +1262,27 @@ export function installHarness(harness: string, flags: Record<string, string>, d
     };
     return { code: 0, stdout: 'Speckl ' + harness + ' plugin written to ' + mainPath + '\n' + next[harness], stderr: warn };
   }
+  if (harness === 'cline') {
+    // .clinerules/hooks/ is read by both the Cline CLI and the VS Code
+    // extension. A hook file Speckl did not write is never overwritten.
+    const dir = deps.dirname(deps.resolvePath(project, harnessConfigFile(harness)));
+    const scripts = clineScripts(ours);
+    for (const name of Object.keys(scripts)) {
+      for (const n of [name, name + '.sh', name + '.js', name + '.mjs', name + '.py', name + '.ps1']) {
+        const t = deps.readFile(deps.resolvePath(dir, n));
+        if (t !== null && t.trim() !== '' && !(n === name && t.includes('Generated by speckl adapter.mjs install cline'))) {
+          return { code: 1, stdout: '', stderr: deps.resolvePath(dir, n) + ' exists and was not written by Speckl; not touching it (Cline runs one ' + name + ' hook per directory)\n' };
+        }
+      }
+    }
+    for (const [name, text] of Object.entries(scripts)) deps.writeFile(deps.resolvePath(dir, name), text, 0o755);
+    return {
+      code: 0,
+      stdout: 'Speckl cline hooks written to ' + dir + '/ (' + Object.keys(scripts).join(', ') + ')\n'
+        + 'Cline runs them while hooks are enabled (the default). A Speckl deny cancels the whole task, not only the call.\n',
+      stderr: warn,
+    };
+  }
   const pluginDir = pluginsDir ? deps.resolvePath(pluginsDir, pluginName) : deps.resolvePath(project, '.agents/plugins/speckl');
   const target = harness === 'goose' ? deps.resolvePath(pluginDir, 'hooks/hooks.json') : deps.resolvePath(project, harnessConfigFile(harness));
   const text = deps.readFile(target);
@@ -1008,14 +1295,30 @@ export function installHarness(harness: string, flags: Record<string, string>, d
       return { code: 1, stdout: '', stderr: target + ' is not a JSON object; not touching it\n' };
     }
   }
+  const extraTargets: { path: string; settings: Record<string, unknown> }[] = [];
+  if (harness === 'windsurf') {
+    // Older Windsurf releases read only .windsurf/hooks.json; current ones read
+    // it only when .devin/hooks.json is absent or empty, so both get the hooks.
+    const legacy = deps.resolvePath(project, '.windsurf/hooks.json');
+    const lt = deps.readFile(legacy);
+    let le: Record<string, unknown> = {};
+    if (lt !== null && lt.trim() !== '') {
+      try { le = JSON.parse(lt); } catch { return { code: 1, stdout: '', stderr: legacy + ' is not valid JSON; not touching it\n' }; }
+      if (!le || typeof le !== 'object' || Array.isArray(le)) return { code: 1, stdout: '', stderr: legacy + ' is not a JSON object; not touching it\n' };
+    }
+    extraTargets.push({ path: legacy, settings: mergeHarnessSettings(harness, le, ours) });
+  }
   const merged = mergeHarnessSettings(harness, existing, ours);
   deps.writeFile(target, JSON.stringify(merged, null, 2) + '\n');
+  for (const x of extraTargets) deps.writeFile(x.path, JSON.stringify(x.settings, null, 2) + '\n');
   if (harness === 'goose') {
     // The plugin manifest next to hooks/ makes the directory a Goose plugin.
     const manifest = { name: pluginName, version: '1.0.0', description: 'Speckl rails for ' + project + ': every tool call is checked against the compiled policy (fail closed).' };
     deps.writeFile(deps.resolvePath(pluginDir, 'plugin.json'), JSON.stringify(manifest, null, 2) + '\n');
   }
-  return { code: 0, stdout: 'Speckl ' + harness + ' hooks written to ' + target + '\n', stderr: warn };
+  const also = extraTargets.length ? ' and ' + extraTargets.map(x => x.path).join(', ') : '';
+  const note = harness === 'windsurf' ? 'Cascade does not run hooks while the workspace is in Restricted Mode: trust the workspace.\n' : '';
+  return { code: 0, stdout: 'Speckl ' + harness + ' hooks written to ' + target + also + '\n' + note, stderr: warn };
 }
 
 /**
@@ -1176,19 +1479,36 @@ export function runAdapter(
   }
   const pin0 = parseToolInput(payload.tool_input);
   if (!pin0.ok) return fail(pin0.reason);
+  if (harness === 'kiro' && event === 'post' && Object.keys(pin0.input).length === 0) {
+    // Kiro IDE often sends PostToolUse with an empty tool_input. The pending
+    // call carries the spec tool and input its pre hook mapped; the derived
+    // call id (session + tool name) ties the two together.
+    const text = deps.readFile(stateAbs);
+    let pending: Record<string, unknown> | null = null;
+    try {
+      const st = text ? JSON.parse(text) : null;
+      if (st && st.pending && typeof st.pending === 'object') pending = st.pending as Record<string, unknown>;
+    } catch { /* hook.mjs reports a broken state on the next call */ }
+    if (pending && callId !== null && pending.call_id === callId && typeof pending.tool === 'string') {
+      const ok = postSucceeded(harness, event, payload);
+      const r = interpretHook(deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: callId, ok }, stateAbs, keyAbs));
+      return formatPost(harness, r.allow ? null : 'Speckl could not record ' + String(toolName) + ' (spec tool ' + pending.tool + '): ' + r.reason);
+    }
+  }
   const pin = { ok: true, input: normalizeToolInput(harness, toolName, pin0.input) };
   const label = typeof toolName === 'string' ? toolName : '(no tool_name)';
 
   if (isPre) {
     const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
     if (hit) return fail(label + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
-    // OpenCode bash and OpenClaw exec take a workdir: a mapped command run
+    // OpenCode bash and OpenClaw exec take a workdir, Kiro shell tools a cwd: a mapped command run
     // elsewhere (`npm test` in another checkout) would advance the policy
     // on someone else's result, so only the project root is accepted.
-    const wd = pin.input.workdir;
-    if ((harness === 'opencode' || harness === 'openclaw') && wd !== undefined && wd !== null && wd !== '') {
+    const wdField = harness === 'kiro' || harness === 'windsurf' ? 'cwd' : 'workdir';
+    const wd = pin.input[wdField];
+    if ((harness === 'opencode' || harness === 'openclaw' || harness === 'kiro' || harness === 'windsurf') && wd !== undefined && wd !== null && wd !== '') {
       if (typeof wd !== 'string' || deps.resolvePath(callCwd, wd) !== deps.resolvePath(projectDir, '.')) {
-        return fail(label + ' sets workdir ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')');
+        return fail(label + ' sets ' + wdField + ' ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')');
       }
     }
   }
@@ -1206,6 +1526,9 @@ export function runAdapter(
   }
   const ok = postSucceeded(harness, event, payload);
   const r = interpretHook(deps.runHook('post', { tool: m.tool, input: m.input, call_id: callId, ok }, stateAbs, keyAbs));
+  if (r.allow && harness === 'windsurf' && toolName === 'run_command') {
+    return formatPost(harness, 'Speckl recorded ' + label + ' (spec tool ' + m.tool + ') as not successful: Cascade does not report a command\'s exit status, so a terminal command never advances the policy. Use the tool mapped for this step (an MCP tool) instead.');
+  }
   if (r.allow && harness === 'codex' && toolName === 'Bash') {
     return formatPost(harness, 'Speckl recorded ' + label + ' (spec tool ' + m.tool + ') as not successful: Codex does not report a Bash exit status, so a shell call never advances the policy. Use the tool mapped for this step instead.');
   }
@@ -1218,5 +1541,5 @@ export const ADAPTER_FUNCTIONS = [
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
   harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
-  buildHarnessHooks, mergeHarnessSettings, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness, runAdapter,
+  buildHarnessHooks, mergeHarnessSettings, clineScripts, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness, runAdapter,
 ];

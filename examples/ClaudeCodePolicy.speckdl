@@ -211,6 +211,51 @@ speck ClaudeCodePolicy {
             map exec command ~ "git commit -m \"[^\"]*\"" -> request_review
             map exec command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
         }
+
+        // Cline (CLI 3.x and the VS Code extension). run_commands maps only
+        // when it carries a single plain command; a shell result counts as a
+        // success only when every command entry reports success: true.
+        harness cline {
+            map editor -> edit_code { path = path }
+            map apply_patch -> edit_code { path = path }
+            map read_files|search_codebase -> inspect
+            map run_commands command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map run_commands command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map run_commands command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map run_commands command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map run_commands command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
+
+        // Kiro (IDE 1.x and CLI V3, .kiro/hooks/*.json). Kiro reports no
+        // success flag: a shell result counts only with a final "Exit Code: 0".
+        harness kiro {
+            map fs_write|fs_append|str_replace|write -> edit_code { path = path }
+            map read_file|fs_read|read -> read_file { path = path }
+            map list_directory|file_search|grep_search -> inspect
+            map execute_bash|shell command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map execute_bash|shell command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map execute_bash|shell command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map execute_bash|shell command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map execute_bash|shell command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
+
+        // Windsurf / Devin Desktop Cascade hooks. Each hook event is one kind
+        // of action (read_code, write_code, run_command, mcp__<server>__<tool>).
+        // Cascade reports no exit status for a terminal command, so a
+        // run_command never advances the policy: tests and pushes must go
+        // through MCP tools to count.
+        harness windsurf {
+            map write_code -> edit_code { path = file_path }
+            map read_code -> read_file { path = file_path }
+            map mcp__ci__run_tests -> run_tests
+            map mcp__ci__request_review -> request_review
+            map mcp__github__create_pull_request -> open_pr
+            map run_command command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map run_command command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map run_command command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map run_command command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map run_command command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
     }
 
     next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect

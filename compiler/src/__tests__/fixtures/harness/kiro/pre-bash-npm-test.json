@@ -1,0 +1,12 @@
+{
+  "session_id": "sess_7f3c2a91",
+  "hook_event_name": "PreToolUse",
+  "cwd": "__PROJECT__",
+  "tool_name": "execute_bash",
+  "tool_input": {
+    "command": "npm test",
+    "cwd": "__PROJECT__",
+    "run_in_background": false,
+    "timeout": 120
+  }
+}

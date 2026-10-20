@@ -1,0 +1,23 @@
+{
+  "clineVersion": "0.0.0",
+  "hookName": "PostToolUse",
+  "timestamp": "1792455544129",
+  "taskId": "1792455544000",
+  "workspaceRoots": [
+    "__PROJECT__"
+  ],
+  "userId": "u-1",
+  "model": {
+    "provider": "unknown",
+    "slug": "unknown"
+  },
+  "postToolUse": {
+    "toolName": "run_commands",
+    "parameters": {
+      "commands": "[\"npm test\"]"
+    },
+    "result": "[object Object]",
+    "success": true,
+    "executionTimeMs": 250
+  }
+}

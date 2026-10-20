@@ -18,6 +18,8 @@ describe('docs/harness-adapters.md quickstart', () => {
     const block2 = md.split('## Quickstart: GitHub Copilot CLI, Goose and Hermes')[1].match(/```bash\n([\s\S]*?)```/)![1];
     // ... and so does the Pi / OpenCode / OpenClaw one.
     const block3 = md.split('## Quickstart: Pi, OpenCode and OpenClaw')[1].match(/```bash\n([\s\S]*?)```/)![1];
+    // ... and so does the Cline / Kiro / Windsurf one.
+    const block4 = md.split('## Quickstart: Cline, Kiro and Windsurf')[1].match(/```bash\n([\s\S]*?)```/)![1];
     const work = mkdtempSync(join(tmpdir(), 'speckl-quickstart-'));
     const home = mkdtempSync(join(tmpdir(), 'speckl-home-'));
     // speckl-compile is the repo compiler; curl serves the example from this
@@ -30,7 +32,7 @@ curl() {
   case "$url" in https://raw.githubusercontent.com/wscoble/speckl/main/examples/*) cp "${repoDir}/examples/\${url##*/}" "$out";; *) return 22;; esac
 }
 `;
-    const r = spawnSync('bash', ['-c', prelude + block + block2 + block3], {
+    const r = spawnSync('bash', ['-c', prelude + block + block2 + block3 + block4], {
       cwd: work, encoding: 'utf-8', env: { ...process.env, HOME: home, SPECKL_STATE_KEY_FILE: '' },
     });
     expect(r.status, r.stderr + r.stdout).toBe(0);
@@ -59,6 +61,14 @@ curl() {
     expect(readFileSync(join(proj, '.pi', 'extensions', 'speckl.js'), 'utf-8')).toContain('export default function specklRails(pi)');
     expect(readFileSync(join(proj, '.opencode', 'plugins', 'speckl.js'), 'utf-8')).toContain('"tool.execute.before"');
     expect(JSON.parse(readFileSync(join(proj, '.openclaw', 'plugins', 'speckl', 'openclaw.plugin.json'), 'utf-8')).id).toBe('speckl');
+    // Cline, Kiro and Windsurf each denied the push; the wiring is written.
+    expect(r.stderr).toContain('Speckl denied run_commands (spec tool open_pr)');
+    expect(r.stderr).toContain('Speckl denied execute_bash (spec tool open_pr)');
+    expect(r.stderr).toContain('Speckl denied run_command (spec tool open_pr)');
+    expect(readFileSync(join(proj, '.clinerules', 'hooks', 'PreToolUse'), 'utf-8')).toContain('adapter.mjs cline pre');
+    expect(JSON.parse(readFileSync(join(proj, '.kiro', 'hooks', 'speckl.json'), 'utf-8')).version).toBe('v1');
+    expect(JSON.parse(readFileSync(join(proj, '.devin', 'hooks.json'), 'utf-8')).hooks.pre_run_command[0].command).toMatch(/\|\| exit 2$/);
+    expect(JSON.parse(readFileSync(join(proj, '.windsurf', 'hooks.json'), 'utf-8')).hooks.pre_run_command).toHaveLength(1);
     const state = JSON.parse(readFileSync(join(proj, '.speckl', 'state.json'), 'utf-8'));
     expect(state.pending.tool).toBe('run_tests');
   }, 90_000);

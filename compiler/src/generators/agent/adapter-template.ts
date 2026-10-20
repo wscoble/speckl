@@ -64,7 +64,7 @@ const deps = {
   cwd: process.cwd(),
   agentDir,
   readFile(p) { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
-  writeFile(p, text) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); },
+  writeFile(p, text, mode) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); if (mode) fs.chmodSync(p, mode); },
 };
 
 async function main() {

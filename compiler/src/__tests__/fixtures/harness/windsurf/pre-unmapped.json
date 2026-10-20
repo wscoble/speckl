@@ -1,0 +1,14 @@
+{
+  "agent_action_name": "pre_mcp_tool_use",
+  "trajectory_id": "traj-5d1e8c",
+  "execution_id": "exec-01",
+  "timestamp": "2026-10-20T00:40:12.345Z",
+  "model_name": "Claude Sonnet 4",
+  "tool_info": {
+    "mcp_server_name": "web",
+    "mcp_tool_arguments": {
+      "url": "https://example.com"
+    },
+    "mcp_tool_name": "fetch"
+  }
+}

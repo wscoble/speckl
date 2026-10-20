@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_7f3c2a91",
+  "hook_event_name": "PreToolUse",
+  "cwd": "__PROJECT__",
+  "tool_name": "read_file",
+  "tool_input": {
+    "path": ".speckl/state.json"
+  }
+}

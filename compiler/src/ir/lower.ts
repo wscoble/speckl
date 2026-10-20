@@ -571,7 +571,7 @@ function lowerAgent(
 }
 
 /** Harness ids with a generated adapter (see generators/agent/harness-runtime.ts). */
-export const SUPPORTED_HARNESSES = ['claude-code', 'cursor', 'codex', 'gemini', 'copilot', 'goose', 'hermes', 'pi', 'opencode', 'openclaw'] as const;
+export const SUPPORTED_HARNESSES = ['claude-code', 'cursor', 'codex', 'gemini', 'copilot', 'goose', 'hermes', 'pi', 'opencode', 'openclaw', 'cline', 'kiro', 'windsurf'] as const;
 
 /**
  * Check `harness <name> { map ... }` blocks: known harness, declared target
