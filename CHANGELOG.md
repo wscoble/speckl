@@ -12,11 +12,30 @@ First npm release. The package was renamed from the unpublished
 
 ### Added
 
-- **Compile tests** (#20). `src/__tests__/compiles-*.test.ts` compiles
-  every example's generated code with a real toolchain, starting with
-  `javac` for Camel against pinned Camel 4.8.0 and Jakarta jars. `npm test`
-  skips a missing toolchain with a visible reason. `npm run test:compile`
-  fetches the pinned jars and fails if a toolchain is missing.
+- **Compile tests** (#20, #21). `src/__tests__/compiles-*.test.ts` checks every
+  example's generated code with a real toolchain:
+  - `tsc --strict` for TypeScript and the agent machines, plus `node --check` for the hook scripts;
+  - `javac` for Camel;
+  - `go build`, `cargo check`, `elm make` and `protoc`;
+  - swagger-parser for OpenAPI;
+  - the official Kubernetes CRD schema (strict) for k8s.
+
+  `npm test` skips a missing toolchain with a visible reason.
+  `npm run test:compile` fetches the pinned jars and schema, fills the Elm
+  package cache, and fails if a toolchain is missing.
+  `examples/.speckl-compile-baseline.json` records the current failures:
+
+  | Target | Compiling today |
+  |---|---|
+  | TypeScript | 4/16 |
+  | Agent rails | 0/2 |
+  | Go | 4/16 |
+  | Rust | 1/16 |
+  | Elm | 0/16 |
+  | Protobuf | 7/16 |
+  | OpenAPI | 15/16 |
+  | Camel | 16/16 |
+  | k8s | 16/16 |
 - **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
   `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
   `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with

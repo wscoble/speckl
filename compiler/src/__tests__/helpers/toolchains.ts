@@ -6,10 +6,10 @@
 // SPECKL_REQUIRE_TOOLCHAINS=1 (`npm run test:compile`) a missing
 // toolchain is a failure instead.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { compileSpec, CompileOptions } from '../../compile.js';
 
 export const REQUIRE_TOOLCHAINS = process.env.SPECKL_REQUIRE_TOOLCHAINS === '1';
@@ -95,4 +95,62 @@ export function filesUnder(dir: string, suffix: string): string[] {
 export function run(cmd: string, args: string[], cwd?: string, env?: NodeJS.ProcessEnv): { ok: boolean; output: string } {
   const r = spawnSync(cmd, args, { cwd, encoding: 'utf-8', env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 });
   return { ok: !r.error && r.status === 0, output: `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? String(r.error) : ''}` };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Known failures
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Examples whose generated code is known not to compile for a target, with
+ * the reason. A listed example must still fail (so a fix has to delete its
+ * entry); an unlisted one must compile. Like the verify baseline, this
+ * records debt honestly instead of hiding it.
+ */
+export const COMPILE_BASELINE_FILE = join(EXAMPLES_DIR, '.speckl-compile-baseline.json');
+
+export function knownFailures(target: string): Record<string, string> {
+  const all = JSON.parse(readFileSync(COMPILE_BASELINE_FILE, 'utf-8')) as Record<string, unknown>;
+  return (all[target] ?? {}) as Record<string, string>;
+}
+
+export interface CheckResult {
+  ok: boolean;
+  output: string;
+}
+
+/**
+ * The compile tests for one target: a toolchain check, then one test per
+ * example held to the known-failures baseline.
+ */
+export function targetSuite(opts: {
+  target: string;
+  name: string;
+  toolchain: Probe;
+  check: (example: string) => CheckResult | Promise<CheckResult>;
+  examples?: string[];
+  timeout?: number;
+}): void {
+  const { title, skip } = gate(opts.name, opts.toolchain);
+  const known = knownFailures(opts.target);
+  const examples = opts.examples ?? exampleNames();
+  describe.skipIf(skip)(title, () => {
+    it('toolchain is available', () => {
+      expect(opts.toolchain.reason ?? 'ok').toBe('ok');
+    });
+
+    it('the known-failures baseline names only real examples', () => {
+      expect(Object.keys(known).filter((e) => !exampleNames().includes(e))).toEqual([]);
+    });
+
+    it.each(examples)('%s', async (example) => {
+      expect(opts.toolchain.ok).toBe(true);
+      const r = await opts.check(example);
+      if (known[example]) {
+        expect(r.ok, `${example} now compiles for ${opts.target}: delete its entry from examples/.speckl-compile-baseline.json`).toBe(false);
+      } else {
+        expect(r.ok, `${opts.target} output for ${example} does not compile:\n${r.output.slice(0, 4000)}`).toBe(true);
+      }
+    }, opts.timeout ?? 120_000);
+  });
 }
