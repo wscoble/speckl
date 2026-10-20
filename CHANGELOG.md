@@ -1,0 +1,62 @@
+# Changelog
+
+All notable changes to the Speckl compiler (npm package `speckl`). The format
+follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
+project uses [Semantic Versioning](https://semver.org/) (0.x: minor versions
+may change generated output).
+
+## [0.4.0] - unreleased
+
+First npm release. The package was renamed from the unpublished
+`speckl-compile` to `speckl`; `speckl-compile` stays as a bin alias.
+
+### Added
+
+- **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
+  `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
+  `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with
+  pluggable verifiers, the generated machine and `spec.sha256`.
+  - `await` states wait for a verified signal and refuse act tools, near or in
+    the loop.
+  - State is tamper-evident: an HMAC-signed, hash-chained log.
+  - One call in flight, with a pending timeout and `clear-pending`.
+- **Harness adapters** (#5, #6). A `harness <name> { map ... }` block maps a
+  harness's own tool calls onto spec tools. Unmapped calls are denied.
+  - Generates `adapter.mjs` and reference wiring for Claude Code
+    (`.claude/settings.json`), Cursor (`.cursor/hooks.json`), Codex CLI
+    (`.codex/hooks.json`) and Gemini CLI (`.gemini/settings.json`).
+  - `adapter.mjs install` merges the wiring into an existing config.
+  - Fails closed: hook crashes, timeouts, malformed output and adapter errors
+    all block. The wiring sets `onFailure: "block"` (Claude Code) or
+    `failClosed: true` (Cursor), and adds `|| exit 2` for Codex and Gemini.
+  - Includes `docs/harness-adapters.md`, with an executed 10-minute quickstart.
+- `next:` is a first-class IR member (#3). The generated TypeScript machine
+  gains `ACTIONS`, a side-effect-free `can(action, args)`, and
+  `serialize()` / `restore()`.
+- `speckl verify [<spec.speckdl|dir> ...]` runs the bundled Z3 verifier
+  (`scripts/verify-z3.mjs`) on your specs. It needs the `z3` binary.
+- Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
+
+### Fixed
+
+- **Vacuous BMC proofs** (#3). The Z3 backend scraped `next:` from raw source
+  and read past it into `verify` blocks, so BMC only stuttered and every
+  `Always` obligation "proved". Multi-line relations lost alternatives
+  (KafkaKRaft, SQLitePager, OAuth2), and SQLiteWAL had no transitions. Unknown
+  action names in `next:` now fail the compile.
+- `verify-z3` checks every `(check-sat)` obligation against its own
+  `speckl-expect` marker, not only the last one per file (#2).
+
+### Known issues (tracked for the next release)
+
+- The AST Z3 output still ends with `(get-model)` after an `unsat` answer,
+  which makes a raw `z3` run exit 1. `speckl verify` handles this.
+- The IR Z3 backend does not yet emit `Always` invariants, so it reports fewer
+  obligations than the AST backend.
+- Deny messages from generated guards show stage numbers, not names.
+
+## [0.3.1] and earlier
+
+Unreleased development versions published only as source (#1).
+
+[0.4.0]: https://github.com/wscoble/speckl/releases/tag/v0.4.0

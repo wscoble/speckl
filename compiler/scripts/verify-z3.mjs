@@ -16,10 +16,13 @@
 // or produces no solver result. Exit 2 means "z3 not available" — CI decides
 // whether that is fatal.
 //
-// Usage: node scripts/verify-z3.mjs [--examples <dir>] [--depth <n>] [--keep]
+// Usage: node scripts/verify-z3.mjs [<spec.speckdl|dir> ...] [--examples <dir>] [--depth <n>] [--keep]
+//        speckl verify [<spec.speckdl|dir> ...] [--depth <n>] [--keep]
+//
+// With no paths, verifies the repository's examples/ (or --examples <dir>).
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readdirSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +42,23 @@ function argValue(flag, fallback) {
 const examplesDir = resolve(argValue('--examples', process.env.SPECKL_EXAMPLES ?? join(repoDir, 'examples')));
 const depth = parseInt(argValue('--depth', '10'), 10);
 const keep = argv.includes('--keep');
+if (argv.includes('--help') || argv.includes('-h')) {
+  console.log('usage: speckl verify [<spec.speckdl|dir> ...] [--depth <n>] [--keep]');
+  console.log('Compiles each spec to SMT-LIB2 (AST and IR backends), runs z3, and checks every');
+  console.log('verify obligation against its expected result. Exit 0 all pass, 1 any fail, 2 no z3.');
+  process.exit(0);
+}
+// Positional paths: everything that is not a flag or a flag's value.
+const valueFlags = new Set(['--examples', '--depth']);
+const paths = [];
+for (let i = 0; i < argv.length; i++) {
+  if (valueFlags.has(argv[i])) { i++; continue; }
+  if (!argv[i].startsWith('-')) paths.push(resolve(argv[i]));
+}
+if (!Number.isFinite(depth) || depth < 1) {
+  console.error('verify-z3: --depth must be a positive integer');
+  process.exit(1);
+}
 
 // --- Tool checks ---
 const z3Path = process.env.Z3_BIN ?? 'z3';
@@ -163,22 +183,35 @@ function findSpeckFiles(dir, prefix = '') {
   }
   return out;
 }
-const exampleFiles = findSpeckFiles(examplesDir).sort();
-if (exampleFiles.length === 0) {
-  console.error(`verify-z3: no .speckdl files found in ${examplesDir}`);
+// Each entry: [absolute path, display name].
+const specs = [];
+const roots = paths.length > 0 ? paths : [examplesDir];
+for (const root of roots) {
+  if (!existsSync(root)) {
+    console.error(`verify-z3: ${root} does not exist`
+      + (paths.length === 0 ? ' (pass a spec file or directory: speckl verify <spec.speckdl|dir>)' : ''));
+    process.exit(1);
+  }
+  if (statSync(root).isDirectory()) {
+    for (const rel of findSpeckFiles(root).sort()) specs.push([join(root, rel), paths.length > 1 ? join(basename(root), rel) : rel]);
+  } else {
+    specs.push([root, basename(root)]);
+  }
+}
+if (specs.length === 0) {
+  console.error(`verify-z3: no .speckdl files found in ${roots.join(', ')}`);
   process.exit(1);
 }
 
 console.log(`Speckl Z3 verification — z3 ${z3Version}`);
-console.log(`Examples: ${examplesDir} (${exampleFiles.length} files), BMC depth ${depth}`);
+console.log(`${paths.length > 0 ? 'Specs' : 'Examples'}: ${roots.join(', ')} (${specs.length} files), BMC depth ${depth}`);
 console.log('');
 
 const workDir = mkdtempSync(join(tmpdir(), 'speckl-verify-'));
 const results = [];
 let failed = 0;
 
-for (const file of exampleFiles) {
-  const filePath = join(examplesDir, file);
+for (const [filePath, file] of specs) {
   const base = file.replace(/\.speckdl$/, '').replaceAll('/', '.');
 
   for (const [mode, target] of [['ast', 'z3'], ['ir', 'all-ir']]) {

@@ -1,12 +1,25 @@
 {
-  "name": "speckl-compile",
-  "version": "0.3.1",
-  "description": "SpeckDL compiler — compiles state machine specs to TypeScript, Rust, Z3, Protobuf, K8s CRDs, and SBOM artifacts with embedded provenance",
+  "name": "speckl",
+  "version": "0.4.0",
+  "description": "Speckl compiler for SpeckDL specs: TypeScript, Rust, Go, Z3, Protobuf, K8s CRDs, OpenAPI, agent rails (Claude Code, Cursor, Codex, Gemini) and SBOM artifacts with embedded provenance",
+  "keywords": [
+    "speckl",
+    "speckdl",
+    "specification",
+    "state-machine",
+    "formal-verification",
+    "z3",
+    "smt",
+    "model-checking",
+    "sbom",
+    "provenance",
+    "ai-agents",
+    "claude-code",
+    "cursor",
+    "agent-guardrails"
+  ],
   "type": "module",
   "license": "MIT",
-  "bin": {
-    "speckl-compile": "./dist/index.js"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/wscoble/speckl.git"
@@ -15,19 +28,34 @@
     "url": "https://github.com/wscoble/speckl/issues"
   },
   "homepage": "https://github.com/wscoble/speckl#readme",
+  "bin": {
+    "speckl": "./dist/index.js",
+    "speckl-compile": "./dist/index.js"
+  },
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=20"
   },
-  "files": [
-    "dist/"
-  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "test": "vitest run",
     "verify": "node scripts/verify-z3.mjs",
-    "prepublishOnly": "npm run build && npm test",
+    "prepublishOnly": "npm test",
     "dev": "tsc --watch",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "prepack": "npm run build",
+    "test:pack": "vitest run src/__tests__/package-pack.test.ts"
   },
   "dependencies": {
     "js-yaml": "^5.4.0",

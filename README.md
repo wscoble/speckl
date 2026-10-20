@@ -18,6 +18,22 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
 
 No LLMs in the compilation path. Same spec, same output, every time.
 
+## Install
+
+```bash
+npm install -g speckl        # Node.js 20+
+speckl --help
+speckl spec.speckdl -t all -o out
+speckl verify spec.speckdl   # Z3 check of every verify block (needs the z3 binary)
+```
+
+Or without installing: `npx speckl spec.speckdl -t agent -o .speckl`.
+`speckl-compile` is the same CLI under its older name. Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
+For agent rails in Claude Code, Cursor, Codex CLI or Gemini CLI, see
+[docs/harness-adapters.md](docs/harness-adapters.md).
+
 ## Verification
 
 The Z3 backend emits SMT-LIB2 with bounded model checking, and CI runs a **real Z3 solver** over every example spec:
@@ -27,6 +43,8 @@ cd compiler
 npm run build
 npm run verify          # compiles examples, runs z3, checks solver results
 ```
+
+Installed from npm, the same verifier runs on your own specs: `speckl verify <spec.speckdl|dir>`.
 
 Each generated `.smt2` file carries a `; speckl-expect:` marker declaring what the solver should return. When a property is violated, the verifier renders a human-readable counterexample — a per-step state trace from the solver model. Constructs the translators cannot yet handle are skipped with visible comments rather than emitted as invalid SMT.
 
