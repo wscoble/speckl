@@ -59,7 +59,8 @@ speck RetryHandler {
   constraint: initialDelay > 0
   constraint: maxDelay >= initialDelay
   constraint: totalDelay == sum(delays)
-  constraint: totalDelay <= 30s
+  // Delays are in seconds; SpeckDL has no duration literals (was `30s`).
+  constraint: totalDelay <= 30
 
   // Backoff constraint - delay grows exponentially
   constraint: backoff(delay(n)) == delay(n-1) * 2
