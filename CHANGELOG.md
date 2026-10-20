@@ -30,7 +30,7 @@ First npm release. The package was renamed from the unpublished
   | TypeScript | 4/16 |
   | Agent rails | 0/2 |
   | Go | 4/16 |
-  | Rust | 1/16 |
+  | Rust | 16/16 |
   | Elm | 0/16 |
   | Protobuf | 10/16 |
   | OpenAPI | 15/16 |
@@ -122,6 +122,25 @@ First npm release. The package was renamed from the unpublished
   statements, 86% branches and 97% functions.
 
 ### Fixed
+
+- **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
+
+  It now works from the IR, like the Camel target, and translates expressions with their types:
+  - numeric widening, Option and nil;
+  - map and list reads and writes, `in`/`notIn`;
+  - `old()`, built from a clone taken at the start of the action;
+  - `append`, `min`/`max`, `has`/`contains`, `length` and string concatenation.
+
+  Untranslated forms fail closed:
+  - an action with an untranslated statement returns `Err("SPECKL-UNTRANSLATED: ...")` before it touches state;
+  - an untranslated init, invariant or temporal property panics through `speckl_untranslated`.
+
+  Types the spec uses without declaring become `SPECKL-UNRESOLVED` placeholder structs. Events live in `mod events`, so an event may share a type's name. All 16 examples compile. In 62 of their 88 actions an untranslated form makes the whole action fail closed (Camel has the same count).
+
+  Output changes:
+  - `check_<name>` methods for invariant blocks;
+  - `verify_N` checks the state predicate of `always(...)`;
+  - the invented `<Speck>State` enum is gone.
 
 - **Camel output did not compile** (#20). Processors used state variables
   as bare Java names instead of the injected state bean, `return x` was
