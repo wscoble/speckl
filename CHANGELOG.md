@@ -56,6 +56,13 @@ First npm release. The package was renamed from the unpublished
   `serialize()` / `restore()`.
 - `speckl verify [<spec.speckdl|dir> ...]` runs the bundled Z3 verifier
   (`scripts/verify-z3.mjs`) on your specs. It needs the `z3` binary.
+- **Coverage floor** (#12). `npm run coverage` measures the compile pipeline
+  in-process (it moved from `index.ts` to `src/compile.ts`, so the CLI, the
+  AST Z3 backend and the Go/Elm generators are now measured) and includes the
+  verifier helpers in `scripts/lib/`. It fails below 80% lines/statements,
+  85% branches and 95% functions. The old 54% line figure came from what was
+  measured, not from missing tests. Generated example output is pinned by a
+  digest snapshot.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Fixed
@@ -65,16 +72,46 @@ First npm release. The package was renamed from the unpublished
   `Always` obligation "proved". Multi-line relations lost alternatives
   (KafkaKRaft, SQLitePager, OAuth2), and SQLiteWAL had no transitions. Unknown
   action names in `next:` now fail the compile.
+- **`speckl verify` fails closed** (#8). Before, any check the verifier could
+  not actually run still counted as a pass.
+  - Each verify block declares `; speckl-obligation: <name>`. A degraded check
+    (model incomplete, post-state invariant, invariant not found, free-form
+    temporal property) is reported UNCHECKED, and UNCHECKED fails.
+  - Verify blocks in a spec with no actions are declared unchecked instead of
+    being dropped. A `(check-sat)` with no `speckl-expect` marker fails.
+  - The IR Z3 backend no longer runs a stuttering "BMC" that proved nothing.
+    It declares each verify block `speckl-unchecked` and the verifier fails it
+    unless the AST backend proves it.
+  - `examples/.speckl-unchecked.json` acknowledges the 31 example obligations
+    that are not yet proven. They print as UNCHECKED and never count as
+    passed. An entry that becomes proven or no longer exists fails as
+    `STALE-BASELINE`. Today 3 of 34 example verify blocks are proven.
+  - `-t agent` refuses to emit rails if a guard still contains an
+    untranslated placeholder (the bogus `const x = {}` lines are gone).
+  - The AST Z3 output no longer ends with `(get-model)` after `unsat`, so a
+    raw `z3` run exits 0. Deny messages name stages
+    (`stage == Approved (stage is Idle)`), not numbers.
+- **False "proved" for infix `P implies Q`** (#12). The AST Z3 backend's typed
+  expression path parsed only `P`, so `stage >= 0 implies stage < 2` was
+  proved as `stage >= 0` although an action breaks it. A partial parse is now
+  a failure, and the property degrades to UNCHECKED instead of proving.
+  (RetryHandler.smt2 no longer asserts `totalDelay <= 30s` as `<= 30` for the
+  same reason.)
+- **Unknown `verify` forms vanished** (#12). `verify Eventually(...) { ... }`
+  produced no obligation and verification stayed green. It is now a parse
+  error that names the supported forms.
 - `verify-z3` checks every `(check-sat)` obligation against its own
   `speckl-expect` marker, not only the last one per file (#2).
 
 ### Known issues (tracked for the next release)
 
-- The AST Z3 output still ends with `(get-model)` after an `unsat` answer,
-  which makes a raw `z3` run exit 1. `speckl verify` handles this.
-- The IR Z3 backend does not yet emit `Always` invariants, so it reports fewer
-  obligations than the AST backend.
-- Deny messages from generated guards show stage numbers, not names.
+- The IR Z3 backend does not unroll transitions, so it cannot prove `Always`
+  or other verify obligations. Since #8 it declares each one unchecked
+  (visible, and failing unless the AST backend proves it) rather than
+  reporting fewer obligations.
+- 31 of the 34 example verify blocks are not yet proven (see
+  `examples/.speckl-unchecked.json`), mostly because the AST Z3 sanitizer
+  drops forms it cannot translate (model incomplete).
 
 ## [0.3.1] and earlier
 
