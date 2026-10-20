@@ -12,6 +12,11 @@ First npm release. The package was renamed from the unpublished
 
 ### Added
 
+- **Compile tests** (#20). `src/__tests__/compiles-*.test.ts` compiles
+  every example's generated code with a real toolchain, starting with
+  `javac` for Camel against pinned Camel 4.8.0 and Jakarta jars. `npm test`
+  skips a missing toolchain with a visible reason. `npm run test:compile`
+  fetches the pinned jars and fails if a toolchain is missing.
 - **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
   `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
   `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with
@@ -86,6 +91,27 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
+- **Camel output did not compile** (#20). Processors used state variables
+  as bare Java names instead of the injected state bean, `return x` was
+  emitted inside `void process()`, untranslated set algebra and inline
+  records were pasted in as Java, and type aliases or generic primitives
+  (`List<long>`) produced invalid types. Only 2 of 16 examples' Camel projects
+  compiled, and only because their processors were empty. Now:
+  - all 16 compile with `javac`;
+  - processors read and write state through the state bean;
+  - parameters come from message headers;
+  - `return x` sets the reply body;
+  - events go through `SpecklRuntime.emit`;
+  - postconditions are checked after the effects.
+
+  Expressions are translated with their types. Anything without a typed
+  Java form calls `SpecklRuntime.untranslated("<source>")`. An action
+  containing such a statement throws `UnsupportedOperationException` before
+  it reads or writes state. It used to skip the check or apply only part of
+  its effects. 60 of the 88 example processors fail closed this way today.
+  The causes are spec forms the IR does not lower yet: `if` blocks, record
+  literals, set literals and algebra, scalar type aliases, and dotted
+  assignments.
 - **IR backends acted on truncated expressions** (#14). The IR's expression
   parser stopped at the first token it could not use (`P implies Q` became
   `P`, `x := a union {b}` swallowed the next statement, record constructors
