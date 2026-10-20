@@ -30,7 +30,7 @@ First npm release. The package was renamed from the unpublished
   | TypeScript | 4/16 |
   | Agent rails | 0/2 |
   | Go | 4/16 |
-  | Rust | 1/16 |
+  | Rust | 16/16 |
   | Elm | 0/16 |
   | Protobuf | 7/16 |
   | OpenAPI | 15/16 |
@@ -113,6 +113,48 @@ First npm release. The package was renamed from the unpublished
   statements, 86% branches and 97% functions.
 
 ### Fixed
+
+- **Loops in action bodies were dropped without a trace.** The TypeScript
+  target kept an action's guards but emitted nothing for a `for` loop, so a
+  split-style action "succeeded" with none of the loop's effects (no children
+  created, the running sum left at 0) and no `SPECKL-UNTRANSLATED` marker.
+  Other backends had the same pattern for loops, if-blocks or unreadable
+  statements. Regression fixture: `src/__tests__/fixtures/LoopSplit.speckdl`.
+  - **Parser**: if-blocks and loops (brace or indented colon form, including
+    `forall v in S:` statement loops and `else if` chains) are now parsed into
+    nested statements. Multi-line `emit`, typed `let x: T = ...`, continuation
+    lines, bare `return` and targets such as `m[a.b]` are read instead of
+    dropped. A line it still cannot read is kept as an `unparsed` statement.
+    The printer round-trips the nested form.
+  - **TypeScript**: `for i from a to b` becomes an inclusive range loop;
+    `for x in list` and `for k in m.keys` iterate; if/else-if/else chains,
+    `m[k].field := v` on maps, `emptyList`/`emptyMap`, balanced `append(...)`
+    and string literals inside record literals are translated. Anything else
+    (an unreadable statement, a loop over a whole map, a name nothing declares)
+    emits `// SPECKL-UNTRANSLATED` and a `throw`. The old `const X = {} as any`
+    placeholders for unknown names are gone. When a guard can fail after the
+    body has changed state (a `require` inside a loop), the action restores the
+    state it started from before rethrowing.
+  - **TypeScript (IR)**: a statement it cannot lower throws instead of
+    becoming a comment.
+  - **IR statement parser**: a loop and its body stay one raw statement, so
+    Rust and Camel fail closed on the loop. Before, the body was flattened into
+    the action and ran once, outside any loop, with the loop variable unbound.
+  - **Go**: loops (`from..to` ranges and `in` collections) and if-chains are
+    lowered from the parsed structure, nested to any depth. An unlowerable
+    statement sets `err` to `SPECKL-UNTRANSLATED: ...` and returns, instead of
+    a `// TODO` comment or `_ = <text>`.
+  - **Elm**: an action with any statement the client translator cannot express
+    no longer applies the rest of its transition optimistically. Only its
+    guards run, and the server's state arrives on refetch.
+  - **Z3**: a state variable assigned inside an if-block or loop was framed as
+    unchanged by the step. This could prove an invariant the loop breaks.
+    Such variables are now left unconstrained (a sound over-approximation),
+    and an unreadable statement leaves every variable unconstrained. The
+    verify baseline is unchanged (48/79).
+
+  The compile baseline gains no entries. Six first-error messages were
+  refreshed: five TypeScript and one Go.
 
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 

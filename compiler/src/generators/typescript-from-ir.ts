@@ -158,12 +158,19 @@ function renderStmt(stmt: any, indent: string): string {
       return `this.events.push({ type: '${stmt.event}', ${(stmt.fields || []).map((f: any) => `${f.name}: ${renderExpr(f.value)}`).join(', ')} });`;
     case 'return':
       return `return ${renderExpr(stmt.expr)};`;
-    case 'if':
-      if (stmt.raw) return `// SPECKL-UNTRANSLATED statement (not lowered): ${stmt.raw.replace(/\s+/g, ' ').trim()}`;
-      return `// if-block (not yet lowered): ${stmt.expr ? renderExpr(stmt.expr) : '...'}`;
+    case 'if': {
+      // The IR keeps if-blocks and loops as raw text. Never drop one silently:
+      // the action throws when it reaches it.
+      const what = (stmt.raw ?? (stmt.expr ? `if ${renderExpr(stmt.expr)}` : 'if-block')).replace(/\s+/g, ' ').trim();
+      return untranslatedStmt(what, indent);
+    }
     default:
-      return `// unknown statement kind: ${stmt.kind}`;
+      return untranslatedStmt(`unknown statement kind: ${stmt.kind}`, indent);
   }
+}
+
+function untranslatedStmt(what: string, indent: string): string {
+  return `// SPECKL-UNTRANSLATED statement (not lowered): ${what}\n${indent}throw new Error(${JSON.stringify(`SPECKL-UNTRANSLATED: ${what}`)});`;
 }
 
 function renderExpr(e: any): string {

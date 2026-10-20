@@ -5,7 +5,8 @@
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
-import { filesUnder, generate, run, targetSuite, Probe } from './helpers/toolchains.js';
+import { describe, it, expect } from 'vitest';
+import { filesUnder, FIXTURES_DIR, generate, run, targetSuite, Probe } from './helpers/toolchains.js';
 
 const require = createRequire(import.meta.url);
 const tscBin = require.resolve('typescript/bin/tsc');
@@ -28,6 +29,19 @@ targetSuite({
     if (files.length === 0) return { ok: false, output: 'no .ts output' };
     return typecheck(files);
   },
+});
+
+// fixtures/LoopSplit.speckdl: an action whose for-loop (with an if, a map
+// write and an accumulator inside) must be translated, not dropped. Its
+// runtime behaviour is checked in for-loop-fail-closed.test.ts.
+describe('tsc --strict: fixture LoopSplit (for-loop in an action body)', () => {
+  it('compiles', () => {
+    const files = filesUnder(generate(join(FIXTURES_DIR, 'LoopSplit.speckdl'), 'typescript'), '.ts');
+    expect(files.length).toBeGreaterThan(0);
+    const r = typecheck(files);
+    expect(r.output).toBe('');
+    expect(r.ok).toBe(true);
+  }, 120_000);
 });
 
 targetSuite({
