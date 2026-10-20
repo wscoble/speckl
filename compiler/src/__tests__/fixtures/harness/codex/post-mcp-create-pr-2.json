@@ -1,0 +1,26 @@
+{
+  "session_id": "019a3c1e-7f2b-7d40-9a51-2c4b8e1f0a77",
+  "transcript_path": "/home/dev/.codex/sessions/2026/10/19/rollout-2026-10-19T15-12-03-019a3c1e.jsonl",
+  "cwd": "__PROJECT__",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5.5-codex",
+  "turn_id": "turn_3",
+  "tool_name": "mcp__github__create_pull_request",
+  "tool_use_id": "call_M5pr",
+  "tool_input": {
+    "owner": "acme",
+    "repo": "greet",
+    "title": "greet takes a name",
+    "head": "feat/greet",
+    "base": "main"
+  },
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "https://github.com/acme/greet/pull/7"
+      }
+    ],
+    "isError": false
+  }
+}

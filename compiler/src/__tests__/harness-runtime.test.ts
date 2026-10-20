@@ -5,6 +5,7 @@ import {
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, parseAdapterFlags, shellQuote,
   buildHarnessHooks, mergeHarnessSettings, installHarness, runAdapter, ADAPTER_FUNCTIONS,
+  normalizeToolInput, harnessCallId, harnessConfigFile,
   HarnessRule, AdapterDeps, HookResult,
 } from '../generators/agent/harness-runtime.js';
 
@@ -387,5 +388,186 @@ describe('emission', () => {
       expect(src.startsWith('function ' + fn.name + '(')).toBe(true);
       expect(src).not.toMatch(/__vite|import\(|require\(/);
     }
+  });
+});
+
+describe('Codex CLI and Gemini CLI', () => {
+  const cxRules: HarnessRule[] = [
+    { tools: ['apply_patch'], target: 'edit_code', inputs: [{ param: 'path', field: 'path' }] },
+    { tools: ['Bash'], field: 'command', pattern: 'npm test', target: 'run_tests', inputs: [] },
+    { tools: ['mcp__ci__run_tests'], target: 'run_tests', inputs: [] },
+  ];
+  const gmRules: HarnessRule[] = [
+    { tools: ['run_shell_command'], field: 'command', pattern: 'npm test', target: 'run_tests', inputs: [] },
+  ];
+  const cfg = { harness: { codex: { rules: cxRules }, gemini: { rules: gmRules } } };
+  const cx = (ev: string, tool: string, input: unknown, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ hook_event_name: ev, tool_name: tool, tool_input: input, tool_use_id: 'call_1', cwd: '/p/src', turn_id: 't', ...extra });
+  const gm = (ev: string, tool: string, input: unknown, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ hook_event_name: ev, session_id: 's1', tool_name: tool, tool_input: input, cwd: '/p', timestamp: 'x', ...extra });
+
+  it('event names, config files', () => {
+    expect(harnessEventName('codex', 'pre')).toBe('PreToolUse');
+    expect(harnessEventName('codex', 'turn-end')).toBe('Stop');
+    expect(harnessEventName('codex', 'post-failure')).toBeNull();
+    expect(harnessEventName('gemini', 'pre')).toBe('BeforeTool');
+    expect(harnessEventName('gemini', 'post')).toBe('AfterTool');
+    expect(harnessEventName('gemini', 'turn-end')).toBe('AfterAgent');
+    expect(harnessEventName('gemini', 'batch')).toBeNull();
+    expect(harnessConfigFile('codex')).toBe('.codex/hooks.json');
+    expect(harnessConfigFile('gemini')).toBe('.gemini/settings.json');
+    expect(harnessConfigFile('claude-code')).toBe('.claude/settings.json');
+    expect(harnessConfigFile('nope')).toBe('');
+  });
+
+  it('normalizeToolInput: apply_patch exposes the files it touches', () => {
+    const patch = '*** Begin Patch\n*** Add File: a.js\n+x\n*** Update File: b/c.js\n*** Move to: b/d.js\n*** Delete File: e.js\n*** End Patch\n';
+    expect(normalizeToolInput('codex', 'apply_patch', { command: patch })).toEqual({ command: patch, files: ['a.js', 'b/c.js', 'b/d.js', 'e.js'], path: 'a.js' });
+    expect(normalizeToolInput('codex', 'apply_patch', { command: 'garbage' })).toEqual({ command: 'garbage', files: [] });
+    expect(normalizeToolInput('codex', 'apply_patch', { command: 5 })).toEqual({ command: 5 });
+    expect(normalizeToolInput('codex', 'Bash', { command: 'x' })).toEqual({ command: 'x' });
+    expect(normalizeToolInput('claude-code', 'apply_patch', { command: patch })).toEqual({ command: patch });
+  });
+
+  it('harnessCallId: tool_use_id, or a stable id per Gemini session and tool', () => {
+    expect(harnessCallId('codex', { tool_use_id: 'call_9' })).toBe('call_9');
+    expect(harnessCallId('codex', { tool_use_id: '' })).toBeNull();
+    expect(harnessCallId('claude-code', {})).toBeNull();
+    const a = harnessCallId('gemini', { session_id: 's1', tool_name: 'read_file', tool_input: { file_path: 'a' } });
+    expect(a).toMatch(/^gemini-[0-9a-f]{8}$/);
+    expect(harnessCallId('gemini', { session_id: 's1', tool_name: 'read_file', tool_input: { file_path: 'b' } })).toBe(a);
+    expect(harnessCallId('gemini', { session_id: 's2', tool_name: 'read_file' })).not.toBe(a);
+    expect(harnessCallId('gemini', { session_id: 's1', tool_name: 'write_file' })).not.toBe(a);
+    expect(harnessCallId('gemini', { session_id: 's1' })).toBeNull();
+  });
+
+  it('formats: Codex like Claude Code; Gemini prints {} on allow; posts surface problems as context', () => {
+    expect(formatPre('codex', true, '')).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(formatPre('codex', false, 'no')).toEqual({ code: 2, stdout: '', stderr: 'no\n' });
+    expect(formatPre('gemini', true, '')).toEqual({ code: 0, stdout: '{}\n', stderr: '' });
+    expect(formatPre('gemini', false, 'no')).toEqual({ code: 2, stdout: '', stderr: 'no\n' });
+    expect(formatPost('codex', null)).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(formatPost('gemini', null)).toEqual({ code: 0, stdout: '{}\n', stderr: '' });
+    const p = formatPost('gemini', 'bad');
+    expect(p.code).toBe(0);
+    expect(JSON.parse(p.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'AfterTool', additionalContext: 'bad' } });
+    expect(JSON.parse(formatPost('codex', 'bad').stdout).hookSpecificOutput.hookEventName).toBe('PostToolUse');
+  });
+
+  it('postSucceeded: Codex Bash never; apply_patch needs Exit code 0; MCP isError counts', () => {
+    expect(postSucceeded('codex', 'post', { tool_name: 'Bash', tool_response: '# pass 3' })).toBe(false);
+    expect(postSucceeded('codex', 'post', { tool_name: 'apply_patch', tool_response: 'Exit code: 0\nOutput:\nSuccess.' })).toBe(true);
+    expect(postSucceeded('codex', 'post', { tool_name: 'apply_patch', tool_response: 'Exit code: 1\nOutput:\nfailed' })).toBe(false);
+    expect(postSucceeded('codex', 'post', { tool_name: 'apply_patch', tool_response: { x: 1 } })).toBe(false);
+    expect(postSucceeded('codex', 'post', { tool_name: 'mcp__ci__run_tests', tool_response: { content: [], isError: true } })).toBe(false);
+    expect(postSucceeded('codex', 'post', { tool_name: 'mcp__ci__run_tests', tool_response: { content: [], isError: false } })).toBe(true);
+    expect(postSucceeded('codex', 'post', { tool_name: 'update_plan', tool_response: 'Plan updated' })).toBe(true);
+  });
+
+  it('postSucceeded: Gemini needs an error-free response; shell needs a clean Output block', () => {
+    const sh = (llm: unknown, extra: Record<string, unknown> = {}) =>
+      postSucceeded('gemini', 'post', { tool_name: 'run_shell_command', tool_response: { llmContent: llm, returnDisplay: '', ...extra } });
+    expect(sh('Output: 3 passing')).toBe(true);
+    expect(sh('Output: 2 passing\nExit Code: 1')).toBe(false);
+    expect(sh('Output: (empty)\nSignal: 9')).toBe(false);
+    expect(sh('Output: (empty)\nError: spawn failed')).toBe(false);
+    expect(sh('Command moved to background (PID: 7). Output hidden.')).toBe(false);
+    expect(sh(42)).toBe(false);
+    expect(sh('Output: ok', { error: { message: 'x' } })).toBe(false);
+    expect(postSucceeded('gemini', 'post', { tool_name: 'read_file', tool_response: { llmContent: 'x' } })).toBe(true);
+    expect(postSucceeded('gemini', 'post', { tool_name: 'read_file', tool_response: { llmContent: 'x', error: null } })).toBe(true);
+    expect(postSucceeded('gemini', 'post', { tool_name: 'read_file', tool_response: 'x' })).toBe(false);
+    expect(postSucceeded('gemini', 'post', { tool_name: 'read_file' })).toBe(false);
+  });
+
+  it('wiring: three events, blocking pre, absolute install paths', () => {
+    const c = buildHarnessHooks('codex', { adapter: 'a/adapter.mjs', state: 's.json', key: '/k', relative: true }) as any;
+    expect(Object.keys(c.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'Stop']);
+    expect(c.hooks.PreToolUse[0].hooks[0]).toEqual({ type: 'command', command: 'node a/adapter.mjs codex pre --state s.json --key /k || exit 2', timeout: 30 });
+    expect(c.hooks.Stop[0].matcher).toBeUndefined();
+    const g = buildHarnessHooks('gemini', { adapter: 'a/adapter.mjs', state: 's.json', key: null, relative: true }) as any;
+    expect(g.hooks.BeforeTool[0]).toEqual({ matcher: '.*', hooks: [{ type: 'command', command: 'node ${GEMINI_PROJECT_DIR}/a/adapter.mjs gemini pre --state ${GEMINI_PROJECT_DIR}/s.json || exit 2', timeout: 30000, name: 'speckl-pre' }] });
+    expect(g.hooks.AfterAgent[0].hooks[0].command).not.toContain('exit 2');
+    for (const h of ['codex', 'gemini']) {
+      const d = fakeDeps();
+      expect(installHarness(h, { project: '.', state: '.speckl/state.json', key: '/k/s.key' }, d).code).toBe(0);
+      const file = h === 'codex' ? '/p/.codex/hooks.json' : '/p/.gemini/settings.json';
+      const pre = JSON.parse(d.files[file]).hooks[h === 'codex' ? 'PreToolUse' : 'BeforeTool'][0].hooks[0].command;
+      expect(pre).toBe(`node /p/.speckl/agent/adapter.mjs ${h} pre --state /p/.speckl/state.json --key /k/s.key --project /p || exit 2`);
+    }
+  });
+
+  it('runAdapter codex: apply_patch maps to its first file; rails in a patch are refused', () => {
+    const d = fakeDeps();
+    const patch = '*** Begin Patch\n*** Update File: src/a.js\n@@\n-x\n+y\n*** End Patch\n';
+    const out = runAdapter(['codex', 'pre', '--state', '/p/.speckl/state.json'], {}, cx('PreToolUse', 'apply_patch', { command: patch }), cfg, d);
+    expect(out).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(d.calls[0].msg).toEqual({ tool: 'edit_code', input: { path: 'src/a.js' }, call_id: 'call_1' });
+    const rails = '*** Begin Patch\n*** Update File: ../.codex/hooks.json\n*** End Patch\n';
+    const r = runAdapter(['codex', 'pre', '--state', '/p/.speckl/state.json'], {}, cx('PreToolUse', 'apply_patch', { command: rails }), cfg, fakeDeps());
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('Speckl-protected path (.codex)');
+    // An absolute path from a subdirectory session is caught once --project pins the root.
+    const abs = '*** Begin Patch\\n*** Update File: /p/.codex/hooks.json\\n*** End Patch\\n';
+    const r2 = runAdapter(['codex', 'pre', '--state', '/p/.speckl/state.json', '--project', '/p'], {}, cx('PreToolUse', 'apply_patch', { command: abs }), cfg, fakeDeps());
+    expect(r2.code).toBe(2);
+    expect(r2.stderr).toContain('Speckl-protected path (/p/.codex)');
+  });
+
+  it('runAdapter codex: a Bash post is recorded as failed and says why', () => {
+    const d = fakeDeps();
+    const out = runAdapter(['codex', 'post', '--state', '/p/s.json'], {}, cx('PostToolUse', 'Bash', { command: 'npm test' }, { tool_response: 'ok' }), cfg, d);
+    expect(d.calls[0].msg).toMatchObject({ tool: 'run_tests', ok: false });
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext).toContain('does not report a Bash exit status');
+    const m = fakeDeps();
+    const ok = runAdapter(['codex', 'post', '--state', '/p/s.json'], {}, cx('PostToolUse', 'mcp__ci__run_tests', {}, { tool_response: { isError: false } }), cfg, m);
+    expect(m.calls[0].msg).toMatchObject({ ok: true });
+    expect(ok).toEqual({ code: 0, stdout: '', stderr: '' });
+  });
+
+  it('runAdapter gemini: derived call id pairs BeforeTool with AfterTool; GEMINI_PROJECT_DIR is the project', () => {
+    const d = fakeDeps();
+    const pre = runAdapter(['gemini', 'pre', '--state', '.speckl/state.json'], { GEMINI_PROJECT_DIR: '/p' }, gm('BeforeTool', 'run_shell_command', { command: 'npm test' }), cfg, d);
+    expect(pre).toEqual({ code: 0, stdout: '{}\n', stderr: '' });
+    const post = runAdapter(['gemini', 'post', '--state', '.speckl/state.json'], { GEMINI_PROJECT_DIR: '/p' },
+      gm('AfterTool', 'run_shell_command', { command: 'npm test' }, { tool_response: { llmContent: 'Output: ok' } }), cfg, d);
+    expect(post).toEqual({ code: 0, stdout: '{}\n', stderr: '' });
+    expect(d.calls[0].msg.call_id).toBe(d.calls[1].msg.call_id);
+    expect(d.calls[1].msg.ok).toBe(true);
+    expect(d.calls[0].statePath).toBe('/p/.speckl/state.json');
+    const bad = runAdapter(['gemini', 'pre', '--state', 's.json'], {}, gm('BeforeTool', 'web_fetch', {}), cfg, fakeDeps());
+    expect(bad).toMatchObject({ code: 2, stdout: '' });
+    expect(bad.stderr).toContain('unmapped harness tool "web_fetch"');
+    const wrong = runAdapter(['gemini', 'pre', '--state', 's.json'], {}, gm('AfterTool', 'run_shell_command', { command: 'npm test' }), cfg, fakeDeps());
+    expect(wrong.code).toBe(2);
+    expect(wrong.stderr).toContain('wired as BeforeTool');
+  });
+
+  it('runAdapter turn-end: clears a pending call as failed, quiet otherwise, never blocks', () => {
+    const state = '/p/.speckl/state.json';
+    const pending = JSON.stringify({ pending: { call_id: 'c7', tool: 'open_pr', input: { a: 1 } } });
+    const d = fakeDeps({}, { [state]: pending });
+    const out = runAdapter(['codex', 'turn-end', '--state', state], {}, JSON.stringify({ hook_event_name: 'Stop', cwd: '/p' }), cfg, d);
+    expect(out.code).toBe(0);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toContain('cleared pending call c7');
+    expect(d.calls).toEqual([{ cmd: 'post', msg: { tool: 'open_pr', input: { a: 1 }, call_id: 'c7', ok: false }, statePath: state, keyPath: null }]);
+    // Nothing pending, no state, a broken state: no hook call, exit 0.
+    const variants: Record<string, string>[] = [{ [state]: JSON.stringify({ pending: null }) }, {}, { [state]: '{broken' }];
+    for (const files of variants) {
+      const q = fakeDeps({}, files);
+      expect(runAdapter(['gemini', 'turn-end', '--state', state], {}, JSON.stringify({ hook_event_name: 'AfterAgent' }), cfg, q))
+        .toEqual({ code: 0, stdout: '{}\n', stderr: '' });
+      expect(q.calls).toEqual([]);
+    }
+    // hook.mjs refusing the clear is reported, still exit 0.
+    const f = fakeDeps({ runHook: () => ({ status: 2, stdout: '{"decision":"deny","reason":"post: no matching pending call_id"}\n', stderr: '' }) }, { [state]: pending });
+    const r = runAdapter(['gemini', 'turn-end', '--state', state], {}, JSON.stringify({ hook_event_name: 'AfterAgent' }), cfg, f);
+    expect(r).toMatchObject({ code: 0, stdout: '{}\n' });
+    expect(r.stderr).toContain('could not clear the pending call: post: no matching pending call_id');
+    // Malformed turn-end payloads also exit 0 (a Gemini exit 2 would force a retry).
+    expect(runAdapter(['gemini', 'turn-end', '--state', state], {}, 'nope', cfg, fakeDeps())).toMatchObject({ code: 0, stdout: '{}\n' });
+    expect(runAdapter(['codex', 'turn-end', '--state', state], {}, 'nope', cfg, fakeDeps())).toMatchObject({ code: 0, stdout: '' });
   });
 });

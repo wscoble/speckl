@@ -1,0 +1,16 @@
+{
+  "session_id": "7c1f4e2a-93b0-4d5e-a8c6-0f2d9b71e345",
+  "transcript_path": "/home/dev/.gemini/tmp/5f0e9a/chats/session-2026-10-19T22-12-7c1f4e2a.json",
+  "cwd": "__PROJECT__",
+  "hook_event_name": "AfterTool",
+  "timestamp": "2026-10-19T22:12:41.204Z",
+  "tool_name": "run_shell_command",
+  "tool_input": {
+    "command": "git commit -m \"greet takes a name\"",
+    "description": "Run git commit -m \"greet takes a name\""
+  },
+  "tool_response": {
+    "llmContent": "Output: [feat/greet 3f9c2d1] greet takes a name\n 1 file changed",
+    "returnDisplay": "[feat/greet 3f9c2d1] greet takes a name\n 1 file changed"
+  }
+}

@@ -108,6 +108,31 @@ speck ClaudeCodePolicy {
             map Shell command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
             map Shell command ~ "gh pr create( .*)?" -> open_pr
         }
+
+        // Codex reports a Bash call's output but not its exit status, so a
+        // Bash call can never count as a success there (fail closed): it is
+        // allowed or denied as usual but never advances the policy. Run the
+        // gates through MCP tools, whose results carry isError.
+        harness codex {
+            map apply_patch -> edit_code { path = path }
+            map mcp__ci__run_tests -> run_tests
+            map mcp__ci__request_review -> request_review
+            map mcp__github__create_pull_request -> open_pr
+            map update_plan -> inspect
+            map Bash command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map Bash command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+        }
+
+        harness gemini {
+            map write_file|replace -> edit_code { path = file_path }
+            map read_file -> read_file { path = file_path }
+            map glob|grep_search|list_directory|write_todos -> inspect
+            map run_shell_command command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map run_shell_command command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map run_shell_command command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map run_shell_command command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map run_shell_command command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
     }
 
     next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect
