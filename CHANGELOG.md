@@ -97,6 +97,17 @@ First npm release. The package was renamed from the unpublished
   subtraction. An operator after a call keeps its precedence
   (`a <= f(x) && c`). RetryHandler's `30s` is now `30` (seconds), because
   SpeckDL has no duration literals.
+- **Z3 arithmetic grouped right to left** (#19). The AST Z3 backend's
+  fallback string translator, used for quantified invariants (`forall`), `let`
+  sugar, post-state invariants and expressions the typed parser cannot read,
+  split each operator at its first occurrence. So `stage - 1 - 1 == stage` was
+  translated as `stage - (1 - 1) == stage` and **proved**, although it is
+  false. A leading unary minus took the whole rest of the expression
+  (`- s - 1` became `-(s - 1)`). Subtraction, `*`, `/` and `%` are now
+  left-associative. `*`/`/`/`%` are translated (`div`/`mod`) instead of
+  leaking as infix, and unary minus applies to its operand only. No bundled
+  example hit this: every generated file and every verify result is
+  unchanged. The typed path was already correct.
 - **Vacuous BMC proofs** (#3). The Z3 backend scraped `next:` from raw source
   and read past it into `verify` blocks, so BMC only stuttered and every
   `Always` obligation "proved". Multi-line relations lost alternatives

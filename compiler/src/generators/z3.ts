@@ -867,8 +867,11 @@ function convertToPrefix(expr: string): string {
   expr = convertOp(expr, '<', '<');
   expr = convertOp(expr, '>=', '>=');
   expr = convertOp(expr, '<=', '<=');
-  expr = convertOp(expr, '+', '+');
-  expr = convertOp(expr, '-', '-');
+  // Additive and multiplicative operators each form one precedence level and
+  // are split at their LAST top-level occurrence, so `a - b - c` is
+  // (- (- a b) c) and `a / b * c` is (* (div a b) c), the usual convention.
+  expr = convertOpGroup(expr, [['+', '+'], ['-', '-']]);
+  expr = convertOpGroup(expr, [['*', '*'], ['/', 'div'], ['%', 'mod'], ['mod', 'mod']]);
   return expr;
 }
 
@@ -978,24 +981,57 @@ function wrapNotOperator(expr: string): string {
   return result.join('');
 }
 
+/**
+ * Split `expr` at a top-level binary operator and convert both sides.
+ * `=>` is right-associative and splits at its first occurrence; every other
+ * operator is left-associative and splits at its last one. Splitting at the
+ * first occurrence made `a - b - c` into (- a (- b c)).
+ */
 function convertOp(expr: string, op: string, smtOp: string): string {
-  // Find top-level operator occurrence (outside any parens)
+  return convertOpGroup(expr, [[op, smtOp]], op === '=>');
+}
+
+/** Text before an operator that leaves the operator in a unary position. */
+const UNARY_CONTEXT_RE = /(^|[\s(])(\+|-|\*|\/|%|mod|and|or|not|=>|distinct|=|<|>|>=|<=|__[A-Z]{2}__)$/;
+
+/**
+ * Split `expr` at one top-level occurrence of any operator in `ops` (one
+ * precedence level): the last occurrence, or the first when `rightAssoc`.
+ * An occurrence with nothing, an opening parenthesis or another operator to
+ * its left is a unary operator, not a split point.
+ */
+function convertOpGroup(expr: string, ops: [string, string][], rightAssoc = false): string {
+  let best: { i: number; op: string; smtOp: string } | null = null;
   let depth = 0;
   for (let i = 0; i < expr.length; i++) {
-    if (expr[i] === '(') depth++;
-    else if (expr[i] === ')') depth--;
-    else if (depth === 0 && expr.substring(i, i + op.length) === op) {
+    if (expr[i] === '(') { depth++; continue; }
+    if (expr[i] === ')') { depth--; continue; }
+    if (depth !== 0) continue;
+    for (const [op, smtOp] of ops) {
+      if (expr.substring(i, i + op.length) !== op) continue;
       const beforeOk = i === 0 || /\s/.test(expr[i - 1]) || expr[i - 1] === '(';
       const afterOk = i + op.length >= expr.length || /\s/.test(expr[i + op.length]) || expr[i + op.length] === ')';
-      if (beforeOk && afterOk) {
-        const left = expr.substring(0, i).trim();
-        const right = expr.substring(i + op.length).trim();
-        return `(${smtOp} ${convertToPrefix(left)} ${convertToPrefix(right)})`;
+      if (!beforeOk || !afterOk) continue;
+      const left = expr.substring(0, i).trim();
+      if (left === '' || UNARY_CONTEXT_RE.test(left)) {
+        // Unary minus: (- x). Only meaningful for `-`; other operators keep
+        // the historical behaviour of splitting with an empty left side.
+        if (op === '-') continue;
       }
+      best = { i, op, smtOp };
+      break;
     }
+    if (best && rightAssoc) break;
   }
-  // Already in prefix form
-  return expr;
+  if (!best) {
+    // A leading unary minus: `- x` → (- x).
+    const m = expr.match(/^-\s+(.+)$/s);
+    if (m && ops.some(([op]) => op === '-')) return `(- ${convertToPrefix(m[1])})`;
+    return expr;
+  }
+  const left = expr.substring(0, best.i).trim();
+  const right = expr.substring(best.i + best.op.length).trim();
+  return `(${best.smtOp} ${convertToPrefix(left)} ${convertToPrefix(right)})`;
 }
 
 // --- Action transition predicate emission ---
