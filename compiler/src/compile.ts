@@ -1,5 +1,6 @@
 // The compile pipeline behind `speckl <file> -t <target>`. Kept apart from
 // the CLI entry (index.ts) so tests can run it in-process.
+import { expandTypeAliases } from './aliases.js';
 import { parseSpeckFile } from './parser.js';
 import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
@@ -32,7 +33,9 @@ export interface CompileOptions {
 export function compileSpec(file: string, options: CompileOptions): void {
   console.log(`Compiling ${file}...`);
   
-  const ast = parseSpeckFile(file);
+  // Alias references (`leaderId: ServerId`) are expanded to their targets
+  // here, so every backend, IR-based or not, sees ordinary types.
+  const ast = expandTypeAliases(parseSpeckFile(file));
   // Synthetic __signal_* actions are injected only for Z3 BMC (and again
   // inside the agent target). Other backends keep the source AST clean.
   const astForProof = injectSignalActions(ast);

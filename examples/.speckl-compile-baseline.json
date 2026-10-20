@@ -3,10 +3,10 @@
   "typescript": {
     "AgentPolicy": "AgentPolicy.ts(144,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
     "ClaudeCodePolicy": "ClaudeCodePolicy.ts(157,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
-    "KafkaKRaft": "KafkaKRaft.ts(164,11): error TS2304: Cannot find name 'TermMonotonicity'.",
-    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(12,15): error TS2304: Cannot find name 'TokenType'.",
+    "KafkaKRaft": "KafkaKRaft.ts(165,11): error TS2304: Cannot find name 'TermMonotonicity'.",
+    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(179,108): error TS2339: Property 'or' does not exist on type 'string'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
-    "Raft": "Raft.ts(11,9): error TS2304: Cannot find name 'Term'.",
+    "Raft": "Raft.ts(115,5): error TS7052: Element implicitly has an 'any' type because type 'Map<string, ServerState>' has no index signature.",
     "RetryHandler": "RetryHandler.ts(124,12): error TS2304: Cannot find name 'maxRetries'.",
     "ReviewGate": "ReviewGate.ts(145,11): error TS2304: Cannot find name 'MergeNeedsApproval'.",
     "SQLitePager": "SQLitePager.ts(288,11): error TS2304: Cannot find name 'CommitAtomicity'.",
@@ -69,11 +69,8 @@
   },
   "protobuf": {
     "AccountLedger": "account_ledger.proto: \"PendingTransfer\" is not defined.",
-    "KafkaKRaft": "kafka_k_raft.proto:14:9: Expected field name.",
-    "OAuth2AuthorizationCode": "o_auth2_authorization_code.proto:12:3: \"AccessToken\" is not defined.",
     "Paxos": "paxos.proto: \"Ballot\" is not defined.",
     "PreconditionTest": "precondition_test.proto:12:3: \"Integer\" is not defined.",
-    "Raft": "raft.proto:12:3: \"Term\" is not defined.",
     "tef": "tef.proto:311:22: \"CreateCustomerRequest\" is not defined.",
     "TigerBeetleLedger": "tiger_beetle_ledger.proto: \"Account\" is not defined.",
     "TwoPhaseCommit": "two_phase_commit.proto:15:12: \"Message\" is not defined."

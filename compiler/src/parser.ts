@@ -269,7 +269,20 @@ export type MemberNode = (
   | InvariantMemberNode
   | NextMemberNode
   | AgentMemberNode
+  | TypeAliasNode
 ) & LineSpan;
+
+/**
+ * `type X = T` where T is not a record: a named alias for another type
+ * (`type ServerId = String`, `type Ids = List(ServerId)`). Generators see
+ * every reference to X resolved to T (see expandTypeAliases); the IR also
+ * keeps the alias as a named type.
+ */
+export interface TypeAliasNode {
+  type: 'type_alias';
+  name: string;
+  target: TypeExpr;
+}
 
 /**
  * `next:` transition relation: the disjunction of actions the system may
@@ -587,6 +600,17 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
         i++;
         continue;
       }
+    }
+
+    // `type X = T` on one line: an enum (`A | B | C`), a one-line record
+    // (`type X = { a: Nat, b: Value }`), or an alias of another type.
+    // Records spanning lines are block members handled below.
+    const aliasMatch = openCount === closeCount ? stripLineComment(line).match(/^type\s+(\w+)\s*=\s*(.+)$/) : null;
+    if (aliasMatch) {
+      members.push(Object.assign(parseTypeAliasLine(aliasMatch[1], aliasMatch[2].trim()), { startLine: i + 1, endLine: i + 1 }));
+      speckEndLine = i + 1;
+      i++;
+      continue;
     }
 
     if (isBlockStarter && openCount > 0) {
@@ -1199,6 +1223,12 @@ function parseTypeExpr(expr: string): TypeExpr {
     return { type: 'primitive', name: expr };
   }
   
+  // Option(T) / Option<T>: T or nothing, i.e. the nullable `T | null`.
+  const optionMatch = expr.match(/^Option\s*(?:\((.+)\)|<(.+)>)$/);
+  if (optionMatch) {
+    return { ...parseTypeExpr((optionMatch[1] ?? optionMatch[2]).trim()), nullable: true };
+  }
+
   // List<T>
   if (expr.startsWith('List<') && expr.endsWith('>')) {
     const inner = expr.substring(5, expr.length - 1).trim();
@@ -1336,6 +1366,30 @@ function parseTypeExpr(expr: string): TypeExpr {
 
   // Identifier (for interface references, etc.)
   return { type: 'ident', name: expr };
+}
+
+/** Bare names joined by `|` (`Follower | Candidate | Leader`) declare an enum. */
+const ENUM_ALTERNATIVES = /^[A-Za-z_]\w*(\s*\|\s*[A-Za-z_]\w*)+$/;
+
+function parseTypeAliasLine(name: string, rhs: string): InterfaceNode | TypeAliasNode {
+  if (ENUM_ALTERNATIVES.test(rhs)) {
+    const variants = rhs.split('|').map((v) => v.trim());
+    // `T | null` is a nullable alias, not an enum.
+    if (!variants.includes('null')) {
+      return {
+        type: 'interface',
+        name,
+        kind: 'enum',
+        methods: variants.map((v) => ({ name: v, params: [], returnType: { type: 'ident', name: 'Void' } })),
+        fields: [],
+      };
+    }
+  }
+  const target = parseTypeExpr(rhs);
+  if (target.type === 'record' && !target.nullable) {
+    return { type: 'interface', name, kind: 'record', methods: [], fields: target.fields ?? [] };
+  }
+  return { type: 'type_alias', name, target };
 }
 
 function parseInterface(line: string): InterfaceNode {
