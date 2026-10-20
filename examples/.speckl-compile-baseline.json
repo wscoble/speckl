@@ -1,22 +1,12 @@
 {
   "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java) has no entries: all examples compile.",
   "typescript": {
-    "AgentPolicy": "AgentPolicy.ts(144,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
-    "ClaudeCodePolicy": "ClaudeCodePolicy.ts(157,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
-    "KafkaKRaft": "KafkaKRaft.ts(164,11): error TS2304: Cannot find name 'TermMonotonicity'.",
     "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(12,15): error TS2304: Cannot find name 'TokenType'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
     "Raft": "Raft.ts(11,9): error TS2304: Cannot find name 'Term'.",
     "RetryHandler": "RetryHandler.ts(124,12): error TS2304: Cannot find name 'maxRetries'.",
-    "ReviewGate": "ReviewGate.ts(145,11): error TS2304: Cannot find name 'MergeNeedsApproval'.",
-    "SQLitePager": "SQLitePager.ts(288,11): error TS2304: Cannot find name 'CommitAtomicity'.",
     "SQLiteWAL": "SQLiteWAL.ts(264,32): error TS1005: ';' expected.",
-    "tef": "TEF.ts(301,22): error TS1005: ',' expected.",
-    "TigerBeetleLedger": "TigerBeetleLedger.ts(247,11): error TS2304: Cannot find name 'AccountBalanceInvariant'."
-  },
-  "agent": {
-    "AgentPolicy": "agent/AgentPolicy.ts(156,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
-    "ClaudeCodePolicy": "agent/ClaudeCodePolicy.ts(169,11): error TS2304: Cannot find name 'PrNeedsGreenTests'."
+    "tef": "TEF.ts(301,22): error TS1005: ',' expected."
   },
   "go": {
     "AccountLedger": "./account_ledger.go:36:14: syntax error: unexpected name notIn, expected )",

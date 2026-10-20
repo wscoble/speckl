@@ -27,8 +27,8 @@ First npm release. The package was renamed from the unpublished
 
   | Target | Compiling today |
   |---|---|
-  | TypeScript | 4/16 |
-  | Agent rails | 0/2 |
+  | TypeScript | 10/16 |
+  | Agent rails (incl. all 13 harness adapters) | 2/2 |
   | Go | 4/16 |
   | Rust | 1/16 |
   | Elm | 0/16 |
@@ -36,6 +36,17 @@ First npm release. The package was renamed from the unpublished
   | OpenAPI | 15/16 |
   | Camel | 16/16 |
   | k8s | 16/16 |
+- **Agent rails type-check** (#AGENT). The generated TypeScript machine inlined
+  only the first invariant a `verify Always(Inv)` named (invariants were
+  folded into one member when deduplicated), so `-t agent` output for
+  AgentPolicy and ClaudeCodePolicy failed `tsc` with
+  `Cannot find name 'PrNeedsApproval'`. Every invariant is inlined now. An
+  invariant the TypeScript backend can't translate (primes, quantifiers,
+  multi-clause bodies) makes `verifyN()` throw `SPECKL-UNTRANSLATED` instead
+  of emitting a bare name. The agent compile check now also covers each
+  harness adapter's output: `node --check` for the plugin `.js` files,
+  JSON/YAML parsing for configs, `sh -n` for Cline hooks, and a failure for
+  any unchecked file type.
 - **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
   `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
   `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with
