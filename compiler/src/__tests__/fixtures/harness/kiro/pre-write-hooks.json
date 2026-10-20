@@ -1,0 +1,10 @@
+{
+  "session_id": "sess_7f3c2a91",
+  "hook_event_name": "PreToolUse",
+  "cwd": "__PROJECT__",
+  "tool_name": "fs_write",
+  "tool_input": {
+    "path": ".kiro/hooks/speckl.json",
+    "text": "{\"version\":\"v1\",\"hooks\":[]}\n"
+  }
+}

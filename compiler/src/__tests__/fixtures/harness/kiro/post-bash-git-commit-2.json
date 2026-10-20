@@ -1,0 +1,13 @@
+{
+  "session_id": "sess_7f3c2a91",
+  "hook_event_name": "PostToolUse",
+  "cwd": "__PROJECT__",
+  "tool_name": "execute_bash",
+  "tool_input": {
+    "command": "git commit -m \"feat: app\"",
+    "cwd": "__PROJECT__",
+    "run_in_background": false,
+    "timeout": 120
+  },
+  "tool_response": "Output:\n[feat 1991b30] feat: app\n 1 file changed, 1 insertion(+)\n\nExit Code: 0"
+}

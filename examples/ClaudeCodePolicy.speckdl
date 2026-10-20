@@ -225,6 +225,19 @@ speck ClaudeCodePolicy {
             map run_commands command ~ "git commit -m \"[^\"]*\"" -> request_review
             map run_commands command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
         }
+
+        // Kiro (IDE 1.x and CLI V3, .kiro/hooks/*.json). Kiro reports no
+        // success flag: a shell result counts only with a final "Exit Code: 0".
+        harness kiro {
+            map fs_write|fs_append|str_replace|write -> edit_code { path = path }
+            map read_file|fs_read|read -> read_file { path = path }
+            map list_directory|file_search|grep_search -> inspect
+            map execute_bash|shell command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map execute_bash|shell command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map execute_bash|shell command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map execute_bash|shell command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map execute_bash|shell command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
     }
 
     next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect

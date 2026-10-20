@@ -163,3 +163,100 @@ describe('cline', () => {
     expect(ADAPTER_FUNCTIONS).toContain(clineScripts);
   });
 });
+
+describe('kiro', () => {
+  const krules: HarnessRule[] = [
+    { tools: ['execute_bash'], field: 'command', pattern: 'npm test', target: 'run_tests', inputs: [] },
+    { tools: ['fs_write'], target: 'edit_code', inputs: [{ param: 'path', field: 'path' }] },
+  ];
+  const kconfig = { harness: { kiro: { rules: krules } } };
+  it('events, config file, protected paths, legacy camelCase names', () => {
+    expect(['pre', 'post', 'post-failure', 'turn-end'].map(e => harnessEventName('kiro', e))).toEqual(['PreToolUse', 'PostToolUse', null, 'Stop']);
+    expect(harnessConfigFile('kiro')).toBe('.kiro/hooks/speckl.json');
+    expect(harnessProtectedDirs(['kiro']).slice(4)).toEqual(['.kiro/hooks', '.kiro/agents', '.kiro/settings']);
+    for (const [a, b] of [['preToolUse', 'PreToolUse'], ['postToolUse', 'PostToolUse'], ['stop', 'Stop'], ['PreToolUse', 'PreToolUse'], ['agentSpawn', 'agentSpawn']]) {
+      expect(normalizePayload('kiro', { hook_event_name: a }).hook_event_name).toBe(b);
+    }
+    const id = harnessCallId('kiro', { session_id: 's', tool_name: 'fs_write' });
+    expect(id).toMatch(/^kiro-[0-9a-f]{8}$/);
+    expect(harnessCallId('kiro', { session_id: 's', tool_name: 'fs_write', tool_use_id: 'x' })).toBe(id);
+  });
+  it('postSucceeded: shell needs a final Exit Code 0; prose errors and objects with errors fail', () => {
+    const ok = (tool: string, r: unknown) => postSucceeded('kiro', 'post', { tool_name: tool, tool_response: r });
+    expect(ok('execute_bash', 'Output:\nPASS\n\nExit Code: 0')).toBe(true);
+    expect(ok('execute_bash', 'Output:\nExit Code: 0 printed by the test\n\nExit Code: 1')).toBe(false);
+    expect(ok('execute_pwsh', 'Output:\nok')).toBe(false);
+    expect(ok('shell', { exit_status: 0 })).toBe(true);
+    expect(ok('shell', { exit_status: '0' })).toBe(true);
+    expect(ok('execute_cmd', { exit_code: 2 })).toBe(false);
+    expect(ok('execute_bash', { exitCode: 0, error: 'x' })).toBe(false);
+    expect(ok('execute_bash', {})).toBe(false);
+    expect(ok('fs_write', 'Created the file.')).toBe(true);
+    expect(ok('str_replace', 'Replaced text in src/a.js')).toBe(true);
+    expect(ok('str_replace', 'Error: oldStr not found')).toBe(false);
+    expect(ok('fs_write', 'Failed to write')).toBe(false);
+    expect(ok('fs_write', '  ')).toBe(false);
+    expect(ok('fs_write', { success: false })).toBe(false);
+    expect(ok('fs_write', { isError: true })).toBe(false);
+    expect(ok('fs_write', { content: 'x' })).toBe(true);
+    expect(ok('fs_write', [])).toBe(false);
+    expect(ok('fs_write', undefined)).toBe(false);
+  });
+  it('formatPre blocks with exit 2 and stderr only; a post problem is a warning (exit 1)', () => {
+    expect(formatPre('kiro', true, '')).toEqual({ code: 0, stdout: '{"decision":"allow"}\n', stderr: '' });
+    expect(formatPre('kiro', false, 'no')).toEqual({ code: 2, stdout: '', stderr: 'no\n' });
+    expect(formatPost('kiro', null)).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(formatPost('kiro', 'p')).toEqual({ code: 1, stdout: '', stderr: 'p\n' });
+  });
+  it('install writes a v1 hook file with a blocking pre, keeps other hooks and replaces its own', () => {
+    const other = { name: 'lint', trigger: 'PostFileSave', action: { type: 'command', command: 'npm run lint' } };
+    const d = fakeDeps({ '/p/.kiro/hooks/speckl.json': JSON.stringify({ version: 'v1', hooks: [other] }) });
+    expect(installHarness('kiro', { project: '.', state: '.speckl/state.json', key: '/k' }, d).code).toBe(0);
+    expect(installHarness('kiro', { project: '.', state: '.speckl/state.json', key: '/k' }, d).code).toBe(0);
+    const doc = JSON.parse(d.files['/p/.kiro/hooks/speckl.json']);
+    expect(doc.version).toBe('v1');
+    expect(doc.hooks.map((h: any) => h.name)).toEqual(['lint', 'speckl-pre', 'speckl-post', 'speckl-stop']);
+    expect(doc.hooks[1]).toMatchObject({ trigger: 'PreToolUse', timeout: 30, enabled: true, action: { type: 'command', command: '[ "$(node /p/.speckl/agent/adapter.mjs kiro pre --state /p/.speckl/state.json --key /k --project /p)" = \'{"decision":"allow"}\' ] || exit 2' } });
+    expect(doc.hooks[1].matcher).toBeUndefined();
+    expect(doc.hooks[2].action.command).not.toContain('|| exit 2');
+    expect(doc.hooks[3]).toMatchObject({ trigger: 'Stop' });
+    expect(doc.hooks[3].action.command).not.toContain('|| exit 2');
+    const odd = fakeDeps({ '/p/.kiro/hooks/speckl.json': '{"hooks":{}}' });
+    expect(installHarness('kiro', { project: '.', state: '.speckl/state.json' }, odd).code).toBe(0);
+    expect(JSON.parse(odd.files['/p/.kiro/hooks/speckl.json']).hooks).toHaveLength(3);
+  });
+  it('runAdapter: a post with an empty tool_input is recorded against the pending call', () => {
+    const pendingState = (call_id: string) => JSON.stringify({ pending: { call_id, tool: 'run_tests', input: {} } });
+    const id = harnessCallId('kiro', { session_id: 's', tool_name: 'execute_bash' }) as string;
+    const d = fakeDeps({ '/p/.speckl/state.json': pendingState(id) });
+    const post = (resp: unknown, extra: Record<string, unknown> = {}) => runAdapter(argv('kiro', 'post'), {}, JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 's', cwd: '/p', tool_name: 'execute_bash', tool_input: {}, tool_response: resp, ...extra }), kconfig, d);
+    expect(post('Output:\nPASS\n\nExit Code: 0')).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(d.calls.at(-1).msg).toEqual({ tool: 'run_tests', input: {}, call_id: id, ok: true });
+    post('Output:\nFAIL\n\nExit Code: 1');
+    expect(d.calls.at(-1).msg.ok).toBe(false);
+    // Not the pending call: falls through to mapping, which an empty input cannot satisfy.
+    const other = post('x', { session_id: 'other' });
+    expect(other.code).toBe(1);
+    expect(other.stderr).toMatch(/ran without a Speckl mapping/);
+    const d2 = fakeDeps({ '/p/.speckl/state.json': pendingState(id) }, () => ({ status: 1, stdout: '', stderr: 'broken state' }));
+    const bad = runAdapter(argv('kiro', 'post'), {}, JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 's', tool_name: 'execute_bash', tool_input: {} }), kconfig, d2);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toMatch(/Speckl could not record execute_bash \(spec tool run_tests\)/);
+    const d3 = fakeDeps({ '/p/.speckl/state.json': '{not json' });
+    expect(runAdapter(argv('kiro', 'post'), {}, JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 's', tool_name: 'execute_bash', tool_input: {} }), kconfig, d3).code).toBe(1);
+  });
+  it('runAdapter: a shell cwd outside the project root is denied; malformed input denies; Stop is silent', () => {
+    const d = fakeDeps();
+    const pre = (inp: unknown) => runAdapter(argv('kiro', 'pre'), {}, JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 's', cwd: '/p', tool_name: 'execute_bash', tool_input: inp }), kconfig, d);
+    expect(pre({ command: 'npm test', cwd: '/p' }).code).toBe(0);
+    expect(pre({ command: 'npm test', cwd: '.' }).code).toBe(0);
+    const out = pre({ command: 'npm test', cwd: '/tmp' });
+    expect(out.code).toBe(2);
+    expect(out.stderr).toMatch(/sets cwd "\/tmp"; Speckl only accepts commands run in the project root/);
+    expect(pre({ command: 'npm test', cwd: 7 }).code).toBe(2);
+    expect(pre('nope').code).toBe(2);
+    expect(runAdapter(argv('kiro', 'pre'), {}, '', kconfig, d)).toMatchObject({ code: 2, stdout: '' });
+    expect(runAdapter(argv('kiro', 'turn-end'), {}, JSON.stringify({ hook_event_name: 'Stop' }), kconfig, d)).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(runAdapter(argv('kiro', 'turn-end'), {}, 'garbage', kconfig, d)).toMatchObject({ code: 0, stdout: '' });
+  });
+});

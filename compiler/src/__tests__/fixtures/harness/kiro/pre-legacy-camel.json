@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_7f3c2a91",
+  "hook_event_name": "preToolUse",
+  "cwd": "__PROJECT__",
+  "tool_name": "execute_bash",
+  "tool_input": {
+    "command": "npm test"
+  }
+}

@@ -1,6 +1,6 @@
 // Harness adapter runtime: pure functions that turn a real agent harness's
 // hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI,
-// Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline) into a call to the generic
+// Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro) into a call to the generic
 // hook.mjs, and hook.mjs's verdict back into the harness's expected output.
 // Pi, OpenCode and OpenClaw have in-process plugin APIs instead of command
 // hooks; `install` writes a small generated plugin (pluginSource) that pipes
@@ -228,6 +228,13 @@ export function formatPre(harness: string, allow: boolean, message: string): Ada
     if (allow) return { code: 0, stdout: JSON.stringify({ decision: 'allow' }) + '\n', stderr: '' };
     return { code: 2, stdout: JSON.stringify({ decision: 'block', reason: message }) + '\n', stderr: message + '\n' };
   }
+  // Kiro: exit 2 blocks and sends stderr to the model; stdout is ignored.
+  // The generated command allows only when the adapter prints exactly
+  // {"decision":"allow"}, so a broken adapter that exits 0 still blocks.
+  if (harness === 'kiro') {
+    if (allow) return { code: 0, stdout: JSON.stringify({ decision: 'allow' }) + '\n', stderr: '' };
+    return { code: 2, stdout: '', stderr: message + '\n' };
+  }
   // Cline file hooks: only a {"cancel":true} JSON line on stdout blocks
   // (the exit code is ignored); the generated wrapper script turns anything
   // but an exact {"cancel":false} into a cancel.
@@ -280,6 +287,12 @@ export function formatPost(harness: string, problem: string | null): AdapterOutp
     const body: Record<string, unknown> = { cancel: false };
     if (problem) body.contextModification = problem;
     return { code: 0, stdout: JSON.stringify(body) + '\n', stderr: problem ? problem + '\n' : '' };
+  }
+  // Kiro PostToolUse output never reaches the agent; a non-zero exit shows
+  // stderr to the user as a warning (the tool already ran).
+  if (harness === 'kiro') {
+    if (!problem) return { code: 0, stdout: '', stderr: '' };
+    return { code: 1, stdout: '', stderr: problem + '\n' };
   }
   // Goose and Hermes post hooks are observers: their output is ignored, so
   // a problem is logged on stderr and the hook exits 0.
@@ -374,6 +387,30 @@ export function postSucceeded(harness: string, event: string, payload: Record<st
     }
     return true;
   }
+  if (harness === 'kiro') {
+    // Kiro sends tool_response with no success flag: prose such as
+    // "Output:\n...\nExit Code: 0", "Created the file." or "Replaced text in
+    // src/a.js", or (CLI) an object. A shell call needs a final exit code 0;
+    // any other tool counts unless the result reads as an error. Inferred
+    // from the text: see docs/harness-adapters.md, Limits.
+    const shell = ['execute_bash', 'execute_pwsh', 'execute_cmd', 'shell'].includes(String(toolName));
+    if (typeof out === 'string') {
+      if (shell) {
+        const codes = out.match(/Exit (?:Code|Status):\s*(-?\d+)/gi);
+        return !!codes && /:\s*0$/.test(codes[codes.length - 1]);
+      }
+      return out.trim() !== '' && !/^\s*(error|failed|failure|tool .* failed|cannot|could not|unable to)\b/i.test(out);
+    }
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return false;
+    const o = out as Record<string, unknown>;
+    if (o.success === false || o.is_error === true || o.isError === true) return false;
+    if (o.error !== undefined && o.error !== null && o.error !== '') return false;
+    if (shell) {
+      const code = o.exit_status !== undefined ? o.exit_status : o.exit_code !== undefined ? o.exit_code : o.exitCode;
+      return code === 0 || code === '0';
+    }
+    return true;
+  }
   if (harness === 'cline') {
     // CLI: tool_result {output, error}; a failed run_commands entry is
     // {success: false, error} inside output without a tool error, so every
@@ -439,6 +476,7 @@ export function harnessEventName(harness: string, event: string): string | null 
     opencode: { pre: 'tool.execute.before', post: 'tool.execute.after', 'post-failure': 'message.part.updated', 'turn-end': 'session.idle' },
     openclaw: { pre: 'before_tool_call', post: 'after_tool_call', 'turn-end': 'session_end' },
     cline: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'TaskComplete' },
+    kiro: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'Stop' },
   };
   const h = names[harness];
   return h && h[event] ? h[event] : null;
@@ -493,7 +531,7 @@ export function harnessCallId(harness: string, payload: Record<string, unknown>)
   const given = payload.tool_use_id;
   if (harness === 'copilot' && typeof given === 'string' && given !== '') return given;
   if (harness === 'cline' && typeof given === 'string' && given !== '') return given;
-  if (harness === 'gemini' || harness === 'copilot' || harness === 'cline') {
+  if (harness === 'gemini' || harness === 'copilot' || harness === 'cline' || harness === 'kiro') {
     if (typeof payload.tool_name !== 'string' || payload.tool_name === '') return null;
     const text = String(payload.session_id ?? '') + '\u0000' + payload.tool_name;
     let h = 0x811c9dc5;
@@ -523,6 +561,7 @@ export function harnessConfigFile(harness: string): string {
     openclaw: '.openclaw/plugins/speckl/index.js',
     // Executable hook scripts named after the event (clineScripts).
     cline: '.clinerules/hooks/PreToolUse',
+    kiro: '.kiro/hooks/speckl.json',
   };
   return files[harness] || '';
 }
@@ -538,6 +577,7 @@ export function harnessProtectedDirs(harnesses: string[]): string[] {
     opencode: ['.opencode', 'opencode.json', 'opencode.jsonc'],
     openclaw: ['.openclaw'],
     cline: ['.clinerules/hooks', '.cline'],
+    kiro: ['.kiro/hooks', '.kiro/agents', '.kiro/settings'],
   };
   for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
   return dirs;
@@ -606,6 +646,12 @@ export function normalizePayload(harness: string, payload: Record<string, unknow
     if (p.tool_input === undefined) p.tool_input = ev.params;
     if (p.tool_use_id === undefined) p.tool_use_id = ev.toolCallId !== undefined ? ev.toolCallId : ctx.toolCallId;
     if (p.session_id === undefined) p.session_id = ctx.sessionId;
+  }
+  if (harness === 'kiro') {
+    // {hook_event_name, cwd, session_id, tool_name, tool_input[, tool_response]};
+    // CLI 2.x agent hooks use camelCase event names.
+    const legacy: Record<string, string> = { preToolUse: 'PreToolUse', postToolUse: 'PostToolUse', stop: 'Stop' };
+    if (typeof p.hook_event_name === 'string' && legacy[p.hook_event_name]) p.hook_event_name = legacy[p.hook_event_name];
   }
   if (harness === 'cline') {
     // CLI / SDK: {hookName: "tool_call"|"tool_result"|"agent_end"|..., taskId,
@@ -732,6 +778,21 @@ export function buildHarnessHooks(
     if (paths.outsideAllow) argv.push('--outside', 'allow');
     return { plugin: harness, argv, relative: paths.relative };
   }
+  if (harness === 'kiro') {
+    // .kiro/hooks/speckl.json (IDE 1.x and CLI V3). Only exit 2 blocks a
+    // PreToolUse call (stderr goes to the model); any other exit or a
+    // timeout lets it run, so the pre command exits 2 unless the adapter
+    // printed exactly {"decision":"allow"} (a crash, a missing node or an
+    // empty exit 0 all block), and the adapter's own 20 s hook.mjs timeout stays
+    // inside the 30 s hook timeout. No matcher: every tool, MCP included.
+    // Stop must exit 0 with no output (exit 1 or a block decision asks
+    // Kiro to keep going).
+    const h = (name: string, trigger: string, event: string, block: boolean) => ({
+      name, description: 'Speckl rails (generated by adapter.mjs install kiro; rerun install to change)', trigger,
+      action: { type: 'command', command: block ? '[ "$(' + cmd(event) + ')" = \'{"decision":"allow"}\' ] || exit 2' : cmd(event) }, timeout: 30, enabled: true,
+    });
+    return { version: 'v1', hooks: [h('speckl-pre', 'PreToolUse', 'pre', true), h('speckl-post', 'PostToolUse', 'post', false), h('speckl-stop', 'Stop', 'turn-end', false)] };
+  }
   if (harness === 'cline') {
     // Command lines for the hook scripts clineScripts writes; stdin passes through.
     return { commands: { pre: cmd('pre'), post: cmd('post'), 'turn-end': cmd('turn-end') } };
@@ -834,6 +895,14 @@ export function mergeHarnessSettings(harness: string, existing: Record<string, u
     }
     return cmds.some(c => c.includes('adapter.mjs') && c.includes(' ' + harness + ' '));
   };
+  if (harness === 'kiro') {
+    // v1 document: {version, hooks: [{name, trigger, action: {command}}]}.
+    const cmdOf = (e: unknown) => (e && typeof e === 'object' && (e as Record<string, unknown>).action && typeof (e as Record<string, unknown>).action === 'object'
+      ? ((e as Record<string, unknown>).action as Record<string, unknown>).command : undefined);
+    const mine = (e: unknown) => { const c = cmdOf(e); return typeof c === 'string' && c.includes('adapter.mjs') && c.includes(' kiro '); };
+    const prev = Array.isArray(existing.hooks) ? (existing.hooks as unknown[]).filter(e => !mine(e)) : [];
+    return { ...existing, version: 'v1', hooks: [...prev, ...((ours.hooks || []) as unknown[])] };
+  }
   const merged: Record<string, unknown> = { ...existing };
   if (harness === 'cursor' || harness === 'copilot') merged.version = (existing.version as number) || 1;
   const hooks: Record<string, unknown[]> = { ...((existing.hooks as Record<string, unknown[]>) || {}) };
@@ -1336,19 +1405,36 @@ export function runAdapter(
   }
   const pin0 = parseToolInput(payload.tool_input);
   if (!pin0.ok) return fail(pin0.reason);
+  if (harness === 'kiro' && event === 'post' && Object.keys(pin0.input).length === 0) {
+    // Kiro IDE often sends PostToolUse with an empty tool_input. The pending
+    // call carries the spec tool and input its pre hook mapped; the derived
+    // call id (session + tool name) ties the two together.
+    const text = deps.readFile(stateAbs);
+    let pending: Record<string, unknown> | null = null;
+    try {
+      const st = text ? JSON.parse(text) : null;
+      if (st && st.pending && typeof st.pending === 'object') pending = st.pending as Record<string, unknown>;
+    } catch { /* hook.mjs reports a broken state on the next call */ }
+    if (pending && callId !== null && pending.call_id === callId && typeof pending.tool === 'string') {
+      const ok = postSucceeded(harness, event, payload);
+      const r = interpretHook(deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: callId, ok }, stateAbs, keyAbs));
+      return formatPost(harness, r.allow ? null : 'Speckl could not record ' + String(toolName) + ' (spec tool ' + pending.tool + '): ' + r.reason);
+    }
+  }
   const pin = { ok: true, input: normalizeToolInput(harness, toolName, pin0.input) };
   const label = typeof toolName === 'string' ? toolName : '(no tool_name)';
 
   if (isPre) {
     const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
     if (hit) return fail(label + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
-    // OpenCode bash and OpenClaw exec take a workdir: a mapped command run
+    // OpenCode bash and OpenClaw exec take a workdir, Kiro shell tools a cwd: a mapped command run
     // elsewhere (`npm test` in another checkout) would advance the policy
     // on someone else's result, so only the project root is accepted.
-    const wd = pin.input.workdir;
-    if ((harness === 'opencode' || harness === 'openclaw') && wd !== undefined && wd !== null && wd !== '') {
+    const wdField = harness === 'kiro' ? 'cwd' : 'workdir';
+    const wd = pin.input[wdField];
+    if ((harness === 'opencode' || harness === 'openclaw' || harness === 'kiro') && wd !== undefined && wd !== null && wd !== '') {
       if (typeof wd !== 'string' || deps.resolvePath(callCwd, wd) !== deps.resolvePath(projectDir, '.')) {
-        return fail(label + ' sets workdir ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')');
+        return fail(label + ' sets ' + wdField + ' ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')');
       }
     }
   }

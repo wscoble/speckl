@@ -1,0 +1,8 @@
+{
+  "session_id": "sess_7f3c2a91",
+  "hook_event_name": "PostToolUse",
+  "cwd": "__PROJECT__",
+  "tool_name": "execute_bash",
+  "tool_input": {},
+  "tool_response": "Output:\n\n> app@1.0.0 test\n> node test.js\n\nFAIL: expected 2, got 1\n\nExit Code: 1"
+}

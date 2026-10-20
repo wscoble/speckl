@@ -231,3 +231,108 @@ describe('Cline wiring (real payloads through the generated .clinerules/hooks/ s
     expect(r.stderr).toContain('PostToolUse.sh exists and was not written by Speckl');
   });
 });
+
+describe('Kiro wiring (real-format payloads through .kiro/hooks/speckl.json; not live-tested)', () => {
+  let ctx: ReturnType<typeof setup>;
+  let cmds: Record<string, string>;
+  beforeAll(() => {
+    ctx = setup('kiro');
+    const doc = JSON.parse(readFileSync(join(ctx.project, '.kiro', 'hooks', 'speckl.json'), 'utf-8'));
+    cmds = Object.fromEntries(doc.hooks.map((h: any) => [h.trigger, h.action.command]));
+  }, 60_000);
+  // Kiro runs the action command through a shell in the project root, payload on stdin.
+  const run = (trigger: string, name: string, env: Record<string, string> = {}) => sh(cmds[trigger], ctx.project, env, fixtureText('kiro', name, ctx.project));
+  const allow = (name: string) => { const r = run('PreToolUse', name); expect(r.status, r.stderr).toBe(0); expect(r.stdout).toBe(''); };
+  const deny = (name: string, re: RegExp) => { const r = run('PreToolUse', name); expect(r.status).toBe(2); expect(r.stdout).toBe(''); expect(r.stderr).toMatch(re); };
+  const posted = (name: string) => { const r = run('PostToolUse', name); expect(r.status, r.stderr).toBe(0); expect(r.stdout).toBe(''); };
+
+  it('writes PreToolUse / PostToolUse / Stop with absolute paths, a blocking pre and no matcher', () => {
+    expect(Object.keys(cmds)).toEqual(['PreToolUse', 'PostToolUse', 'Stop']);
+    expect(cmds.PreToolUse).toMatch(/^\[ "\$\(node \S+adapter\.mjs kiro pre .*--project \S+\)" = '\{"decision":"allow"\}' \] \|\| exit 2$/);
+    expect(ctx.inst.stdout).toContain('Speckl kiro hooks written to ' + join(ctx.project, '.kiro', 'hooks', 'speckl.json'));
+  });
+
+  it('walks write → failed edit → failing test → green test → commit → HNTL → approval → push (empty post inputs)', () => {
+    allow('pre-fs-write');
+    posted('post-fs-write');
+    expect(stateOf(ctx.project).pending).toBeNull();
+    allow('pre-str-replace');
+    posted('post-str-replace-error');
+    expect(stateOf(ctx.project).log.filter((e: any) => e.kind === 'post').map((e: any) => e.ok)).toEqual([true, false]);
+    allow('pre-str-replace-2');
+    posted('post-str-replace-2');
+    allow('pre-bash-npm-test');
+    posted('post-bash-npm-test-exit1');
+    expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
+    deny('pre-bash-git-commit', /Speckl denied execute_bash \(spec tool request_review\): can\(\) refused/);
+    allow('pre-bash-npm-test-2');
+    posted('post-bash-npm-test-2');
+    expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 1, testsPassed: true });
+    allow('pre-bash-git-commit-2');
+    posted('post-bash-git-commit-2');
+    expect(stateOf(ctx.project).machine.state.stage).toBe(2);
+    deny('pre-bash-git-push', /HNTL/);
+    allow('pre-read');
+    posted('post-read');
+    deny('pre-read-state', /Speckl-protected path/);
+    deny('pre-write-hooks', /Speckl-protected path \(\.kiro\/hooks\)/);
+    deny('pre-unmapped', /unmapped harness tool "mcp_fetch_fetch"/);
+    deny('pre-bash-chained', /shell control characters/);
+    deny('pre-bash-elsewhere', /sets cwd "\/tmp"/);
+    approve(ctx);
+    // A call that never reports is recorded as failed at Stop, silently.
+    allow('pre-bash-git-push-2');
+    const stop = run('Stop', 'stop');
+    expect(stop.status).toBe(0);
+    expect(stop.stdout).toBe('');
+    expect(stateOf(ctx.project).pending).toBeNull();
+    expect(stateOf(ctx.project).machine.state.stage).toBe(3);
+    allow('pre-bash-git-push-2');
+    posted('post-bash-git-push-2');
+    expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 5, prFromApproved: true });
+    // CLI 2.x camelCase event names are accepted (and judged: tests are refused after the PR).
+    deny('pre-legacy-camel', /Speckl denied execute_bash \(spec tool run_tests\): can\(\) refused/);
+  }, 120_000);
+
+  it('a post that cannot be recorded is a warning (exit 1), not a block', () => {
+    const r = run('PostToolUse', 'post-bash-git-commit-2');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/Speckl could not record execute_bash \(spec tool request_review\): post: no matching pending call_id/);
+  });
+
+  it('crash, exit 1, malformed output, SIGKILL, timeout, corrupt config, bad payloads and missing node all exit 2', () => {
+    const hook = join(ctx.project, '.speckl', 'agent', 'hook.mjs');
+    const good = readFileSync(hook, 'utf-8');
+    try {
+      for (const [name, body] of Object.entries(BROKEN_HOOK)) {
+        writeFileSync(hook, body);
+        const r = run('PreToolUse', 'pre-read', { SPECKL_HOOK_TIMEOUT_MS: '700' });
+        expect(r.status, `${name}: ${r.stderr}`).toBe(2);
+        expect(r.stderr, name).toMatch(/Speckl denied read_file/);
+      }
+    } finally { writeFileSync(hook, good); }
+    const a = join(ctx.project, '.speckl', 'agent', 'adapter.mjs');
+    copyFileSync(a, a + '.good');
+    try {
+      for (const [name, body] of Object.entries(BROKEN_ADAPTER)) {
+        writeFileSync(a, body);
+        const r = run('PreToolUse', 'pre-read');
+        // Even an adapter that exits 0 blocks unless it printed the allow line.
+        expect(r.status, name).toBe(2);
+      }
+    } finally { copyFileSync(a + '.good', a); }
+    expect(sh(cmds.PreToolUse, ctx.project, { PATH: '/nonexistent' }, fixtureText('kiro', 'pre-read', ctx.project)).status).toBe(2);
+    for (const bad of ['', 'not json', '[]', '{"hook_event_name":"PostToolUse"}']) {
+      expect(sh(cmds.PreToolUse, ctx.project, {}, bad).status, bad).toBe(2);
+    }
+    const cfg = join(ctx.project, '.speckl', 'agent', 'agent-config.json');
+    const goodCfg = readFileSync(cfg, 'utf-8');
+    try {
+      writeFileSync(cfg, '{corrupt');
+      const r = run('PreToolUse', 'pre-read');
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('Speckl adapter error');
+      expect(run('Stop', 'stop')).toMatchObject({ status: 0, stdout: '' });
+    } finally { writeFileSync(cfg, goodCfg); }
+  }, 60_000);
+});
