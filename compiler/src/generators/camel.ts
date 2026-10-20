@@ -552,7 +552,11 @@ function stmtToJava(stmt: IRStmt, speck: IRSpeck): string {
       return `        return ${expr};`;
     }
     case 'if': {
-      if (!stmt.expr) return '        // if: (untranslatable condition, skipped)';
+      if (!stmt.expr) {
+        return stmt.raw
+          ? `        // SPECKL-UNTRANSLATED statement, skipped: ${javaCommentText(stmt.raw)}`
+          : '        // if: (untranslatable condition, skipped)';
+      }
       const cond = exprToJava(stmt.expr!);
       const thenBlock = (stmt.thenBlock || []).map((s) => stmtToJava(s, speck)).join('\n');
       const elseBlock = (stmt.elseBlock || []).map((s) => stmtToJava(s, speck)).join('\n');
@@ -581,8 +585,9 @@ function exprToJava(expr: IRExpr): string {
   switch (expr.kind) {
     case 'bool_lit':
       if (expr.value === undefined) return 'null /* unsupported expression */';
-      return String(expr.value);
-    case 'bool_lit':
+      // Placeholder for source the IR could not parse: keep the fail-closed
+      // `false` but say so, with the original text.
+      if (expr.parseFailed) return `false /* SPECKL-UNTRANSLATED: ${javaCommentText(expr.source ?? 'unknown expression')} */`;
       return String(expr.value);
     case 'int_lit':
       return String(expr.value);
@@ -610,10 +615,16 @@ function exprToJava(expr: IRExpr): string {
   }
 }
 
+/** Single-line text that is safe inside a Java block or line comment. */
+function javaCommentText(text: string): string {
+  return text.replace(/\s+/g, ' ').replace(/\*\//g, '* /').trim();
+}
+
 function exprToJavaRaw(expr: IRExpr): string {
   // For comments — closer to the source language
   switch (expr.kind) {
     case 'bool_lit':
+      if (expr.parseFailed) return `<untranslated: ${javaCommentText(expr.source ?? 'unknown expression')}>`;
       return String(expr.value);
     case 'int_lit':
       return String(expr.value);

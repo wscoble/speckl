@@ -18,7 +18,8 @@ export type Expr =
   | SetExpr          // { elem, elem, ... }
   | MapExpr          // { key -> val, key -> val }
   | RangeExpr        // [0..N]
-  | ParenthesizedExpr;
+  | ParenthesizedExpr
+  | UnparsedExpr;     // source the expression parser could not read in full
 
 // --- Literals ---
 
@@ -62,6 +63,7 @@ export type BinaryOp =
   | 'mod'   // %
   | 'and'   // and
   | 'or'    // or
+  | 'implies' // implies (right-associative, lowest precedence)
   | 'in'    // in
   | 'union' // union
   | 'diff'  // \
@@ -146,6 +148,18 @@ export interface RangeExpr {
   start: number;
   end: Expr; // identifier or number
   token: TokenT;
+}
+
+// --- Unparsed source ---
+
+/**
+ * An expression the parser could not read in full. Carried as source text so
+ * consumers can report it instead of acting on a truncated prefix.
+ */
+export interface UnparsedExpr {
+  kind: 'unparsed';
+  source: string;
+  error: string;
 }
 
 // --- Parenthesized expression ---

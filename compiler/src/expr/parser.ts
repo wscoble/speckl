@@ -13,6 +13,7 @@ import {
 
 const PREC = {
   LOWEST: 0,
+  IMPLIES: 0.5,  // implies (lowest binary operator, right-associative)
   LOGICAL: 1,    // or, and, ||, &&
   EQUALITY: 2,   // ==, !=
   COMPARISON: 3, // <, >, <=, >=
@@ -28,6 +29,7 @@ function precOf(type: TokenType, value?: string): number {
   // Ident-based keywords (or, and, in, not, union)
   if (type === TokenType.IDENT) {
     switch (value) {
+      case 'implies': return PREC.IMPLIES;
       case 'or': case 'and': return PREC.LOGICAL;
       case 'in': case 'notIn': return PREC.SET;
       case 'not': return PREC.PREFIX;
@@ -53,6 +55,7 @@ function precOf(type: TokenType, value?: string): number {
 function binOp(type: TokenType, value?: string): BinaryOp | null {
   if (type === TokenType.IDENT) {
     switch (value) {
+      case 'implies': return 'implies';
       case 'or': return 'or';
       case 'and': return 'and';
       case 'in': return 'in';
@@ -99,6 +102,11 @@ export class ExpressionParser {
     const rest = this.current();
     if (rest.type !== TokenType.EOF) {
       throw new Error(`Unexpected ${rest.type} ('${rest.value}') at ${rest.line}:${rest.col}: trailing input not parsed`);
+    }
+    // The tokenizer ends the stream early at a character it does not know,
+    // returning an EOF token that carries that character.
+    if (rest.value !== '') {
+      throw new Error(`Unexpected character '${rest.value}' at ${rest.line}:${rest.col}: trailing input not parsed`);
     }
     return e;
   }
@@ -186,7 +194,8 @@ export class ExpressionParser {
         // Binary operator (symbol or ident-based keyword)
         const op = binOp(opTok.type, opTok.value);
         if (!op) throw new Error(`Not an infix operator: ${opTok.type} '${opTok.value}'`);
-        const right = this.expr(p);
+        // `a implies b implies c` is `a implies (b implies c)`.
+        const right = this.expr(op === 'implies' ? PREC.LOWEST : p);
         return { kind: 'binary', op, left, right, token: opTok } as BinaryExpr;
       }
     }
@@ -326,24 +335,10 @@ export class ExpressionParser {
 
     const call: CallExpr = { kind: 'call', callee, args, token: nameTok };
 
-    // Check for postfix continuation (chaining: f(x).y, f(x)[z], f(x) \ {y})
-    while (this.pos < this.tokens.length) {
-      const peek = this.current();
-      if (peek.type === TokenType.DOT) {
-        const dotTok = this.advance();
-        return this.parseMember(call, dotTok);
-      }
-      if (peek.type === TokenType.LBRACKET) {
-        const bracketTok = this.advance();
-        return this.parseIndex(call, bracketTok);
-      }
-      const p = precOf(peek.type, peek.value);
-      if (p <= PREC.LOWEST) break;
-      if (peek.type === TokenType.COLON) break;
-      // Infix continuation (e.g., \ operator)
-      const opTok = this.advance();
-      return this.infix(call, opTok);
-    }
+    // Postfix chaining (f(x).y, f(x)[z]) and infix operators (f(x) \ {y})
+    // are left to the caller's precedence loop. Consuming an infix operator
+    // here ignored the enclosing precedence: `a <= f(x) && c` became
+    // `a <= (f(x) && c)` and `a * f(x) + 1` became `a * (f(x) + 1)`.
     return call;
   }
 

@@ -115,11 +115,17 @@ describe.skipIf(!hasZ3)('AST Z3 backend: proofs and counterexamples', () => {
   it('regression: infix `P implies Q` is never proved as just P', () => {
     // The typed expression parser stopped at `implies` and returned P, and
     // the Z3 backend then proved `stage >= 0`: a false "proved" for a
-    // property Ship (stage := 2) breaks.
+    // property Ship (stage := 2) breaks. Infix implies is now an operator, so
+    // the property is checked as written and the counterexample is found.
     const v = verify('Gate', gate('require stage == 1', 'stage >= 0 implies stage < 2'));
     expect(v.proven).toEqual([]);
-    // Not lowered, so it is reported as unchecked (which fails `speckl verify`).
-    expect([...v.unchecked, ...v.violated]).toContain('Safe');
+    expect(v.status).toBe('VIOLATED');
+    expect(v.violated).toContain('Safe');
+  }, 60_000);
+
+  it('infix implies is directional, like implies(P, Q)', () => {
+    expect(verify('Gate', gate('require stage == 1', 'stage == 2 implies approved')).status).toBe('OK');
+    expect(verify('Gate', gate('require stage == 1', 'approved implies stage == 2')).status).toBe('VIOLATED');
   }, 60_000);
 
   it('a state variable named like an SMT keyword is renamed, and the proof still means something', () => {
@@ -187,11 +193,17 @@ describe('whole-expression parsing for the Z3 typed path', () => {
     const { parseExpression, parseExpressionComplete } = await import('../expr/index.js');
     const { parseStringToIRExpr } = await import('../ir/lower.js');
     // The lenient parser still stops early (other callers rely on it)...
-    expect(parseExpression('stage >= 0 implies stage < 2')).toEqual(parseExpression('stage >= 0'));
-    // ...the strict one refuses, and the Z3 entry point reports a failure.
-    expect(() => parseExpressionComplete('stage >= 0 implies stage < 2')).toThrow(/trailing input not parsed/);
+    expect(parseExpression('totalDelay <= 30s')).toEqual(parseExpression('totalDelay <= 30'));
+    // ...the strict one refuses, and the Z3 entry point reports a failure
+    // that carries the source text.
     expect(() => parseExpressionComplete('totalDelay <= 30s')).toThrow(/trailing input/);
-    expect(parseStringToIRExpr('stage >= 0 implies stage < 2')).toMatchObject({ parseFailed: true });
+    expect(parseStringToIRExpr('totalDelay <= 30s')).toMatchObject({ parseFailed: true, source: 'totalDelay <= 30s' });
     expect(parseExpressionComplete('stage < 2 or approved')).toEqual(parseExpression('stage < 2 or approved'));
+  });
+
+  it('infix implies lowers to the same IR as the call form', async () => {
+    const { parseStringToIRExpr } = await import('../ir/lower.js');
+    expect(parseStringToIRExpr('stage >= 0 implies stage < 2'))
+      .toEqual(parseStringToIRExpr('implies(stage >= 0, stage < 2)'));
   });
 });

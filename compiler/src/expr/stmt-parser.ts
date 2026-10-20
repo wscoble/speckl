@@ -17,10 +17,10 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
-    if (line.startsWith('//') || line.startsWith('/*')) continue;
 
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (trimmed.startsWith('//') || trimmed.startsWith('/*')) continue;
 
     // Clean up double-backslash from old parser (SpeckDL set diff is single \)
     // The old parser stores \\ as two chars; the expression parser expects single \\n    // Actually, keep double backslash as-is since the tokenizer handles both
@@ -74,14 +74,23 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
       continue;
     }
 
-    // --- emit Event { fields } ---
-    const emitMatch = trimmed.match(/^emit\s+(\w+)\s*\{\s*(.*)\s*\}$/);
+    // --- emit Event { fields } (may span several lines) ---
+    let emitText = trimmed;
+    if (/^emit\s+\w+\s*\{/.test(emitText)) {
+      emitText = stripLineComment(emitText);
+      while (exprLooksIncomplete(emitText) && i + 1 < lines.length) {
+        const nt = stripLineComment(lines[i + 1]?.trim() ?? '');
+        i++;
+        if (nt) emitText += ' ' + nt;
+      }
+    }
+    const emitMatch = emitText.match(/^emit\s+(\w+)\s*\{\s*(.*)\s*\}$/);
     if (emitMatch) {
       const eventName = emitMatch[1];
       const fieldsStr = emitMatch[2];
       const fields: { name: string; value: Expr }[] = [];
       if (fieldsStr.trim()) {
-        for (const fp of fieldsStr.split(',').map(s => s.trim()).filter(Boolean)) {
+        for (const fp of splitTopLevel(fieldsStr)) {
           const colonIdx = fp.indexOf(':');
           if (colonIdx > 0) {
             fields.push({
@@ -120,7 +129,9 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
     }
 
     // --- let name := expr ---
-    const letMatch = trimmed.match(/^let\s+([A-Za-z_]\w*)\s*:=\s*(.+)$/);
+    // `let name := expr`, or the typed form `let name: Type = expr`.
+    const letMatch = trimmed.match(/^let\s+([A-Za-z_]\w*)\s*:=\s*(.+)$/)
+      ?? trimmed.match(/^let\s+([A-Za-z_]\w*)\s*:\s*[\w.<>\[\], ]+?\s*=(?!=)\s*(.+)$/);
     if (letMatch) {
       let rhs = letMatch[2].trim();
       if (/^if\b/.test(rhs) && !/\belse\b/.test(rhs)) {
@@ -130,10 +141,10 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
       // Multi-line expressions: join continuation lines while the right-hand
       // side is syntactically incomplete (e.g. a multi-line record literal
       // opened with `Customer {`).
-      while (exprLooksIncomplete(rhs) && i + 1 < lines.length) {
-        const next = lines[i + 1];
-        const nt = next?.trim() ?? '';
-        if (!nt || nt.startsWith('//') || STMT_START_RE.test(nt) || /\w+\s*:=/.test(nt)) break;
+      rhs = stripLineComment(rhs);
+      while (i + 1 < lines.length) {
+        const nt = stripLineComment(lines[i + 1]?.trim() ?? '');
+        if (!continues(rhs, nt) || /\w+\s*:=/.test(nt)) break;
         rhs += ' ' + nt;
         i++;
       }
@@ -142,24 +153,19 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
     }
 
     // --- assignment: target := expr ---
-    const assignMatch = trimmed.match(/^(\w+(?:\[.*?\])?)\s*:=\s*(.+)$/);
+    const assignMatch = trimmed.match(/^(\w+(?:\[.*?\])?)\s*:=\s*(.*)$/);
     if (assignMatch) {
-      let exprText = assignMatch[2].trim();
-      // Handle multiline expressions
+      let exprText = stripLineComment(assignMatch[2].trim());
+      // Join continuation lines only while the right-hand side is still
+      // incomplete (dangling operator, open bracket) or the next line starts
+      // with a binary operator. Joining unconditionally swallowed the next
+      // statement whenever it was not caught by a keyword check, e.g.
+      // `balances[id] := 0` or a bare call.
       while (i + 1 < lines.length) {
-        const next = lines[i + 1];
-        if (!next || next.trim().startsWith('//') || next.trim().startsWith('require ') ||
-            next.trim().startsWith('return ') || next.trim().startsWith('emit ') ||
-            next.trim().startsWith('let ') || /\w+\s*:=/.test(next.trim())) {
-          break;
-        }
-        // Join continuation lines
-        if (next.trim()) {
-          exprText += ' ' + next.trim();
-          i++;
-        } else {
-          break;
-        }
+        const nt = stripLineComment(lines[i + 1]?.trim() ?? '');
+        if (!continues(exprText, nt)) break;
+        exprText += ' ' + nt;
+        i++;
       }
       const target = assignMatch[1];
       const expr = parseExprSingle(exprText);
@@ -177,6 +183,10 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
       }
       continue;
     }
+
+    // Anything else (a bare call, an assignment to a dotted path, ...) is
+    // kept as raw text so it is reported as not lowered instead of vanishing.
+    stmts.push({ type: 'ifblock', raw: trimmed });
   }
 
   return stmts;
@@ -186,8 +196,15 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
 
 /** Parse a single expression string to an Expr AST. */
 function parseExprSingle(src: string): Expr {
-  const tokens = new Tokenizer(src).tokenize();
-  return new ExpressionParser(tokens).parse();
+  // The whole text must parse. A prefix parse used to drop the rest silently
+  // (`x := a union {b}` followed by a swallowed next line, `Rec { ... }` read
+  // as `Rec`); report it as unparsed instead.
+  try {
+    const tokens = new Tokenizer(src).tokenize();
+    return new ExpressionParser(tokens).parseComplete();
+  } catch (e) {
+    return { kind: 'unparsed', source: src, error: (e as Error).message };
+  }
 }
 
 interface CollectResult {
@@ -208,10 +225,59 @@ function exprLooksIncomplete(text: string): boolean {
   }
   if (depth > 0) return true;
   // Ends with a binary operator → the expression continues on the next line.
-  return /(==|!=|>=|<=|<|>|\+|-|\*|\/|\band\b|\bor\b|implies|->|=\u003e|distinct|union|mod)\s*$/i.test(text.trim());
+  const t = text.trim();
+  // Nothing yet (`x :=` with the value on the next line), or a quantifier
+  // header ending in `:` whose body follows.
+  if (!t || t.endsWith(':')) return true;
+  return /(==|!=|>=|<=|<|>|\+|-|\*|\/|\band\b|\bor\b|implies|->|=\u003e|distinct|union|mod)\s*$/i.test(t);
 }
 
-const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|precondition:|postcondition:|\w+\s*:=)/;
+/** A line that starts with a binary operator continues the previous expression. */
+const LEADING_OP_RE = /^(\|\||&&|==|!=|>=|<=|\+|\*|\/|or\b|and\b|implies\b|union\b|diff\b|mod\b)/;
+
+/**
+ * Whether `next` continues the expression `text`: either `text` is still
+ * incomplete or `next` opens with a binary operator. Blank lines, comments
+ * and new statements never continue it.
+ */
+function continues(text: string, next: string): boolean {
+  if (!next || next.startsWith('//') || STMT_START_RE.test(next)) return false;
+  return exprLooksIncomplete(text) || LEADING_OP_RE.test(next);
+}
+
+/** Drop a trailing `// comment` (outside string literals) before lines are joined. */
+function stripLineComment(text: string): string {
+  let inStr = false;
+  for (let k = 0; k < text.length - 1; k++) {
+    const c = text[k];
+    if (c === '"') inStr = !inStr;
+    if (!inStr && c === '/' && text[k + 1] === '/') return text.slice(0, k).trim();
+  }
+  return text;
+}
+
+/** Split on commas that are not nested inside brackets or strings. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let start = 0;
+  for (let k = 0; k < text.length; k++) {
+    const c = text[k];
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ',' && depth === 0) {
+      parts.push(text.slice(start, k));
+      start = k + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts.map(p => p.trim()).filter(Boolean);
+}
+
+const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|precondition:|postcondition:|[\w.]+(\[.*?\])?\s*:=)/;
 
 function collectExpression(lines: string[], startIdx: number, prefixLen: number, continuationPfx: string): CollectResult {
   let text = lines[startIdx].trim().substring(prefixLen).trim();
@@ -242,19 +308,11 @@ function collectExpression(lines: string[], startIdx: number, prefixLen: number,
 
 /** Collect a require expression that may span multiple lines (forall, or, etc). */
 function collectRequireExpression(lines: string[], startIdx: number): CollectResult {
-  let text = lines[startIdx].trim().substring(8).trim();
+  let text = stripLineComment(lines[startIdx].trim().substring(8).trim());
   let i = startIdx;
   while (i + 1 < lines.length) {
-    const next = lines[i + 1];
-    if (!next) break;
-    const nt = next.trim();
-    if (nt.startsWith('//') || nt.startsWith('precondition:') || nt.startsWith('postcondition:') ||
-        nt.startsWith('require ') || nt.startsWith('return ') || nt.startsWith('emit ') ||
-        nt.startsWith('let ') || /\w+\s*:=/.test(nt)) {
-      break;
-    }
-    // Dangling-operator continuation (see collectExpression).
-    if (!exprLooksIncomplete(text)) break;
+    const nt = stripLineComment(lines[i + 1]?.trim() ?? '');
+    if (/\w+\s*:=/.test(nt) || !continues(text, nt)) break;
     i++;
     text += ' ' + nt;
   }

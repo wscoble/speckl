@@ -159,6 +159,7 @@ function renderStmt(stmt: any, indent: string): string {
     case 'return':
       return `return ${renderExpr(stmt.expr)};`;
     case 'if':
+      if (stmt.raw) return `// SPECKL-UNTRANSLATED statement (not lowered): ${stmt.raw.replace(/\s+/g, ' ').trim()}`;
       return `// if-block (not yet lowered): ${stmt.expr ? renderExpr(stmt.expr) : '...'}`;
     default:
       return `// unknown statement kind: ${stmt.kind}`;
@@ -168,7 +169,13 @@ function renderStmt(stmt: any, indent: string): string {
 function renderExpr(e: any): string {
   if (!e) return 'undefined';
   switch (e.kind) {
-    case 'bool_lit': return String(e.value);
+    case 'bool_lit':
+      // Placeholder for source the IR could not parse: fail at runtime with
+      // the original text rather than evaluate to a silent `false`.
+      if (e.parseFailed) {
+        return `(() => { throw new Error(${JSON.stringify(`speckl: untranslated expression: ${(e.source ?? 'unknown').replace(/\s+/g, ' ').trim()}`)}); })()`;
+      }
+      return String(e.value);
     case 'int_lit': return String(e.value);
     case 'float_lit': return String(e.value);
     case 'string_lit': return JSON.stringify(e.value);
