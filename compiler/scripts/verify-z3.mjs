@@ -26,7 +26,8 @@ import { mkdtempSync, rmSync, readdirSync, readFileSync, mkdirSync, existsSync, 
 import { tmpdir } from 'node:os';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { judge, modelQueryFor } from './lib/obligations.mjs';
+import { judge, modelQueryFor, accountObligations } from './lib/obligations.mjs';
+import { loadBaseline } from './lib/baseline.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const compilerDir = resolve(scriptDir, '..');
@@ -210,10 +211,21 @@ console.log('');
 const workDir = mkdtempSync(join(tmpdir(), 'speckl-verify-'));
 const results = [];
 let failed = 0;
+// Acknowledged unchecked obligations (<examples>/.speckl-unchecked.json).
+// Listed obligations are reported as UNCHECKED, never as passed; an entry
+// that is now proven (or no longer declared) fails as stale.
+// Only the examples directory run carries a baseline; explicitly named
+// specs are verified with none (every unchecked obligation fails).
+const namedSpecs = process.argv.slice(2).some((a, i, all) => !a.startsWith('-') && !['--examples', '--depth'].includes(all[i - 1] ?? ''));
+const baseline = namedSpecs ? { path: null, entries: new Map() } : loadBaseline(examplesDir);
+if (baseline.path) console.log(`Unchecked-obligation baseline: ${baseline.path}\n`);
+const verifiedSpecs = new Set();
 
 for (const [filePath, file] of specs) {
   const base = file.replace(/\.speckdl$/, '').replaceAll('/', '.');
 
+  const specChecks = []; // every compiled SMT file for this spec, for obligation accounting
+  verifiedSpecs.add(file);
   for (const [mode, target] of [['ast', 'z3'], ['ir', 'all-ir']]) {
     const outDir = join(workDir, `${base}.${mode}`);
 
@@ -235,6 +247,8 @@ for (const [filePath, file] of specs) {
     for (const smtName of smtFiles.sort()) {
       const smtPath = join(outDir, smtName);
       const smt = readFileSync(smtPath, 'utf-8');
+      const check = { smt, obligations: [] };
+      specChecks.push(check);
       if (!smt.includes('(check-sat')) {
         results.push({ file, mode, smt: smtName, status: 'SKIP', detail: 'nothing to check (no check-sat)' });
         continue; // not a failure — nothing verifiable in this speck
@@ -246,11 +260,13 @@ for (const [filePath, file] of specs) {
         continue;
       }
       const verdict = judge(smt, res.stdout, res.stderr);
+      check.obligations = verdict.obligations;
       for (const o of verdict.obligations) {
         const mark = o.ok ? '✓' : '✗';
         const what = o.ok ? o.got : (o.expect === 'unsat' && o.got === 'sat' ? 'VIOLATED — sat (expected unsat)'
           : o.expect === 'sat' && o.got === 'unsat' ? 'contradiction — unsat (expected sat)' : `got ${o.got}${o.expect ? ` (expected ${o.expect})` : ''}`);
-        console.log(`  ${mark} ${file} [${mode}] ${smtName} · ${o.label}: ${what}`);
+        const note = o.ok && o.degraded ? ` (consistency only, not a proof: ${o.degraded})` : '';
+        console.log(`  ${mark} ${file} [${mode}] ${smtName} · ${o.label}: ${what}${note}`);
         if (!o.ok && o.expect === 'unsat' && o.got === 'sat') {
           const rerun = runZ3(modelQueryFor(smt, o));
           for (const line of renderCounterexample(rerun.stdout, smt)) console.log(line);
@@ -258,12 +274,39 @@ for (const [filePath, file] of specs) {
       }
       const n = verdict.obligations.length;
       if (verdict.status === 'OK') {
-        results.push({ file, mode, smt: smtName, status: 'OK', detail: `${n}/${n} obligation(s) hold` });
+        results.push({ file, mode, smt: smtName, status: 'OK', detail: `${n}/${n} check(s) answered as expected` });
       } else {
         results.push({ file, mode, smt: smtName, status: verdict.status, detail: verdict.detail });
         failed++;
       }
     }
+  }
+
+  // Fail closed: every declared verify block must be proven by some backend.
+  const { unchecked } = accountObligations(specChecks);
+  const acknowledged = baseline.entries.get(file) ?? new Map();
+  for (const u of unchecked) {
+    const why = u.reasons.join('; ');
+    if (acknowledged.has(u.key)) {
+      results.push({ file, mode: 'obligation', smt: u.key, status: 'UNCHECKED', detail: `acknowledged in baseline — ${why}`, acknowledged: true });
+      console.log(`  ! ${file} · ${u.key}: UNCHECKED (acknowledged in baseline) — ${why}`);
+    } else {
+      results.push({ file, mode: 'obligation', smt: u.key, status: 'UNCHECKED', detail: why });
+      console.log(`  ✗ ${file} · ${u.key}: UNCHECKED — ${why}`);
+      failed++;
+    }
+  }
+  for (const key of acknowledged.keys()) {
+    if (!unchecked.some(u => u.key === key)) {
+      results.push({ file, mode: 'obligation', smt: key, status: 'STALE-BASELINE', detail: 'listed as unchecked but now proven or no longer declared; remove it from the baseline' });
+      failed++;
+    }
+  }
+}
+for (const [file] of baseline.entries) {
+  if (!verifiedSpecs.has(file)) {
+    results.push({ file, mode: 'obligation', status: 'STALE-BASELINE', detail: 'baseline names a spec that was not verified' });
+    failed++;
   }
 }
 
@@ -280,12 +323,14 @@ console.log('══════════════════════�
 const label = r => `${r.file} [${r.mode}]${r.smt ? ' ' + r.smt : ''}`;
 const width = Math.max(...results.map(r => label(r).length), 30);
 for (const r of results) {
-  const icon = r.status === 'OK' ? '✓' : '✗';
+  const icon = r.status === 'OK' ? '✓' : r.acknowledged ? '!' : '✗';
   console.log(` ${icon} ${label(r).padEnd(width + 2)} ${r.status}${r.detail ? ' — ' + r.detail : ''}`);
 }
 const ok = results.filter(r => r.status === 'OK').length;
 const skipped = results.filter(r => r.status === 'SKIP').length;
+const acked = results.filter(r => r.acknowledged).length;
 console.log('────────────────────────────────────────────────────');
-console.log(` ${ok}/${results.length} checks passed, ${failed} failed, ${skipped} skipped`);
+console.log(` ${ok}/${results.length} checks passed, ${failed} failed, ${skipped} skipped` +
+  (acked ? `, ${acked} unchecked obligation(s) acknowledged in baseline (not passed)` : ''));
 
 if (failed > 0) process.exit(1);

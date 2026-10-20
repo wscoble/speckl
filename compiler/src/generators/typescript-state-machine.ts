@@ -711,7 +711,7 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
     .replace(/'[^']*'/g, "''")
     .replace(/\/\/[^\n]*/g, "")
     .replace(/\b([A-Z]\w+)\s*:/g, "    :")
-    .replace(/\.\s*(\w+)/g, ".xxx")
+    .replace(/\.\s*\w+/g, "")
     .replace(/\bas\s+\w+/g, "   ");
 
   const found = new Set<string>();

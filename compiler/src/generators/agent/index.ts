@@ -86,6 +86,23 @@ function emitAgentForSpeck(
   console.log(`Generated agent target: ${agentDir}/`);
 }
 
+/** Actions whose generated body declares `// FIXME: parser dropped` placeholders. */
+export function untranslatedActions(js: string): { action: string; names: string[] }[] {
+  const out: { action: string; names: string[] }[] = [];
+  let current = '';
+  for (const line of js.split('\n')) {
+    const head = line.match(/^ {2}(\w+)\([^)]*\)\s*\{\s*$/);
+    if (head) current = head[1];
+    const m = line.match(/^\s*const (\w+)\b.*\/\/ FIXME: parser dropped/);
+    if (m) {
+      const last = out[out.length - 1];
+      if (last && last.action === current) last.names.push(m[1]);
+      else out.push({ action: current || '(unknown)', names: [m[1]] });
+    }
+  }
+  return out;
+}
+
 /**
  * Emit the machine as plain JavaScript so `-t agent` needs no TypeScript at
  * compile time or runtime. The result is syntax-checked with the running
@@ -93,6 +110,15 @@ function emitAgentForSpeck(
  */
 export function transpileTsToMjs(tsPath: string, mjsPath: string): void {
   const js = stripTypes(fs.readFileSync(tsPath, 'utf-8'));
+  // Fail closed: a placeholder stands in for an identifier the TS generator
+  // could not translate (a dropped let/forall). A guard reading it is not the
+  // spec's guard, so refuse to emit rails rather than enforce the wrong rule.
+  const dropped = untranslatedActions(js);
+  if (dropped.length > 0) {
+    throw new Error('-t agent: the generated machine has untranslated identifiers in '
+      + dropped.map(d => `${d.action} (${d.names.join(', ')})`).join('; ')
+      + '; its guards would not match the spec, so no rails were emitted');
+  }
   fs.writeFileSync(mjsPath, js);
   const r = spawnSync(process.execPath, ['--check', mjsPath], { encoding: 'utf-8' });
   if (r.status !== 0) {

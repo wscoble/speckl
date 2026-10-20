@@ -141,6 +141,25 @@ function clearPendingAsFailed(state, reason) {
   state.pending = null;
 }
 
+// Guard text in spec terms: "this.stage === 3" becomes "stage == Approved", plus
+// where the machine is now, using the agent block's stage labels.
+function describeGuard(reason, machine, cfg) {
+  const labels = cfg.stages || {};
+  const nameOf = {};
+  for (const [name, v] of Object.entries(labels)) nameOf[String(v)] = name;
+  const sv = cfg.stageVariable;
+  let text = reason.replace(/\\bthis\\.(\\w+)\\s*(===|!==)\\s*(-?\\d+)\\b/g, (m, v, op, n) => {
+    const eq = op === '===' ? '==' : '!=';
+    return v === sv && nameOf[n] !== undefined ? v + ' ' + eq + ' ' + nameOf[n] : v + ' ' + eq + ' ' + n;
+  });
+  text = text.replace(/\\bthis\\.(\\w+)/g, '$1').replace(/ === /g, ' == ').replace(/ !== /g, ' != ');
+  if (sv && machine && machine[sv] !== undefined) {
+    const now = machine[sv];
+    text += ' (' + sv + ' is ' + (nameOf[String(now)] !== undefined ? nameOf[String(now)] : String(now)) + ')';
+  }
+  return text;
+}
+
 function currentAwait(machine, cfg) {
   const stage = machine[cfg.stageVariable];
   return cfg.awaits.find(a => a.stateValue === stage) || null;
@@ -224,7 +243,7 @@ async function main() {
       }
 
       const can = machine.can(binding.action, input);
-      if (can !== true) deny('can() refused: ' + can);
+      if (can !== true) deny('can() refused: ' + describeGuard(String(can), machine, config));
 
       append(state, { kind: 'pre', call_id: callId, tool, action: binding.action, input });
       state.pending = { call_id: callId, tool, action: binding.action, input, since: new Date().toISOString() };
