@@ -876,7 +876,7 @@ function emitSpeck(speck: SpeckNode): string {
       if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
         ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
         const cm2 = String((st as any).raw ?? '').match(/^if\s+(.+?)\s*\{/);
-        if (cm2) { ctxExprs.push({ text: cm2[1].trim(), ctx: 'guard' }); console.error('COND-GUARD in', a.name, ':', JSON.stringify(cm2[1].trim().slice(0, 60))); }
+        if (cm2) ctxExprs.push({ text: cm2[1].trim(), ctx: 'guard' });
       }
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
         ctxExprs.push({ text: String(f.value), ctx: 'emit' });

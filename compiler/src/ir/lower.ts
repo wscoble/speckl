@@ -303,15 +303,9 @@ function lowerBehavior(
     } else if (m.type === 'action') {
       const a = m as ActionNode;
       const rawStmts = rawStatementsByAction.get(a.name) || [];
-      let stmts: IRStmt[];
-      if (rawStmts.length === 0 && a.name.startsWith('__signal_')) {
-        // Synthetic __signal_* actions (injected AST) carry parser-shaped
-        // statements with string expressions. Real actions keep the
-        // raw-statement path so existing backend output is unchanged.
-        stmts = a.statements.map(s => lowerParserActionStatement(s, diagnostics, speck.name));
-      } else {
-        stmts = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
-      }
+      // No caller lowers a signal-injected AST: the agent block's synthetic
+      // __signal_* actions are added to the IR below, from the agent block.
+      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
@@ -875,47 +869,6 @@ function lowerTypeExpr(t: TypeExpr): IRTypeRef {
 // Statement lower
 // ─────────────────────────────────────────────────────────────────────
 
-
-/** Lower a parser-shaped ActionStatement (string exprs) into IR. */
-function lowerParserActionStatement(
-  s: { type: string; target?: string; expr?: string; name?: string; event?: string; fields?: { name: string; value: string }[]; raw?: string },
-  diagnostics: IRDiagnostic[],
-  speckName: string,
-): IRStmt {
-  switch (s.type) {
-    case 'assign':
-      return {
-        kind: 'assign',
-        target: s.target || '',
-        value: parseExprSafe(s.expr || '0', diagnostics, speckName),
-      };
-    case 'require':
-    case 'precondition':
-    case 'postcondition':
-      return {
-        kind: s.type as 'require' | 'precondition' | 'postcondition',
-        value: parseExprSafe(s.expr || 'true', diagnostics, speckName),
-      };
-    case 'let':
-      return {
-        kind: 'let',
-        letName: s.name,
-        value: parseExprSafe(s.expr || '0', diagnostics, speckName),
-      };
-    case 'return':
-      return {
-        kind: 'return',
-        expr: parseExprSafe(s.expr || 'true', diagnostics, speckName),
-      };
-    default:
-      diagnostics.push({
-        level: 'warning',
-        message: `unsupported synthetic statement type: ${s.type}`,
-        speck: speckName,
-      });
-      return { kind: 'require', value: { kind: 'bool_lit', value: true } };
-  }
-}
 
 function lowerStatement(
   s: ActionStatement,

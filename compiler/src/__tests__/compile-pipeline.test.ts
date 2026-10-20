@@ -155,3 +155,35 @@ describe('invalid input fails the compile', () => {
     expect(existsSync(join(out, 'agent', 'hook.mjs'))).toBe(false);
   });
 });
+
+describe('removed syntax is rejected, not ignored', () => {
+  const base = (member: string) => `speck C {
+    state {
+        x: Nat
+    }
+    init {
+        x := 0
+    }
+    action Inc {
+        x := x + 1
+    }
+${member}
+    next: Inc
+}
+`;
+  function compileText(src: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-pipe-comp-'));
+    const f = join(dir, 'C.speckdl');
+    writeFileSync(f, src);
+    return () => run(f, 'elm');
+  }
+  it('a component block is a parse error', () => {
+    expect(compileText(base('    component Board {\n        state: x\n        actions: Inc\n    }'))).toThrow(/component blocks are no longer supported/);
+  });
+  it('a single-line component is a parse error', () => {
+    expect(compileText(base('    component Board { state: x; actions: Inc }'))).toThrow(/component blocks are no longer supported/);
+  });
+  it('a bare component line is a parse error', () => {
+    expect(compileText(base('    component Board'))).toThrow(/component blocks are no longer supported/);
+  });
+});

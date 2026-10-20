@@ -58,6 +58,15 @@ First npm release. The package was renamed from the unpublished
   (`scripts/verify-z3.mjs`) on your specs. It needs the `z3` binary.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
+### Removed
+
+- **Elm `component` blocks** (#13). The component path in the Elm generator
+  and parser had no users. A `component` block is now a parse error
+  ("component blocks are no longer supported"). The Go generator's `COND-GUARD` debug print and the unused
+  `lowerParserActionStatement` are gone too. Generated output for all
+  examples is byte-identical, and the coverage floor rises to 88% lines and
+  statements, 86% branches and 97% functions.
+
 ### Fixed
 
 - **Vacuous BMC proofs** (#3). The Z3 backend scraped `next:` from raw source
