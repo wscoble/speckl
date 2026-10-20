@@ -1,5 +1,5 @@
 // Emits adapter.mjs — the harness adapter (Claude Code, Cursor, Codex, Gemini,
-// Copilot, Goose, Hermes) that sits in
+// Copilot, Goose, Hermes, Pi, OpenCode, OpenClaw) that sits in
 // front of hook.mjs. The logic is harness-runtime.ts, emitted verbatim.
 
 import { ADAPTER_FUNCTIONS } from './harness-runtime.js';
@@ -18,6 +18,9 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *       .codex/hooks.json, .gemini/settings.json, .github/hooks/speckl.json
  *       (Copilot) or .agents/plugins/speckl/ (Goose); Hermes takes
  *       --hermes-home <profile dir> and writes its config.yaml hooks block.
+ *       Pi, OpenCode and OpenClaw get a generated plugin in .pi/extensions/,
+ *       .opencode/plugins/ or .openclaw/plugins/speckl/ that pipes each
+ *       tool event to this adapter and blocks unless it answers allow.
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).

@@ -1,0 +1,13 @@
+{
+  "event": {
+    "type": "tool_call",
+    "toolName": "read",
+    "toolCallId": "call_r1",
+    "input": {
+      "path": "src/app.js"
+    }
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

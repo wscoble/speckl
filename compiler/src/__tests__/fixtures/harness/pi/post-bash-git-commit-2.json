@@ -1,0 +1,26 @@
+{
+  "event": {
+    "type": "tool_result",
+    "toolName": "bash",
+    "toolCallId": "call_c2",
+    "input": {
+      "command": "git commit -m \"feat: app\""
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "[feat 1a2b3c4] feat: app"
+      }
+    ],
+    "structuredContent": {
+      "output": "[feat 1a2b3c4] feat: app\n",
+      "truncated": false,
+      "exit_code": 0,
+      "wall_time_seconds": 0
+    },
+    "isError": false
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

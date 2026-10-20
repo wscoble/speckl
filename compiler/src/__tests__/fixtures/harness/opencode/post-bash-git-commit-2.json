@@ -1,0 +1,21 @@
+{
+  "hook": "tool.execute.after",
+  "input": {
+    "tool": "bash",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_c2",
+    "args": {
+      "command": "git commit -m \"feat: app\"",
+      "description": "Commit"
+    }
+  },
+  "output": {
+    "title": "git commit -m \"feat: app\"",
+    "metadata": {
+      "output": "[feat 1a2b3c4] feat: app",
+      "exit": 0,
+      "truncated": false
+    },
+    "output": "[feat 1a2b3c4] feat: app"
+  }
+}

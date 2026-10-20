@@ -1,0 +1,20 @@
+{
+  "hook": "tool.execute.after",
+  "input": {
+    "tool": "read",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_r1",
+    "args": {
+      "filePath": "src/app.js"
+    }
+  },
+  "output": {
+    "title": "src/app.js",
+    "metadata": {
+      "preview": "module.exports = () => 1;",
+      "truncated": false,
+      "loaded": []
+    },
+    "output": "<path>__PROJECT__/src/app.js</path>\n<type>file</type>\n<content>\n1: module.exports = () => 1;\n\n(End of file - total 1 lines)\n</content>"
+  }
+}

@@ -17,7 +17,7 @@ import { emitCliVerifier, emitFileDropVerifier } from './verifier-templates.js';
 import { stripTypes } from './strip-types.js';
 import { emitStateIntegrityMjs } from './state-integrity-template.js';
 import { emitAdapterMjs } from './adapter-template.js';
-import { buildHarnessHooks, harnessConfigFile, harnessProtectedDirs, hermesYaml, HarnessRule } from './harness-runtime.js';
+import { buildHarnessHooks, harnessConfigFile, harnessProtectedDirs, hermesYaml, pluginFiles, HarnessRule } from './harness-runtime.js';
 
 /** Default for `pending timeout` when the spec does not declare one. */
 export const DEFAULT_PENDING_TIMEOUT_MS = 10 * 60_000;
@@ -227,6 +227,12 @@ function emitHarnessFiles(speckName: string, agentDir: string, harness: Record<s
     fs.mkdirSync(dir, { recursive: true });
     const file = path.posix.basename(harnessConfigFile(name));
     const hooks = buildHarnessHooks(name, { adapter, state, key: null, relative });
+    if (name === 'pi' || name === 'opencode' || name === 'openclaw') {
+      // Reference copy of the plugin `install` writes (with absolute paths and
+      // --project); relative paths here resolve from the plugin's install location.
+      for (const [f, text] of Object.entries(pluginFiles(name, hooks))) fs.writeFileSync(path.join(dir, f), text);
+      continue;
+    }
     fs.writeFileSync(path.join(dir, file), name === 'hermes' ? hermesYaml(hooks) : JSON.stringify(hooks, null, 2) + '\n');
   }
 }
@@ -342,7 +348,7 @@ function buildAgentsMd(
       lines.push('call at a time.');
     } else {
       lines.push('The rails themselves (this directory, the state file, its key and the harness');
-      lines.push(`config directories ${listWords(dirs.map(d => '`' + d + '/`'))})`);
+      lines.push(`config ${dirs.some(d => /\.jsonc?$/.test(d)) ? 'paths' : 'directories'} ${listWords(dirs.map(d => '`' + d + (/\.jsonc?$/.test(d) ? '' : '/') + '`'))})`);
       lines.push('are off limits to every tool. Make one tool call at a time.');
     }
     lines.push('');

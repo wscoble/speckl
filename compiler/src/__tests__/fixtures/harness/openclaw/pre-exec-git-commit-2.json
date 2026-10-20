@@ -1,0 +1,28 @@
+{
+  "hook": "before_tool_call",
+  "event": {
+    "toolName": "exec",
+    "params": {
+      "command": "git commit -m \"feat: app\""
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_c2"
+  },
+  "ctx": {
+    "toolName": "exec",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "trace": {
+      "traceId": "1289046230cad101ffab115e448f5df5",
+      "spanId": "339910fdc170bde4",
+      "parentSpanId": "5e30dcc7a10a7d19",
+      "traceFlags": "01"
+    },
+    "toolCallId": "call_c2",
+    "requester": {
+      "senderIsOwner": true
+    }
+  }
+}

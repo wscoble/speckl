@@ -1,0 +1,34 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "read",
+    "params": {
+      "path": ".speckl/state.json"
+    },
+    "runId": "94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "toolCallId": "call_r2",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Speckl: read touches a Speckl-protected path (.speckl/state.json); the agent may not read or change its own rails"
+        }
+      ],
+      "details": {
+        "status": "blocked",
+        "deniedReason": "plugin-before-tool-call",
+        "reason": "Speckl: read touches a Speckl-protected path (.speckl/state.json); the agent may not read or change its own rails"
+      }
+    },
+    "error": "Speckl: read touches a Speckl-protected path (.speckl/state.json); the agent may not read or change its own rails",
+    "durationMs": 81
+  },
+  "ctx": {
+    "toolName": "read",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "sessionId": "94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "runId": "94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "toolCallId": "call_r2"
+  }
+}

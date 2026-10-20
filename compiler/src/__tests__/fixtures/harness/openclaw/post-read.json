@@ -1,0 +1,32 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "read",
+    "params": {
+      "path": "src/app.js"
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_r1",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "module.exports = () => 1;\n"
+        }
+      ],
+      "details": {
+        "kind": "text",
+        "content": "module.exports = () => 1;\n"
+      }
+    },
+    "durationMs": 141
+  },
+  "ctx": {
+    "toolName": "read",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_r1"
+  }
+}

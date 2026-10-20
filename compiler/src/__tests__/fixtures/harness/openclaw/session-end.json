@@ -1,0 +1,8 @@
+{
+  "hook": "session_end",
+  "ctx": {
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "exec",
+    "params": {
+      "command": "npm test"
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_t2",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Command still running (session brisk-otter, pid 4242). Use process (list/poll/log/write/kill/clear/remove) for follow-up."
+        }
+      ],
+      "details": {
+        "status": "running",
+        "sessionId": "brisk-otter",
+        "pid": 4242,
+        "startedAt": 1792453268902,
+        "cwd": "__PROJECT__",
+        "tail": ""
+      }
+    },
+    "durationMs": 141
+  },
+  "ctx": {
+    "toolName": "exec",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_t2"
+  }
+}

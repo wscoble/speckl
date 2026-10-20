@@ -20,7 +20,7 @@ First npm release. The package was renamed from the unpublished
     the loop.
   - State is tamper-evident: an HMAC-signed, hash-chained log.
   - One call in flight, with a pending timeout and `clear-pending`.
-- **Harness adapters** (#5, #6, #9). A `harness <name> { map ... }` block maps a
+- **Harness adapters** (#5, #6, #9, batch 3). A `harness <name> { map ... }` block maps a
   harness's own tool calls onto spec tools. Unmapped calls are denied.
   - Generates `adapter.mjs` and reference wiring for Claude Code
     (`.claude/settings.json`), Cursor (`.cursor/hooks.json`), Codex CLI
@@ -28,6 +28,13 @@ First npm release. The package was renamed from the unpublished
     Copilot CLI (`.github/hooks/speckl.json`), Goose (a project or user
     plugin under `.agents/plugins/`) and Hermes Agent (the profile's
     `config.yaml` `hooks:` block plus its consent allowlist).
+  - Pi, OpenCode and OpenClaw get a generated in-process plugin
+    (`.pi/extensions/speckl.js`, `.opencode/plugins/speckl.js`,
+    `.openclaw/plugins/speckl/`) that runs the adapter for every tool call and
+    blocks on anything but an explicit allow (crash, timeout, missing `node`,
+    bad output). `--plugins-dir` installs a user-level Pi or OpenCode plugin.
+    OpenCode `bash` / OpenClaw `exec` with a `workdir` outside the project
+    root are denied.
   - `adapter.mjs install` merges the wiring into an existing config.
   - Fails closed: hook crashes, timeouts, malformed output and adapter errors
     all block. The wiring sets `onFailure: "block"` (Claude Code) or

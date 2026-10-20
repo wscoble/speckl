@@ -1,0 +1,38 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "exec",
+    "params": {
+      "command": "git commit -m \"feat: app\""
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_c2",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "[feat 1a2b3c4] feat: app"
+        }
+      ],
+      "details": {
+        "status": "completed",
+        "exitCode": 0,
+        "exitSignal": null,
+        "exitReason": "exit",
+        "durationMs": 282,
+        "aggregated": "[feat 1a2b3c4] feat: app",
+        "noOutputTimedOut": false,
+        "cwd": "__PROJECT__"
+      }
+    },
+    "durationMs": 141
+  },
+  "ctx": {
+    "toolName": "exec",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_c2"
+  }
+}
