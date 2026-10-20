@@ -222,16 +222,6 @@ export interface InitNode {
   assignments: { name: string; expr: string }[];
 }
 
-// Component partition: declares which state vars and actions belong to a
-// named component. Used by composite backends (Elm modules, Go handler
-// groups). Members must exist in the speck; the compiler validates coverage.
-export interface ComponentNode {
-  type: 'component';
-  name: string;
-  stateVars: string[];
-  actions: string[];
-}
-
 export interface ActionNode {
   type: 'action';
   name: string;
@@ -275,7 +265,6 @@ export type MemberNode = (
   | StateNode
   | InitNode
   | ActionNode
-  | ComponentNode
   | ServiceNode
   | InvariantMemberNode
   | NextMemberNode
@@ -753,9 +742,7 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
   if (firstLine.startsWith('invariant ')) {
     return parseInvariantBlockMultiline(lines, startIndex, startBraceCount);
   }
-  if (firstLine.startsWith('component ')) {
-    return parseComponentBlockMultiline(lines, startIndex, startBraceCount);
-  }
+  if (firstLine.startsWith('component ')) throw componentRemoved(firstLine, startIndex);
   if (firstLine.startsWith('event ')) {
     return parseEventBlockMultiline(lines, startIndex, startBraceCount);
   }
@@ -1050,15 +1037,7 @@ function parseMember(line: string): MemberNode | null {
     return parseActionHeader(line);
   }
 
-  // component <Name> { — block handled by parseMemberBlock; single-line form
-  // (component Board { state: a, b; actions: X }) parses lists inline
-  if (line.startsWith('component ')) {
-    const cm = line.match(/^component\s+(\w+)\s*\{(.*)\}\s*$/);
-    if (cm) {
-      return parseComponentBody(cm[1], cm[2]);
-    }
-    return { type: 'component', name: '', stateVars: [], actions: [] };
-  }
+  if (line.startsWith('component ')) throw componentRemoved(line);
 
   // bom {
   if (line.startsWith('bom ')) {
@@ -2609,52 +2588,13 @@ function splitFields(s: string): string[] {
   return result;
 }
 
-// ─── component partition parsing ─────────────────────────────────────
-
-function parseComponentBody(name: string, body: string): ComponentNode {
-  const stateVars: string[] = [];
-  const actions: string[] = [];
-  const stateM = body.match(/state:\s*([^;]*)(?:;|$)/);
-  if (stateM) {
-    stateVars.push(...stateM[1].split(',').map(s => s.trim()).filter(Boolean));
-  }
-  const actionM = body.match(/actions:\s*(.+)$/);
-  if (actionM) {
-    actions.push(...actionM[1].split(',').map(s => s.trim()).filter(Boolean));
-  }
-  return { type: 'component', name, stateVars, actions };
-}
-
-function parseComponentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ComponentNode {
-  const firstLine = lines[startIndex].trim();
-  const nameMatch = firstLine.match(/^component\s+(\w+)/);
-  const name = nameMatch ? nameMatch[1] : 'Component';
-
-  // collect lines until braces balance
-  let depth = startBraceCount - (firstLine.match(/}/g) || []).length;
-  const bodyLines: string[] = [];
-  let i = startIndex + 1;
-  while (i < lines.length && depth > 0) {
-    const raw = lines[i];
-    depth += (raw.match(/{/g) || []).length - (raw.match(/}/g) || []).length;
-    if (depth > 0) bodyLines.push(raw.trim());
-    i++;
-  }
-
-  const stateVars: string[] = [];
-  const actions: string[] = [];
-  for (const l of bodyLines) {
-    const sm = l.match(/^state:\s*(.+)$/);
-    if (sm) {
-      stateVars.push(...sm[1].replace(/;$/, '').split(',').map(s => s.trim()).filter(Boolean));
-      continue;
-    }
-    const am = l.match(/^actions:\s*(.+)$/);
-    if (am) {
-      actions.push(...am[1].replace(/;$/, '').split(',').map(s => s.trim()).filter(Boolean));
-    }
-  }
-  return { type: 'component', name, stateVars, actions };
+/**
+ * `component` partitions only drove the Elm composite-app backend, which was
+ * removed. Reject the block instead of silently ignoring it.
+ */
+function componentRemoved(line: string, index?: number): Error {
+  const at = index === undefined ? '' : ` at line ${index + 1}`;
+  return new Error(`Parse error${at}: component blocks are no longer supported ("${line}")`);
 }
 
 /** Strip a trailing `//` line comment (next: lines hold only identifiers). */
