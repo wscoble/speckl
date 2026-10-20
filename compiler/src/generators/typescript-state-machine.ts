@@ -176,6 +176,15 @@ function emitSpeck(speck: SpeckNode): string {
       }
     }
   }
+  // Each enum member belongs to the enum that declares it. Members declared
+  // by exactly one enum are qualified with that enum (not with the state
+  // enum, which used to receive every member: `EntityEnum.Inventory`).
+  enumOwner = new Map();
+  const memberCount = new Map<string, number>();
+  for (const values of enumMap.values()) for (const v of new Set(values)) memberCount.set(v, (memberCount.get(v) ?? 0) + 1);
+  for (const [enumName, values] of enumMap) {
+    for (const v of values) if (memberCount.get(v) === 1) enumOwner.set(v, `${speck.name}${enumName}`);
+  }
   const allEnums: string[] = [];
   for (const [enumName, values] of enumMap) {
     const fullEnumName = `${speck.name}${enumName}`;
@@ -650,7 +659,11 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
           break;
         }
         const keyword = reassigned.has(stmt.name) ? 'let' : 'const';
-        bodyParts.push(`${indent}${keyword} ${stmt.name} = ${expr};`);
+        // A reassigned local initialised with an enum member would be typed
+        // as that one literal; widen it to the enum type.
+        const enumInit = expr.match(/^(\w+)\.(\w+)$/);
+        const annot = keyword === 'let' && enumInit && enumOwner.get(enumInit[2]) === enumInit[1] ? `: ${enumInit[1]}` : '';
+        bodyParts.push(`${indent}${keyword} ${stmt.name}${annot} = ${expr};`);
         break;
       }
       case 'assign': {
@@ -895,7 +908,7 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   ['Open','Grooming','Groomed','Assigned','InProgress','InReview','Merged','Blocked','Closed','Idle','Parsing','Parsed','ProvenanceGenerated','BOMsGenerated','TypeScriptGenerated','Done'].forEach(s => allStateValues.add(s));
   if (allStateValues.size > 0) {
     const stateValueRegex = new RegExp('\\b(' + Array.from(allStateValues).join('|') + ')\\b', 'g');
-    ts = ts.replace(stateValueRegex, `${stateEnumName}.$1`);
+    ts = ts.replace(stateValueRegex, (_m, v: string) => `${enumOwner.get(v) ?? stateEnumName}.${v}`);
   }
 
   // NOTE: Do NOT restore string literals yet — keep them protected through step 3b
@@ -1082,6 +1095,11 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
 
   // 5f: append(X, Y) -> [...X, Y] (list append) — use spread on arrays, fine without downlevelIteration
   ts = rewriteCalls(ts, 'append', args => (args.length === 2 ? `[...${args[0]}, ${args[1]}]` : undefined));
+  // min/max of numbers (two or more arguments; a one-argument form would be a
+  // collection reduction, left untranslated)
+  for (const fn of ['min', 'max'] as const) {
+    ts = rewriteCalls(ts, fn, args => (args.length >= 2 ? `Math.${fn}(${args.join(', ')})` : undefined));
+  }
 
   // 5g: Map access via bracket -> .get()  (e.g. "transfers[id]" -> "transfers.get(id)")
   //     Only applies to state variables that are Map types
@@ -1260,8 +1278,11 @@ function replaceStateWithEnum(expr: string, enumName: string, knownStateValues: 
   ['Open','Grooming','Groomed','Assigned','InProgress','InReview','Merged','Blocked','Closed','Idle','Parsing','Parsed','ProvenanceGenerated','BOMsGenerated','TypeScriptGenerated','Done'].forEach(s => allStateValues.add(s));
   if (allStateValues.size === 0) return expr;
   const stateValueRegex = new RegExp('\\b(' + Array.from(allStateValues).join('|') + ')\\b', 'g');
-  return expr.replace(stateValueRegex, `${enumName}.$1`);
+  return expr.replace(stateValueRegex, (_m, v: string) => `${enumOwner.get(v) ?? enumName}.${v}`);
 }
+
+/** Enum member -> the enum const that declares it (members unique to one enum), for the speck being emitted. */
+let enumOwner = new Map<string, string>();
 
 function cleanExpr(s: string): string {
   return s.replace(/,$/, '').trim();

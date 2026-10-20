@@ -32,10 +32,19 @@ First npm release. The package was renamed from the unpublished
   | Go | 4/16 |
   | Rust | 16/16 |
   | Elm | 0/16 |
-  | Protobuf | 7/16 |
+  | Protobuf | 10/16 |
   | OpenAPI | 15/16 |
   | Camel | 16/16 |
   | k8s | 16/16 |
+- **Type aliases** (#24). `type ServerId = String`, `type Ids = List(ServerId)`
+  and `type Maybe = ServerId | null` are now parsed (they were silently dropped)
+  and expanded to their targets before any backend runs, so protoc, OpenAPI,
+  TypeScript, Go, Rust, Elm, Camel and Z3 see ordinary types. The IR also keeps
+  each alias as a named type, and OpenAPI emits it as a component.
+  - `type State = A | B | C` on one line declares an enum.
+  - `type X = { a: Nat, b: Value }` on one line is a record with only those
+    fields (it used to absorb the members after it).
+  - `Option(T)` is read as the nullable `T | null`.
 - **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
   `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
   `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with
@@ -134,7 +143,11 @@ First npm release. The package was renamed from the unpublished
     emits `// SPECKL-UNTRANSLATED` and a `throw`. The old `const X = {} as any`
     placeholders for unknown names are gone. When a guard can fail after the
     body has changed state (a `require` inside a loop), the action restores the
-    state it started from before rethrowing.
+    state it started from before rethrowing. Enum members are qualified with
+    the enum that declares them (they all went to the state enum, so a
+    one-line union like `type Entity = Personal | Business` produced
+    `StatusEnum.Personal`), and `min`/`max` of two or more numbers become
+    `Math.min`/`Math.max`.
   - **TypeScript (IR)**: a statement it cannot lower throws instead of
     becoming a comment.
   - **IR statement parser**: a loop and its body stay one raw statement, so
@@ -153,8 +166,8 @@ First npm release. The package was renamed from the unpublished
     and an unreadable statement leaves every variable unconstrained. The
     verify baseline is unchanged (48/79).
 
-  The compile baseline gains no entries. Six first-error messages were
-  refreshed: five TypeScript and one Go.
+  The compile baseline gains no entries. Some first-error messages were
+  refreshed.
 
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 

@@ -345,3 +345,57 @@ ${inLoop ? '        for i from 0 to k:\n            bad := bad + 1' : ''}
     expect(fine.proven.some(p => p.endsWith('Safe'))).toBe(true);
   });
 });
+
+describe('TypeScript backend: members of one-line union types', () => {
+  // Two one-line unions (#24 parses `type X = A | B` as an enum). Each member
+  // must be qualified with the enum that declares it; they used to be
+  // qualified with the state enum (`ProbeMode.Done`) or, before #24, left
+  // undeclared.
+  const SRC = `speck Probe {
+    type Mode = Idle | Busy
+    type Kind = Small | Large
+    type Job = { size: Nat, kind: Kind }
+
+    state {
+        mode: Mode
+        jobs: Map(Nat, Job)
+        peak: Nat
+    }
+    init {
+        mode := Idle
+        jobs := emptyMap
+        peak := 0
+    }
+    action Add(id: Nat, size: Nat) {
+        require mode == Idle
+        require id notIn jobs.keys
+        let k := Small
+        if size > 10 {
+            k := Large
+        }
+        jobs[id] := { size: size, kind: k }
+        peak := max(peak, size)
+        if k == Large {
+            mode := Busy
+        }
+    }
+}
+`;
+  it('declares each union, qualifies members with their own enum, and runs', async () => {
+    const source = generateTs(SRC, 'Probe.ts');
+    expect(source).toContain('ProbeKind.Large');
+    expect(source).not.toContain('ProbeMode.Large');
+    expect(source).toContain('Math.max(this.peak, size)');
+    expect(source).not.toContain('SPECKL-UNTRANSLATED');
+    expect(typecheck(source, 'Probe.ts')).toEqual([]);
+    const m = new (await load(source, 'ProbeMachine'))();
+    m.Add(1, 4);
+    expect(m.jobs.get(1)).toEqual({ size: 4, kind: 'small' });
+    expect(m.mode).toBe('idle');
+    m.Add(2, 20);
+    expect(m.jobs.get(2).kind).toBe('large');
+    expect(m.mode).toBe('busy');
+    expect(m.peak).toBe(20);
+    expect(() => m.Add(3, 1)).toThrow('Guard failed');
+  });
+});
