@@ -36,7 +36,7 @@ First npm release. The package was renamed from the unpublished
   | OpenAPI | 15/16 |
   | Camel | 16/16 |
   | k8s | 16/16 |
-- **Type aliases** (#ALIAS). `type ServerId = String`, `type Ids = List(ServerId)`
+- **Type aliases** (#24). `type ServerId = String`, `type Ids = List(ServerId)`
   and `type Maybe = ServerId | null` are now parsed (they were silently dropped)
   and expanded to their targets before any backend runs, so protoc, OpenAPI,
   TypeScript, Go, Rust, Elm, Camel and Z3 see ordinary types. The IR also keeps
