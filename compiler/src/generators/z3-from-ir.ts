@@ -77,6 +77,27 @@ export function containsParseFailure(e: IRExpr): boolean {
   return kids.some(containsParseFailure);
 }
 
+/**
+ * Source text of the first parse-failure placeholder in the tree, flattened to
+ * one line for an SMT comment, or '' when none carries its source.
+ */
+export function parseFailureSource(e: IRExpr): string {
+  if (e.kind === 'bool_lit' && (e as IRBoolLit).parseFailed) {
+    return ((e as IRBoolLit).source ?? '').replace(/\s+/g, ' ').trim();
+  }
+  const node = e as unknown as Record<string, unknown>;
+  const kids: IRExpr[] = [];
+  for (const key of ['left', 'right', 'operand', 'target', 'index']) {
+    if (node[key]) kids.push(node[key] as IRExpr);
+  }
+  if (node['args']) kids.push(...(node['args'] as IRExpr[]));
+  for (const k of kids) {
+    const src = parseFailureSource(k);
+    if (src) return src;
+  }
+  return '';
+}
+
 /** Collect all named (ident) type references in a type tree. */
 function collectIdentTypeNames(t: IRTypeRef): string[] {
   const names: string[] = [];
@@ -215,7 +236,8 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
     // when the source expression couldn't be parsed — already reported as a
     // warning diagnostic). Asserting them would make the spec spuriously UNSAT.
     if (containsParseFailure(assign.expr)) {
-      lines.push(`; skipped init ${assign.target}: expression failed to parse`);
+      const src = parseFailureSource(assign.expr);
+      lines.push(`; skipped init ${assign.target}: expression failed to parse${src ? `: ${src}` : ''}`);
       continue;
     }
     lines.push(`(assert (= ${assign.target} ${translateExpr(assign.expr)}))`);
@@ -229,7 +251,8 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
     // Skip expressions containing parse-failure placeholders — asserting
     // them would make the spec spuriously UNSAT.
     if (containsParseFailure(c.expr)) {
-      lines.push(`; skipped constraint: expression failed to parse`);
+      const src = parseFailureSource(c.expr);
+      lines.push(`; skipped constraint${c.name ? ` ${c.name}` : ''}: expression failed to parse${src ? `: ${src}` : ''}`);
       continue;
     }
     const label = c.name ? ` ; ${c.name}` : '';
