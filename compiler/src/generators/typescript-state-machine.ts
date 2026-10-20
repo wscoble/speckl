@@ -267,6 +267,7 @@ function emitSpeck(speck: SpeckNode): string {
   const mapVarNames = new Set(stateVars
     .filter(v => v.typeExpr?.type === 'map' || (v.typeExpr?.type === 'ident' && v.typeExpr?.name && /^Map/i.test(v.typeExpr.name)))
     .map(v => v.name));
+  listStateVars = new Set(stateVars.filter(v => v.typeExpr?.type === 'list').map(v => v.name));
 
   const stateProperties = stateVars.map(v => {
     return `  ${v.name}: ${tsType(v.typeExpr, speck.name, enumMap)};`;
@@ -361,6 +362,45 @@ function emitSpeck(speck: SpeckNode): string {
   // checked with `z3 -smt2` (see compiler/src/generators/z3.ts). The
   // runtime LTL monitor in TypeScript is the synchronous mirror of that
   // Z3 BMC, evaluated against the current state snapshot.
+  // `verify Always(PrNeedsApproval)` names an invariant; the TS has no
+  // binding for that name, so inline the invariant's expression (as the Z3
+  // backend does). Nested references are inlined up to a fixed depth.
+  const invariantExprs = new Map<string, string>();
+  // speck.members, not the deduped list: memberKey folds all invariants into one key.
+  for (const m of speck.members) {
+    if (m.type === 'invariant' && !stateVarNames.has(m.name)) invariantExprs.set(m.name, m.expr);
+  }
+  // Only a one-line invariant in plain expression syntax is inlined. Primes
+  // (`x'`), `->`, `let`/`:=` bodies and multi-line invariants are beyond this
+  // backend's expression rewriter; a verify naming one fails closed at run
+  // time instead of emitting TypeScript that does not parse.
+  // The parser joins an invariant's lines with spaces, so two clauses on
+  // separate lines show up as adjacent operands (`a >= 0 b >= 0`); those
+  // are rejected too, as are quantifier bodies (`forall a in S: ...`).
+  const OPERATOR_WORDS = new Set(['and', 'or', 'not', 'implies', 'in']);
+  const adjacentOperands = (body: string) => {
+    const toks = body.split(/\s+/).filter(Boolean);
+    return toks.some((t, k) => k > 0
+      && /[\w)\]]$/.test(toks[k - 1]) && /^[\w(]/.test(t)
+      && !OPERATOR_WORDS.has(toks[k - 1]) && !OPERATOR_WORDS.has(t));
+  };
+  const inlinable = (body: string) => !/\n|'|->|:|\blet\b|\bforall\b|\bexists\b/.test(body) && !adjacentOperands(body.trim());
+  function inlineInvariants(expr: string): { expr: string; untranslated: string[] } {
+    let out = expr;
+    const untranslated = new Set<string>();
+    for (let depth = 0; depth < 8 && invariantExprs.size > 0; depth++) {
+      const next = out.replace(/\b[A-Za-z_]\w*\b/g, (id) => {
+        const body = invariantExprs.get(id);
+        if (body === undefined) return id;
+        if (!inlinable(body)) { untranslated.add(id); return id; }
+        return `(${body.trim()})`;
+      });
+      if (next === out) break;
+      out = next;
+    }
+    return { expr: out, untranslated: [...untranslated] };
+  }
+
   const verifyChecks = verifies.map((v, i) => {
     const formula = v.temporalExpr.trim();
     const ltlMatch = formula.match(/^(always|Always|eventually|Eventually)\s*\(([\s\S]*)\)$/);
@@ -369,7 +409,8 @@ function emitSpeck(speck: SpeckNode): string {
     // the LTL operator's closing paren — strip it (we already matched the
     // outer parens above). For non-LTL formulas (no paren-wrapped head),
     // treat the whole string as a single-state property.
-    const innerRaw = ltlMatch ? ltlMatch[2].trim() : formula;
+    const inlined = inlineInvariants(ltlMatch ? ltlMatch[2].trim() : formula);
+    const innerRaw = inlined.expr;
     // The LTL formula's body is a SpeckDL boolean expression. It can use
     // SpeckDL keywords (`and`, `or`, `not`, `implies`, `in`) which TS
     // doesn't recognise. We translate the *operator keywords* here and
@@ -432,7 +473,11 @@ function emitSpeck(speck: SpeckNode): string {
       `  // check that reads the current class state via this.<stateVar>.\n` +
       `  async verify${i + 1}(): Promise<boolean> {\n` +
       `    // Temporal: ${formula}\n` +
-      `${ltlBody}\n` +
+      (inlined.untranslated.length > 0
+        ? `    // SPECKL-UNTRANSLATED: the TypeScript backend cannot translate invariant ${inlined.untranslated.join(', ')}.\n` +
+          `    // Fail closed: this check never reports the property as holding.\n` +
+          `    throw new Error(${JSON.stringify(`SPECKL-UNTRANSLATED: verify ${formula} uses invariant ${inlined.untranslated.join(', ')}, which the TypeScript backend cannot translate`)});\n`
+        : `${ltlBody}\n`) +
       `  }`
     );
   }).join('\n\n');
@@ -609,6 +654,11 @@ ${table}
 function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames: Set<string>, speckName: string, stateEnumName: string, knownStateValues: string[], enumMap: Map<string, string[]>, moduleNames: Set<string> = new Set()): string {
   // Collect local parameter names so we DON'T prefix them with this.
   const localNames = new Set(action.params.map(p => p.name));
+  // Expressions known to be lists, as they read after rewriting.
+  listExprs = new Set([
+    ...action.params.filter(p => (p.type as any)?.type === 'list').map(p => p.name),
+    ...[...listStateVars].filter(v => !localNames.has(v)).map(v => `this.${v}`),
+  ]);
   // let-bound names and loop variables, at any nesting depth, and the locals
   // that are assigned after their `let` (those need `let`, not `const`).
   const reassigned = new Set<string>();
@@ -1094,7 +1144,11 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   ts = ts.replace(/(\S+)\s*===\s*$/g, '$1 === $1');
 
   // 5f: append(X, Y) -> [...X, Y] (list append) — use spread on arrays, fine without downlevelIteration
-  ts = rewriteCalls(ts, 'append', args => (args.length === 2 ? `[...${args[0]}, ${args[1]}]` : undefined));
+  // append(list, x): x is one element, unless it is itself a list of the
+  // same kind (a list parameter or list state variable), which concatenates.
+  ts = rewriteCalls(ts, 'append', args => (args.length === 2
+    ? (listExprs.has(args[1]) ? `[...${args[0]}, ...${args[1]}]` : `[...${args[0]}, ${args[1]}]`)
+    : undefined));
   // min/max of numbers (two or more arguments; a one-argument form would be a
   // collection reduction, left untranslated)
   for (const fn of ['min', 'max'] as const) {
@@ -1283,6 +1337,10 @@ function replaceStateWithEnum(expr: string, enumName: string, knownStateValues: 
 
 /** Enum member -> the enum const that declares it (members unique to one enum), for the speck being emitted. */
 let enumOwner = new Map<string, string>();
+/** List-typed state variables of the speck being emitted. */
+let listStateVars = new Set<string>();
+/** List-valued expressions (as rewritten) in the action being emitted. */
+let listExprs = new Set<string>();
 
 function cleanExpr(s: string): string {
   return s.replace(/,$/, '').trim();

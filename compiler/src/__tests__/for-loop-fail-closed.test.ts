@@ -399,3 +399,32 @@ describe('TypeScript backend: members of one-line union types', () => {
     expect(() => m.Add(3, 1)).toThrow('Guard failed');
   });
 });
+
+describe('TypeScript backend: append of a list onto a list', () => {
+  // `append(log, entries)` with `entries: List(T)` concatenates (as in the
+  // Rust backend); it used to push the whole list as one element, which
+  // surfaced once the `if` around it in KafkaKRaft stopped being dropped.
+  it('concatenates a list parameter and appends a single element', async () => {
+    const source = generateTs(`speck Probe {
+    type Entry = { n: Nat }
+    state {
+        log: List(Entry)
+    }
+    init {
+        log := emptyList
+    }
+    action Push(e: Entry) {
+        log := append(log, e)
+    }
+    action Extend(es: List(Entry)) {
+        log := append(log, es)
+    }
+}
+`, 'Probe.ts');
+    expect(typecheck(source, 'Probe.ts')).toEqual([]);
+    const m = new (await load(source, 'ProbeMachine'))();
+    m.Push({ n: 1 });
+    m.Extend([{ n: 2 }, { n: 3 }]);
+    expect(m.log).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
+  });
+});
