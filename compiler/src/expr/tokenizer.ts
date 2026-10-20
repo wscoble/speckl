@@ -123,8 +123,29 @@ export class Tokenizer {
     return tokens;
   }
 
+  /** Type of the token returned before this one (for `-` disambiguation). */
+  private prevType: TokenType | undefined;
+
   /** Return the next token. Returns EOF token when source is exhausted. */
   next(): Token {
+    const tok = this.scan();
+    this.prevType = tok.type;
+    return tok;
+  }
+
+  /** True when the previous token ends an operand, so a following `-` is binary. */
+  private afterOperand(): boolean {
+    switch (this.prevType) {
+      case TokenType.IDENT: case TokenType.NUMBER: case TokenType.STRING:
+      case TokenType.BOOL: case TokenType.NULL:
+      case TokenType.RPAREN: case TokenType.RBRACKET: case TokenType.RBRACE:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private scan(): Token {
     this.skipWhitespaceAndComments();
 
     if (this.pos >= this.src.length) {
@@ -198,7 +219,8 @@ export class Tokenizer {
 
     // - can be minus or start of a negative number
     if (ch === '-') {
-      if (this.isDigit(this.peek())) {
+      // `n-1` is a subtraction; `-1` after an operator or `(` is a literal.
+      if (this.isDigit(this.peek()) && !this.afterOperand()) {
         return this.readNumber();
       }
       return this.advance(1, TokenType.SUB, '-');
@@ -236,10 +258,12 @@ export class Tokenizer {
     const savedPos = this.pos;
     const savedLine = this.line;
     const savedCol = this.col;
+    const savedPrev = this.prevType;
     const tok = this.next();
     this.pos = savedPos;
     this.line = savedLine;
     this.col = savedCol;
+    this.prevType = savedPrev;
     return tok;
   }
 
