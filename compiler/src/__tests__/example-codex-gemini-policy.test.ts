@@ -65,7 +65,7 @@ describe('Codex CLI wiring (real payloads through .codex/hooks.json)', () => {
     expect(ctx.config.hooks.PreToolUse[0].matcher).toBe('*');
     expect(cmd('PreToolUse')).toBe(`node ${ctx.project}/.speckl/agent/adapter.mjs codex pre --state ${ctx.project}/.speckl/state.json --key ${ctx.key} --project ${ctx.project} || exit 2`);
     expect(cmd('PostToolUse')).not.toContain('|| exit 2');
-    expect(readFileSync(join(ctx.project, '.speckl', 'agent', 'README.md'), 'utf-8')).toContain('wires this hook into claude-code, cursor, codex and gemini:');
+    expect(readFileSync(join(ctx.project, '.speckl', 'agent', 'README.md'), 'utf-8')).toContain('wires this hook into claude-code, cursor, codex, gemini, copilot, goose and hermes:');
     // Reference wiring for every declared harness ships next to the adapter.
     for (const f of ['claude-code/settings.json', 'cursor/hooks.json', 'codex/hooks.json', 'gemini/settings.json']) {
       expect(() => JSON.parse(readFileSync(join(ctx.project, '.speckl', 'agent', 'harness', f), 'utf-8')), f).not.toThrow();

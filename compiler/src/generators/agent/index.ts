@@ -17,7 +17,7 @@ import { emitCliVerifier, emitFileDropVerifier } from './verifier-templates.js';
 import { stripTypes } from './strip-types.js';
 import { emitStateIntegrityMjs } from './state-integrity-template.js';
 import { emitAdapterMjs } from './adapter-template.js';
-import { buildHarnessHooks, HarnessRule } from './harness-runtime.js';
+import { buildHarnessHooks, harnessConfigFile, harnessProtectedDirs, hermesYaml, HarnessRule } from './harness-runtime.js';
 
 /** Default for `pending timeout` when the spec does not declare one. */
 export const DEFAULT_PENDING_TIMEOUT_MS = 10 * 60_000;
@@ -225,9 +225,9 @@ function emitHarnessFiles(speckName: string, agentDir: string, harness: Record<s
   for (const name of names) {
     const dir = path.join(agentDir, 'harness', name);
     fs.mkdirSync(dir, { recursive: true });
-    const file = name === 'cursor' || name === 'codex' ? 'hooks.json' : 'settings.json';
+    const file = path.posix.basename(harnessConfigFile(name));
     const hooks = buildHarnessHooks(name, { adapter, state, key: null, relative });
-    fs.writeFileSync(path.join(dir, file), JSON.stringify(hooks, null, 2) + '\n');
+    fs.writeFileSync(path.join(dir, file), name === 'hermes' ? hermesYaml(hooks) : JSON.stringify(hooks, null, 2) + '\n');
   }
 }
 
@@ -335,9 +335,16 @@ function buildAgentsMd(
     lines.push('Each harness tool call is mapped onto a tool above (first match wins).');
     lines.push('Calls that match no line are **denied**. A matched command must be one plain');
     lines.push('command: `;`, `&`, `|`, backticks, `$`, `<`, `>` and newlines are refused.');
-    lines.push('The rails themselves (this directory, the state file, its key, `.claude/`,');
-    lines.push('`.cursor/`, `.codex/`, `.gemini/`) are off limits to every tool. Make one tool');
-    lines.push('call at a time.');
+    const dirs = harnessProtectedDirs(Object.keys(config.harness));
+    if (dirs.length === 4) {
+      lines.push('The rails themselves (this directory, the state file, its key, `.claude/`,');
+      lines.push('`.cursor/`, `.codex/`, `.gemini/`) are off limits to every tool. Make one tool');
+      lines.push('call at a time.');
+    } else {
+      lines.push('The rails themselves (this directory, the state file, its key and the harness');
+      lines.push(`config directories ${listWords(dirs.map(d => '`' + d + '/`'))})`);
+      lines.push('are off limits to every tool. Make one tool call at a time.');
+    }
     lines.push('');
     for (const [name, h] of Object.entries(config.harness)) {
       lines.push(`### ${name}`);

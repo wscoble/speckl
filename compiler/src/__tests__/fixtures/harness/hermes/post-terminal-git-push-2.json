@@ -1,0 +1,22 @@
+{
+  "hook_event_name": "post_tool_call",
+  "tool_name": "terminal",
+  "tool_input": {
+    "command": "git push -u origin feat/greet"
+  },
+  "session_id": "20261019_221241_a1b2c3",
+  "cwd": "__PROJECT__",
+  "profile": "default",
+  "extra": {
+    "result": "{\"output\": \"branch 'feat/greet' set up to track 'origin/feat/greet'.\", \"exit_code\": 0, \"error\": null}",
+    "task_id": "20261019_221241_a1b2c3",
+    "tool_call_id": "call_hermes0008",
+    "turn_id": "turn_0003",
+    "api_request_id": "req_9f8e",
+    "duration_ms": 812,
+    "status": "ok",
+    "error_type": null,
+    "error_message": null,
+    "middleware_trace": []
+  }
+}

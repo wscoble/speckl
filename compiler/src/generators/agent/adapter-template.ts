@@ -1,4 +1,5 @@
-// Emits adapter.mjs — the harness adapter (Claude Code, Cursor) that sits in
+// Emits adapter.mjs — the harness adapter (Claude Code, Cursor, Codex, Gemini,
+// Copilot, Goose, Hermes) that sits in
 // front of hook.mjs. The logic is harness-runtime.ts, emitted verbatim.
 
 import { ADAPTER_FUNCTIONS } from './harness-runtime.js';
@@ -14,10 +15,12 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *       harness block, runs hook.mjs, and answers in the harness's format.
  *   node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>]
  *       merges the hook wiring into .claude/settings.json, .cursor/hooks.json,
- *       .codex/hooks.json or .gemini/settings.json.
+ *       .codex/hooks.json, .gemini/settings.json, .github/hooks/speckl.json
+ *       (Copilot) or .agents/plugins/speckl/ (Goose); Hermes takes
+ *       --hermes-home <profile dir> and writes its config.yaml hooks block.
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
- * errors deny (Claude Code: exit 2 + stderr; Cursor: permission "deny", exit 2).
+ * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
 import fs from 'node:fs';

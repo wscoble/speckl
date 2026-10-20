@@ -133,6 +133,44 @@ speck ClaudeCodePolicy {
             map run_shell_command command ~ "git commit -m \"[^\"]*\"" -> request_review
             map run_shell_command command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
         }
+
+        // GitHub Copilot CLI / cloud agent. A bash result counts as a success
+        // only when it ends with `<exited with exit code 0>`.
+        harness copilot {
+            map create|edit -> edit_code { path = path }
+            map apply_patch -> edit_code { path = path }
+            map view -> read_file { path = path }
+            map grep|glob -> inspect
+            map bash command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map bash command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map bash command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map bash command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map bash command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
+
+        // Goose (developer extension tools arrive under their bare names).
+        harness goose {
+            map write|edit -> edit_code { path = path }
+            map tree -> inspect
+            map shell command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map shell command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map shell command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map shell command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map shell command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
+
+        // Hermes Agent. A terminal call counts as a success only when its
+        // result reports exit_code 0.
+        harness hermes {
+            map write_file|patch -> edit_code { path = path }
+            map read_file -> read_file { path = path }
+            map search_files -> inspect
+            map terminal command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map terminal command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map terminal command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map terminal command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map terminal command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
     }
 
     next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect

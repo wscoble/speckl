@@ -1,0 +1,11 @@
+{
+  "event": "PostToolUseFailure",
+  "session_id": "20261019_7",
+  "matcher_context": "shell",
+  "tool_call_id": "toolu_01Goose0002",
+  "tool_name": "shell",
+  "tool_input": {
+    "command": "npm test"
+  },
+  "working_dir": "__PROJECT__"
+}
