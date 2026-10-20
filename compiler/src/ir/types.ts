@@ -291,6 +291,8 @@ export interface IRStmt {
   // For 'if'
   thenBlock?: IRStmt[];
   elseBlock?: IRStmt[];
+  // Source text of a statement that was preserved but not lowered
+  raw?: string;
 }
 
 export interface IREvent {
@@ -361,7 +363,7 @@ export type IRExpr =
   | IRFieldAccess
   | IRIndexExpr;
 
-export interface IRBoolLit { kind: 'bool_lit'; value: boolean; /** True when this node is a placeholder for an expression that failed to parse. */ parseFailed?: boolean }
+export interface IRBoolLit { kind: 'bool_lit'; value: boolean; /** True when this node is a placeholder for an expression that failed to parse. */ parseFailed?: boolean; /** Source text of the expression that failed to parse or lower, when known. */ source?: string }
 export interface IRIntLit { kind: 'int_lit'; value: number }
 export interface IRFloatLit { kind: 'float_lit'; value: number }
 export interface IRStringLit { kind: 'string_lit'; value: string }

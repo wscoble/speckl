@@ -18,6 +18,7 @@
 //   - Expressions are typed trees, not strings.
 //   - Provenance is always populated.
 
+import { exprToSource } from '../expr/print.js';
 import { readFileSync } from 'fs';
 import {
   AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode,
@@ -969,10 +970,10 @@ function lowerStatement(
       // statement that the generators can choose to ignore.
       diagnostics.push({
         level: 'info',
-        message: 'ifblock preserved as raw text in IR; full lowering pending',
+        message: `statement preserved as raw text in IR, not lowered: ${s.raw}`,
         speck: speckName,
       });
-      return { kind: 'if', expr: undefined };
+      return { kind: 'if', expr: undefined, raw: s.raw };
   }
 }
 
@@ -997,7 +998,8 @@ function lowerExpr(
         if (Number.isInteger(n)) return { kind: 'int_lit', value: n };
         return { kind: 'float_lit', value: n };
       }
-      return { kind: 'bool_lit', value: false, parseFailed: true };
+      // `null` has no IR literal.
+      return { kind: 'bool_lit', value: false, parseFailed: true, source: e.value || 'null' };
     }
     case 'ident':
       return { kind: 'ident', name: e.name };
@@ -1008,6 +1010,15 @@ function lowerExpr(
         operand: lowerExpr(e.operand, diagnostics, speckName),
       };
     case 'binary':
+      // Infix `a implies b` lowers to the same node as the call form
+      // `implies(a, b)`, which the IR backends already understand.
+      if (e.op === 'implies') {
+        return {
+          kind: 'call',
+          fn: 'implies',
+          args: [lowerExpr(e.left, diagnostics, speckName), lowerExpr(e.right, diagnostics, speckName)],
+        };
+      }
       return {
         kind: 'binop',
         op: lowerBinOp(e.op),
@@ -1035,13 +1046,20 @@ function lowerExpr(
     case 'parens':
       // Parenthesized grouping - transparent in the IR.
       return lowerExpr(e.expr, diagnostics, speckName);
+    case 'unparsed':
+      diagnostics.push({
+        level: 'warning',
+        message: `expression not parsed in full (${e.error}); carried as an untranslated placeholder: ${e.source}`,
+        speck: speckName,
+      });
+      return { kind: 'bool_lit', value: false, parseFailed: true, source: e.source };
     default:
       diagnostics.push({
         level: 'info',
-        message: `expression kind ${e.kind} not yet lowered; emitting bool_lit false placeholder`,
+        message: `expression kind ${e.kind} not yet lowered; emitting bool_lit false placeholder: ${exprToSource(e)}`,
         speck: speckName,
       });
-      return { kind: 'bool_lit', value: false, parseFailed: true };
+      return { kind: 'bool_lit', value: false, parseFailed: true, source: exprToSource(e) };
   }
 }
 
@@ -1077,16 +1095,18 @@ function parseExprSafe(
   diagnostics: IRDiagnostic[],
   speckName: string,
 ): IRExpr {
+  // The whole string must parse; a prefix parse used to drop the tail
+  // silently (`P implies Q` read as `P`, `forall x in c: body` as `forall`).
   try {
-    const parsed = parseExpression(src);
+    const parsed = parseExpressionComplete(src);
     return lowerExpr(parsed, diagnostics, speckName);
   } catch (e) {
     diagnostics.push({
       level: 'warning',
-      message: `expression parse failed: ${(e as Error).message}; emitting bool_lit false placeholder`,
+      message: `expression parse failed: ${(e as Error).message}; carried as an untranslated placeholder: ${src}`,
       speck: speckName,
     });
-    return { kind: 'bool_lit', value: false, parseFailed: true };
+    return { kind: 'bool_lit', value: false, parseFailed: true, source: src };
   }
 }
 
@@ -1102,7 +1122,7 @@ export function parseStringToIRExpr(src: string): IRExpr {
   try {
     return lowerExpr(parseExpressionComplete(src), [], '(inline)');
   } catch {
-    return { kind: 'bool_lit', value: false, parseFailed: true };
+    return { kind: 'bool_lit', value: false, parseFailed: true, source: src };
   }
 }
 
