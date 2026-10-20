@@ -64,16 +64,26 @@ Requires the `z3` binary (`pacman -S z3`, `apt-get install z3`, or set `Z3_BIN`)
 
 ## Compile tests
 
-Generated code is fed to real compilers. `src/__tests__/compiles-*.test.ts` compiles the output for every example:
+Generated code goes through real compilers and validators. `compiler/src/__tests__/compiles-*.test.ts` checks the output for every example:
 
 | Target | Checked with | Toolchain |
 |---|---|---|
-| Camel (Java) | `javac --release 21` against Camel 4.8.0 and Jakarta CDI/Inject APIs | JDK 21+, plus the pinned jars |
+| TypeScript (`-t typescript`) | `tsc --noEmit --strict` | bundled (dev dependency) |
+| Agent rails (`-t agent`) | `tsc --strict` on the machine, `node --check` on the hook scripts | bundled |
+| Camel (Java) | `javac --release 21` against Camel 4.8.0 and Jakarta CDI/Inject APIs | JDK 21+, plus pinned jars |
+| Go | `go build ./...` (offline) | Go 1.22+ |
+| Rust | `cargo check --offline` | Rust toolchain |
+| Elm | `elm make` | Elm 0.19.1, plus a cached package set |
+| Protobuf | `protoc` | protoc |
+| OpenAPI 3.1 | `@apidevtools/swagger-parser` validate | bundled (dev dependency) |
+| Kubernetes CRDs | the official Kubernetes v1.31 `apiextensions.k8s.io/v1` schema, strict (unknown fields fail) | bundled ajv, plus the pinned schema |
 
-The jars are pinned by SHA-256 in `compiler/scripts/fetch-compile-deps.mjs`. `node scripts/fetch-compile-deps.mjs` downloads them once into `compiler/.cache/compile-deps`, or into `$SPECKL_COMPILE_DEPS_DIR` if set. The tests themselves never use the network.
+Third-party inputs are pinned by SHA-256 in `compiler/scripts/fetch-compile-deps.mjs`: the Camel and Jakarta jars, and the Kubernetes schema. `node scripts/fetch-compile-deps.mjs` downloads them once into `compiler/.cache/compile-deps`, or into `$SPECKL_COMPILE_DEPS_DIR` if set. It also fills Elm's package cache (`$ELM_HOME`). The tests themselves never use the network.
 
-- `npm test` runs these tests when the toolchain is present. If it is missing, it prints a warning and the test group's name reads `SKIPPED: <reason>`.
-- `npm run test:compile` fetches the pinned files if they are missing, then runs only the compile tests. Here a missing toolchain is a **failure**. Use it before a release or in CI.
+- `npm test` runs these tests for every toolchain it finds. A missing toolchain prints a warning, and the test group's name reads `SKIPPED: <reason>`.
+- `npm run test:compile` fetches the pinned inputs if they are missing, then runs only the compile tests. Here a missing toolchain is a **failure**. Use it before a release or in CI.
+
+`examples/.speckl-compile-baseline.json` lists the examples whose output does not compile yet for each target, each with its first compiler error. A listed example must keep failing, so a fix has to delete its entry. An unlisted example must compile.
 
 ## Quick Start
 
@@ -121,7 +131,7 @@ Browse all in [examples/](examples/).
 ## Status
 
 - About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
-- Every example's generated Camel project compiles with `javac` (see [Compile tests](#compile-tests)).
+- Compile tests run against every example (see [Compile tests](#compile-tests)). Camel and Kubernetes CRDs pass for all 16 examples. The other targets have known failures recorded in `examples/.speckl-compile-baseline.json`.
 - `npm run verify` compiles every example and checks it with Z3. Today: 48 of 79 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
 - CI (`.github/workflows/ci.yml`) runs on GitHub-hosted `ubuntu-latest` and has two jobs:
   - **build-and-test:** build, `tsc --noEmit`, `npm test`, `npm run verify` against a pinned z3 release, and coverage with the floors above.
