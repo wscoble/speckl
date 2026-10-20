@@ -17,7 +17,7 @@
 // whether that is fatal.
 //
 // Usage: node scripts/verify-z3.mjs [<spec.speckdl|dir> ...] [--examples <dir>] [--depth <n>] [--keep]
-//        speckl verify [<spec.speckdl|dir> ...] [--depth <n>] [--keep]
+//        speckl verify [<spec.speckdl|dir> ...] [--examples <dir>] [--depth <n>] [--keep]
 //
 // With no paths, verifies the repository's examples/ (or --examples <dir>).
 
@@ -44,9 +44,16 @@ const examplesDir = resolve(argValue('--examples', process.env.SPECKL_EXAMPLES ?
 const depth = parseInt(argValue('--depth', '10'), 10);
 const keep = argv.includes('--keep');
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('usage: speckl verify [<spec.speckdl|dir> ...] [--depth <n>] [--keep]');
+  console.log('usage: speckl verify [<spec.speckdl|dir> ...] [--examples <dir>] [--depth <n>] [--keep]');
   console.log('Compiles each spec to SMT-LIB2 (AST and IR backends), runs z3, and checks every');
   console.log('verify obligation against its expected result. Exit 0 all pass, 1 any fail, 2 no z3.');
+  console.log('');
+  console.log('  --examples <dir>  with no spec paths, verify every spec in <dir> (default: the');
+  console.log('                    repository examples/, or $SPECKL_EXAMPLES) and honour its');
+  console.log('                    unchecked baseline, <dir>/.speckl-unchecked.json. Named specs');
+  console.log('                    or directories get no baseline: any UNCHECKED obligation fails.');
+  console.log('  --depth <n>       BMC depth (default 10)');
+  console.log('  --keep            keep the generated SMT files');
   process.exit(0);
 }
 // Positional paths: everything that is not a flag or a flag's value.

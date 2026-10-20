@@ -37,7 +37,7 @@ CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro or Windsurf, see
 
 ## Verification
 
-The Z3 backend emits SMT-LIB2 with bounded model checking, and CI runs a **real Z3 solver** over every example spec:
+The Z3 backend emits SMT-LIB2 with bounded model checking, and `npm run verify` (also the CI job) runs a **real Z3 solver** over every example spec:
 
 ```bash
 cd compiler
@@ -107,7 +107,9 @@ Browse all in [examples/](examples/).
 
 ## Status
 
-- 256 tests passing, CI green (incl. real-solver Z3 verification of all examples)
+- 699 vitest tests, run locally with `npm test`. The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
+- `npm run verify` compiles every example and checks it with Z3. Today: 48 of 79 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
+- CI (`.github/workflows/ci.yml`) runs on a self-hosted runner, which is not currently picking up jobs. Until it is, the checks above are run locally before merging.
 - Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust (generated-text tested)
 - Round-trip property tested: parse → print → parse is identity for all examples
 - Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments

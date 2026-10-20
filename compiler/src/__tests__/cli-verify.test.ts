@@ -83,6 +83,16 @@ describe('compile CLI exit codes', () => {
     expect(r.stderr).toMatch(/Compilation failed: .*unsupported verify form/);
     expect(existsSync(join(dir, 'out', 'agent'))).toBe(false);
   }, 60_000);
+  it('`speckl verify --help` documents --examples and the baseline rule', () => {
+    const r = cli(['verify', '--help']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/^usage: speckl verify \[<spec\.speckdl\|dir> \.\.\.\] \[--examples <dir>\] \[--depth <n>\] \[--keep\]/m);
+    expect(r.stdout).toMatch(/--examples <dir> {2}with no spec paths/);
+    expect(r.stdout).toContain('.speckl-unchecked.json');
+    expect(r.stdout).toContain('Named specs');
+    expect(r.stdout).toMatch(/--depth <n>/);
+    expect(r.stdout).toMatch(/--keep/);
+  }, 60_000);
   it('an unknown target is rejected', () => {
     const r = cli([join(compilerDir, '..', 'examples', 'ToggleSwitch.speckdl'), '-t', 'cobol']);
     expect(r.status).not.toBe(0);
