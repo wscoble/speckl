@@ -47,6 +47,17 @@ npm run verify          # compiles examples, runs z3, checks solver results
 
 Installed from npm, the same verifier runs on your own specs: `speckl verify <spec.speckdl|dir>`.
 
+Every obligation that is not proven fails the run, with one exception: an
+unchecked baseline (`.speckl-unchecked.json`) is read only when you run the
+verifier **without spec paths**, over an examples directory: the repository's
+`examples/`, or `speckl verify --examples <dir>` (also `SPECKL_EXAMPLES`).
+Obligations listed there are reported as UNCHECKED, never as passed, and an
+entry that is now proven or no longer exists fails as stale. Named specs or
+directories (`speckl verify spec.speckdl`, `speckl verify specs/`) get no
+baseline, so any UNCHECKED obligation fails. An npm install does not ship
+`examples/`, so use `--examples <dir>` to verify a directory against its own
+baseline.
+
 Each generated `.smt2` file carries a `; speckl-expect:` marker declaring what the solver should return. When a property is violated, the verifier renders a human-readable counterexample — a per-step state trace from the solver model. Constructs the translators cannot yet handle are skipped with visible comments rather than emitted as invalid SMT.
 
 Requires the `z3` binary (`pacman -S z3`, `apt-get install z3`, or set `Z3_BIN`).
