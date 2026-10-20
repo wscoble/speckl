@@ -1,0 +1,13 @@
+{
+  "event": {
+    "type": "tool_call",
+    "toolName": "web_fetch",
+    "toolCallId": "call_u1",
+    "input": {
+      "url": "https://example.com"
+    }
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

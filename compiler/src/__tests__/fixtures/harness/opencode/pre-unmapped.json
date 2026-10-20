@@ -1,0 +1,14 @@
+{
+  "hook": "tool.execute.before",
+  "input": {
+    "tool": "webfetch",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_u1"
+  },
+  "output": {
+    "args": {
+      "url": "https://example.com",
+      "format": "markdown"
+    }
+  }
+}

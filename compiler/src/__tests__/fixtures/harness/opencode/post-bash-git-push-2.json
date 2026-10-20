@@ -1,0 +1,21 @@
+{
+  "hook": "tool.execute.after",
+  "input": {
+    "tool": "bash",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_p2",
+    "args": {
+      "command": "git push origin feat",
+      "description": "Push"
+    }
+  },
+  "output": {
+    "title": "git push origin feat",
+    "metadata": {
+      "output": "To github.com:acme/app.git",
+      "exit": 0,
+      "truncated": false
+    },
+    "output": "To github.com:acme/app.git"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "exec",
+    "params": {
+      "command": "git push origin feat"
+    },
+    "runId": "94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "toolCallId": "call_p2",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Blocked by plugin release-freeze: pushes are frozen"
+        }
+      ],
+      "details": {
+        "status": "blocked",
+        "deniedReason": "plugin-before-tool-call",
+        "reason": "Blocked by plugin release-freeze: pushes are frozen"
+      }
+    },
+    "error": "Blocked by plugin release-freeze: pushes are frozen",
+    "durationMs": 81
+  },
+  "ctx": {
+    "toolName": "exec",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "sessionId": "94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "runId": "94fae684-858f-4b59-934c-40bf2ff71ffb",
+    "toolCallId": "call_p2"
+  }
+}

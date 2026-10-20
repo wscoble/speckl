@@ -1,0 +1,31 @@
+{
+  "hook": "event",
+  "event": {
+    "id": "evt_1568a57ce0010M1aA4OsqBlQav",
+    "type": "message.part.updated",
+    "properties": {
+      "part": {
+        "id": "prt_1568a57a6001",
+        "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+        "messageID": "msg_1568a5778001",
+        "type": "tool",
+        "callID": "call_w1",
+        "tool": "write",
+        "state": {
+          "status": "completed",
+          "input": {
+            "filePath": "src/app.js",
+            "content": "module.exports = () => 1;\n"
+          },
+          "output": "Wrote file successfully.",
+          "metadata": {},
+          "title": "src/app.js",
+          "time": {
+            "start": 1792453268729,
+            "end": 1792453268800
+          }
+        }
+      }
+    }
+  }
+}

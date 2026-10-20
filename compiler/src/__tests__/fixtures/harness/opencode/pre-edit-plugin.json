@@ -1,0 +1,15 @@
+{
+  "hook": "tool.execute.before",
+  "input": {
+    "tool": "edit",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_e1"
+  },
+  "output": {
+    "args": {
+      "filePath": ".opencode/plugins/speckl.js",
+      "oldString": "throw new Error",
+      "newString": "void"
+    }
+  }
+}

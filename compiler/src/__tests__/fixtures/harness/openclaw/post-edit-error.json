@@ -1,0 +1,40 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "edit",
+    "params": {
+      "path": "src/app.js",
+      "edits": [
+        {
+          "oldText": "NOPE",
+          "newText": "2"
+        }
+      ]
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_e2",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"status\": \"error\",\n  \"tool\": \"edit\",\n  \"error\": \"Could not find the exact text in __PROJECT__/src/app.js. The old text must match exactly including all whitespace and newlines.\"\n}"
+        }
+      ],
+      "details": {
+        "status": "error",
+        "tool": "edit",
+        "error": "Could not find the exact text in __PROJECT__/src/app.js. The old text must match exactly including all whitespace and newlines."
+      }
+    },
+    "error": "Could not find the exact text in __PROJECT__/src/app.js. The old text must match exactly including all whitespace and newlines.",
+    "durationMs": 141
+  },
+  "ctx": {
+    "toolName": "edit",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_e2"
+  }
+}

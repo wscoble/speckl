@@ -1,0 +1,35 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "write",
+    "params": {
+      "path": "src/app.js",
+      "content": "module.exports = () => 1;\n"
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_w1",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Successfully wrote 26 bytes to __PROJECT__/src/app.js"
+        }
+      ],
+      "details": {
+        "changed": true,
+        "created": true,
+        "diff": "+1 module.exports = () => 1;",
+        "firstChangedLine": 1
+      }
+    },
+    "durationMs": 141
+  },
+  "ctx": {
+    "toolName": "write",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_w1"
+  }
+}

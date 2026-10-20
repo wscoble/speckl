@@ -16,6 +16,8 @@ describe('docs/harness-adapters.md quickstart', () => {
     const block = md.split('## Quickstart: Speckl + Claude Code')[1].match(/```bash\n([\s\S]*?)```/)![1];
     // The Copilot / Goose / Hermes quickstart continues in the same project.
     const block2 = md.split('## Quickstart: GitHub Copilot CLI, Goose and Hermes')[1].match(/```bash\n([\s\S]*?)```/)![1];
+    // ... and so does the Pi / OpenCode / OpenClaw one.
+    const block3 = md.split('## Quickstart: Pi, OpenCode and OpenClaw')[1].match(/```bash\n([\s\S]*?)```/)![1];
     const work = mkdtempSync(join(tmpdir(), 'speckl-quickstart-'));
     const home = mkdtempSync(join(tmpdir(), 'speckl-home-'));
     // speckl-compile is the repo compiler; curl serves the example from this
@@ -28,7 +30,7 @@ curl() {
   case "$url" in https://raw.githubusercontent.com/wscoble/speckl/main/examples/*) cp "${repoDir}/examples/\${url##*/}" "$out";; *) return 22;; esac
 }
 `;
-    const r = spawnSync('bash', ['-c', prelude + block + block2], {
+    const r = spawnSync('bash', ['-c', prelude + block + block2 + block3], {
       cwd: work, encoding: 'utf-8', env: { ...process.env, HOME: home, SPECKL_STATE_KEY_FILE: '' },
     });
     expect(r.status, r.stderr + r.stdout).toBe(0);
@@ -50,6 +52,13 @@ curl() {
     expect(hermes).toContain('fail_closed: true');
     const allow = JSON.parse(readFileSync(join(home, '.hermes-greet', 'shell-hooks-allowlist.json'), 'utf-8'));
     expect(allow.approvals).toHaveLength(3);
+    // Pi, OpenCode and OpenClaw each denied the push; the plugins are written.
+    expect(r.stderr.match(/Speckl denied bash \(spec tool open_pr\)/g)!.length).toBeGreaterThanOrEqual(3);
+    expect(r.stderr).toContain('Speckl denied exec (spec tool open_pr)');
+    expect(r.stdout).toContain('{"decision":"block"');
+    expect(readFileSync(join(proj, '.pi', 'extensions', 'speckl.js'), 'utf-8')).toContain('export default function specklRails(pi)');
+    expect(readFileSync(join(proj, '.opencode', 'plugins', 'speckl.js'), 'utf-8')).toContain('"tool.execute.before"');
+    expect(JSON.parse(readFileSync(join(proj, '.openclaw', 'plugins', 'speckl', 'openclaw.plugin.json'), 'utf-8')).id).toBe('speckl');
     const state = JSON.parse(readFileSync(join(proj, '.speckl', 'state.json'), 'utf-8'));
     expect(state.pending.tool).toBe('run_tests');
   }, 90_000);

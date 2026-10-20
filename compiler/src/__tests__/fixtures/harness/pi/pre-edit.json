@@ -1,0 +1,19 @@
+{
+  "event": {
+    "type": "tool_call",
+    "toolName": "edit",
+    "toolCallId": "call_e2",
+    "input": {
+      "path": "src/app.js",
+      "edits": [
+        {
+          "oldText": "NOPE",
+          "newText": "2"
+        }
+      ]
+    }
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

@@ -95,7 +95,7 @@ describe('harness validation', () => {
     expect(errorsOf(spec(GOOD))).toEqual([]);
   });
   it('reports unknown harnesses, duplicates, targets, params and patterns', () => {
-    const bad = `        harness windsurf {
+    const bad = `        harness aider {
             map X -> go
         }
         harness cursor {
@@ -107,7 +107,7 @@ describe('harness validation', () => {
         }`;
     const msgs = errorsOf(spec(bad)).map(d => `${d.level}: ${d.message}`);
     expect(msgs).toEqual(expect.arrayContaining([
-      'error: agent harness windsurf: unknown harness (supported: claude-code, cursor, codex, gemini, copilot, goose, hermes)',
+      'error: agent harness aider: unknown harness (supported: claude-code, cursor, codex, gemini, copilot, goose, hermes, pi, opencode, openclaw)',
       expect.stringMatching(/^error: agent harness cursor map Shell: pattern "\(" is not a valid regular expression/),
       'error: agent harness cursor map Read: -> nope is not a declared tool',
       'error: agent harness cursor map Read: file is not a parameter of Look (has: path)',
@@ -136,6 +136,21 @@ describe('harness generation', () => {
     expect(agentsMd).toContain('## Harness wiring');
     expect(agentsMd).toContain('| `Bash` | `command` matches `make go( -j[0-9]{1,2})?` | `go` |');
     expect(readFileSync(join(dir, 'README.md'), 'utf-8')).toContain('node adapter.mjs install <harness>');
+  });
+  it('Pi, OpenCode and OpenClaw: reference plugins (valid JS), config paths in AGENTS.md', () => {
+    const out = mkdtempSync(join(tmpdir(), 'speckl-harness-plugins-'));
+    const h = ['pi', 'opencode', 'openclaw'].map(n => `        harness ${n} {\n            map bash|exec command ~ "make go" -> go\n        }`).join('\n');
+    generateAgent(parseSpeckContent(spec(h)), { outputDir: out });
+    const dir = join(out, 'agent');
+    expect(readFileSync(join(dir, 'harness', 'pi', 'speckl.js'), 'utf-8')).toContain('export default function specklRails(pi)');
+    expect(readFileSync(join(dir, 'harness', 'opencode', 'speckl.js'), 'utf-8')).toContain('export const SpecklRails');
+    expect(readFileSync(join(dir, 'harness', 'openclaw', 'index.js'), 'utf-8')).toContain('id: "speckl"');
+    expect(JSON.parse(readFileSync(join(dir, 'harness', 'openclaw', 'package.json'), 'utf-8')).openclaw.extensions).toEqual(['./index.js']);
+    expect(existsSync(join(dir, 'harness', 'openclaw', 'openclaw.plugin.json'))).toBe(true);
+    const md = readFileSync(join(dir, 'AGENTS.md'), 'utf-8');
+    expect(md).toContain('`.pi/`');
+    expect(md).toContain('`opencode.json`');
+    expect(md).not.toContain('`opencode.json/`');
   });
   it('no harness block: no adapter, no harness config, README points at the docs', () => {
     const out = mkdtempSync(join(tmpdir(), 'speckl-harness-none-'));

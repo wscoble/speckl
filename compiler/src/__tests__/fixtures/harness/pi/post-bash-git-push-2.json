@@ -1,0 +1,26 @@
+{
+  "event": {
+    "type": "tool_result",
+    "toolName": "bash",
+    "toolCallId": "call_p2",
+    "input": {
+      "command": "git push origin feat"
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "To github.com:acme/app.git\n * [new branch]      feat -> feat"
+      }
+    ],
+    "structuredContent": {
+      "output": "To github.com:acme/app.git\n * [new branch]      feat -> feat\n",
+      "truncated": false,
+      "exit_code": 0,
+      "wall_time_seconds": 0
+    },
+    "isError": false
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "hook": "tool.execute.before",
+  "input": {
+    "tool": "bash",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_x1"
+  },
+  "output": {
+    "args": {
+      "command": "npm test && git push origin feat",
+      "description": "x"
+    }
+  }
+}

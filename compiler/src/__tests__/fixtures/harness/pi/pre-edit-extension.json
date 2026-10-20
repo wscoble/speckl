@@ -1,0 +1,19 @@
+{
+  "event": {
+    "type": "tool_call",
+    "toolName": "edit",
+    "toolCallId": "call_e1",
+    "input": {
+      "path": ".pi/extensions/speckl.js",
+      "edits": [
+        {
+          "oldText": "block: true",
+          "newText": "block: false"
+        }
+      ]
+    }
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

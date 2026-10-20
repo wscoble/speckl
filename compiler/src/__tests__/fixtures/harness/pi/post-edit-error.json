@@ -1,0 +1,26 @@
+{
+  "event": {
+    "type": "tool_result",
+    "toolName": "edit",
+    "toolCallId": "call_e2",
+    "input": {
+      "path": "src/app.js",
+      "edits": [
+        {
+          "oldText": "NOPE",
+          "newText": "2"
+        }
+      ]
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "Could not find the exact text in src/app.js. The old text must match exactly including all whitespace and newlines."
+      }
+    ],
+    "isError": true
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

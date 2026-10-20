@@ -1,0 +1,26 @@
+{
+  "event": {
+    "type": "tool_result",
+    "toolName": "bash",
+    "toolCallId": "call_t1",
+    "input": {
+      "command": "npm test"
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "FAIL test/app.test.js\n\nCommand exited with code 1"
+      }
+    ],
+    "structuredContent": {
+      "output": "FAIL test/app.test.js\n",
+      "truncated": false,
+      "exit_code": 1,
+      "wall_time_seconds": 0
+    },
+    "isError": true
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

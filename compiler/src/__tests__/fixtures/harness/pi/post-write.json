@@ -1,0 +1,21 @@
+{
+  "event": {
+    "type": "tool_result",
+    "toolName": "write",
+    "toolCallId": "call_w1",
+    "input": {
+      "path": "src/app.js",
+      "content": "module.exports = () => 1;\n"
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "Successfully wrote to src/app.js"
+      }
+    ],
+    "isError": false
+  },
+  "ctx": {
+    "cwd": "__PROJECT__"
+  }
+}

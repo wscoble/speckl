@@ -1,0 +1,22 @@
+{
+  "hook": "tool.execute.after",
+  "input": {
+    "tool": "write",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_w1",
+    "args": {
+      "filePath": "src/app.js",
+      "content": "module.exports = () => 1;\n"
+    }
+  },
+  "output": {
+    "title": "src/app.js",
+    "metadata": {
+      "diagnostics": {},
+      "filepath": "__PROJECT__/src/app.js",
+      "exists": false,
+      "truncated": false
+    },
+    "output": "Wrote file successfully."
+  }
+}

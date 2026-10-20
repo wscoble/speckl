@@ -171,6 +171,46 @@ speck ClaudeCodePolicy {
             map terminal command ~ "git commit -m \"[^\"]*\"" -> request_review
             map terminal command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
         }
+
+        // Pi (pi.dev). A bash result counts as a success only when pi reports
+        // isError false and structuredContent.exit_code 0.
+        harness pi {
+            map write|edit -> edit_code { path = path }
+            map read -> read_file { path = path }
+            map grep|find|ls -> inspect
+            map bash command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map bash command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map bash command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map bash command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map bash command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
+
+        // OpenCode 1.x. A bash result counts as a success only with metadata.exit 0.
+        harness opencode {
+            map write|edit -> edit_code { path = filePath }
+            map apply_patch -> edit_code { path = path }
+            map read -> read_file { path = filePath }
+            map grep|glob|todowrite -> inspect
+            map bash command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map bash command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map bash command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map bash command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map bash command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
+
+        // OpenClaw. An exec result counts as a success only with details
+        // {status: "completed", exitCode: 0}.
+        harness openclaw {
+            map write|edit -> edit_code { path = path }
+            map apply_patch -> edit_code { path = path }
+            map read -> read_file { path = path }
+            map ls -> inspect
+            map exec command ~ "npm (run )?test( -- [A-Za-z0-9_./=-]+)*" -> run_tests
+            map exec command ~ "git (status|diff|log)( [A-Za-z0-9_./=-]+)*" -> inspect
+            map exec command ~ "git add( [A-Za-z0-9_./-]+)+" -> inspect
+            map exec command ~ "git commit -m \"[^\"]*\"" -> request_review
+            map exec command ~ "git push( -u)? origin [A-Za-z0-9_./-]+" -> open_pr
+        }
     }
 
     next: EditCode | RunTests | RequestReview | OpenPR | ReadFile | Inspect

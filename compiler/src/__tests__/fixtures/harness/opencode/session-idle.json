@@ -1,0 +1,10 @@
+{
+  "hook": "event",
+  "event": {
+    "id": "evt_1568a58cd002iayPhMDfN9pHQ8",
+    "type": "session.idle",
+    "properties": {
+      "sessionID": "ses_ea975b03dffey5DnRSazWMotLh"
+    }
+  }
+}

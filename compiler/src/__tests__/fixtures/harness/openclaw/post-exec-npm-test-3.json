@@ -1,0 +1,38 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "exec",
+    "params": {
+      "command": "npm test"
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_t3",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "PASS test/app.test.js"
+        }
+      ],
+      "details": {
+        "status": "completed",
+        "exitCode": 0,
+        "exitSignal": null,
+        "exitReason": "exit",
+        "durationMs": 282,
+        "aggregated": "PASS test/app.test.js",
+        "noOutputTimedOut": false,
+        "cwd": "__PROJECT__"
+      }
+    },
+    "durationMs": 141
+  },
+  "ctx": {
+    "toolName": "exec",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_t3"
+  }
+}

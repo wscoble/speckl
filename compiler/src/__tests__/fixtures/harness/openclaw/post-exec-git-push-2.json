@@ -1,0 +1,38 @@
+{
+  "hook": "after_tool_call",
+  "event": {
+    "toolName": "exec",
+    "params": {
+      "command": "git push origin feat"
+    },
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_p2",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "To github.com:acme/app.git\n * [new branch]      feat -> feat"
+        }
+      ],
+      "details": {
+        "status": "completed",
+        "exitCode": 0,
+        "exitSignal": null,
+        "exitReason": "exit",
+        "durationMs": 282,
+        "aggregated": "To github.com:acme/app.git\n * [new branch]      feat -> feat",
+        "noOutputTimedOut": false,
+        "cwd": "__PROJECT__"
+      }
+    },
+    "durationMs": 141
+  },
+  "ctx": {
+    "toolName": "exec",
+    "agentId": "main",
+    "sessionKey": "agent:main:explicit:124bf025-9e92-4109-9697-54f9c6998365",
+    "sessionId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "runId": "124bf025-9e92-4109-9697-54f9c6998365",
+    "toolCallId": "call_p2"
+  }
+}

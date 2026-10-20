@@ -1,4 +1,4 @@
-# Harness adapters (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI, Goose, Hermes Agent)
+# Harness adapters (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw)
 
 `hook.mjs` only enforces a policy if the agent harness calls it before and
 after every tool call. A `harness` block in the spec's `agent { }` makes
@@ -14,10 +14,20 @@ after every tool call. A `harness` block in the spec's `agent { }` makes
   harness/copilot/speckl.json        reference .github/hooks/speckl.json hooks
   harness/goose/hooks.json           reference .agents/plugins/speckl/hooks/hooks.json
   harness/hermes/config.yaml         reference hooks: block for the Hermes config.yaml
+  harness/pi/speckl.js               reference .pi/extensions/speckl.js extension
+  harness/opencode/speckl.js         reference .opencode/plugins/speckl.js plugin
+  harness/openclaw/index.js          reference .openclaw/plugins/speckl/ plugin
+  harness/openclaw/openclaw.plugin.json, package.json
 ```
 
 `node adapter.mjs install <harness> ...` merges the wiring into the project's
 settings file with the right paths, keeping any hooks you already have.
+
+Pi, OpenCode and OpenClaw have no command hooks; they load JavaScript plugins
+in-process. For them `install` writes a small generated plugin that runs
+`node adapter.mjs <harness> <event> ...` for every tool call and allows the
+call only when the adapter exits 0 **and** prints `{"decision":"allow"}`.
+It never overwrites a plugin file it did not write.
 
 ## Declaring the mapping
 
@@ -55,8 +65,12 @@ agent {
   file (and its directory when that is not the project root), the key file,
   `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, and for each declared harness
   its own config (`.github/hooks/`; `.agents/plugins/` and `.config/goose/`;
-  `.hermes/` and the `--hermes-home` directory). A call that names one is
-  denied, whatever the tool.
+  `.hermes/` and the `--hermes-home` directory; `.pi/`; `.opencode/`,
+  `opencode.json` and `opencode.jsonc`; `.openclaw/`). A call that names one
+  is denied, whatever the tool.
+- OpenCode `bash` and OpenClaw `exec` take a `workdir`. A call whose `workdir`
+  is set and is not the project root is denied: `npm test` run in another
+  checkout must not advance this project's policy.
 
 The compiler rejects unknown harnesses, targets that are not declared tools,
 parameters the action doesn't have, and patterns that don't compile.
@@ -155,6 +169,36 @@ Then start the agent in the project: `copilot`, `goose session` (from the
 project root, see Limits) or `HERMES_HOME="$HERMES_PROFILE" hermes`.
 Approve from your own terminal with `signal.mjs apply` as above.
 
+## Quickstart: Pi, OpenCode and OpenClaw
+
+Same project and policy as above (steps 1 to 4). This session runs as written
+too (the same test executes it).
+
+```bash
+# 5. Write the plugins. Pi loads .pi/extensions/ (trusted projects only, see
+#    Limits); OpenCode loads .opencode/plugins/; OpenClaw loads the plugin
+#    directory you list in its config (install prints the two settings).
+node .speckl/agent/adapter.mjs install pi --project . --state .speckl/state.json --key "$KEY"
+node .speckl/agent/adapter.mjs install opencode --project . --state .speckl/state.json --key "$KEY"
+node .speckl/agent/adapter.mjs install openclaw --project . --state .speckl/state.json --key "$KEY"
+
+# 6. Dry run with what each plugin sends before a push: each answer is exit 2
+#    and {"decision":"block",...}, so the plugin blocks the call.
+PI="node .speckl/agent/adapter.mjs pi pre --state .speckl/state.json --key $KEY --project $PWD"
+! echo '{"type":"tool_call","toolName":"bash","toolCallId":"p1","input":{"command":"git push -u origin main"},"cwd":"'"$PWD"'"}' | $PI
+OC="node .speckl/agent/adapter.mjs opencode pre --state .speckl/state.json --key $KEY --project $PWD"
+! echo '{"hook":"tool.execute.before","input":{"tool":"bash","sessionID":"s4","callID":"o1"},"output":{"args":{"command":"git push -u origin main"}},"directory":"'"$PWD"'"}' | $OC
+CLAW="node .speckl/agent/adapter.mjs openclaw pre --state .speckl/state.json --key $KEY --project $PWD"
+! echo '{"hook":"before_tool_call","event":{"toolName":"exec","params":{"command":"git push -u origin main"},"toolCallId":"c1"},"ctx":{"sessionId":"s5"}}' | $CLAW
+```
+
+Then start the agent in the project: `pi` (run `/trust` once, or `pi --approve`
+in print mode), `opencode`, or OpenClaw with
+`plugins.load.paths` containing `.openclaw/plugins/speckl`,
+`plugins.entries.speckl.enabled: true` and the agent workspace set to the
+project (`openclaw agent exec --cwd .`). Approve from your own terminal with
+`signal.mjs apply` as above.
+
 ## What the adapter does
 
 | Claude Code event | Adapter | hook.mjs |
@@ -242,6 +286,33 @@ in `examples/ClaudeCodePolicy.speckdl`.
 Install for all three writes absolute paths and `--project <root>`: Copilot,
 Goose and Hermes report a working directory but no project root.
 
+| Pi event | Adapter | hook.mjs |
+| --- | --- | --- |
+| `tool_call` | `pre` | `pre` with `call_id: toolCallId` |
+| `tool_result` | `post` | `post`; `ok: true` only for `isError: false`, and for `bash` only with `structuredContent.exit_code: 0`. Fires for every executed call, including tools that throw |
+| `agent_end` | `turn-end` | `post` with `ok: false` for a call still pending |
+
+| OpenCode hook / event | Adapter | hook.mjs |
+| --- | --- | --- |
+| `tool.execute.before` | `pre` | `pre` with `tool: input.tool`, `input: output.args`, `call_id: input.callID`; `apply_patch` `patchText` gains `files` and `path` |
+| `tool.execute.after` | `post` | `post`; fires only on success; `bash` needs `metadata.exit: 0` (`null` after a timeout) |
+| `message.part.updated` (tool part, `state.status: "error"`) | `post-failure` | `post` with `ok: false` for our pending call; ignored for any other call (it also fires for calls Speckl denied) |
+| `session.idle` | `turn-end` | `post` with `ok: false` for a call still pending |
+
+| OpenClaw hook | Adapter | hook.mjs |
+| --- | --- | --- |
+| `before_tool_call` | `pre` | `pre` with `tool: event.toolName`, `input: event.params`, `call_id: event.toolCallId`; `apply_patch` `input` gains `files` and `path` |
+| `after_tool_call` | `post` | `post`; `ok: true` only with no `error`, a result that is not `isError`, and for `exec` `details.status: "completed"` with `exitCode: 0` (a yielded `running` exec is a failure). `details.status: "blocked"`: no-op, unless it is our pending call |
+| `session_end` | `turn-end` | `post` with `ok: false` for a call still pending |
+
+- **Pi, OpenCode, OpenClaw** allow: exit 0 and `{"decision":"allow"}`. Deny:
+  exit 2, `{"decision":"block","reason"}` and the reason on stderr. The plugin
+  turns a deny into Pi's `{block: true, reason}`, an OpenCode `throw`, or
+  OpenClaw's `{block: true, blockReason}`; the reason reaches the model as the
+  tool error. Post problems come back as `{"additionalContext"}`: appended to
+  the tool result (Pi, OpenCode) or logged (OpenClaw's `after_tool_call` is
+  observe-only).
+
 Install for Codex and Gemini writes absolute paths and `--project <root>`. Codex runs
 hooks from the session cwd, and Gemini sets `GEMINI_PROJECT_DIR` to it, so a
 session started in a subdirectory would otherwise resolve the rails wrong.
@@ -281,6 +352,19 @@ Cursor: crashes, timeouts and non-zero exits other than 2 fail open). So:
   generated `pre_tool_call` entry sets `fail_closed: true` (a missing command,
   a timeout, a non-zero exit without a directive and non-JSON stdout block;
   Hermes v0.22). `fail_closed` does not exist for other events.
+- **Pi, OpenCode and OpenClaw** plugins call the adapter with `spawnSync`
+  (25 s timeout) and allow only on exit 0 plus a `{"decision":"allow"}` line.
+  A crash, any other exit, a signal, a timeout, a missing `node` (`ENOENT`),
+  empty or unparsable output, an allow-less answer and a payload that can't be
+  serialised all block. The hosts add their own safety net: a Pi `tool_call`
+  handler that throws blocks the call; an OpenCode `tool.execute.before` that
+  throws stops it; an OpenClaw `before_tool_call` handler that throws or
+  passes its `timeoutMs` (set to 30 s) blocks. What the plugin cannot cover is
+  the plugin not loading at all; see Limits.
+- `example-pi-opencode-openclaw-policy.test.ts` imports each installed plugin
+  with a stand-in host API and runs crash / `exit 1` / empty / allow-less /
+  garbage / `SIGKILL` / missing `node` / unserialisable payload (and a hang for
+  Pi) through it; every case blocks.
 - `example-copilot-goose-hermes-policy.test.ts` runs the same crash / `exit 1` /
   garbage / `SIGKILL` / hang / corrupt config / missing `node` matrix through
   the exact commands Copilot (bash), Goose (`sh -c`) and Hermes (argv, no
@@ -349,6 +433,34 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   records consent for its three commands, and `hermes hooks list` shows them.
   Revoking them, or editing `config.yaml` so the commands change, turns the
   rails off until consent is given again.
+- Pi loads project extensions (`.pi/extensions/`) only for a **trusted**
+  project. Untrusted, `pi -p` skips the extension silently and nothing is
+  checked. Run `/trust` once, pass `--approve`, or install at user level:
+  `install pi ... --plugins-dir ~/.pi/agent/extensions` writes
+  `speckl-<hash>.js` there, which loads regardless of trust, judges sessions
+  inside the project and lets others through (still denying calls that name
+  the rails). A plugin file that fails to load stops Pi from starting
+  (fail-closed). Pi runs tool calls in parallel by default; the second one
+  is refused as pending and retried.
+- OpenCode and OpenClaw: **a plugin that fails to load is skipped and tool
+  calls run unchecked** (OpenCode silently; OpenClaw logs `[plugins] speckl
+  failed during load`). The plugin files are protected from the agent, but
+  check the startup log after editing anything by hand, and rerun `install`
+  rather than editing the generated file.
+- Plugins run in order. A plugin loaded after Speckl's can still change a
+  call's arguments after it was checked (Pi `event.input`, OpenCode
+  `output.args`, OpenClaw `params`). Don't combine Speckl with plugins that
+  rewrite tool arguments.
+- OpenCode: checked against the released 1.19.3 (`opencode-ai` on npm,
+  plugin API V1). The `dev` branch (`@opencode/cli` 2.x) has a new plugin
+  API without `tool.execute.*`; this plugin does not work there yet.
+  `install opencode --plugins-dir ~/.config/opencode/plugins` installs it for
+  every session.
+- OpenClaw: `agent_end` needs conversation access, so `session_end` clears
+  a stuck call; set the agent workspace to the project, or the `workdir` and
+  path checks resolve against another directory. OpenClaw ships its own
+  `node` on `PATH`, so the missing-`node` case is only covered in the
+  in-process test.
 
 ## Sources
 
@@ -390,6 +502,31 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   `model_tools.py` (`post_tool_call` status, `blocked`), `agent/display.py`
   (`_detect_tool_failure`: terminal `exit_code`). Checked 2026-10-19 against
   tag v0.22.2 (PyPI's `hermes-agent` 0.19.0 predates `fail_closed`).
+- Pi extensions: `badlogic/pi-mono` commit 73f8de8 (npm
+  `@earendil-works/pi-coding-agent` 1.3.0)
+  `packages/coding-agent/docs/extensions.md` (`tool_call` `{block, reason}`,
+  "a `tool_call` handler failure blocks the tool as a fail-safe",
+  `tool_result`, `agent_end`, project trust, `~/.pi/agent/extensions`),
+  `packages/coding-agent/src/core/extensions/types.ts` (event shapes),
+  `packages/coding-agent/src/core/tools/bash.ts` (`structuredContent.exit_code`).
+  Checked 2026-10-19.
+- OpenCode plugins: <https://opencode.ai/docs/plugins/> and `sst/opencode`
+  tag v1.19.3 (commit e3c4eb2): `packages/plugin/src/index.ts` (`Hooks`:
+  `tool.execute.before` / `after`, `event`),
+  `packages/opencode/src/session/prompt.ts` (call sites, error parts),
+  `packages/opencode/src/tool/shell.ts` (`metadata.exit`, `null` on timeout,
+  `workdir`), `packages/opencode/src/plugin/index.ts` (a plugin that fails to
+  load is logged and skipped). Checked 2026-10-19 against `opencode-ai` 1.19.3.
+- OpenClaw plugin hooks: <https://docs.openclaw.ai/plugins/hooks/tool-policy>,
+  <https://docs.openclaw.ai/plugins/manifest> and `openclaw/openclaw` commit
+  55a44329 (npm `openclaw` 2026.10.5): `docs/plugins/hooks/tool-policy.md`,
+  `src/plugins/hooks.ts` (`before_tool_call` block, per-hook `timeoutMs`,
+  `session_end`), `src/agents/agent-tools.before-tool-call.policy.ts` (a hook
+  that throws or times out blocks: "Tool call blocked because
+  before_tool_call hook failed"), `src/agents/agent-tool-definition-adapter.ts`
+  (`after_tool_call`, also for blocked calls; `details.status: "blocked"` in
+  `agent-tool-definition-adapter.after-tool-call.fires-once.test.ts`).
+  Checked 2026-10-19.
 
 ### Live runs (2026-10-19)
 
@@ -408,3 +545,18 @@ ran `write_file`, `terminal` and `read_file` through them: the whole policy
 walk to an approved push, the same denials, and crash / hang / missing `node`
 / corrupt config blocked (`fail_closed`). Without the allowlist entry the hook
 was skipped. Copilot CLI needs a GitHub login, so it was not run live.
+
+Pi 1.3.0, OpenCode 1.19.3 and OpenClaw 2026.10.5 (npm releases) each ran
+headless (`pi -p --approve`, `opencode run`, `openclaw agent exec`) against the
+same mock model server with the plugin `install` wrote. In all three: the
+failing test did not advance the policy, the early commit was denied (`can()
+refused`), the green test and commit advanced it, the push was denied
+(`HNTL`), reading `.speckl/state.json`, editing the plugin's own directory,
+`;` chains and unmapped tools were denied, and an adapter that crashed, hung
+or answered without an allow blocked the call. OpenCode and OpenClaw also
+denied `npm test` with a foreign `workdir`; OpenCode loaded the plugin in a
+session started in `src/`; a tool that threw was recorded as failed. Pi
+without `--approve` skipped the project extension (see Limits); the
+`--plugins-dir` install covered it. A plugin replaced with a syntax error
+stopped Pi at startup but let OpenCode and OpenClaw run the call unchecked
+(see Limits).

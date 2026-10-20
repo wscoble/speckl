@@ -1,0 +1,21 @@
+{
+  "hook": "tool.execute.after",
+  "input": {
+    "tool": "bash",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_t1",
+    "args": {
+      "command": "npm test",
+      "description": "Run the test suite"
+    }
+  },
+  "output": {
+    "title": "npm test",
+    "metadata": {
+      "output": "FAIL test/app.test.js",
+      "exit": 1,
+      "truncated": false
+    },
+    "output": "FAIL test/app.test.js"
+  }
+}

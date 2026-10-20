@@ -1,7 +1,10 @@
 // Harness adapter runtime: pure functions that turn a real agent harness's
 // hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI,
-// Goose, Hermes Agent) into a call to the generic hook.mjs, and
-// hook.mjs's verdict back into the harness's expected output.
+// Goose, Hermes Agent, Pi, OpenCode, OpenClaw) into a call to the generic
+// hook.mjs, and hook.mjs's verdict back into the harness's expected output.
+// Pi, OpenCode and OpenClaw have in-process plugin APIs instead of command
+// hooks; `install` writes a small generated plugin (pluginSource) that pipes
+// each event to this adapter and blocks unless it answers an explicit allow.
 //
 // These functions are emitted verbatim into <out>/agent/adapter.mjs with
 // Function.prototype.toString (see adapter-template.ts), so the code tested
@@ -122,7 +125,7 @@ export function findProtectedMention(
   cwd: string,
   resolvePath: (base: string, p: string) => string,
 ): string | null {
-  const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits', 'file_text', 'new_str', 'old_str', 'before', 'after'];
+  const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits', 'file_text', 'new_str', 'old_str', 'before', 'after', 'oldString', 'newString'];
   const norm = (p: string) => p.replace(/\\/g, '/');
   const prots = protectedPaths.map(p => ({ abs: norm(p.abs), rel: norm(p.rel) }));
   const checkString = (s: string): string | null => {
@@ -218,6 +221,12 @@ export function formatPre(harness: string, allow: boolean, message: string): Ada
     if (allow) return { code: 0, stdout: '', stderr: '' };
     return { code: 2, stdout: JSON.stringify({ decision: 'block', reason: message }) + '\n', stderr: message + '\n' };
   }
+  // Pi, OpenCode, OpenClaw: the generated plugin allows only on exit 0 with
+  // a {"decision":"allow"} line; anything else blocks with the reason.
+  if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
+    if (allow) return { code: 0, stdout: JSON.stringify({ decision: 'allow' }) + '\n', stderr: '' };
+    return { code: 2, stdout: JSON.stringify({ decision: 'block', reason: message }) + '\n', stderr: message + '\n' };
+  }
   // Gemini CLI parses stdout as JSON on exit 0; `{}` is "no decision".
   if (harness === 'gemini') {
     if (allow) return { code: 0, stdout: '{}\n', stderr: '' };
@@ -248,6 +257,12 @@ export function formatPost(harness: string, problem: string | null): AdapterOutp
   }
   // Copilot CLI appends additionalContext to the tool result the model sees.
   if (harness === 'copilot') {
+    if (!problem) return { code: 0, stdout: '', stderr: '' };
+    return { code: 0, stdout: JSON.stringify({ additionalContext: problem }) + '\n', stderr: problem + '\n' };
+  }
+  // Pi and OpenCode plugins append additionalContext to the tool result the
+  // model sees; OpenClaw's after_tool_call is an observer, so its plugin logs it.
+  if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
     if (!problem) return { code: 0, stdout: '', stderr: '' };
     return { code: 0, stdout: JSON.stringify({ additionalContext: problem }) + '\n', stderr: problem + '\n' };
   }
@@ -304,6 +319,46 @@ export function postSucceeded(harness: string, event: string, payload: Record<st
     }
     return toolName !== 'terminal';
   }
+  if (harness === 'pi') {
+    // tool_result fires for every executed call; isError is true for a
+    // thrown tool and for a non-zero shell exit. A shell result must also
+    // carry structuredContent.exit_code 0.
+    if (payload.isError !== false) return false;
+    if (toolName === 'bash' || toolName === 'powershell') {
+      const sc = payload.structuredContent as Record<string, unknown> | undefined;
+      return !!sc && typeof sc === 'object' && !Array.isArray(sc) && sc.exit_code === 0;
+    }
+    return true;
+  }
+  if (harness === 'opencode') {
+    // tool.execute.after fires only when the tool returned (a thrown tool
+    // reaches the plugin as a message.part.updated error, post-failure). A
+    // shell result needs metadata.exit 0 (null on timeout or abort).
+    const o = payload.output as Record<string, unknown> | undefined;
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+    if (toolName === 'bash') {
+      const md = o.metadata as Record<string, unknown> | undefined;
+      return !!md && typeof md === 'object' && md.exit === 0;
+    }
+    return true;
+  }
+  if (harness === 'openclaw') {
+    // after_tool_call carries an optional result and error; both missing is
+    // not a success. exec needs details {status: "completed", exitCode: 0}
+    // (a yielded command reports status "running").
+    const ev = payload.event as Record<string, unknown> | undefined;
+    if (!ev || typeof ev !== 'object') return false;
+    if (ev.error !== undefined && ev.error !== null && ev.error !== '') return false;
+    const res = ev.result as Record<string, unknown> | undefined;
+    if (!res || typeof res !== 'object' || Array.isArray(res)) return false;
+    if (res.isError === true) return false;
+    const d = res.details as Record<string, unknown> | undefined;
+    if (d && typeof d === 'object' && (d.status === 'error' || d.status === 'failed')) return false;
+    if (toolName === 'exec' || toolName === 'bash') {
+      return !!d && typeof d === 'object' && d.status === 'completed' && d.exitCode === 0;
+    }
+    return true;
+  }
   if (harness === 'gemini') {
     if (!out || typeof out !== 'object' || Array.isArray(out)) return false;
     const r = out as Record<string, unknown>;
@@ -336,6 +391,9 @@ export function harnessEventName(harness: string, event: string): string | null 
     copilot: { pre: 'preToolUse', post: 'postToolUse', 'post-failure': 'postToolUseFailure', 'turn-end': 'agentStop' },
     goose: { pre: 'PreToolUse', post: 'PostToolUse', 'post-failure': 'PostToolUseFailure', 'turn-end': 'Stop' },
     hermes: { pre: 'pre_tool_call', post: 'post_tool_call', 'turn-end': 'on_session_end' },
+    pi: { pre: 'tool_call', post: 'tool_result', 'turn-end': 'agent_end' },
+    opencode: { pre: 'tool.execute.before', post: 'tool.execute.after', 'post-failure': 'message.part.updated', 'turn-end': 'session.idle' },
+    openclaw: { pre: 'before_tool_call', post: 'after_tool_call', 'turn-end': 'session_end' },
   };
   const h = names[harness];
   return h && h[event] ? h[event] : null;
@@ -347,8 +405,12 @@ export function harnessEventName(harness: string, event: string): string | null 
  * touches as `files` and the first one as `path`.
  */
 export function normalizeToolInput(harness: string, toolName: unknown, input: Record<string, unknown>): Record<string, unknown> {
-  // Copilot CLI apply_patch carries the same patch format in `input` (or `patch`).
-  const patch = harness === 'codex' ? input.command : harness === 'copilot' ? (input.input ?? input.patch) : undefined;
+  // Copilot CLI apply_patch carries the same patch format in `input` (or
+  // `patch`), OpenClaw in `input`, OpenCode in `patchText`.
+  const patch = harness === 'codex' ? input.command
+    : harness === 'copilot' ? (input.input ?? input.patch)
+      : harness === 'openclaw' ? input.input
+        : harness === 'opencode' ? input.patchText : undefined;
   if (toolName === 'apply_patch' && typeof patch === 'string') {
     const files: string[] = [];
     const re = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
@@ -394,6 +456,10 @@ export function harnessConfigFile(harness: string): string {
     goose: '.agents/plugins/speckl/hooks/hooks.json',
     // Relative to the Hermes profile directory (--hermes-home), not the project.
     hermes: 'config.yaml',
+    // Generated plugins (pluginSource), not hook configs.
+    pi: '.pi/extensions/speckl.js',
+    opencode: '.opencode/plugins/speckl.js',
+    openclaw: '.openclaw/plugins/speckl/index.js',
   };
   return files[harness] || '';
 }
@@ -405,6 +471,9 @@ export function harnessProtectedDirs(harnesses: string[]): string[] {
     copilot: ['.github/hooks'],
     goose: ['.agents/plugins', '.config/goose'],
     hermes: ['.hermes'],
+    pi: ['.pi'],
+    opencode: ['.opencode', 'opencode.json', 'opencode.jsonc'],
+    openclaw: ['.openclaw'],
   };
   for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
   return dirs;
@@ -436,6 +505,43 @@ export function normalizePayload(harness: string, payload: Record<string, unknow
   if (harness === 'hermes') {
     const extra = p.extra && typeof p.extra === 'object' && !Array.isArray(p.extra) ? p.extra as Record<string, unknown> : {};
     if (p.tool_use_id === undefined) p.tool_use_id = extra.tool_call_id;
+  }
+  const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {});
+  if (harness === 'pi') {
+    // The plugin forwards pi's event ({type, toolName, toolCallId, input, ...}) plus ctx.cwd.
+    if (p.hook_event_name === undefined) p.hook_event_name = p.type === undefined ? null : p.type;
+    if (p.tool_name === undefined) p.tool_name = p.toolName;
+    if (p.tool_input === undefined) p.tool_input = p.input;
+    if (p.tool_use_id === undefined) p.tool_use_id = p.toolCallId;
+  }
+  if (harness === 'opencode') {
+    // tool.execute.*: {hook, input: {tool, sessionID, callID[, args]}, output, directory};
+    // bus events: {type, properties, directory}.
+    if (p.hook_event_name === undefined) p.hook_event_name = p.hook !== undefined ? p.hook : p.type === undefined ? null : p.type;
+    if (p.hook_event_name === 'message.part.updated') {
+      const part = obj(obj(p.properties).part);
+      if (p.tool_name === undefined) p.tool_name = part.tool;
+      if (p.tool_input === undefined) p.tool_input = obj(part.state).input;
+      if (p.tool_use_id === undefined) p.tool_use_id = part.callID;
+      if (p.session_id === undefined) p.session_id = part.sessionID;
+    } else {
+      const inp = obj(p.input);
+      if (p.tool_name === undefined) p.tool_name = inp.tool;
+      if (p.tool_input === undefined) p.tool_input = p.hook_event_name === 'tool.execute.before' ? obj(p.output).args : inp.args;
+      if (p.tool_use_id === undefined) p.tool_use_id = inp.callID;
+      if (p.session_id === undefined) p.session_id = inp.sessionID;
+    }
+    if (p.cwd === undefined && typeof p.directory === 'string') p.cwd = p.directory;
+  }
+  if (harness === 'openclaw') {
+    // {hook, event: {toolName, params, toolCallId, ...}, ctx: {sessionId, toolCallId, ...}}
+    const ev = obj(p.event);
+    const ctx = obj(p.ctx);
+    if (p.hook_event_name === undefined) p.hook_event_name = p.hook === undefined ? null : p.hook;
+    if (p.tool_name === undefined) p.tool_name = ev.toolName;
+    if (p.tool_input === undefined) p.tool_input = ev.params;
+    if (p.tool_use_id === undefined) p.tool_use_id = ev.toolCallId !== undefined ? ev.toolCallId : ctx.toolCallId;
+    if (p.session_id === undefined) p.session_id = ctx.sessionId;
   }
   return p;
 }
@@ -480,6 +586,17 @@ export function buildHarnessHooks(
     if (paths.outsideAllow) parts.push('--outside', 'allow');
     return parts.join(' ');
   };
+  if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
+    // In-process plugin harnesses: the generated plugin (pluginSource) runs
+    // `node <argv[0]> <harness> <event> <argv[1..]>`. With `relative`, the
+    // adapter and state paths are resolved against the project root the
+    // plugin file sits in.
+    const argv = [paths.adapter, '--state', paths.state];
+    if (paths.key) argv.push('--key', paths.key);
+    if (paths.project) argv.push('--project', paths.project);
+    if (paths.outsideAllow) argv.push('--outside', 'allow');
+    return { plugin: harness, argv, relative: paths.relative };
+  }
   if (harness === 'copilot') {
     // Copilot CLI / cloud agent: .github/hooks/*.json, camelCase events.
     // preToolUse denies on exit 2, a crash or any other non-zero exit; only a
@@ -591,6 +708,141 @@ export function mergeHarnessSettings(harness: string, existing: Record<string, u
 }
 
 /**
+ * The generated plugin for Pi, OpenCode or OpenClaw, from buildHarnessHooks's
+ * {argv, relative}. It pipes every tool event to adapter.mjs with
+ * spawnSync('node', ...) and allows a call only when the adapter exits 0
+ * with {"decision":"allow"}; a crash, a timeout, a signal, a missing node,
+ * unparsable output or an unserialisable payload blocks it. The plugin
+ * imports only node:child_process (and node:url/node:path when relative), so
+ * it has nothing that can fail to load besides itself.
+ */
+export function pluginSource(harness: string, ours: Record<string, unknown>): string {
+  const argv = (ours.argv || []) as string[];
+  const relative = ours.relative === true;
+  const up: Record<string, string> = { pi: '../../', opencode: '../../', openclaw: '../../../' };
+  const pathAt = (i: number) => i === 0 || (i > 0 && (argv[i - 1] === '--state' || argv[i - 1] === '--key'));
+  const lit = argv.map((a, i) => (relative && pathAt(i) && !/^\//.test(a) ? 'resolve(ROOT, ' + JSON.stringify(a) + ')' : JSON.stringify(a)));
+  const L: string[] = [
+    '// Generated by speckl adapter.mjs install ' + harness + '; do not edit (rerun install).',
+    '// Every tool call goes through the Speckl adapter before it runs. Anything',
+    '// other than an explicit allow (a crash, a timeout, bad output, a missing',
+    '// node) blocks the call.',
+    "import { spawnSync } from 'node:child_process';",
+  ];
+  if (relative) {
+    L.push("import { fileURLToPath } from 'node:url';", "import { resolve } from 'node:path';");
+    L.push('const ROOT = fileURLToPath(new URL(' + JSON.stringify(up[harness] || '../../') + ', import.meta.url));');
+  }
+  L.push(
+    'const ARGV = [' + lit.join(', ') + '];',
+    'function speckl(event, payload) {',
+    '  let input;',
+    '  try { input = JSON.stringify(payload); } catch (e) { return { ok: false, reason: "Speckl: the hook payload could not be serialised (" + e + ")" }; }',
+    '  if (typeof input !== "string") return { ok: false, reason: "Speckl: the hook payload could not be serialised" };',
+    '  let r;',
+    '  try {',
+    '    r = spawnSync("node", [ARGV[0], ' + JSON.stringify(harness) + ', event, ...ARGV.slice(1)], { input, encoding: "utf-8", timeout: 25000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });',
+    '  } catch (e) { return { ok: false, reason: "Speckl: could not run the adapter (" + e + ")" }; }',
+    '  const lines = String(r.stdout || "").trim().split("\\n").filter(Boolean);',
+    '  let body = null;',
+    '  try { body = lines.length ? JSON.parse(lines[lines.length - 1]) : null; } catch { body = null; }',
+    '  const err = String(r.stderr || "").trim();',
+    '  if (r.error || r.status !== 0) {',
+    '    const why = (body && typeof body.reason === "string" && body.reason) || err.split("\\n")[0]',
+    '      || (r.error ? String(r.error.message || r.error) : r.signal ? "killed by " + r.signal : "exit " + r.status);',
+    '    return { ok: false, reason: (/^Speckl/.test(why) ? "" : "Speckl adapter failed: ") + why };',
+    '  }',
+    '  return { ok: true, body };',
+    '}',
+    'function allowed(r) { return r.ok && !!r.body && typeof r.body === "object" && r.body.decision === "allow"; }',
+    'function denial(r) { return r.ok ? "Speckl: the adapter gave no allow decision" : r.reason; }',
+    'function note(r) { return !r.ok ? r.reason : r.body && typeof r.body.additionalContext === "string" ? r.body.additionalContext : ""; }',
+  );
+  if (harness === 'pi') {
+    L.push(
+      '// Pi extension (.pi/extensions): tool_call can block; a handler that throws',
+      '// also blocks (pi fail-safe). tool_result fires for every executed call.',
+      'export default function specklRails(pi) {',
+      '  pi.on("tool_call", async (event, ctx) => {',
+      '    const r = speckl("pre", { ...event, cwd: ctx.cwd });',
+      '    if (allowed(r)) return undefined;',
+      '    return { block: true, reason: denial(r) };',
+      '  });',
+      '  pi.on("tool_result", async (event, ctx) => {',
+      '    const text = note(speckl("post", { ...event, cwd: ctx.cwd }));',
+      '    if (!text) return undefined;',
+      '    const out = { content: [...(Array.isArray(event.content) ? event.content : []), { type: "text", text }] };',
+      '    if (event.structuredContent !== undefined) out.structuredContent = event.structuredContent;',
+      '    return out;',
+      '  });',
+      '  pi.on("agent_end", async (event, ctx) => { speckl("turn-end", { type: "agent_end", cwd: ctx.cwd }); return undefined; });',
+      '}',
+    )
+  } else if (harness === 'opencode') {
+    L.push(
+      '// OpenCode plugin (.opencode/plugins): throwing in tool.execute.before stops',
+      '// the call. A tool that throws never reaches tool.execute.after; its',
+      '// message.part.updated error event is reported as post-failure.',
+      'export const SpecklRails = async ({ directory }) => ({',
+      '  "tool.execute.before": async (input, output) => {',
+      '    const r = speckl("pre", { hook: "tool.execute.before", input, output: { args: output.args }, directory });',
+      '    if (!allowed(r)) throw new Error(denial(r));',
+      '  },',
+      '  "tool.execute.after": async (input, output) => {',
+      '    const text = note(speckl("post", { hook: "tool.execute.after", input, output: { title: output.title, output: output.output, metadata: output.metadata }, directory }));',
+      '    if (text) output.output = (typeof output.output === "string" ? output.output + "\\n\\n" : "") + text;',
+      '  },',
+      '  event: async ({ event }) => {',
+      '    if (!event || typeof event !== "object") return;',
+      '    if (event.type === "message.part.updated") {',
+      '      const part = event.properties && event.properties.part;',
+      '      if (part && part.type === "tool" && part.state && part.state.status === "error") speckl("post-failure", { ...event, directory });',
+      '    } else if (event.type === "session.idle") {',
+      '      speckl("turn-end", { ...event, directory });',
+      '    }',
+      '  },',
+      '});',
+    )
+  } else {
+    L.push(
+      '// OpenClaw native plugin: before_tool_call returns {block, blockReason}; a',
+      '// handler that throws or times out blocks the call (host policy).',
+      'const pick = (ctx) => ({ agentId: ctx && ctx.agentId, sessionKey: ctx && ctx.sessionKey, sessionId: ctx && ctx.sessionId, runId: ctx && ctx.runId, toolName: ctx && ctx.toolName, toolCallId: ctx && ctx.toolCallId });',
+      'export default {',
+      '  id: "speckl",',
+      '  name: "Speckl rails",',
+      '  description: "Checks every tool call against the compiled Speckl policy (fail closed).",',
+      '  register(api) {',
+      '    api.on("before_tool_call", (event, ctx) => {',
+      '      const r = speckl("pre", { hook: "before_tool_call", event, ctx: pick(ctx) });',
+      '      if (allowed(r)) return undefined;',
+      '      return { block: true, blockReason: denial(r) };',
+      '    }, { timeoutMs: 30000 });',
+      '    api.on("after_tool_call", (event, ctx) => {',
+      '      const text = note(speckl("post", { hook: "after_tool_call", event, ctx: pick(ctx) }));',
+      '      if (text && api.logger && typeof api.logger.warn === "function") api.logger.warn(text);',
+      '    }, { timeoutMs: 30000 });',
+      '    api.on("session_end", (event, ctx) => { speckl("turn-end", { hook: "session_end", ctx: pick(ctx) }); });',
+      '  },',
+      '};',
+    )
+  }
+  return L.join('\n') + '\n';
+}
+
+/** Files of the generated plugin, by name relative to the plugin file's directory. */
+export function pluginFiles(harness: string, ours: Record<string, unknown>): Record<string, string> {
+  const main = harness === 'openclaw' ? 'index.js' : 'speckl.js';
+  const files: Record<string, string> = { [main]: pluginSource(harness, ours) };
+  if (harness === 'openclaw') {
+    const configSchema = { type: 'object', additionalProperties: false, properties: {} };
+    files['openclaw.plugin.json'] = JSON.stringify({ id: 'speckl', name: 'Speckl rails', description: 'Checks every tool call against the compiled Speckl policy (fail closed).', configSchema }, null, 2) + '\n';
+    files['package.json'] = JSON.stringify({ name: 'speckl-openclaw-rails', version: '1.0.0', private: true, type: 'module', openclaw: { extensions: ['./index.js'] } }, null, 2) + '\n';
+  }
+  return files;
+}
+
+/**
  * The Hermes `hooks:` block as YAML, between marker comments so `install`
  * can replace it later. Strings are JSON-quoted (valid YAML double-quoted
  * scalars), so no YAML library is needed.
@@ -692,7 +944,12 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   // Goose loads project plugins only when it starts in the project root;
   // --plugins-dir ~/.agents/plugins installs a user-scope plugin that also
   // covers sessions started in a subdirectory.
-  const pluginsDir = harness === 'goose' && flags['plugins-dir'] ? deps.resolvePath(deps.cwd, flags['plugins-dir']) : '';
+  // Pi (~/.pi/agent/extensions) and OpenCode (~/.config/opencode/plugins)
+  // take --plugins-dir too: a user-level plugin loads without Pi's project
+  // trust and wherever the session starts, and judges only calls whose cwd
+  // is inside the project (the rails are protected from every session).
+  const userScope = harness === 'goose' || harness === 'pi' || harness === 'opencode';
+  const pluginsDir = userScope && flags['plugins-dir'] ? deps.resolvePath(deps.cwd, flags['plugins-dir']) : '';
   let pluginName = 'speckl';
   if (pluginsDir) {
     let h = 0x811c9dc5;
@@ -714,6 +971,30 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   if (hermesHome) {
     const r = installHermes(project, ours, hermesHome, deps);
     return { code: r.code, stdout: r.stdout, stderr: r.stderr + (r.code === 0 ? warn : '') };
+  }
+  if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
+    // A plugin file Speckl did not write is never overwritten.
+    const mainPath = pluginsDir ? deps.resolvePath(pluginsDir, pluginName + '.js') : deps.resolvePath(project, harnessConfigFile(harness));
+    const dir = deps.dirname(mainPath);
+    const files = pluginFiles(harness, ours);
+    const mine = (t: string | null) => t === null || t.trim() === '' || t.includes('Generated by speckl adapter.mjs install ' + harness);
+    const mainText = deps.readFile(mainPath);
+    if (!mine(mainText)) return { code: 1, stdout: '', stderr: mainPath + ' exists and was not written by Speckl; not touching it\n' };
+    if (mainText === null) {
+      for (const name of Object.keys(files).slice(1)) {
+        const t = deps.readFile(deps.resolvePath(dir, name));
+        if (t !== null && t.trim() !== '') return { code: 1, stdout: '', stderr: deps.resolvePath(dir, name) + ' exists and was not written by Speckl; not touching it\n' };
+      }
+    }
+    const main = Object.keys(files)[0];
+    for (const [name, text] of Object.entries(files)) deps.writeFile(name === main ? mainPath : deps.resolvePath(dir, name), text);
+    const next: Record<string, string> = {
+      pi: pluginsDir ? 'Pi loads this user-level extension in every session; it judges calls made inside ' + project + '.\n'
+        : 'Pi loads project extensions only for a trusted project: run /trust once, or pass --approve (or -e ' + mainPath + ') in print/JSON/RPC mode. Untrusted, the extension is skipped and nothing is checked; --plugins-dir ~/.pi/agent/extensions avoids that.\n',
+      opencode: 'OpenCode loads ' + (pluginsDir ? pluginsDir : '.opencode/plugins/') + ' at startup; restart running sessions.\n',
+      openclaw: 'Enable it in your OpenClaw config: plugins.load.paths += ["' + dir + '"], plugins.entries.speckl.enabled = true, and set the agent workspace (or `openclaw agent exec --cwd`) to ' + project + '.\n',
+    };
+    return { code: 0, stdout: 'Speckl ' + harness + ' plugin written to ' + mainPath + '\n' + next[harness], stderr: warn };
   }
   const pluginDir = pluginsDir ? deps.resolvePath(pluginsDir, pluginName) : deps.resolvePath(project, '.agents/plugins/speckl');
   const target = harness === 'goose' ? deps.resolvePath(pluginDir, 'hooks/hooks.json') : deps.resolvePath(project, harnessConfigFile(harness));
@@ -877,6 +1158,22 @@ export function runAdapter(
       return formatPost(harness, r.allow ? null : 'Speckl could not record blocked call ' + callId + ': ' + r.reason);
     }
   }
+  const clawDetails = harness === 'openclaw' && event === 'post' && payload.event && typeof payload.event === 'object'
+    ? ((payload.event as Record<string, unknown>).result as Record<string, unknown> | undefined) : undefined;
+  const clawBlocked = !!clawDetails && typeof clawDetails === 'object' && !!clawDetails.details
+    && (clawDetails.details as Record<string, unknown>).status === 'blocked';
+  if ((harness === 'opencode' && event === 'post-failure') || clawBlocked) {
+    // Every failed OpenCode tool part, and every OpenClaw call a
+    // before_tool_call hook blocked, arrives here, including calls our pre
+    // hook denied (never pending); only our pending call is recorded as failed.
+    const text = deps.readFile(stateAbs);
+    let pending: Record<string, unknown> | null = null;
+    try {
+      const st = text ? JSON.parse(text) : null;
+      if (st && st.pending && typeof st.pending === 'object') pending = st.pending as Record<string, unknown>;
+    } catch { /* hook.mjs reports a broken state on the next call */ }
+    if (!pending || callId === null || pending.call_id !== callId) return formatPost(harness, null);
+  }
   const pin0 = parseToolInput(payload.tool_input);
   if (!pin0.ok) return fail(pin0.reason);
   const pin = { ok: true, input: normalizeToolInput(harness, toolName, pin0.input) };
@@ -885,6 +1182,15 @@ export function runAdapter(
   if (isPre) {
     const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
     if (hit) return fail(label + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
+    // OpenCode bash and OpenClaw exec take a workdir: a mapped command run
+    // elsewhere (`npm test` in another checkout) would advance the policy
+    // on someone else's result, so only the project root is accepted.
+    const wd = pin.input.workdir;
+    if ((harness === 'opencode' || harness === 'openclaw') && wd !== undefined && wd !== null && wd !== '') {
+      if (typeof wd !== 'string' || deps.resolvePath(callCwd, wd) !== deps.resolvePath(projectDir, '.')) {
+        return fail(label + ' sets workdir ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')');
+      }
+    }
   }
   const m = mapHarnessCall(rules, toolName, pin.input);
   if (!m.ok) {
@@ -912,5 +1218,5 @@ export const ADAPTER_FUNCTIONS = [
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
   harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
-  buildHarnessHooks, mergeHarnessSettings, hermesYaml, installHermes, installHarness, runAdapter,
+  buildHarnessHooks, mergeHarnessSettings, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness, runAdapter,
 ];

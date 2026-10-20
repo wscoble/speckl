@@ -1,0 +1,13 @@
+{
+  "hook": "tool.execute.before",
+  "input": {
+    "tool": "read",
+    "sessionID": "ses_ea975b03dffey5DnRSazWMotLh",
+    "callID": "call_r2"
+  },
+  "output": {
+    "args": {
+      "filePath": "__PROJECT__/.speckl/state.json"
+    }
+  }
+}
