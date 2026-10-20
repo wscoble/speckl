@@ -4,38 +4,149 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
+
+# One run per ref: a new push cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  Z3_VERSION: 5.1.0
+  Z3_SHA256: f47be8d27d3230e823bf1eeede2fe0abaca55bb78d0b59974370e6689a92284a
 
 jobs:
   build-and-test:
-    runs-on: [self-hosted, linux, x64]
-
+    name: Build, test, verify, coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: compiler
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: compiler/package.json
+          cache: npm
+          cache-dependency-path: compiler/package-lock.json
+
+      - name: Cache z3 ${{ env.Z3_VERSION }}
+        id: z3-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/z3
+          key: z3-${{ env.Z3_VERSION }}-${{ env.Z3_SHA256 }}
+
+      - name: Install z3 ${{ env.Z3_VERSION }} (pinned release)
+        if: steps.z3-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL -o z3.zip "https://github.com/Z3Prover/z3/releases/download/z3-${Z3_VERSION}/z3-${Z3_VERSION}-x64-glibc-2.39.zip"
+          echo "${Z3_SHA256}  z3.zip" | sha256sum -c -
+          unzip -q z3.zip
+          mkdir -p ~/.local/z3
+          cp -r "z3-${Z3_VERSION}-x64-glibc-2.39"/* ~/.local/z3/
+
+      - name: Put z3 on PATH
+        run: |
+          echo "$HOME/.local/z3/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/z3/bin/z3" --version
+
       - name: Install dependencies
-        working-directory: compiler
         run: npm ci
 
       - name: Build
-        working-directory: compiler
         run: npm run build
 
+      - name: Type-check
+        run: npx tsc --noEmit
+
       - name: Test
-        working-directory: compiler
         run: npm test
 
-      - name: Install z3 (if missing)
-        run: |
-          if ! command -v z3 >/dev/null 2>&1; then
-            echo "z3 not found — attempting install"
-            (sudo apt-get update && sudo apt-get install -y z3) \
-              || (sudo pacman -S --noconfirm z3) \
-              || (sudo dnf install -y z3) \
-              || echo "Could not install z3 automatically"
-          fi
-
       - name: Z3 verification (real solver over all examples)
-        working-directory: compiler
         run: npm run verify
+
+      - name: Coverage (enforces the floors in vitest.config.ts)
+        run: npm run coverage
+
+  compile-targets:
+    name: Compile tests (all target toolchains)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: compiler
+    env:
+      PROTOC_VERSION: '28.3'
+      ELM_VERSION: 0.19.1
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: compiler/package.json
+          cache: npm
+          cache-dependency-path: compiler/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache toolchain downloads, Elm packages, cargo registry and pinned deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/protoc
+            ~/.local/elm
+            ~/.elm
+            ~/.cargo/registry
+            ~/go/pkg/mod
+            compiler/.cache/compile-deps
+          key: compile-targets-protoc${{ env.PROTOC_VERSION }}-elm${{ env.ELM_VERSION }}-${{ hashFiles('compiler/scripts/fetch-compile-deps.mjs') }}
+
+      - name: Install protoc ${{ env.PROTOC_VERSION }}
+        run: |
+          if [ ! -x ~/.local/protoc/bin/protoc ]; then
+            curl -fsSL -o "$RUNNER_TEMP/protoc.zip" "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+            mkdir -p ~/.local/protoc && unzip -q -o "$RUNNER_TEMP/protoc.zip" -d ~/.local/protoc
+          fi
+          echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
+
+      - name: Install Elm ${{ env.ELM_VERSION }}
+        run: |
+          if [ ! -x ~/.local/elm/elm ]; then
+            mkdir -p ~/.local/elm
+            curl -fsSL "https://github.com/elm/compiler/releases/download/${ELM_VERSION}/binary-for-linux-64-bit.gz" | gunzip > ~/.local/elm/elm
+            chmod +x ~/.local/elm/elm
+          fi
+          echo "$HOME/.local/elm" >> "$GITHUB_PATH"
+
+      - name: Toolchain versions
+        run: |
+          node --version; javac -version; go version; rustc --version; cargo --version
+          protoc --version; elm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Fetches the pinned jars/schemas (and Elm packages) if not cached, then
+      # runs every compile test; a missing toolchain fails here.
+      - name: Compile tests
+        run: npm run test:compile
