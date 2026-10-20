@@ -74,7 +74,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
   if (options.target === 'rust' || options.target === 'all') {
     console.log('\nGenerating Rust state machine...');
-    generateRust(ast, options.outputDir);
+    generateRust(irAst, options.outputDir, ast);
   }
 
   // Elm
