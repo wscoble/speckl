@@ -154,7 +154,8 @@ First npm release. The package was renamed from the unpublished
     emits `// SPECKL-UNTRANSLATED` and a `throw`. The old `const X = {} as any`
     placeholders for unknown names are gone. Every action that can write state
     (an assignment, an emit, a statement the backend could not read, or an
-    expression calling a method that is not a known pure read, at any depth)
+    expression calling a method or function that is not a known pure read,
+    at any depth)
     saves the state fields its body refers to (all of them if it calls
     another method on the machine) and restores them if anything in the body
     throws, then rethrows. Actions with only guards, lets and returns save

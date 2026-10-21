@@ -602,5 +602,8 @@ describe('statementsWrite: which actions get a rollback point', () => {
     expect(statementsWrite([{ type: 'ifblock', raw: '', branches: [{ cond: 'q.pop() > 0', body: [] }, { cond: null, body: [] }] }])).toBe(true);
     expect(statementsWrite([{ type: 'forblock', raw: '', loop: { variable: 'v', collection: 'xs.splice(0)', body: [] } }])).toBe(true);
     expect(statementsWrite([{ type: 'forblock', raw: '', loop: { variable: 'v', from: '0', to: 'n', body: [] } }])).toBe(false);
+    // A domain function might write; known pure builtins and strings do not count.
+    expect(statementsWrite([{ type: 'let', name: 'r', expr: 'score(x)' }])).toBe(true);
+    expect(statementsWrite([{ type: 'require', expr: 'len(xs) < max(a, b) and name != "f(x)"' }])).toBe(false);
   });
 });

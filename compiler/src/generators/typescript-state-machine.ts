@@ -930,8 +930,9 @@ ${finalBody}
 /**
  * True if running `stmts` can change machine state: an assignment (state or
  * a field reached through a local), an emit (the decision log), a statement
- * whose shape was not recognised, or any expression that calls a method not
- * known to be a pure read (`let s := seen.add(x)` mutates `seen`). Guards,
+ * whose shape was not recognised, or any expression that calls something
+ * not known to be a pure read (`let s := seen.add(x)` mutates `seen`; a
+ * domain function is assumed to be able to write). Guards,
  * lets and returns over pure expressions only read.
  */
 export function statementsWrite(stmts: ActionStatement[]): boolean {
@@ -958,9 +959,22 @@ const PURE_METHODS = new Set([
   'min', 'max', 'abs', 'floor', 'ceil', 'round', 'isEmpty', 'first', 'last',
 ]);
 
-/** True if `expr` calls a method that is not a known pure read. */
+/** Free functions the generator translates to pure expressions. */
+const PURE_FUNCTIONS = new Set([
+  'len', 'min', 'max', 'abs', 'floor', 'ceil', 'round', 'sum', 'count', 'now', 'size', 'contains',
+  'keys', 'values', 'isEmpty', 'append', 'concat', 'old', 'not', 'and', 'or', 'has', 'str', 'int',
+]);
+
+/**
+ * True if `expr` calls anything not known to be a pure read: a method not in
+ * PURE_METHODS, or a free function (a domain function or another action)
+ * not in PURE_FUNCTIONS.
+ */
 export function exprMayWrite(expr: string): boolean {
-  for (const m of expr.matchAll(/\.\s*([A-Za-z_]\w*)\s*\(/g)) if (!PURE_METHODS.has(m[1])) return true;
+  const text = expr.replace(/"[^"]*"/g, '""');
+  for (const m of text.matchAll(/(\.\s*)?\b([A-Za-z_]\w*)\s*\(/g)) {
+    if (m[1] ? !PURE_METHODS.has(m[2]) : !PURE_FUNCTIONS.has(m[2])) return true;
+  }
   return false;
 }
 
