@@ -551,6 +551,28 @@ describe('TypeScript backend: an action that throws after a write leaves no part
     expect(() => m.Check(50)).toThrow('Guard failed');
   });
 
+  it('rolls back a mutating method called from a let (no assignment statement)', async () => {
+    const out = generateTs(`speck Probe {
+    state {
+        seen: Set(Nat)
+    }
+    init {
+        seen := emptySet
+    }
+    action Mark(x: Nat) {
+        let s2 := seen.add(x)
+        require x < 10
+    }
+}
+`, 'Probe.ts');
+    expect(out).toContain('const s2 = this.seen.add(x);');
+    const m = new (await load(out, 'ProbeMachine'))();
+    expect(() => m.Mark(50)).toThrow('Guard failed');
+    expect(m.seen.size).toBe(0);
+    m.Mark(3);
+    expect(m.seen.has(3)).toBe(true);
+  });
+
   it('saves only the fields the action can reach, and the decision log when it emits', () => {
     const bump = source().match(/  Bump\(\) \{[\s\S]*?\n  \}/)![0];
     expect(bump).toContain("this.__save(['total'])");
@@ -573,5 +595,12 @@ describe('statementsWrite: which actions get a rollback point', () => {
     expect(statementsWrite([{ type: 'ifblock', raw: 'if ??' }])).toBe(true);
     expect(statementsWrite([{ type: 'forblock', raw: 'for ??' }])).toBe(true);
     expect(statementsWrite([{ type: 'emit', event: 'E', fields: [] }])).toBe(true);
+  });
+  it('a call to a method that is not a known pure read counts as a write, wherever it appears', () => {
+    expect(statementsWrite([{ type: 'let', name: 's', expr: 'seen.add(x)' }])).toBe(true);
+    expect(statementsWrite([{ type: 'require', expr: 'seen.has(x) and xs.len() > 0' }])).toBe(false);
+    expect(statementsWrite([{ type: 'ifblock', raw: '', branches: [{ cond: 'q.pop() > 0', body: [] }, { cond: null, body: [] }] }])).toBe(true);
+    expect(statementsWrite([{ type: 'forblock', raw: '', loop: { variable: 'v', collection: 'xs.splice(0)', body: [] } }])).toBe(true);
+    expect(statementsWrite([{ type: 'forblock', raw: '', loop: { variable: 'v', from: '0', to: 'n', body: [] } }])).toBe(false);
   });
 });

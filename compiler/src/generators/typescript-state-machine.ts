@@ -929,23 +929,39 @@ ${finalBody}
 }
 /**
  * True if running `stmts` can change machine state: an assignment (state or
- * a field reached through a local), an emit (the decision log), or a
- * statement whose shape was not recognised. Guards, lets and returns only
- * read.
+ * a field reached through a local), an emit (the decision log), a statement
+ * whose shape was not recognised, or any expression that calls a method not
+ * known to be a pure read (`let s := seen.add(x)` mutates `seen`). Guards,
+ * lets and returns over pure expressions only read.
  */
 export function statementsWrite(stmts: ActionStatement[]): boolean {
   return stmts.some(st => {
     switch (st.type) {
       case 'let': case 'require': case 'precondition': case 'postcondition': case 'return':
-        return false;
+        return exprMayWrite(st.expr);
       case 'ifblock':
-        return !st.branches || st.branches.some(b => statementsWrite(b.body));
+        return !st.branches || st.branches.some(b => (b.cond !== null && exprMayWrite(b.cond)) || statementsWrite(b.body));
       case 'forblock':
-        return !st.loop || statementsWrite(st.loop.body);
+        return !st.loop || [st.loop.from, st.loop.to, st.loop.collection].some(e => e !== undefined && exprMayWrite(e))
+          || statementsWrite(st.loop.body);
       default:
         return true;
     }
   });
+}
+
+/** Method names that only read their receiver. */
+const PURE_METHODS = new Set([
+  'has', 'get', 'contains', 'containsKey', 'keys', 'values', 'entries', 'size', 'length', 'len',
+  'includes', 'indexOf', 'some', 'every', 'filter', 'map', 'find', 'slice', 'concat', 'toString',
+  'startsWith', 'endsWith', 'toLowerCase', 'toUpperCase', 'trim', 'split', 'join', 'count', 'sum',
+  'min', 'max', 'abs', 'floor', 'ceil', 'round', 'isEmpty', 'first', 'last',
+]);
+
+/** True if `expr` calls a method that is not a known pure read. */
+export function exprMayWrite(expr: string): boolean {
+  for (const m of expr.matchAll(/\.\s*([A-Za-z_]\w*)\s*\(/g)) if (!PURE_METHODS.has(m[1])) return true;
+  return false;
 }
 
 /**
