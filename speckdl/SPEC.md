@@ -153,6 +153,14 @@ frames + stuttering), and the solver is asked whether `p` can be violated.
 | `T \| null` | Optional | Lifted to underlying sort |
 | `type X = ...` | Named alias | Uninterpreted sort or datatype |
 
+**Reading a key a map does not hold.** `emptyMap` is the constant array of 0 in
+Z3, so every proof treats `m[k]` as 0 for a key never written. Generated code
+matches this for numeric value types (`Nat`, `Int`, `Real`): `m[k]` reads 0 in
+TypeScript, Go, Rust and Camel, so `m[k] := m[k] + x` starts a new key at `x`.
+For any other value type the read fails in generated code (TypeScript: the
+value is `undefined` and its first use throws; Rust: panic; Camel: `null`). A
+spec that must tell an absent key from a stored 0 should test `k in m` first.
+
 ### 2.6 Events
 
 ```
