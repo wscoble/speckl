@@ -1,9 +1,9 @@
-// Runtime check of fixtures/MapTotals.speckdl with the real toolchains: a
-// running total on a key the map does not hold yet starts at 0 in the
-// generated Rust and Go, matching the Z3 encoding (emptyMap is a constant
-// array of 0) and the TypeScript backend (map-read-default.test.ts). The
-// Camel project is compiled with javac. See helpers/toolchains.ts for how a
-// missing toolchain is reported.
+// Runtime check of fixtures/MapTotals.speckdl with the real toolchains:
+// opened periods keep running totals, and reading a period never opened
+// fails loudly, naming the map and the key (SPEC.md 2.5): a Rust panic, a
+// Go panic, a Java NoSuchElementException. The TypeScript side is in
+// map-missing-key.test.ts. See helpers/toolchains.ts for how a missing
+// toolchain is reported.
 import { describe, it, expect } from 'vitest';
 import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,7 @@ const FIXTURE = join(FIXTURES_DIR, 'MapTotals.speckdl');
 const cargo = all(probe('cargo', ['--version']), probe('rustc', ['--version']));
 const rust = gate('cargo test: MapTotals running totals', cargo);
 describe.skipIf(rust.skip)(rust.title, () => {
-  it('a new key starts at 0, a missing key fails the guard instead of panicking', () => {
+  it('opened periods keep running totals; an unopened one panics naming map and key', () => {
     expect(cargo.reason ?? 'ok').toBe('ok');
     const [manifest] = filesUnder(generate(FIXTURE, 'rust'), 'Cargo.toml');
     appendFileSync(join(dirname(manifest), 'src', 'lib.rs'), `
@@ -27,6 +27,8 @@ mod map_totals_runtime {
     #[test]
     fn running_totals() {
         let mut m = MapTotalsMachine::new();
+        m.open(3).unwrap();
+        m.open(4).unwrap();
         m.record(3, 10).unwrap();
         m.record(3, 5).unwrap();
         m.record(4, 7).unwrap();
@@ -34,15 +36,21 @@ mod map_totals_runtime {
         assert_eq!(m.totals[&4], 7);
         assert_eq!(m.counts[&3], 2);
         assert_eq!(m.grand, 22);
-        assert!(m.reset(9).is_err());
         m.reset(3).unwrap();
         assert_eq!(m.grand, 7);
+        assert!(m.reset(3).is_err());
+    }
+    #[test]
+    #[should_panic(expected = "SPECKL-MISSING-KEY: totals[9] is not set")]
+    fn unopened_period_panics() {
+        let mut m = MapTotalsMachine::new();
+        let _ = m.record(9, 1);
     }
 }
 `);
     const target = mkdtempSync(join(tmpdir(), 'speckl-cargo-target-'));
     const r = run('cargo', ['test', '--offline', '--quiet'], dirname(manifest), { CARGO_TARGET_DIR: target });
-    expect(r.output).toContain('1 passed');
+    expect(r.output).toMatch(/2 passed|test result: ok\. 2 passed/);
     expect(r.ok).toBe(true);
   }, 300_000);
 });
@@ -50,15 +58,23 @@ mod map_totals_runtime {
 const goTool = probe('go', ['version']);
 const go = gate('go test: MapTotals running totals', goTool);
 describe.skipIf(go.skip)(go.title, () => {
-  it('a new key starts at 0 (Go zero value) and init needs no emptyMap identifier', () => {
+  it('opened periods keep running totals; an unopened one panics naming map and key', () => {
     expect(goTool.reason ?? 'ok').toBe('ok');
     const [mod] = filesUnder(generate(FIXTURE, 'go'), 'go.mod');
     writeFileSync(join(dirname(mod), 'runtime_test.go'), `package map_totals
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRunningTotals(t *testing.T) {
 	m := NewMapTotalsMachine()
+	for _, p := range []int64{3, 4} {
+		if err := m.Open(p); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, r := range [][2]int64{{3, 10}, {3, 5}, {4, 7}} {
 		if err := m.Record(r[0], r[1]); err != nil {
 			t.Fatal(err)
@@ -67,9 +83,17 @@ func TestRunningTotals(t *testing.T) {
 	if m.Totals[3] != 15 || m.Totals[4] != 7 || m.Counts[3] != 2 || m.Grand != 22 {
 		t.Fatalf("totals=%v counts=%v grand=%d", m.Totals, m.Counts, m.Grand)
 	}
-	if m.Reset(9) == nil {
-		t.Fatal("Reset on a key never written should fail its guard")
-	}
+}
+
+func TestUnopenedPeriodPanics(t *testing.T) {
+	m := NewMapTotalsMachine()
+	defer func() {
+		r := recover()
+		if s, _ := r.(string); !strings.Contains(s, "SPECKL-MISSING-KEY: totals[9] is not set") {
+			t.Fatalf("want a missing-key panic, got %v", r)
+		}
+	}()
+	_ = m.Record(9, 1)
 }
 `);
     const r = run('go', ['test', './...'], dirname(mod), { GOFLAGS: '-mod=mod', GOPROXY: 'off', GOTOOLCHAIN: 'local', GOWORK: 'off' });
@@ -86,7 +110,7 @@ function javaDeps(): Probe {
 const javaTool = all(probe('javac', ['-version']), javaDeps());
 const java = gate('javac: MapTotals Camel project', javaTool);
 describe.skipIf(java.skip)(java.title, () => {
-  it('compiles with the getOrDefault reads', () => {
+  it('compiles, and SpecklRuntime.mustGet throws naming map and key', () => {
     expect(javaTool.reason ?? 'ok').toBe('ok');
     const classpath = (DEPS as { group: string }[]).filter((d) => d.group === 'java').map(depPath).join(delimiter);
     const sources = filesUnder(join(generate(FIXTURE, 'camel'), 'camel'), '.java');
@@ -94,5 +118,28 @@ describe.skipIf(java.skip)(java.title, () => {
     const r = run('javac', ['-proc:none', '-Xlint:none', '-encoding', 'UTF-8', '--release', '21', '-cp', classpath, '-d', classes, ...sources]);
     expect(r.output).toBe('');
     expect(r.ok).toBe(true);
+    // Run the read helper the processors call: a held key reads its value,
+    // a missing one throws naming the map and the key.
+    const check = join(mkdtempSync(join(tmpdir(), 'speckl-java-run-')), 'MissingKeyCheck.java');
+    writeFileSync(check, `public class MissingKeyCheck {
+    public static void main(String[] a) {
+        java.util.Map<Long, Long> m = new java.util.HashMap<>();
+        m.put(3L, 15L);
+        if (maptotals.camel.SpecklRuntime.mustGet(m, 3L, "totals") != 15L) throw new AssertionError("held key");
+        try {
+            maptotals.camel.SpecklRuntime.mustGet(m, 9L, "totals");
+            throw new AssertionError("no throw");
+        } catch (java.util.NoSuchElementException e) {
+            System.out.println(e.getMessage());
+        }
+    }
+}
+`);
+    const cp = [classes, classpath].join(delimiter);
+    const c = run('javac', ['-proc:none', '-Xlint:none', '--release', '21', '-cp', cp, '-d', classes, check]);
+    expect(c.output).toBe('');
+    const x = run('java', ['-cp', cp, 'MissingKeyCheck']);
+    expect(x.output.trim()).toBe('SPECKL-MISSING-KEY: totals[9] is not set');
+    expect(x.ok).toBe(true);
   }, 120_000);
 });

@@ -240,6 +240,13 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
       lines.push(`; skipped init ${assign.target}: expression failed to parse${src ? `: ${src}` : ''}`);
       continue;
     }
+    // `m := emptyMap`: no keys, and no value assumed for any key (a read of
+    // a missing key fails at runtime). Same rule as the AST backend.
+    if ((assign.expr.kind === 'ident' && assign.expr.name === 'emptyMap')
+      || (assign.expr.kind === 'call' && assign.expr.fn === 'emptyMap' && assign.expr.args.length === 0)) {
+      lines.push(`; init ${assign.target} := emptyMap: no keys; values unconstrained`);
+      continue;
+    }
     lines.push(`(assert (= ${assign.target} ${translateExpr(assign.expr)}))`);
   }
 

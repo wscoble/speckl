@@ -253,8 +253,8 @@ function emitSpeck(speck: SpeckNode): string {
   const mapVarNames = new Set(stateVars
     .filter(v => v.typeExpr?.type === 'map' || (v.typeExpr?.type === 'ident' && v.typeExpr?.name && /^Map/i.test(v.typeExpr.name)))
     .map(v => v.name));
-  numericMapVars = new Set(stateVars
-    .filter(v => v.typeExpr?.type === 'map' && isNumericType(v.typeExpr.valueType))
+  nullableMapVars = new Set(stateVars
+    .filter(v => v.typeExpr?.type === 'map' && v.typeExpr.valueType?.nullable)
     .map(v => v.name));
 
   const stateProperties = stateVars.map(v => {
@@ -512,6 +512,11 @@ export interface ${speckName}Snapshot {
   decisionLog: unknown[];
 }
 
+function specklMissing(map: string, key: unknown): never {
+  const k = key !== null && typeof key === 'object' ? JSON.stringify(key) : String(key);
+  throw new Error('SPECKL-MISSING-KEY: ' + map + '[' + k + '] is not set');
+}
+
 function specklEncode(v: unknown): unknown {
   if (v instanceof Map) return { $map: Array.from(v, ([k, x]) => [specklEncode(k), specklEncode(x)]) };
   if (v instanceof Set) return { $set: Array.from(v, specklEncode) };
@@ -702,7 +707,7 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
     "console", "Math", "Date", "JSON", "Object", "Array", "Map", "Set", "Promise", "Error",
     "Number", "String", "Boolean", "Symbol", "NaN", "Infinity", "parseInt", "parseFloat",
     "isNaN", "isFinite", "encodeURI", "decodeURI", "encodeURIComponent", "decodeURIComponent",
-    "simpleHash",
+    "simpleHash", "specklMissing",
     "has", "get", "set", "delete", "size", "keys", "values", "entries", "push", "pop", "length",
     "add", "concat", "filter", "map", "forEach", "join", "indexOf", "includes", "toString",
     "valueOf", "some", "every", "reduce", "find", "slice", "splice", "sort"
@@ -962,19 +967,39 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
     // The chain is part of the match so a wrapped read such as
     // `(this.m.get(k) ?? 0)` encloses the whole receiver.
     // The inner expr needs rewriting for this-prefixing
-    const pattern = new RegExp('((?:\\b[A-Za-z_$][\\w$]*\\.)*)\\b(' + mapVar + ')\\[([^\\]]+)\\]', 'g');
-    ts = ts.replace(pattern, (match, receiver, varName, innerExpr) => {
-      const target = `${receiver}${varName}`;
-      // Check for compound key: { k1: v1, k2: v2 }
-      const compoundMatch = innerExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
-      if (compoundMatch) {
-        const k1Val = rewriteExpr(compoundMatch[2].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        const k2Val = rewriteExpr(compoundMatch[4].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        return `${target}.get(${k1Val})!.get(${k2Val})!`;
+    // The key is found by bracket matching, innermost read first, so a key
+    // that itself indexes a map (`accounts[transfers[id].from]`) is whole.
+    const open = new RegExp('((?:\\b[A-Za-z_$][\\w$]*\\.)*)\\b(' + mapVar + ')\\[', 'g');
+    for (;;) {
+      const hits = [...ts.matchAll(open)];
+      let replaced = false;
+      for (let h = hits.length - 1; h >= 0 && !replaced; h--) {
+        const [whole, receiver, varName] = hits[h];
+        const start = hits[h].index!;
+        const keyStart = start + whole.length;
+        let depth = 1, j = keyStart;
+        for (; j < ts.length && depth > 0; j++) {
+          if (ts[j] === '[') depth++;
+          else if (ts[j] === ']') depth--;
+        }
+        if (depth !== 0) continue;
+        const innerExpr = ts.slice(keyStart, j - 1);
+        const target = `${receiver}${varName}`;
+        let read: string;
+        // Check for compound key: { k1: v1, k2: v2 }
+        const compoundMatch = innerExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
+        if (compoundMatch) {
+          const k1Val = rewriteExpr(compoundMatch[2].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+          const k2Val = rewriteExpr(compoundMatch[4].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+          read = mapRead(mapRead(target, varName, k1Val), varName, k2Val);
+        } else {
+          read = mapRead(target, varName, rewriteExpr(innerExpr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues));
+        }
+        ts = ts.slice(0, start) + read + ts.slice(j);
+        replaced = true;
       }
-      const rewrittenInner = rewriteExpr(innerExpr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-      return mapRead(target, varName, rewrittenInner);
-    });
+      if (!replaced) break;
+    }
   }
   // 5h: .size() -> .size  (Set/Map size property, not a method in JS)
   ts = ts.replace(/\.size\(\)/g, '.size');
@@ -1016,25 +1041,20 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
 
 // Helpers ------------------------------------------------------------------
 
-/** Numeric-valued Map state variables of the speck being emitted. */
-let numericMapVars = new Set<string>();
-
-function isNumericType(t: any): boolean {
-  // A nullable value type (`Int | null`) can hold null on purpose; reading
-  // 0 for it would make `m[k] != null` always true.
-  return t?.type === 'primitive' && !t.nullable && ['Nat', 'Int', 'Real', 'Integer', 'Float', 'Number'].includes(t.name);
-}
+/** Map state variables whose value type is nullable (`Int | null`). */
+let nullableMapVars = new Set<string>();
 
 /**
- * Read `map[key]`. A numeric map reads 0 for a key it does not hold: the Z3
- * encoding (emptyMap is a constant array of 0, so proofs assume it) and the
- * Go backend already do. `Map.get` alone gave undefined, so a running total
- * like `m[k] + x` became NaN. Other value types keep the non-null assertion.
+ * Read `map[key]`. A key the map does not hold throws
+ * `SPECKL-MISSING-KEY: map[key] is not set` (specklMissing), inside the
+ * action, so the action's rollback applies. Nothing is defaulted: the Z3
+ * encoding assumes no value for a missing key either (SPEC.md 2.5). A map
+ * whose value type is nullable keeps `get(k)!`: a stored null reads null.
  */
 function mapRead(target: string, mapVar: string, key: string): string {
-  return numericMapVars.has(mapVar)
-    ? `(${target}.get(${key}) ?? 0)`
-    : `${target}.get(${key})!`;
+  return nullableMapVars.has(mapVar)
+    ? `${target}.get(${key})!`
+    : `(${target}.get(${key}) ?? specklMissing('${mapVar}', ${key}))`;
 }
 
 function memberKey(m: MemberNode): string {

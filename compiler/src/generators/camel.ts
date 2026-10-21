@@ -451,6 +451,17 @@ public final class SpecklRuntime {
         throw new UnsupportedOperationException("SPECKL-UNTRANSLATED: " + source);
     }
 
+    /**
+     * Reads map[key]. A key the map does not hold throws, naming the map
+     * and the key; nothing is defaulted (SPEC.md 2.5).
+     */
+    public static <K, V> V mustGet(java.util.Map<K, V> map, K key, String name) {
+        if (!map.containsKey(key)) {
+            throw new java.util.NoSuchElementException("SPECKL-MISSING-KEY: " + name + "[" + key + "] is not set");
+        }
+        return map.get(key);
+    }
+
     /** Records an emitted event on the exchange (property "SpecklEvents"). */
     @SuppressWarnings("unchecked")
     public static void emit(org.apache.camel.Exchange exchange, Object event) {
@@ -1004,11 +1015,12 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: JT): TExpr | n
       if (target.t.k === 'map') {
         const k = translate(expr.index, env, target.t.key);
         if (!k || !assignable(k.t, target.t.key)) return null;
-        // A numeric map reads 0 for an absent key, as the Z3 encoding and the
-        // Go backend do (unboxing the null from get() threw instead).
-        if (isNumeric(target.t.val) && !target.t.val.nullable) {
-          const zero = target.t.val.k === 'double' ? '0.0' : '0L';
-          return { code: `${target.code}.getOrDefault(${boxed(k, target.t.key, ctx)}, ${zero})`, t: { ...target.t.val } };
+        // A key the map does not hold throws naming the map and the key
+        // (SPEC.md 2.5); nothing is defaulted. A nullable value type keeps
+        // get(): a missing key and a stored null both read null.
+        if (!target.t.val.nullable) {
+          const name = escapeString(expr.target.kind === 'ident' ? expr.target.name : target.code);
+          return { code: `${ctx.pkg}.SpecklRuntime.mustGet(${target.code}, ${boxed(k, target.t.key, ctx)}, "${name}")`, t: { ...target.t.val } };
         }
         return { code: `${target.code}.get(${boxed(k, target.t.key, ctx)})`, t: { ...target.t.val, nullable: true } };
       }

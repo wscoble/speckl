@@ -359,7 +359,7 @@ describe('Camel target — processor bodies', () => {
     const p = proc('Credit');
     expect(p).toContain('camelTranslationState.getAccounts().containsKey(owner)');
     expect(p).toContain('camelTranslationState.getAccounts().keySet().contains(owner)');
-    expect(p).toContain('cameltranslation.camel.model.Account a = camelTranslationState.getAccounts().get(owner);');
+    expect(p).toContain('cameltranslation.camel.model.Account a = cameltranslation.camel.SpecklRuntime.mustGet(camelTranslationState.getAccounts(), owner, "accounts");');
     expect(p).toContain('(a.getPhase() != cameltranslation.camel.model.Phase.Done)');
     expect(p).toContain('camelTranslationState.getBalances().put(camelTranslationState.getCount(), amount);');
     expect(p).toContain('SpecklRuntime.append(camelTranslationState.getSeen(), camelTranslationState.getCount())');

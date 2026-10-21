@@ -352,6 +352,11 @@ fn speckl_untranslated(source: &str) -> ! {
     panic!("SPECKL-UNTRANSLATED: {}", source)
 }
 
+/// Read of a key a map does not hold (SPEC.md 2.5). Panics naming both.
+fn speckl_missing<K: std::fmt::Debug + ?Sized>(map: &str, key: &K) -> ! {
+    panic!("SPECKL-MISSING-KEY: {}[{:?}] is not set", map, key)
+}
+
 /// now(): Unix time in seconds.
 fn speckl_now() -> u64 {
     std::time::SystemTime::now()
@@ -817,14 +822,10 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: RT): TExpr | n
         const k = translate(expr.index, env, target.t.key);
         const kc = k && borrow(k, target.t.key, ctx);
         if (kc == null) return null;
-        // A numeric map reads 0 for an absent key, as the Z3 encoding
-        // (emptyMap is a constant array of 0) and the Go backend do; panicking
-        // here made a running total like `m[k] + x` unusable on a new key.
-        if (isNum(target.t.val)) {
-          return { code: `${target.code}.get(${kc}).copied().unwrap_or_default()`, t: target.t.val };
-        }
-        // Any other value type: a missing key panics (fails closed).
-        return { code: `${target.code}[${kc}]`, t: target.t.val, place: true };
+        // A key the map does not hold panics naming the map and the key
+        // (SPEC.md 2.5); nothing is defaulted. Still a place, like m[&k].
+        const name = rustString(expr.target.kind === 'ident' ? expr.target.name : target.code);
+        return { code: `(*${target.code}.get(${kc}).unwrap_or_else(|| speckl_missing("${name}", ${kc})))`, t: target.t.val, place: true };
       }
       if (target.t.k === 'list') {
         const i = translate(expr.index, env, U64);

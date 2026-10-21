@@ -1193,6 +1193,13 @@ function emitBMC(
   const initAssigns: { target: string; expr: string }[] =
     (initNode?.assignments ?? []).map(a => ({ target: a.name, expr: a.expr }));
   for (const a of initAssigns) {
+    // `m := emptyMap`: the map holds no keys. Reading a key it does not hold
+    // fails at runtime, so no value is assumed for any key (in particular
+    // not 0): the array is left unconstrained. See SPEC.md 2.5.
+    if (isEmptyMapExpr(a.expr)) {
+      lines.push(`    ; ${a.target} := emptyMap: no keys; values unconstrained`);
+      continue;
+    }
     const safeTarget = renameTarget(a.target, renameMap);
     const z3Target = safeTarget.includes('[')
       ? translateExpr(safeTarget, stateVars, '_0')
@@ -1208,7 +1215,9 @@ function emitBMC(
 
   // Default init: use defaultInit from state vars
   for (const v of stateVars) {
-    if (v.defaultInit) {
+    if (v.defaultInit && isEmptyMapExpr(v.defaultInit)) {
+      lines.push(`    ; ${v.name} := emptyMap: no keys; values unconstrained`);
+    } else if (v.defaultInit) {
       const z3Val = translateInitValue(v.defaultInit, v.typeExpr);
       lines.push(`    (= ${v.name}_0 ${z3Val})`);
     } else {
@@ -1420,18 +1429,17 @@ function emitInvariantInstance(lines: string[], inv: InvariantNode, stateVars: S
   lines.push(')');
 }
 
+/** `emptyMap` or `emptyMap()`. */
+export function isEmptyMapExpr(expr: string): boolean {
+  return /^emptyMap(\(\))?$/.test(expr.trim());
+}
+
 function translateInitValue(val: string, typeExpr: TypeExpr): string {
   if (val === 'false') return 'false';
   if (val === 'true') return 'true';
   if (val === 'emptySet') {
     const elemSort = z3Sort(typeExpr.elementType!);
     return `((as const (Array ${elemSort} Bool)) false)`;
-  }
-  if (val === 'emptyMap') {
-    const keySort = z3Sort(typeExpr.keyType!);
-    const valSort = z3Sort(typeExpr.valueType!);
-    // Use const array for maps too — all values default to some baseline
-    return `((as const (Array ${keySort} ${valSort})) 0)`;
   }
   if (val === 'emptyList') {
     const elemSort = z3Sort(typeExpr.elementType!);

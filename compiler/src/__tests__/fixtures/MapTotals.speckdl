@@ -1,7 +1,8 @@
-// Fixture for reading a key a numeric map does not hold yet. A running
-// total keyed by period starts every new key at 0, which is what the Z3
-// encoding assumes (emptyMap is a constant array of 0). Generated code must
-// agree: no NaN (TypeScript), no panic (Rust), no NullPointerException (Java).
+// Fixture for reading a key a map does not hold (SPEC.md 2.5). Such a read
+// fails loudly in generated code (TypeScript throws, Rust and Go panic, Java
+// throws), naming the map and the key; nothing reads as 0. Z3 assumes no
+// value for it either. Open starts a period at 0; Record and Reset on a
+// period never opened fail.
 speck MapTotals {
     state {
         totals: Map(Nat, Int)
@@ -13,6 +14,11 @@ speck MapTotals {
         totals := emptyMap
         counts := emptyMap
         grand := 0
+    }
+
+    action Open(period: Nat) {
+        totals[period] := 0
+        counts[period] := 0
     }
 
     action Record(period: Nat, amount: Int) {

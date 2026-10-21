@@ -114,24 +114,29 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
-- **A missing key of a numeric map read as NaN in TypeScript** (#27). The
-  Z3 encoding treats `emptyMap` as a constant array of 0, so proofs assume
-  `m[k]` is 0 for a key never written, and Go's map read already returns 0.
-  The TypeScript target emitted `this.m.get(k)!`, which is `undefined` at
-  runtime: a running total `m[k] := m[k] + x` stored NaN, and later guards
-  on it were silently false. Rust indexed with `m[&k]` (panic) and Camel
-  unboxed `m.get(k)` (NullPointerException).
-  - Maps with a non-nullable numeric value type now read `(m.get(k) ?? 0)` (TypeScript),
-    `m.get(&k).copied().unwrap_or_default()` (Rust) and
-    `m.getOrDefault(k, 0L)` (Camel). Other value types, including `Int | null`, are unchanged
-    (non-null assertion, panic, null).
+- **Reading a map key that is not set now fails loudly in every target; Z3 no longer assumes 0** (#27).
+  Before, a read of a key never written was `undefined` in TypeScript (a
+  running total `m[k] := m[k] + x` stored NaN, and later guards on it were
+  silently false), a panic without the map's name in Rust (`m[&k]`), an
+  unboxed `null` in Camel, and the zero value in Go. The Z3 AST encoding
+  meant `emptyMap` as the constant array 0, but that term could not be
+  declared, so the bounded model check dropped the whole initial state of
+  any spec that initialises a map (its obligations came out unchecked).
+  - Generated code throws or panics with `SPECKL-MISSING-KEY: m[k] is not
+    set`: TypeScript `(m.get(k) ?? specklMissing('m', k))`, Rust
+    `speckl_missing`, Camel `SpecklRuntime.mustGet`, Go `specklGet` (in
+    the prelude). A map with a nullable value type (`Int | null`) still
+    reads `null` for a missing key in TypeScript, Camel and Go.
+  - Z3 (both encodings): `m := emptyMap` asserts nothing about the array's
+    values, and the other init assignments are kept. Rule in SPEC.md 2.5.
   - `x := emptyMap` (bare, without parentheses) in `init` is now translated
     by the TypeScript, Rust, Camel and Go targets; before, it was emitted
     verbatim (TypeScript, Go: undefined identifier) or marked
     `SPECKL-UNTRANSLATED` (Rust, Camel: the machine could not be constructed).
-  - Regression fixture `src/__tests__/fixtures/MapTotals.speckdl`: checked
-    with `tsc --strict` and run in `npm test`; run with `cargo test` and
-    `go test` and compiled with `javac` in `npm run test:compile`.
+  - Regression fixture `src/__tests__/fixtures/MapTotals.speckdl` (periods
+    are opened before totals are read): checked with `tsc --strict` and run
+    in `npm test`; run with `cargo test` and `go test`, and compiled with
+    `javac` with the Java read helper run, in `npm run test:compile`.
 
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 

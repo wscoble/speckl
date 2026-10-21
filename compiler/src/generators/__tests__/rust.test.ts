@@ -125,7 +125,7 @@ describe('Rust target — translation', () => {
   it('translates map and list reads and writes, lets and Option assignment', () => {
     const credit = method(lib, 'credit');
     expect(credit).toContain('if !(self.accounts.contains_key(&who)) {');
-    expect(credit).toContain('let mut a: Account = self.accounts[&who].clone();');
+    expect(credit).toContain('let mut a: Account = (*self.accounts.get(&who).unwrap_or_else(|| speckl_missing("accounts", &who))).clone();');
     expect(credit).toContain('self.balances.insert(self.count, amount);');
     expect(credit).toContain('self.seen = { let mut v = self.seen.clone(); v.push(self.count); v };');
     expect(credit).toContain('self.seen[(0u64) as usize] = self.count;');
