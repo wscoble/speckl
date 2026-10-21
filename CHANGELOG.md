@@ -155,7 +155,8 @@ First npm release. The package was renamed from the unpublished
     placeholders for unknown names are gone. When the body can throw after it
     has changed state (a `require` inside a loop, or a non-null assertion on a
     map entry that may be missing), the action restores the state it started
-    from before rethrowing. Enum members are qualified with
+    from before rethrowing. A field written through a local bound to a state
+    entry counts as a state change. Enum members are qualified with
     the enum that declares them (they all went to the state enum, so a
     one-line union like `type Entity = Personal | Business` produced
     `StatusEnum.Personal`), and `min`/`max` of two or more numbers become

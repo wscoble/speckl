@@ -896,9 +896,17 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
   // untranslated throw) can fire after the body has already changed state, as
   // a require inside a loop does, roll the state back before rethrowing.
   const lines = finalBody.split('\n');
+  // A local bound to part of the state (`const it = this.items.get(b)!`)
+  // shares the object, so writing a field through it changes the state too.
+  const stateBoundLocals = lines
+    .map(l => l.match(/^\s*(?:const|let)\s+(\w+)(?::[^=]+)?\s*=\s*(.*)$/))
+    .filter((m): m is RegExpMatchArray => !!m && /\bthis\./.test(m[2]))
+    .map(m => m[1]);
   const firstMutation = lines.findIndex(l =>
     /\bthis\.\w+(?:\.get\([^\n]*\)!)?(?:\.\w+|\[[^\n]*\])*\s*=[^=]/.test(l) ||
-    /\bthis\.\w+\.(?:set|delete|add|push|clear)\(/.test(l));
+    /\bthis\.\w+\.(?:set|delete|add|push|clear)\(/.test(l) ||
+    stateBoundLocals.some(n => new RegExp(`^\\s*${n}(?:\\.\\w+|\\[[^\\n]*\\])+\\s*=[^=]`).test(l)
+      || new RegExp(`^\\s*${n}(?:\\.\\w+)*\\.(?:set|delete|add|push|clear)\\(`).test(l)));
   // Besides explicit throws, a non-null assertion (`m.get(k)!`) throws a
   // TypeError when the key is missing: directly when dereferenced on the same
   // line, or later through a local bound to it.

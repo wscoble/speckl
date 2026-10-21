@@ -491,6 +491,31 @@ describe('TypeScript backend: an action that throws after a write leaves no part
     expect(m.items.get(1)).toEqual({ qty: 5 });
   });
 
+  it('rolls back a field written through a local bound to a state entry', async () => {
+    const out = generateTs(`speck Probe {
+    type Item = { qty: Nat }
+    state {
+        items: Map(Nat, Item)
+    }
+    init {
+        items := emptyMap
+    }
+    action SetQty(b: Nat, q: Nat) {
+        let it := items[b]
+        it.qty := q
+        require q < 10
+    }
+}
+`, 'Probe.ts');
+    expect(typecheck(out, 'Probe.ts')).toEqual([]);
+    const m = new (await load(out, 'ProbeMachine'))();
+    m.items.set(1, { qty: 0 });
+    expect(() => m.SetQty(1, 20)).toThrow('Guard failed');
+    expect(m.items.get(1)).toEqual({ qty: 0 });
+    m.SetQty(1, 3);
+    expect(m.items.get(1)).toEqual({ qty: 3 });
+  });
+
   it('does not wrap an action that cannot throw after its first write', () => {
     const bump = source().match(/  Bump\(\) \{[\s\S]*?\n  \}/)![0];
     expect(bump).not.toContain('serialize');
