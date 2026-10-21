@@ -192,6 +192,49 @@ First npm release. The package was renamed from the unpublished
 
   The compile baseline gains no entries. Some first-error messages were
   refreshed.
+- **Reading a map key that is not set now fails loudly in every target; Z3 no longer assumes 0** (#27).
+  Before, a read of a key never written was `undefined` in TypeScript (a
+  running total `m[k] := m[k] + x` stored NaN, and later guards on it were
+  silently false), a panic without the map's name in Rust (`m[&k]`), an
+  unboxed `null` in Camel, and the zero value in Go. The Z3 AST encoding
+  meant `emptyMap` as the constant array 0, but that term could not be
+  declared, so the bounded model check dropped the whole initial state of
+  any spec that initialises a map (its obligations came out unchecked).
+  - Generated code fails with `SPECKL-MISSING-KEY: m[k] is not set`:
+    TypeScript `(m.get(k) ?? specklMissing('m', k))` throws; a Rust action
+    reads through `ok_or_else(|| speckl_missing_key(..))?` and returns the
+    `Err`; Camel `SpecklRuntime.mustGet` throws; Go `specklGet` (in the
+    prelude) panics with a typed value that the action's deferred
+    `specklRecover` turns into its returned `err`. Outside an action (an
+    invariant check) Rust and Go panic. A map with a nullable value type
+    (`Int | null`) still reads `null` for a missing key in TypeScript,
+    Camel and Go.
+  - A failed action leaves no partial write in Rust, Go and Camel either,
+    using the TypeScript rule for which actions write (an assignment, an
+    emit, an untranslated statement, or a call that is not a known pure
+    read). Rust: the public method saves the fields the body uses (the
+    event log by its length), calls a private `__speckl_<name>` with the
+    body, and restores them on `Err`. Go: the method saves the fields (maps
+    and slices copied, the event log by its slice header) and a deferred
+    function restores them when `err` is set. Events emitted before the
+    failure are dropped too. Camel: the processor copies
+    the fields it uses and restores them in a `catch (RuntimeException)`
+    before rethrowing; before this change Camel did not roll back at all.
+    A failing guard after a write is undone the same way.
+  - Z3 (both encodings): `m := emptyMap` asserts nothing about the array's
+    values, and the other init assignments are kept. Rule in SPEC.md 2.5.
+  - `x := emptyMap` (bare, without parentheses) in `init` is now translated
+    by the TypeScript, Rust, Camel and Go targets; before, it was emitted
+    verbatim (TypeScript, Go: undefined identifier) or marked
+    `SPECKL-UNTRANSLATED` (Rust, Camel: the machine could not be constructed).
+  - Regression fixture `src/__tests__/fixtures/MapTotals.speckdl` (periods
+    are opened before totals are read): checked with `tsc --strict` and run
+    in `npm test`; run with `cargo test` and `go test`, and compiled with
+    `javac` with the Java read helper and the `Move` processor run, in
+    `npm run test:compile`. Its `Move` action writes `totals[src]` and emits
+    `Moved` before it reads `totals[dst]`; each target is checked to leave
+    `totals[src]` (and, in TypeScript, Rust and Go, the event log) unchanged
+    when `dst` was never opened.
 
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 

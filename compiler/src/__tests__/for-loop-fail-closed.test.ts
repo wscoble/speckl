@@ -295,7 +295,7 @@ describe('a statement-level if/else (a missing-key guard) is never dropped', () 
     // `k in totals.keys` on a state map used to come out as Go that does not
     // compile (`if k in m.Totals.keys {`).
     const go = sources('go', '.go');
-    expect(go).toContain('\tif mapHas(m.Totals, k) {\n\t\tm.Totals[k] = m.Totals[k] + v\n\t} else {\n\t\tm.Totals[k] = v\n\t}');
+    expect(go).toContain('\tif mapHas(m.Totals, k) {\n\t\tm.Totals[k] = specklGet(m.Totals, k, "totals") + v\n\t} else {\n\t\tm.Totals[k] = v\n\t}');
     expect(go).not.toContain(' in m.Totals');
     const rust = sources('rust', '.rs');
     expect(rust).toMatch(/return Err\("SPECKL-UNTRANSLATED: Add: 1 untranslated statements?, first: if k in totals\.keys/);

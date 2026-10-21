@@ -1,3 +1,4 @@
+import { PURE_METHODS, PURE_FUNCTIONS } from './writes.js';
 import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ActionStatement, ConstraintNode, VerifyNode, EventNode, TypeExpr } from '../parser.js';
 import fs from 'fs';
 import path from 'path';
@@ -268,6 +269,9 @@ function emitSpeck(speck: SpeckNode): string {
     .filter(v => v.typeExpr?.type === 'map' || (v.typeExpr?.type === 'ident' && v.typeExpr?.name && /^Map/i.test(v.typeExpr.name)))
     .map(v => v.name));
   listStateVars = new Set(stateVars.filter(v => v.typeExpr?.type === 'list').map(v => v.name));
+  nullableMapVars = new Set(stateVars
+    .filter(v => v.typeExpr?.type === 'map' && v.typeExpr.valueType?.nullable)
+    .map(v => v.name));
 
   const stateProperties = stateVars.map(v => {
     return `  ${v.name}: ${tsType(v.typeExpr, speck.name, enumMap)};`;
@@ -574,6 +578,11 @@ export interface ${speckName}Snapshot {
   decisionLog: unknown[];
 }
 
+function specklMissing(map: string, key: unknown): never {
+  const k = key !== null && typeof key === 'object' ? JSON.stringify(key) : String(key);
+  throw new Error('SPECKL-MISSING-KEY: ' + map + '[' + k + '] is not set');
+}
+
 function specklEncode(v: unknown): unknown {
   if (v instanceof Map) return { $map: Array.from(v, ([k, x]) => [specklEncode(k), specklEncode(x)]) };
   if (v instanceof Set) return { $set: Array.from(v, specklEncode) };
@@ -864,7 +873,7 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
     "console", "Math", "Date", "JSON", "Object", "Array", "Map", "Set", "Promise", "Error",
     "Number", "String", "Boolean", "Symbol", "NaN", "Infinity", "parseInt", "parseFloat",
     "isNaN", "isFinite", "encodeURI", "decodeURI", "encodeURIComponent", "decodeURIComponent",
-    "simpleHash",
+    "simpleHash", "specklMissing",
     "has", "get", "set", "delete", "size", "keys", "values", "entries", "push", "pop", "length",
     "add", "concat", "filter", "map", "forEach", "join", "indexOf", "includes", "toString",
     "valueOf", "some", "every", "reduce", "find", "slice", "splice", "sort"
@@ -950,20 +959,6 @@ export function statementsWrite(stmts: ActionStatement[]): boolean {
     }
   });
 }
-
-/** Method names that only read their receiver. */
-const PURE_METHODS = new Set([
-  'has', 'get', 'contains', 'containsKey', 'keys', 'values', 'entries', 'size', 'length', 'len',
-  'includes', 'indexOf', 'some', 'every', 'filter', 'map', 'find', 'slice', 'concat', 'toString',
-  'startsWith', 'endsWith', 'toLowerCase', 'toUpperCase', 'trim', 'split', 'join', 'count', 'sum',
-  'min', 'max', 'abs', 'floor', 'ceil', 'round', 'isEmpty', 'first', 'last',
-]);
-
-/** Free functions the generator translates to pure expressions. */
-const PURE_FUNCTIONS = new Set([
-  'len', 'min', 'max', 'abs', 'floor', 'ceil', 'round', 'sum', 'count', 'now', 'size', 'contains',
-  'keys', 'values', 'isEmpty', 'append', 'concat', 'old', 'not', 'and', 'or', 'has', 'str', 'int',
-]);
 
 /**
  * True if `expr` calls anything not known to be a pure read: a method not in
@@ -1097,13 +1092,12 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   // 5a-pre: Map dot-access rewriting (mapVar.paramName -> mapVar.get(paramName)!)
   //   Handle SpeckDL syntax where "clients.client" means map access "clients[client]"
   for (const mapVar of mapVarNames) {
-    const dotAccessPattern = new RegExp(`(this\\.)?${mapVar}\\.(\\w+)`, 'g');
+    const dotAccessPattern = new RegExp(`((?:\\b[A-Za-z_$][\\w$]*\\.)*)\\b${mapVar}\\.(\\w+)`, 'g');
     ts = ts.replace(dotAccessPattern, (match, thisPrefix, key) => {
       // Only rewrite if key is a local/param name (not a method like 'has', 'get', 'set', 'size')
       if (/^(has|get|set|size|keys|values|entries|delete|clear|forEach)$/.test(key)) return match;
       if (localNames.has(key)) {
-        const prefix = thisPrefix || '';
-        return `${prefix}${mapVar}.get(${key})!`;
+        return mapRead(`${thisPrefix}${mapVar}`, mapVar, key);
       }
       return match;
     });
@@ -1237,32 +1231,44 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   //     Add non-null assertion (!) because Map.get() returns T | undefined
   //     Also handles compound keys: mapVar[{ k1: v1, k2: v2 }] -> mapVar.get(v1)!.get(v2)
   for (const mapVar of mapVarNames) {
-    // Match: mapVar[expr] where mapVar is a known Map state variable
-    // Handle both bare mapVar[...] and this.mapVar[...]
+    // Match: mapVar[expr] where mapVar is a known Map state variable, with
+    // any receiver chain in front of it (this.mapVar[...], a.b.mapVar[...]).
+    // The chain is part of the match so a wrapped read such as
+    // `(this.m.get(k) ?? 0)` encloses the whole receiver.
     // The inner expr needs rewriting for this-prefixing
-    const barePattern = new RegExp('\\b(' + mapVar + ')\\[([^\\]]+)\\]', 'g');
-    ts = ts.replace(barePattern, (match, varName, innerExpr) => {
-      // Check for compound key: { k1: v1, k2: v2 }
-      const compoundMatch = innerExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
-      if (compoundMatch) {
-        const k1Val = rewriteExpr(compoundMatch[2].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        const k2Val = rewriteExpr(compoundMatch[4].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        return `${varName}.get(${k1Val})!.get(${k2Val})!`;
+    // The key is found by bracket matching, innermost read first, so a key
+    // that itself indexes a map (`accounts[transfers[id].from]`) is whole.
+    const open = new RegExp('((?:\\b[A-Za-z_$][\\w$]*\\.)*)\\b(' + mapVar + ')\\[', 'g');
+    for (;;) {
+      const hits = [...ts.matchAll(open)];
+      let replaced = false;
+      for (let h = hits.length - 1; h >= 0 && !replaced; h--) {
+        const [whole, receiver, varName] = hits[h];
+        const start = hits[h].index!;
+        const keyStart = start + whole.length;
+        let depth = 1, j = keyStart;
+        for (; j < ts.length && depth > 0; j++) {
+          if (ts[j] === '[') depth++;
+          else if (ts[j] === ']') depth--;
+        }
+        if (depth !== 0) continue;
+        const innerExpr = ts.slice(keyStart, j - 1);
+        const target = `${receiver}${varName}`;
+        let read: string;
+        // Check for compound key: { k1: v1, k2: v2 }
+        const compoundMatch = innerExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
+        if (compoundMatch) {
+          const k1Val = rewriteExpr(compoundMatch[2].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+          const k2Val = rewriteExpr(compoundMatch[4].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+          read = mapRead(mapRead(target, varName, k1Val), varName, k2Val);
+        } else {
+          read = mapRead(target, varName, rewriteExpr(innerExpr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues));
+        }
+        ts = ts.slice(0, start) + read + ts.slice(j);
+        replaced = true;
       }
-      const rewrittenInner = rewriteExpr(innerExpr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-      return `${varName}.get(${rewrittenInner})!`;
-    });
-    const thisPattern = new RegExp('\\b(this\\.' + mapVar + ')\\[([^\\]]+)\\]', 'g');
-    ts = ts.replace(thisPattern, (match, varName, innerExpr) => {
-      const compoundMatch = innerExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
-      if (compoundMatch) {
-        const k1Val = rewriteExpr(compoundMatch[2].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        const k2Val = rewriteExpr(compoundMatch[4].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        return `${varName}.get(${k1Val})!.get(${k2Val})!`;
-      }
-      const rewrittenInner = rewriteExpr(innerExpr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-      return `${varName}.get(${rewrittenInner})!`;
-    });
+      if (!replaced) break;
+    }
   }
   // 5h: .size() -> .size  (Set/Map size property, not a method in JS)
   ts = ts.replace(/\.size\(\)/g, '.size');
@@ -1367,6 +1373,22 @@ function splitRecordLiteral(text: string): [string, string][] | undefined {
     fields.push([m[1], m[2].trim()]);
   }
   return fields.length > 0 ? fields : undefined;
+}
+
+/** Map state variables whose value type is nullable (`Int | null`). */
+let nullableMapVars = new Set<string>();
+
+/**
+ * Read `map[key]`. A key the map does not hold throws
+ * `SPECKL-MISSING-KEY: map[key] is not set` (specklMissing), inside the
+ * action, so the action's rollback applies. Nothing is defaulted: the Z3
+ * encoding assumes no value for a missing key either (SPEC.md 2.5). A map
+ * whose value type is nullable keeps `get(k)!`: a stored null reads null.
+ */
+function mapRead(target: string, mapVar: string, key: string): string {
+  return nullableMapVars.has(mapVar)
+    ? `${target}.get(${key})!`
+    : `(${target}.get(${key}) ?? specklMissing('${mapVar}', ${key}))`;
 }
 
 function memberKey(m: MemberNode): string {

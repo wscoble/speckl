@@ -29,6 +29,7 @@
 //
 // See OB1 #3642 for the architecture rationale.
 
+import { irStmtsWrite } from './writes.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -451,6 +452,17 @@ public final class SpecklRuntime {
         throw new UnsupportedOperationException("SPECKL-UNTRANSLATED: " + source);
     }
 
+    /**
+     * Reads map[key]. A key the map does not hold throws, naming the map
+     * and the key; nothing is defaulted (SPEC.md 2.5).
+     */
+    public static <K, V> V mustGet(java.util.Map<K, V> map, K key, String name) {
+        if (!map.containsKey(key)) {
+            throw new java.util.NoSuchElementException("SPECKL-MISSING-KEY: " + name + "[" + key + "] is not set");
+        }
+        return map.get(key);
+    }
+
     /** Records an emitted event on the exchange (property "SpecklEvents"). */
     @SuppressWarnings("unchecked")
     public static void emit(org.apache.camel.Exchange exchange, Object event) {
@@ -505,7 +517,35 @@ function emitProcessor(ctx: SpeckContext, action: IRAction): string {
   const posts = action.statements.filter((s) => s.kind === 'postcondition');
   const body = action.statements.filter((s) => s.kind !== 'postcondition');
   env.postconditions = posts;
-  const lines = [...paramExtracts, ...stmtsToJava(body, env, '        ', true)];
+  let bodyLines = stmtsToJava(body, env, '        ', true);
+  // A writing action (same rule as the TypeScript target) saves the state
+  // fields its body reads or writes and puts them back if the body throws
+  // (a failed guard, a missing map key), so a failed action leaves no
+  // partial write. Writes in this target are whole-field sets and map/list
+  // put/set (a field of a stored record cannot be assigned), so a copy of
+  // each collection is enough.
+  if (env.failures.length === 0 && irStmtsWrite(action.statements)) {
+    const text = bodyLines.join('\n');
+    const saved = [...ctx.stateVars.entries()].filter(([name]) => text.includes(`${ctx.stateBeanVar}.get${cap(javaIdent(name))}()`));
+    if (saved.length > 0) {
+      const decl = saved.map(([name, t]) => {
+        const get = `${ctx.stateBeanVar}.get${cap(javaIdent(name))}()`;
+        const copy = t.k === 'map' ? 'java.util.LinkedHashMap' : t.k === 'list' ? 'java.util.ArrayList' : t.k === 'set' ? 'java.util.LinkedHashSet' : null;
+        const v = copy ? `${get} == null ? null : new ${copy}<>(${get})` : get;
+        return `        final ${ctx.java(t)} __saved${cap(javaIdent(name))} = ${v};`;
+      });
+      bodyLines = [
+        ...decl,
+        '        try {',
+        ...bodyLines.map((l) => l.split('\n').map((x) => (x ? '    ' + x : x)).join('\n')),
+        '        } catch (RuntimeException e) {',
+        ...saved.map(([name]) => `            ${ctx.stateBeanVar}.set${cap(javaIdent(name))}(__saved${cap(javaIdent(name))});`),
+        '            throw e;',
+        '        }',
+      ];
+    }
+  }
+  const lines = [...paramExtracts, ...bodyLines];
   // If any part of the action has no translation, refuse the whole action
   // before it reads or writes state, rather than applying part of it.
   if (env.failures.length > 0) {
@@ -971,6 +1011,8 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: JT): TExpr | n
     case 'ident': {
       const n = lookupName(expr.name, env);
       if (n) return n;
+      // `emptyMap` written without parentheses, as most specs do.
+      if (['emptySet', 'emptyMap', 'emptyList'].includes(expr.name)) return translateCall(expr.name, [], env, expected);
       const owners = ctx.variants.get(expr.name);
       if (owners) {
         const owner = expected?.k === 'enum' && owners.includes(expected.name) ? expected.name
@@ -1002,6 +1044,13 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: JT): TExpr | n
       if (target.t.k === 'map') {
         const k = translate(expr.index, env, target.t.key);
         if (!k || !assignable(k.t, target.t.key)) return null;
+        // A key the map does not hold throws naming the map and the key
+        // (SPEC.md 2.5); nothing is defaulted. A nullable value type keeps
+        // get(): a missing key and a stored null both read null.
+        if (!target.t.val.nullable) {
+          const name = escapeString(expr.target.kind === 'ident' ? expr.target.name : target.code);
+          return { code: `${ctx.pkg}.SpecklRuntime.mustGet(${target.code}, ${boxed(k, target.t.key, ctx)}, "${name}")`, t: { ...target.t.val } };
+        }
         return { code: `${target.code}.get(${boxed(k, target.t.key, ctx)})`, t: { ...target.t.val, nullable: true } };
       }
       if (target.t.k === 'list') {

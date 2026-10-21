@@ -153,6 +153,27 @@ frames + stuttering), and the solver is asked whether `p` can be violated.
 | `T \| null` | Optional | Lifted to underlying sort |
 | `type X = ...` | Named alias (one line: `type Id = String`, `type Ids = List(Id)`) | Replaced by its target type before code generation and Z3; `A \| B \| C` declares an enum, `{ ... }` a record |
 
+**Reading a key a map does not hold.** `m[k]` is only defined when `k` is a
+key of `m`. A map starts with no keys (`m := emptyMap`) and gains one when it
+is assigned (`m[k] := v`). Nothing is defaulted, for any value type:
+
+- Generated code fails loudly, inside the action, with
+  `SPECKL-MISSING-KEY: m[k] is not set`: TypeScript throws an `Error`, the
+  Rust method returns it as `Err`, the Go method returns it as `err`, Camel
+  throws `java.util.NoSuchElementException`. In every target an action that
+  writes state saves the fields it touches first and puts them back when it
+  fails, so a write made before the failing read is undone. Outside an
+  action (an invariant check) Rust and Go panic. The exception is a map whose
+  value type is nullable (`Int | null`): there a missing key reads `null`,
+  like a stored `null` (TypeScript, Go, Camel; Rust still fails).
+- Z3 assumes no value for a key the spec has not written: `m := emptyMap`
+  leaves the array unconstrained (it was the constant 0, which the bounded
+  model check could not even parse, so the whole initial state was dropped).
+  A property that needs `m[k]` for an unwritten `k` is therefore reported
+  violated, not proved. A spec gives keys values explicitly (an action that
+  opens the key, as in `compiler/src/__tests__/fixtures/MapTotals.speckdl`)
+  or tests `k in m` before reading.
+
 ### 2.6 Events
 
 ```
