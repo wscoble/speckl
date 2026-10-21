@@ -21,6 +21,7 @@ import { generateTypeScriptFromIR } from '../generators/typescript-from-ir.js';
 import { generateGo } from '../generators/go.js';
 import { generateElm } from '../generators/elm.js';
 import { compileSpec } from '../compile.js';
+import { filesUnder, generate } from './helpers/toolchains.js';
 // @ts-ignore plain ESM helper shared with scripts/verify-z3.mjs
 import { judge, accountObligations } from '../../scripts/lib/obligations.mjs';
 
@@ -245,6 +246,62 @@ describe('IR TypeScript backend: raw statements throw', () => {
     const markers = out.match(/\/\/ SPECKL-UNTRANSLATED/g) ?? [];
     expect(markers.length).toBeGreaterThan(0);
     expect((out.match(/throw new Error\("SPECKL-UNTRANSLATED/g) ?? []).length).toBe(markers.length);
+  });
+});
+
+describe('a statement-level if/else (a missing-key guard) is never dropped', () => {
+  // The TypeScript backend on main replaced a statement-level if/else with a
+  // "manual translation required" comment and ran the rest of the action,
+  // so the first entry of a running total was never written. Every backend
+  // must now translate the block or refuse the action.
+  const src = `speck Probe {
+    state {
+        totals: Map(Nat, Int)
+        grand: Int
+    }
+    init {
+        totals := emptyMap
+        grand := 0
+    }
+    action Add(k: Nat, v: Int) {
+        require v >= 0
+        grand := grand + v
+        if k in totals.keys {
+            totals[k] := totals[k] + v
+        } else {
+            totals[k] := v
+        }
+    }
+}
+`;
+  const file = join(mkdtempSync(join(tmpdir(), 'speckl-ifelse-')), 'Probe.speckdl');
+  writeFileSync(file, src);
+  const sources = (target: 'rust' | 'go' | 'camel', suffix: string) =>
+    filesUnder(generate(file, target), suffix).map((f) => readFileSync(f, 'utf-8')).join('\n');
+
+  it('TypeScript runs either branch: the first add stores the value, the next one adds to it', async () => {
+    const source = generateTs(src, 'Probe.ts');
+    expect(source).not.toContain('manual translation required');
+    expect(typecheck(source, 'Probe.ts')).toEqual([]);
+    const m = new (await load(source, 'ProbeMachine'))();
+    m.Add(1, 100);
+    expect(m.totals.get(1)).toBe(100);
+    m.Add(1, 10);
+    expect(m.totals.get(1)).toBe(110);
+    expect(m.grand).toBe(110);
+  });
+
+  it('Go lowers the if/else; Rust and Camel refuse the action before any write', () => {
+    // `k in totals.keys` on a state map used to come out as Go that does not
+    // compile (`if k in m.Totals.keys {`).
+    const go = sources('go', '.go');
+    expect(go).toContain('\tif mapHas(m.Totals, k) {\n\t\tm.Totals[k] = m.Totals[k] + v\n\t} else {\n\t\tm.Totals[k] = v\n\t}');
+    expect(go).not.toContain(' in m.Totals');
+    const rust = sources('rust', '.rs');
+    expect(rust).toMatch(/return Err\("SPECKL-UNTRANSLATED: Add: 1 untranslated statements?, first: if k in totals\.keys/);
+    expect(rust.indexOf('SPECKL-UNTRANSLATED: Add:')).toBeLessThan(rust.indexOf('self.grand = '));
+    const camel = sources('camel', '.java');
+    expect(camel).toMatch(/SpecklRuntime\.untranslated\("Add: 1 untranslated statements?, first: if k in totals\.keys/);
   });
 });
 
