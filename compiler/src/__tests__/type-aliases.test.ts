@@ -222,6 +222,27 @@ describe('expandTypeAliases', () => {
   });
 });
 
+describe('a cycle next to ordinary aliases', () => {
+  it('resolves the ordinary alias and leaves the cyclic members as written', () => {
+    const src = parseSpeckContent('speck A {\n  type X = Y\n  type Y = X\n  type Id = Nat\n  state {\n    v: X\n    w: Id\n  }\n}\n');
+    const out = expandTypeAliases(src);
+    expect(stateVar(out, 'w')).toEqual({ type: 'primitive', name: 'Nat' });
+    expect(stateVar(out, 'v')).toEqual({ type: 'ident', name: 'X' });
+    expect((named(out, 'X') as TypeAliasNode).target).toEqual({ type: 'ident', name: 'Y' });
+    expect((named(out, 'Id') as TypeAliasNode).target).toEqual({ type: 'primitive', name: 'Nat' });
+  });
+
+  it('round-trips nullable collection targets through the printer', () => {
+    const src = parseSpeckContent('speck A {\n  type Ids = List(Nat) | null\n  type Tags = Set(String) | null\n  type Idx = Map(String, Nat) | null\n}\n');
+    const again = parseSpeckContent(printAST(src));
+    for (const n of ['Ids', 'Tags', 'Idx']) {
+      const t = (named(src, n) as TypeAliasNode).target;
+      expect(t.nullable).toBe(true);
+      expect((named(again, n) as TypeAliasNode).target).toEqual(t);
+    }
+  });
+});
+
 describe('aliases in the IR', () => {
   it('records each alias as a named type and resolves references', () => {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-alias-ir-'));
