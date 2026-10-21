@@ -222,7 +222,7 @@ First npm release. The package was renamed from the unpublished
   - `examples/.speckl-unchecked.json` acknowledges the 31 example obligations
     that are not yet proven. They print as UNCHECKED and never count as
     passed. An entry that becomes proven or no longer exists fails as
-    `STALE-BASELINE`. Today 3 of 34 example verify blocks are proven.
+    `STALE-BASELINE`. Today 5 of 36 example verify blocks are proven.
   - `-t agent` refuses to emit rails if a guard still contains an
     untranslated placeholder (the bogus `const x = {}` lines are gone).
   - The AST Z3 output no longer ends with `(get-model)` after `unsat`, so a
