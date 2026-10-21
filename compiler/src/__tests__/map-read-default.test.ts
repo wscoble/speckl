@@ -114,6 +114,54 @@ describe('TypeScript: a missing key of a numeric map reads 0', () => {
   });
 });
 
+/** A temp spec with a Real-valued map and a nullable numeric map. */
+function realAndNullableSpec(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'speckl-mapread-'));
+  const file = join(dir, 'RN.speckdl');
+  writeFileSync(file, `speck RN {
+    state {
+        prices: Map(Nat, Real)
+        maybe: Map(Nat, Int | null)
+        sum: Real
+        last: Int
+    }
+    init {
+        prices := emptyMap
+        maybe := emptyMap
+        sum := 0.0
+        last := 0
+    }
+    action Add(k: Nat, p: Real) {
+        prices[k] := prices[k] + p
+        sum := sum + prices[k]
+    }
+    action Peek(k: Nat) {
+        require maybe[k] != null
+        last := maybe[k]
+    }
+}
+`);
+  return file;
+}
+
+describe('Real and nullable numeric value types', () => {
+  it('a Real map reads 0 (0.0 in Java) in every backend', () => {
+    const spec = realAndNullableSpec();
+    expect(sources(spec, 'typescript', 'RN.ts')).toContain('this.prices.set(k, (this.prices.get(k) ?? 0) + p);');
+    expect(sources(spec, 'rust', '.rs')).toContain('self.prices.get(&k).copied().unwrap_or_default()');
+    expect(sources(spec, 'camel', '.java')).toContain('getPrices().getOrDefault(k, 0.0)');
+  });
+
+  it('a nullable numeric map keeps its stored null: no 0 default in any backend', () => {
+    const spec = realAndNullableSpec();
+    const tsOut = sources(spec, 'typescript', 'RN.ts');
+    expect(tsOut).toContain('this.last = this.maybe.get(k)!;');
+    expect(tsOut).not.toMatch(/maybe\.get\(k\) \?\? 0/);
+    expect(sources(spec, 'camel', '.java')).toContain('getMaybe().get(k)');
+    expect(sources(spec, 'rust', '.rs')).not.toMatch(/maybe\.get\(&k\)\.copied\(\)\.unwrap_or_default/);
+  });
+});
+
 describe('Rust, Camel and Go agree on 0 for a missing numeric key', () => {
   it('Rust reads numeric maps with unwrap_or_default and translates `:= emptyMap` in init', () => {
     const out = sources(FIXTURE, 'rust', '.rs');

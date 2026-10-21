@@ -121,9 +121,9 @@ First npm release. The package was renamed from the unpublished
   runtime: a running total `m[k] := m[k] + x` stored NaN, and later guards
   on it were silently false. Rust indexed with `m[&k]` (panic) and Camel
   unboxed `m.get(k)` (NullPointerException).
-  - Numeric-valued maps now read `(m.get(k) ?? 0)` (TypeScript),
+  - Maps with a non-nullable numeric value type now read `(m.get(k) ?? 0)` (TypeScript),
     `m.get(&k).copied().unwrap_or_default()` (Rust) and
-    `m.getOrDefault(k, 0L)` (Camel). Maps of other value types are unchanged
+    `m.getOrDefault(k, 0L)` (Camel). Other value types, including `Int | null`, are unchanged
     (non-null assertion, panic, null).
   - `x := emptyMap` (bare, without parentheses) in `init` is now translated
     by the TypeScript, Rust, Camel and Go targets; before, it was emitted

@@ -1020,7 +1020,9 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
 let numericMapVars = new Set<string>();
 
 function isNumericType(t: any): boolean {
-  return t?.type === 'primitive' && ['Nat', 'Int', 'Real', 'Integer', 'Float', 'Number'].includes(t.name);
+  // A nullable value type (`Int | null`) can hold null on purpose; reading
+  // 0 for it would make `m[k] != null` always true.
+  return t?.type === 'primitive' && !t.nullable && ['Nat', 'Int', 'Real', 'Integer', 'Float', 'Number'].includes(t.name);
 }
 
 /**
