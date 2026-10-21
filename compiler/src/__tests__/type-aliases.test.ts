@@ -101,6 +101,38 @@ describe('type alias parsing', () => {
   });
 });
 
+describe('type alias printing round-trips', () => {
+  // printAST output must parse back to the same types. A nullable record
+  // used to print as `{ ... }`, which re-parses as a (non-null) record type.
+  const SRC = `speck A {
+  type Id = String
+  type MaybePoint = Option({ x: Int, y: Int })
+  type MaybeIds = Option(List(Id))
+  type MaybeSet = Option(Set(Id))
+  type MaybeMap = Option(Map(Id, Nat))
+  type MaybeNat = Option(Nat)
+  state {
+    p: Option({ x: Int })
+    q: MaybePoint
+  }
+}
+`;
+  const aliasTargets = (ast: AST) => members(ast)
+    .filter((m): m is TypeAliasNode & { startLine: number } => m.type === 'type_alias')
+    .map((m) => [m.name, m.target]);
+
+  it('keeps every alias target, including a nullable record, through print and re-parse', () => {
+    const before = parseSpeckContent(SRC);
+    const printed = printAST(before);
+    expect(printed).toContain('type MaybePoint = Option({ x: Int, y: Int })');
+    const after = parseSpeckContent(printed);
+    expect(aliasTargets(after)).toEqual(aliasTargets(before));
+    expect(aliasTargets(after)).toHaveLength(6);
+    expect(stateVar(after, 'p')).toEqual(stateVar(before, 'p'));
+    expect(stateVar(after, 'p')).toMatchObject({ type: 'record', nullable: true });
+  });
+});
+
 describe('expandTypeAliases', () => {
   const ast = expandTypeAliases(parseSpeckContent(SPEC));
 
