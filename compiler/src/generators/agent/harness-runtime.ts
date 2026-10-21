@@ -128,22 +128,30 @@ export function findProtectedMention(
 ): string | null {
   const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits', 'file_text', 'new_str', 'old_str', 'before', 'after', 'oldString', 'newString', 'old_text', 'new_text'];
   const norm = (p: string) => p.replace(/\\/g, '/');
-  const prots = protectedPaths.map(p => ({ abs: norm(p.abs), rel: norm(p.rel) }));
+  // Match case-insensitively. Agent harnesses commonly run on macOS (APFS,
+  // case-insensitive by default) and Windows, where `.Claude/settings.json`
+  // IS `.claude/settings.json`; a case-sensitive check let the agent reach
+  // its own rails by changing the case. Comparing lower-cased is fail-closed:
+  // on a case-sensitive filesystem a path that only case-folds to a protected
+  // one is denied rather than risk letting a real rails edit through.
+  const low = (p: string) => p.toLowerCase();
+  const prots = protectedPaths.map(p => ({ abs: norm(p.abs), rel: norm(p.rel), absL: low(norm(p.abs)), relL: low(norm(p.rel)) }));
   const checkString = (s: string): string | null => {
     const ns = norm(s);
+    const nsL = low(ns);
     for (const p of prots) {
-      if (p.abs && ns.includes(p.abs)) return p.abs;
+      if (p.abs && nsL.includes(p.absL)) return p.abs;
       if (p.rel && p.rel !== '.' && !p.rel.startsWith('..')) {
         // Whole path segments only: `.claude/x` hits, `my.claude` does not.
-        const esc = p.rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        if (new RegExp('(^|[^A-Za-z0-9_.-])' + esc + '($|[^A-Za-z0-9_.-])').test(ns)) return p.rel;
+        const esc = p.relL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp('(^|[^a-z0-9_.-])' + esc + '($|[^a-z0-9_.-])').test(nsL)) return p.rel;
       }
     }
     for (const tok of ns.split(/[\s'"=,:()]+/)) {
       if (!tok) continue;
-      const r = norm(resolvePath(cwd, tok));
+      const r = low(norm(resolvePath(cwd, tok)));
       for (const p of prots) {
-        if (p.abs && (r === p.abs || r.startsWith(p.abs))) return p.abs;
+        if (p.abs && (r === p.absL || r.startsWith(p.absL))) return p.abs;
       }
     }
     return null;
@@ -594,6 +602,17 @@ export function harnessProtectedDirs(harnesses: string[]): string[] {
   };
   for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
   return dirs;
+}
+
+/**
+ * Version-control paths no tool may write, for every spec. `.git/hooks/*`
+ * runs as real shell on the next commit/checkout, so an agent allowed to
+ * edit files and run `git commit` could plant a hook that executes outside
+ * the policy; `.git/config` can redirect `core.hooksPath` to the same end.
+ * Both are off limits (normal `git add/commit/push` name neither).
+ */
+export function vcsProtectedDirs(): string[] {
+  return ['.git/hooks', '.git/config'];
 }
 
 /**
@@ -1388,6 +1407,7 @@ export function runAdapter(
   const stateDir = deps.dirname(stateAbs);
   if (stateDir !== projectDir && deps.resolvePath(stateDir, '.') !== deps.resolvePath(projectDir, '.')) protectedAbs.push(stateDir);
   for (const d of harnessProtectedDirs(Object.keys(harnesses))) protectedAbs.push(deps.resolvePath(projectDir, d));
+  for (const d of vcsProtectedDirs()) protectedAbs.push(deps.resolvePath(projectDir, d));
   if (flags['hermes-home']) protectedAbs.push(deps.resolvePath(projectDir, flags['hermes-home']));
   const protectedPaths = protectedAbs.map(abs => {
     const r = deps.relativePath(projectDir, abs).replace(/\\/g, '/');
@@ -1540,6 +1560,6 @@ export function runAdapter(
 export const ADAPTER_FUNCTIONS = [
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
-  harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
+  harnessConfigFile, harnessProtectedDirs, vcsProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
   buildHarnessHooks, mergeHarnessSettings, clineScripts, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness, runAdapter,
 ];

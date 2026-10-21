@@ -506,7 +506,17 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   the agent must not reach the key or `signal.mjs` that way.
 - `Grep`/`Glob` over the whole project can return lines from `.speckl/` (the
   state is integrity-protected, not secret). Keep the key outside the project.
-- Path checks see paths as written; they don't follow symlinks.
+- Path checks see paths as written; they don't follow symlinks. They match
+  the rails paths **case-insensitively**, because the agent commonly runs on
+  a case-insensitive filesystem (macOS APFS, Windows) where `.Claude/` is
+  `.claude/`; on a case-sensitive filesystem a path that only case-folds to a
+  protected one is still denied (fail closed).
+- `.git/hooks` and `.git/config` are protected in every project: a
+  `.git/hooks/*` script runs as real shell on the next commit or checkout, so
+  an agent allowed to edit files and run `git commit` could otherwise plant
+  one that executes outside the policy (`.git/config` can redirect
+  `core.hooksPath` to the same end). Normal `git add`/`commit`/`push` name
+  neither path, so they are unaffected.
 - Cursor can also load Claude Code hooks ("third-party hooks"). Wire one
   harness per project, or Cursor may call the Claude Code adapter with Cursor
   tool names, which it will deny.
