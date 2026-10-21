@@ -121,6 +121,21 @@ describe('TypeScript: a missing key throws, naming the map and the key', () => {
     expect(() => m.Reset(3)).toThrow('Guard failed');
   });
 
+  it('a miss after an earlier write in the same action undoes that write', async () => {
+    const MapTotals = await load(machine(), 'MapTotalsMachine');
+    const m = new MapTotals();
+    m.Open(1);
+    m.Record(1, 10);
+    // Move writes totals[1] and then reads totals[9], which was never opened.
+    expect(() => m.Move(1, 9, 4)).toThrow(/SPECKL-MISSING-KEY: totals\[9\] is not set/);
+    expect(m.totals.get(1)).toBe(10);
+    expect(m.totals.has(9)).toBe(false);
+    m.Open(2);
+    m.Move(1, 2, 4);
+    expect(m.totals.get(1)).toBe(6);
+    expect(m.totals.get(2)).toBe(4);
+  });
+
   it('applies to dot-access reads and to every non-nullable value type', () => {
     const out = sources(probeSpec(), 'typescript', 'Probe.ts');
     expect(out).toContain("this.last = (this.totals.get(k) ?? specklMissing('totals', k)) + 1;");
@@ -162,7 +177,7 @@ describe('Real and nullable value types', () => {
   it('a Real map fails loudly too in every backend', () => {
     const spec = realAndNullableSpec();
     expect(sources(spec, 'typescript', 'RN.ts')).toContain("this.prices.set(k, (this.prices.get(k) ?? specklMissing('prices', k)) + p);");
-    expect(sources(spec, 'rust', '.rs')).toContain('(*self.prices.get(&k).unwrap_or_else(|| speckl_missing("prices", &k)))');
+    expect(sources(spec, 'rust', '.rs')).toContain('(*self.prices.get(&k).ok_or_else(|| speckl_missing_key("prices", &k))?)');
     expect(sources(spec, 'camel', '.java')).toMatch(/SpecklRuntime\.mustGet\(\w+\.getPrices\(\), k, "prices"\)/);
     expect(sources(spec, 'go', '.go')).toContain('specklGet(m.Prices, k, "prices")');
   });
@@ -185,17 +200,22 @@ describe('Real and nullable value types', () => {
 });
 
 describe('Rust, Camel and Go fail loudly on a missing key', () => {
-  it('Rust reads through speckl_missing (panics naming map and key) and translates `:= emptyMap` in init', () => {
+  it('Rust actions return Err naming map and key (no panic) and translate `:= emptyMap` in init', () => {
     const out = sources(FIXTURE, 'rust', '.rs');
-    expect(out).toContain('self.totals.insert(period, ((*self.totals.get(&period).unwrap_or_else(|| speckl_missing("totals", &period))) + amount));');
-    expect(out).toContain('fn speckl_missing<K: std::fmt::Debug + ?Sized>(map: &str, key: &K) -> !');
+    expect(out).toContain('self.totals.insert(period, ((*self.totals.get(&period).ok_or_else(|| speckl_missing_key("totals", &period))?) + amount));');
+    expect(out).toContain('fn speckl_missing_key<K: std::fmt::Debug + ?Sized>(map: &str, key: &K) -> String {');
+    // Move writes totals[src] before it reads totals[dst]: the public method
+    // saves totals, runs the body, and puts totals back when the body fails.
+    expect(out).toContain('let __saved_totals = self.totals.clone();');
+    expect(out).toContain('let __r = self.__speckl_move(src, dst, amount);');
+    expect(out).toContain('if __r.is_err() {\n            self.totals = __saved_totals;');
     expect(out).not.toContain('SPECKL-UNTRANSLATED: init');
     expect(out).not.toContain('unwrap_or_default');
     expect(out).not.toMatch(/self\.(totals|counts)\[/);
   });
 
   it('Rust uses the same read for a non-numeric value type', () => {
-    expect(sources(probeSpec(), 'rust', '.rs')).toContain('self.label = (*self.names.get(&k).unwrap_or_else(|| speckl_missing("names", &k))).clone();');
+    expect(sources(probeSpec(), 'rust', '.rs')).toContain('self.label = (*self.names.get(&k).ok_or_else(|| speckl_missing_key("names", &k))?).clone();');
   });
 
   it('Camel reads through SpecklRuntime.mustGet and translates `:= emptyMap` in init', () => {
@@ -204,13 +224,19 @@ describe('Rust, Camel and Go fail loudly on a missing key', () => {
     expect(out).toContain('throw new java.util.NoSuchElementException("SPECKL-MISSING-KEY: " + name + "[" + key + "] is not set");');
     expect(out).not.toContain('getOrDefault');
     expect(out).not.toContain('SPECKL-UNTRANSLATED: init');
+    // A writing action copies the state it touches and puts it back when the
+    // body throws, so Move leaves totals[src] alone if totals[dst] is missing.
+    expect(out).toContain('final java.util.Map<Long, Long> __savedTotals = mapTotalsState.getTotals() == null ? null : new java.util.LinkedHashMap<>(mapTotalsState.getTotals());');
+    expect(out).toContain('} catch (RuntimeException e) {\n            mapTotalsState.setTotals(__savedTotals);\n            throw e;\n        }');
   });
 
-  it('Go reads through specklGet (panics) and assigns no undefined `emptyMap`', () => {
+  it('Go reads through specklGet, returns the miss as an error with writes undone, and assigns no undefined `emptyMap`', () => {
     const out = sources(FIXTURE, 'go', '.go');
     expect(out).toContain('m.Totals[period] = specklGet(m.Totals, period, "totals") + amount');
     expect(out).toContain('if !(specklGet(m.Totals, period, "totals") > 0) {');
-    expect(out).toContain('panic(fmt.Sprintf("SPECKL-MISSING-KEY: %s[%v] is not set", name, k))');
+    expect(out).toContain('panic(specklMissingKey{fmt.Sprintf("SPECKL-MISSING-KEY: %s[%v] is not set", name, k)})');
+    expect(out).toContain('__savedTotals := specklCloneMap(m.Totals)');
+    expect(out).toContain('\tdefer func() {\n\t\tif err != nil {\n\t\t\tm.Totals = __savedTotals\n\t\t}\n\t}()\n\tdefer specklRecover(&err)');
     expect(out).toContain('m.Totals = map[int64]int64{}');
     expect(out).not.toContain('emptyMap');
   });

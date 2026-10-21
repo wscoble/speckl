@@ -29,6 +29,7 @@
 //
 // See OB1 #3642 for the architecture rationale.
 
+import { irStmtsWrite } from './writes.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -516,7 +517,35 @@ function emitProcessor(ctx: SpeckContext, action: IRAction): string {
   const posts = action.statements.filter((s) => s.kind === 'postcondition');
   const body = action.statements.filter((s) => s.kind !== 'postcondition');
   env.postconditions = posts;
-  const lines = [...paramExtracts, ...stmtsToJava(body, env, '        ', true)];
+  let bodyLines = stmtsToJava(body, env, '        ', true);
+  // A writing action (same rule as the TypeScript target) saves the state
+  // fields its body reads or writes and puts them back if the body throws
+  // (a failed guard, a missing map key), so a failed action leaves no
+  // partial write. Writes in this target are whole-field sets and map/list
+  // put/set (a field of a stored record cannot be assigned), so a copy of
+  // each collection is enough.
+  if (env.failures.length === 0 && irStmtsWrite(action.statements)) {
+    const text = bodyLines.join('\n');
+    const saved = [...ctx.stateVars.entries()].filter(([name]) => text.includes(`${ctx.stateBeanVar}.get${cap(javaIdent(name))}()`));
+    if (saved.length > 0) {
+      const decl = saved.map(([name, t]) => {
+        const get = `${ctx.stateBeanVar}.get${cap(javaIdent(name))}()`;
+        const copy = t.k === 'map' ? 'java.util.LinkedHashMap' : t.k === 'list' ? 'java.util.ArrayList' : t.k === 'set' ? 'java.util.LinkedHashSet' : null;
+        const v = copy ? `${get} == null ? null : new ${copy}<>(${get})` : get;
+        return `        final ${ctx.java(t)} __saved${cap(javaIdent(name))} = ${v};`;
+      });
+      bodyLines = [
+        ...decl,
+        '        try {',
+        ...bodyLines.map((l) => l.split('\n').map((x) => (x ? '    ' + x : x)).join('\n')),
+        '        } catch (RuntimeException e) {',
+        ...saved.map(([name]) => `            ${ctx.stateBeanVar}.set${cap(javaIdent(name))}(__saved${cap(javaIdent(name))});`),
+        '            throw e;',
+        '        }',
+      ];
+    }
+  }
+  const lines = [...paramExtracts, ...bodyLines];
   // If any part of the action has no translation, refuse the whole action
   // before it reads or writes state, rather than applying part of it.
   if (env.failures.length > 0) {

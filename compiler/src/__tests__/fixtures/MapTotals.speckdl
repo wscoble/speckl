@@ -2,7 +2,9 @@
 // fails loudly in generated code (TypeScript throws, Rust and Go panic, Java
 // throws), naming the map and the key; nothing reads as 0. Z3 assumes no
 // value for it either. Open starts a period at 0; Record and Reset on a
-// period never opened fail.
+// period never opened fail. Move writes the source period before it reads
+// the target, so moving into a period never opened must roll that write
+// back (every target restores earlier writes of a failed action).
 speck MapTotals {
     state {
         totals: Map(Nat, Int)
@@ -33,5 +35,11 @@ speck MapTotals {
         grand := grand - totals[period]
         totals[period] := 0
         counts[period] := 0
+    }
+
+    action Move(src: Nat, dst: Nat, amount: Int) {
+        require amount >= 0
+        totals[src] := totals[src] - amount
+        totals[dst] := totals[dst] + amount
     }
 }

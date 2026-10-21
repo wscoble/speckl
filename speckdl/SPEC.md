@@ -158,11 +158,14 @@ key of `m`. A map starts with no keys (`m := emptyMap`) and gains one when it
 is assigned (`m[k] := v`). Nothing is defaulted, for any value type:
 
 - Generated code fails loudly, inside the action, with
-  `SPECKL-MISSING-KEY: m[k] is not set`: TypeScript throws an `Error` (the
-  action's rollback then restores state), Rust and Go panic, Camel throws
-  `java.util.NoSuchElementException`. The exception is a map whose value type
-  is nullable (`Int | null`): there a missing key reads `null`, like a stored
-  `null` (TypeScript, Go, Camel; Rust still panics).
+  `SPECKL-MISSING-KEY: m[k] is not set`: TypeScript throws an `Error`, the
+  Rust method returns it as `Err`, the Go method returns it as `err`, Camel
+  throws `java.util.NoSuchElementException`. In every target an action that
+  writes state saves the fields it touches first and puts them back when it
+  fails, so a write made before the failing read is undone. Outside an
+  action (an invariant check) Rust and Go panic. The exception is a map whose
+  value type is nullable (`Int | null`): there a missing key reads `null`,
+  like a stored `null` (TypeScript, Go, Camel; Rust still fails).
 - Z3 assumes no value for a key the spec has not written: `m := emptyMap`
   leaves the array unconstrained (it was the constant 0, which the bounded
   model check could not even parse, so the whole initial state was dropped).

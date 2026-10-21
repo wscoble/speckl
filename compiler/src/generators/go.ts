@@ -1,3 +1,4 @@
+import { statementsWrite } from './typescript-state-machine.js';
 import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ConstraintNode, EventNode } from '../parser.js';
 import fs from 'fs';
 import path from 'path';
@@ -50,14 +51,53 @@ import (
 	"time"
 )
 
-// specklGet reads m[k]. A key the map does not hold panics naming the map
-// and the key (SPEC.md 2.5); nothing is defaulted.
+// specklMissingKey is the error for a read of a key a map does not hold
+// (SPEC.md 2.5).
+type specklMissingKey struct{ msg string }
+
+func (e specklMissingKey) Error() string { return e.msg }
+
+// specklGet reads m[k]. A key the map does not hold panics with a
+// specklMissingKey naming the map and the key; nothing is defaulted. An
+// action recovers it as its error and restores its earlier writes.
 func specklGet[M ~map[K]V, K comparable, V any](m M, k K, name string) V {
 	v, ok := m[k]
 	if !ok {
-		panic(fmt.Sprintf("SPECKL-MISSING-KEY: %s[%v] is not set", name, k))
+		panic(specklMissingKey{fmt.Sprintf("SPECKL-MISSING-KEY: %s[%v] is not set", name, k)})
 	}
 	return v
+}
+
+// specklRecover, deferred by an action, turns a specklMissingKey panic into
+// the action's error. Any other panic continues.
+func specklRecover(err *error) {
+	if r := recover(); r != nil {
+		mk, ok := r.(specklMissingKey)
+		if !ok {
+			panic(r)
+		}
+		*err = mk
+	}
+}
+
+// specklCloneMap and specklCloneSlice copy a state field for an action's
+// rollback point (values are copied as Go copies them).
+func specklCloneMap[M ~map[K]V, K comparable, V any](m M) M {
+	if m == nil {
+		return nil
+	}
+	c := make(M, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
+func specklCloneSlice[S ~[]E, E any](s S) S {
+	if s == nil {
+		return nil
+	}
+	return append(S(nil), s...)
 }
 
 func mapHas[M ~map[K]V, K comparable, V any](m M, k K) bool { _, ok := m[k]; return ok }
@@ -1527,8 +1567,36 @@ function emitAction(
 
   let body = bodyLines.length ? bodyLines.join('\n') : '\treturn';
   body += '\n\treturn';
+  body = rollbackPrologue(action, body, nameMap, speckName, enumMap) + body;
 
   return `// Execute action: ${action.name}\nfunc (m *${goName(speckName)}Machine) ${methodName}(${params}) ${retSig} {\n${body}\n}`;
+}
+
+/**
+ * A writing action (same rule as the TypeScript target) saves the fields
+ * its body names as `m.<Field>` (all fields if it calls a method on `m`)
+ * and restores them when it returns an error: a failed guard or a missing
+ * map key, which specklRecover turns from a panic into the error. Deferred
+ * functions run last-in first-out, so the recover runs before the restore.
+ */
+function rollbackPrologue(action: ActionNode, body: string, nameMap: Map<string, string>, speckName: string, enumMap: Map<string, string[]>): string {
+  const lines: string[] = [];
+  if (statementsWrite(action.statements)) {
+    const fields = [...stateVarTypes.entries()].map(([name, t]) => ({ go: nameMap.get(name) || camelCase(name), t }));
+    const goFields = new Set(fields.map((f) => f.go));
+    const callsMethod = [...body.matchAll(/\bm\.(\w+)\s*\(/g)].some((x) => !goFields.has(x[1]));
+    const saved = callsMethod ? fields : fields.filter((f) => new RegExp(`\\bm\\.${f.go}\\b`).test(body));
+    if (saved.length > 0) {
+      for (const f of saved) {
+        const ty = goType(f.t, speckName, enumMap);
+        const copy = ty.startsWith('map[') ? `specklCloneMap(m.${f.go})` : ty.startsWith('[]') ? `specklCloneSlice(m.${f.go})` : `m.${f.go}`;
+        lines.push(`\t__saved${f.go} := ${copy}`);
+      }
+      lines.push('\tdefer func() {', '\t\tif err != nil {', ...saved.map((f) => `\t\t\tm.${f.go} = __saved${f.go}`), '\t\t}', '\t}()');
+    }
+  }
+  if (body.includes('specklGet(')) lines.push('\tdefer specklRecover(&err)');
+  return lines.length ? lines.join('\n') + '\n' : '';
 }
 
 // ─── handlers (HTTP + htmx surface) ─────────────────────────────────

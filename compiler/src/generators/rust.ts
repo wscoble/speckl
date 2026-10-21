@@ -26,6 +26,7 @@
 //     placeholder struct (marked SPECKL-UNRESOLVED) whose values cannot be
 //     constructed by generated code.
 
+import { irStmtsWrite } from './writes.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AST, InvariantMemberNode } from '../parser.js';
@@ -352,9 +353,14 @@ fn speckl_untranslated(source: &str) -> ! {
     panic!("SPECKL-UNTRANSLATED: {}", source)
 }
 
-/// Read of a key a map does not hold (SPEC.md 2.5). Panics naming both.
+/// Error for a read of a key a map does not hold (SPEC.md 2.5).
+fn speckl_missing_key<K: std::fmt::Debug + ?Sized>(map: &str, key: &K) -> String {
+    format!("SPECKL-MISSING-KEY: {}[{:?}] is not set", map, key)
+}
+
+/// The same read outside an action (a predicate returning bool): panics.
 fn speckl_missing<K: std::fmt::Debug + ?Sized>(map: &str, key: &K) -> ! {
-    panic!("SPECKL-MISSING-KEY: {}[{:?}] is not set", map, key)
+    panic!("{}", speckl_missing_key(map, key))
 }
 
 /// now(): Unix time in seconds.
@@ -482,6 +488,8 @@ class Env {
   /** Set when a translation read state (init values that read state run after the struct exists). */
   touchedState = false;
   usesOld = false;
+  /** Inside an action method (returns Result): a missing map key is an Err there. */
+  inAction = false;
   /** Return type, once known; undefined while discovering it. */
   returnType?: RT;
   discoveredReturn?: RT;
@@ -492,6 +500,7 @@ class Env {
     if (parent) {
       this.locals = new Map(parent.locals);
       this.returnType = parent.returnType;
+      this.inAction = parent.inAction;
     }
   }
 
@@ -523,6 +532,7 @@ function emitAction(ctx: Ctx, action: IRAction): string {
 
   const run = (returnType: RT | undefined) => {
     const env = new Env(ctx, 'self');
+    env.inAction = true;
     env.postconditions = posts;
     env.returnType = returnType;
     const params = action.params.map((p) => {
@@ -554,7 +564,43 @@ function emitAction(ctx: Ctx, action: IRAction): string {
     );
   }
   const doc = action.doc ? oneLine(action.doc) : `Action ${action.name}.`;
-  return `    /// ${doc}\n    pub fn ${fieldIdent(action.name)}(&mut self${params.length ? ', ' + params.join(', ') : ''}) -> Result<${rustRet}, String> {\n${lines.join('\n')}\n    }`;
+  const fname = fieldIdent(action.name);
+  const sig = (name: string, ps: string[], vis: string) =>
+    `${vis}fn ${name}(&mut self${ps.length ? ', ' + ps.join(', ') : ''}) -> Result<${rustRet}, String>`;
+  if (!irStmtsWrite(action.statements) || env.failures.length > 0) {
+    return `    /// ${doc}\n    ${sig(fname, params, 'pub ')} {\n${lines.join('\n')}\n    }`;
+  }
+  // A writing action saves the fields its body refers to and puts them back
+  // when the body returns Err (a failed guard, a missing map key), so a
+  // failed action leaves no partial write. Same rule as the TypeScript target.
+  const keys = rollbackFields(lines.join('\n'), ctx);
+  const outer = params.map((p) => p.replace(/^mut /, ''));
+  const args = outer.map((p) => p.slice(0, p.indexOf(':')));
+  const inner = `__speckl_${fname.replace(/^r#/, "")}`;
+  return [
+    `    /// ${doc}`,
+    `    ${sig(fname, outer, 'pub ')} {`,
+    ...keys.map((k) => `        let __saved_${k.replace(/^r#/, "")} = self.${k}.clone();`),
+    `        let __r = self.${inner}(${args.join(', ')});`,
+    `        if __r.is_err() {`,
+    ...keys.map((k) => `            self.${k} = __saved_${k.replace(/^r#/, "")};`),
+    `        }`,
+    `        __r`,
+    `    }`,
+    '',
+    `    ${sig(inner, params, '')} {\n${lines.join('\n')}\n    }`,
+  ].join('\n');
+}
+
+/**
+ * The machine fields an action body can reach: the ones it names as
+ * `self.<field>`, or every field if it calls a method on `self` directly.
+ */
+function rollbackFields(body: string, ctx: Ctx): string[] {
+  const all = [...[...ctx.stateVars.keys()].map(fieldIdent), 'decision_log'];
+  const fields = new Set(all);
+  if ([...body.matchAll(/\bself\.(\w+)\s*\(/g)].some((m) => !fields.has(m[1]))) return all;
+  return all.filter((k) => new RegExp(`\\bself\\.${k}\\b`).test(body));
 }
 
 function stmtsToRust(stmts: IRStmt[], env: Env, indent: string, topLevel = false): { lines: string[]; returned: boolean } {
@@ -822,10 +868,15 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: RT): TExpr | n
         const k = translate(expr.index, env, target.t.key);
         const kc = k && borrow(k, target.t.key, ctx);
         if (kc == null) return null;
-        // A key the map does not hold panics naming the map and the key
-        // (SPEC.md 2.5); nothing is defaulted. Still a place, like m[&k].
+        // A key the map does not hold fails naming the map and the key
+        // (SPEC.md 2.5); nothing is defaulted. In an action it is an Err,
+        // and the action's rollback restores earlier writes; in a predicate
+        // (which returns bool) it panics. Still a place, like m[&k].
         const name = rustString(expr.target.kind === 'ident' ? expr.target.name : target.code);
-        return { code: `(*${target.code}.get(${kc}).unwrap_or_else(|| speckl_missing("${name}", ${kc})))`, t: target.t.val, place: true };
+        const code = env.inAction
+          ? `(*${target.code}.get(${kc}).ok_or_else(|| speckl_missing_key("${name}", ${kc}))?)`
+          : `(*${target.code}.get(${kc}).unwrap_or_else(|| speckl_missing("${name}", ${kc})))`;
+        return { code, t: target.t.val, place: true };
       }
       if (target.t.k === 'list') {
         const i = translate(expr.index, env, U64);
@@ -970,6 +1021,7 @@ function translateCall(fn: string, argExprs: IRExpr[], env: Env, expected?: RT):
   if (fn === 'old' && argExprs.length === 1) {
     if (env.stateRef !== 'self') return null;
     const oldEnv = new Env(ctx, 'old_state');
+    oldEnv.inAction = env.inAction;
     const v = translate(argExprs[0], oldEnv, expected);
     if (!v) return null;
     env.root().usesOld = true;

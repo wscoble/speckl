@@ -1,3 +1,4 @@
+import { PURE_METHODS, PURE_FUNCTIONS } from './writes.js';
 import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ActionStatement, ConstraintNode, VerifyNode, EventNode, TypeExpr } from '../parser.js';
 import fs from 'fs';
 import path from 'path';
@@ -958,20 +959,6 @@ export function statementsWrite(stmts: ActionStatement[]): boolean {
     }
   });
 }
-
-/** Method names that only read their receiver. */
-const PURE_METHODS = new Set([
-  'has', 'get', 'contains', 'containsKey', 'keys', 'values', 'entries', 'size', 'length', 'len',
-  'includes', 'indexOf', 'some', 'every', 'filter', 'map', 'find', 'slice', 'concat', 'toString',
-  'startsWith', 'endsWith', 'toLowerCase', 'toUpperCase', 'trim', 'split', 'join', 'count', 'sum',
-  'min', 'max', 'abs', 'floor', 'ceil', 'round', 'isEmpty', 'first', 'last',
-]);
-
-/** Free functions the generator translates to pure expressions. */
-const PURE_FUNCTIONS = new Set([
-  'len', 'min', 'max', 'abs', 'floor', 'ceil', 'round', 'sum', 'count', 'now', 'size', 'contains',
-  'keys', 'values', 'isEmpty', 'append', 'concat', 'old', 'not', 'and', 'or', 'has', 'str', 'int',
-]);
 
 /**
  * True if `expr` calls anything not known to be a pure read: a method not in

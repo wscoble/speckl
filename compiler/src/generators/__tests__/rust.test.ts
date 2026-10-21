@@ -46,7 +46,12 @@ function method(lib: string, name: string): string {
   const start = lib.indexOf(`pub fn ${name}(`);
   expect(start, `method ${name}`).toBeGreaterThanOrEqual(0);
   const end = lib.indexOf('\n    }\n', start);
-  return lib.slice(start, end);
+  const head = lib.slice(start, end);
+  // A writing action is a public wrapper (save, call, restore on Err)
+  // around a private `__speckl_<name>` that holds the translated body.
+  const inner = lib.indexOf(`fn __speckl_${name.replace(/^r#/, '')}(`);
+  if (inner < 0) return head;
+  return head + '\n' + lib.slice(inner, lib.indexOf('\n    }\n', inner));
 }
 
 describe('Rust target — ToggleSwitch', () => {
@@ -125,7 +130,7 @@ describe('Rust target — translation', () => {
   it('translates map and list reads and writes, lets and Option assignment', () => {
     const credit = method(lib, 'credit');
     expect(credit).toContain('if !(self.accounts.contains_key(&who)) {');
-    expect(credit).toContain('let mut a: Account = (*self.accounts.get(&who).unwrap_or_else(|| speckl_missing("accounts", &who))).clone();');
+    expect(credit).toContain('let mut a: Account = (*self.accounts.get(&who).ok_or_else(|| speckl_missing_key("accounts", &who))?).clone();');
     expect(credit).toContain('self.balances.insert(self.count, amount);');
     expect(credit).toContain('self.seen = { let mut v = self.seen.clone(); v.push(self.count); v };');
     expect(credit).toContain('self.seen[(0u64) as usize] = self.count;');
