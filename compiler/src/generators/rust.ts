@@ -781,6 +781,8 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: RT): TExpr | n
       }
       const n = lookupName(expr.name, env);
       if (n) return n;
+      // `emptyMap` written without parentheses, as most specs do.
+      if (['emptySet', 'emptyMap', 'emptyList'].includes(expr.name)) return translateCall(expr.name, [], env, expected);
       const owners = ctx.variants.get(expr.name);
       if (owners) {
         const exp = expected?.k === 'option' ? expected.inner : expected;
@@ -815,7 +817,13 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: RT): TExpr | n
         const k = translate(expr.index, env, target.t.key);
         const kc = k && borrow(k, target.t.key, ctx);
         if (kc == null) return null;
-        // A missing key panics: reading an absent entry fails closed.
+        // A numeric map reads 0 for an absent key, as the Z3 encoding
+        // (emptyMap is a constant array of 0) and the Go backend do; panicking
+        // here made a running total like `m[k] + x` unusable on a new key.
+        if (isNum(target.t.val)) {
+          return { code: `${target.code}.get(${kc}).copied().unwrap_or_default()`, t: target.t.val };
+        }
+        // Any other value type: a missing key panics (fails closed).
         return { code: `${target.code}[${kc}]`, t: target.t.val, place: true };
       }
       if (target.t.k === 'list') {

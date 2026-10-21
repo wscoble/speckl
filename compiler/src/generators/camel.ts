@@ -971,6 +971,8 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: JT): TExpr | n
     case 'ident': {
       const n = lookupName(expr.name, env);
       if (n) return n;
+      // `emptyMap` written without parentheses, as most specs do.
+      if (['emptySet', 'emptyMap', 'emptyList'].includes(expr.name)) return translateCall(expr.name, [], env, expected);
       const owners = ctx.variants.get(expr.name);
       if (owners) {
         const owner = expected?.k === 'enum' && owners.includes(expected.name) ? expected.name
@@ -1002,6 +1004,12 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: JT): TExpr | n
       if (target.t.k === 'map') {
         const k = translate(expr.index, env, target.t.key);
         if (!k || !assignable(k.t, target.t.key)) return null;
+        // A numeric map reads 0 for an absent key, as the Z3 encoding and the
+        // Go backend do (unboxing the null from get() threw instead).
+        if (isNumeric(target.t.val) && !target.t.val.nullable) {
+          const zero = target.t.val.k === 'double' ? '0.0' : '0L';
+          return { code: `${target.code}.getOrDefault(${boxed(k, target.t.key, ctx)}, ${zero})`, t: { ...target.t.val } };
+        }
         return { code: `${target.code}.get(${boxed(k, target.t.key, ctx)})`, t: { ...target.t.val, nullable: true } };
       }
       if (target.t.k === 'list') {

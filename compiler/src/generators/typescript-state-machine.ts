@@ -253,6 +253,9 @@ function emitSpeck(speck: SpeckNode): string {
   const mapVarNames = new Set(stateVars
     .filter(v => v.typeExpr?.type === 'map' || (v.typeExpr?.type === 'ident' && v.typeExpr?.name && /^Map/i.test(v.typeExpr.name)))
     .map(v => v.name));
+  numericMapVars = new Set(stateVars
+    .filter(v => v.typeExpr?.type === 'map' && isNumericType(v.typeExpr.valueType))
+    .map(v => v.name));
 
   const stateProperties = stateVars.map(v => {
     return `  ${v.name}: ${tsType(v.typeExpr, speck.name, enumMap)};`;
@@ -269,7 +272,10 @@ function emitSpeck(speck: SpeckNode): string {
         const name = cleanName(a.name);
         const expr = cleanExpr(a.expr);
         // Replace bare state literals with enum refs in init
-        const enumRef = replaceStateWithEnum(expr, stateEnumName, allKnownStateValues);
+        const enumRef = replaceStateWithEnum(expr, stateEnumName, allKnownStateValues)
+          .replace(/^emptyMap(\(\))?$/, 'new Map()')
+          .replace(/^emptySet(\(\))?$/, 'new Set()')
+          .replace(/^emptyList(\(\))?$/, '[]');
         return `    this.${name} = ${enumRef};`;
       }).join('\n')
     : '';
@@ -823,13 +829,12 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   // 5a-pre: Map dot-access rewriting (mapVar.paramName -> mapVar.get(paramName)!)
   //   Handle SpeckDL syntax where "clients.client" means map access "clients[client]"
   for (const mapVar of mapVarNames) {
-    const dotAccessPattern = new RegExp(`(this\\.)?${mapVar}\\.(\\w+)`, 'g');
+    const dotAccessPattern = new RegExp(`((?:\\b[A-Za-z_$][\\w$]*\\.)*)\\b${mapVar}\\.(\\w+)`, 'g');
     ts = ts.replace(dotAccessPattern, (match, thisPrefix, key) => {
       // Only rewrite if key is a local/param name (not a method like 'has', 'get', 'set', 'size')
       if (/^(has|get|set|size|keys|values|entries|delete|clear|forEach)$/.test(key)) return match;
       if (localNames.has(key)) {
-        const prefix = thisPrefix || '';
-        return `${prefix}${mapVar}.get(${key})!`;
+        return mapRead(`${thisPrefix}${mapVar}`, mapVar, key);
       }
       return match;
     });
@@ -937,7 +942,8 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   });
 
   // 5d6: emptySet -> new Set()
-  ts = ts.replace(/\bemptySet\b/g, 'new Set()');
+  ts = ts.replace(/\bemptySet\b(\(\))?/g, 'new Set()');
+  ts = ts.replace(/\bemptyMap\b(\(\))?/g, 'new Map()');
 
   // 5e: Clean up trailing empty comparisons (===) — expression has no RHS after old() removal
   //     "accounts[t.from].debits_posted ===" -> "accounts[t.from].debits_posted === accounts[t.from].debits_posted"
@@ -951,31 +957,23 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   //     Add non-null assertion (!) because Map.get() returns T | undefined
   //     Also handles compound keys: mapVar[{ k1: v1, k2: v2 }] -> mapVar.get(v1)!.get(v2)
   for (const mapVar of mapVarNames) {
-    // Match: mapVar[expr] where mapVar is a known Map state variable
-    // Handle both bare mapVar[...] and this.mapVar[...]
+    // Match: mapVar[expr] where mapVar is a known Map state variable, with
+    // any receiver chain in front of it (this.mapVar[...], a.b.mapVar[...]).
+    // The chain is part of the match so a wrapped read such as
+    // `(this.m.get(k) ?? 0)` encloses the whole receiver.
     // The inner expr needs rewriting for this-prefixing
-    const barePattern = new RegExp('\\b(' + mapVar + ')\\[([^\\]]+)\\]', 'g');
-    ts = ts.replace(barePattern, (match, varName, innerExpr) => {
+    const pattern = new RegExp('((?:\\b[A-Za-z_$][\\w$]*\\.)*)\\b(' + mapVar + ')\\[([^\\]]+)\\]', 'g');
+    ts = ts.replace(pattern, (match, receiver, varName, innerExpr) => {
+      const target = `${receiver}${varName}`;
       // Check for compound key: { k1: v1, k2: v2 }
       const compoundMatch = innerExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
       if (compoundMatch) {
         const k1Val = rewriteExpr(compoundMatch[2].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
         const k2Val = rewriteExpr(compoundMatch[4].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        return `${varName}.get(${k1Val})!.get(${k2Val})!`;
+        return `${target}.get(${k1Val})!.get(${k2Val})!`;
       }
       const rewrittenInner = rewriteExpr(innerExpr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-      return `${varName}.get(${rewrittenInner})!`;
-    });
-    const thisPattern = new RegExp('\\b(this\\.' + mapVar + ')\\[([^\\]]+)\\]', 'g');
-    ts = ts.replace(thisPattern, (match, varName, innerExpr) => {
-      const compoundMatch = innerExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
-      if (compoundMatch) {
-        const k1Val = rewriteExpr(compoundMatch[2].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        const k2Val = rewriteExpr(compoundMatch[4].trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        return `${varName}.get(${k1Val})!.get(${k2Val})!`;
-      }
-      const rewrittenInner = rewriteExpr(innerExpr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-      return `${varName}.get(${rewrittenInner})!`;
+      return mapRead(target, varName, rewrittenInner);
     });
   }
   // 5h: .size() -> .size  (Set/Map size property, not a method in JS)
@@ -1017,6 +1015,25 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
 }
 
 // Helpers ------------------------------------------------------------------
+
+/** Numeric-valued Map state variables of the speck being emitted. */
+let numericMapVars = new Set<string>();
+
+function isNumericType(t: any): boolean {
+  return t?.type === 'primitive' && ['Nat', 'Int', 'Real', 'Integer', 'Float', 'Number'].includes(t.name);
+}
+
+/**
+ * Read `map[key]`. A numeric map reads 0 for a key it does not hold: the Z3
+ * encoding (emptyMap is a constant array of 0, so proofs assume it) and the
+ * Go backend already do. `Map.get` alone gave undefined, so a running total
+ * like `m[k] + x` became NaN. Other value types keep the non-null assertion.
+ */
+function mapRead(target: string, mapVar: string, key: string): string {
+  return numericMapVars.has(mapVar)
+    ? `(${target}.get(${key}) ?? 0)`
+    : `${target}.get(${key})!`;
+}
 
 function memberKey(m: MemberNode): string {
   if (m.type === 'action') return `action:${m.name}`;

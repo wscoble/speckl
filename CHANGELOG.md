@@ -114,6 +114,25 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
+- **A missing key of a numeric map read as NaN in TypeScript** (#27). The
+  Z3 encoding treats `emptyMap` as a constant array of 0, so proofs assume
+  `m[k]` is 0 for a key never written, and Go's map read already returns 0.
+  The TypeScript target emitted `this.m.get(k)!`, which is `undefined` at
+  runtime: a running total `m[k] := m[k] + x` stored NaN, and later guards
+  on it were silently false. Rust indexed with `m[&k]` (panic) and Camel
+  unboxed `m.get(k)` (NullPointerException).
+  - Numeric-valued maps now read `(m.get(k) ?? 0)` (TypeScript),
+    `m.get(&k).copied().unwrap_or_default()` (Rust) and
+    `m.getOrDefault(k, 0L)` (Camel). Maps of other value types are unchanged
+    (non-null assertion, panic, null).
+  - `x := emptyMap` (bare, without parentheses) in `init` is now translated
+    by the TypeScript, Rust, Camel and Go targets; before, it was emitted
+    verbatim (TypeScript, Go: undefined identifier) or marked
+    `SPECKL-UNTRANSLATED` (Rust, Camel: the machine could not be constructed).
+  - Regression fixture `src/__tests__/fixtures/MapTotals.speckdl`: checked
+    with `tsc --strict` and run in `npm test`; run with `cargo test` and
+    `go test` and compiled with `javac` in `npm run test:compile`.
+
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 
   It now works from the IR, like the Camel target, and translates expressions with their types:

@@ -853,7 +853,9 @@ function emitSpeck(speck: SpeckNode): string {
     .map(v => `\tm.${v.goName} = ${defaultGoValue(v.typeExpr, speck.name, enumMap)}`)
     .join('\n');
   const overrides = ((initNode?.assignments ?? []) as any[])
-    .filter((a: any) => !/^\w*\.(empty|now)/.test(cleanExpr(a.expr)))
+    // `x := emptyMap` (likewise emptySet/emptyList) is what the defaults
+    // above already did; Go has no identifier by that name.
+    .filter((a: any) => !/^\w*\.(empty|now)/.test(cleanExpr(a.expr)) && !/^empty(Map|Set|List)(\(\))?$/.test(cleanExpr(a.expr)))
     .map((a: any) => {
       const gname = nameMap.get(cleanName(a.name)) || camelCase(cleanName(a.name));
       let expr = rewriteGoExpr(cleanExpr(a.expr), nameMap, mapVarOrigNames, new Set<string>(), stateEnumName, knownStateValues);

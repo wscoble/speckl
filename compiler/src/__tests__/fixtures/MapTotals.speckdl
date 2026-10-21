@@ -1,0 +1,31 @@
+// Fixture for reading a key a numeric map does not hold yet. A running
+// total keyed by period starts every new key at 0, which is what the Z3
+// encoding assumes (emptyMap is a constant array of 0). Generated code must
+// agree: no NaN (TypeScript), no panic (Rust), no NullPointerException (Java).
+speck MapTotals {
+    state {
+        totals: Map(Nat, Int)
+        counts: Map(Nat, Nat)
+        grand: Int
+    }
+
+    init {
+        totals := emptyMap
+        counts := emptyMap
+        grand := 0
+    }
+
+    action Record(period: Nat, amount: Int) {
+        require amount >= 0
+        totals[period] := totals[period] + amount
+        counts[period] := counts[period] + 1
+        grand := grand + amount
+    }
+
+    action Reset(period: Nat) {
+        require totals[period] > 0
+        grand := grand - totals[period]
+        totals[period] := 0
+        counts[period] := 0
+    }
+}
