@@ -101,6 +101,42 @@ describe('type alias parsing', () => {
   });
 });
 
+describe('alias targets with nested type arguments', () => {
+  // The Map and `|` splitters must find the top-level comma / pipe, not one
+  // inside a nested generic or a record key.
+  const ast = expandTypeAliases(parseSpeckContent(`speck A {
+  type Id = String
+  type Votes = Map<Id, List<Nat>>
+  type ByPair = Map({ a: Nat, b: Nat }, Id)
+  type ByPairAngle = Map<{ a: Nat, b: Id }, Nat>
+  type MaybeRec = { a: Nat, b: Nat } | null
+  type MaybeMap = Map(Id, Nat) | null
+  state {
+    v: Votes
+  }
+}
+`));
+  const target = (name: string) => (named(ast, name) as TypeAliasNode).target;
+  const nat = { type: 'primitive', name: 'Nat' };
+  const str = { type: 'primitive', name: 'String' };
+  const pair = (b: object) => ({ type: 'record', fields: [{ name: 'a', type: nat }, { name: 'b', type: b }] });
+
+  it('splits Map<K, V> after a nested generic value', () => {
+    expect(target('Votes')).toEqual({ type: 'map', keyType: str, valueType: { type: 'list', elementType: nat } });
+  });
+
+  it('keeps a record key whole in both Map forms', () => {
+    expect(target('ByPair')).toEqual({ type: 'map', keyType: pair(nat), valueType: str });
+    expect(target('ByPairAngle')).toEqual({ type: 'map', keyType: pair(str), valueType: nat });
+  });
+
+  it('reads `| null` after a record or a Map as nullable, not as an enum', () => {
+    expect(named(ast, 'MaybeRec')!.type).toBe('type_alias');
+    expect(target('MaybeRec')).toEqual({ ...pair(nat), nullable: true });
+    expect(target('MaybeMap')).toEqual({ type: 'map', keyType: str, valueType: nat, nullable: true });
+  });
+});
+
 describe('type alias printing round-trips', () => {
   // printAST output must parse back to the same types. A nullable record
   // used to print as `{ ... }`, which re-parses as a (non-null) record type.
