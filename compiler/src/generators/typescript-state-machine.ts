@@ -713,6 +713,9 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
         // as that one literal; widen it to the enum type.
         const enumInit = expr.match(/^(\w+)\.(\w+)$/);
         const annot = keyword === 'let' && enumInit && enumOwner.get(enumInit[2]) === enumInit[1] ? `: ${enumInit[1]}` : '';
+        // A local bound to a list (literal, emptyList, list param/state var or
+        // another list local) is a list for append(xs, local) below.
+        if (/^\[|^\(\[\] as any\[\]\)$/.test(expr) || listExprs.has(expr)) listExprs.add(stmt.name);
         bodyParts.push(`${indent}${keyword} ${stmt.name}${annot} = ${expr};`);
         break;
       }
@@ -896,7 +899,15 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
   const firstMutation = lines.findIndex(l =>
     /\bthis\.\w+(?:\.get\([^\n]*\)!)?(?:\.\w+|\[[^\n]*\])*\s*=[^=]/.test(l) ||
     /\bthis\.\w+\.(?:set|delete|add|push|clear)\(/.test(l));
-  const needsRollback = firstMutation >= 0 && lines.slice(firstMutation + 1).some(l => /\bthrow new Error\(/.test(l));
+  // Besides explicit throws, a non-null assertion (`m.get(k)!`) throws a
+  // TypeError when the key is missing: directly when dereferenced on the same
+  // line, or later through a local bound to it.
+  const assertedLocals = lines
+    .map(l => l.match(/^\s*(?:const|let)\s+(\w+)(?::[^=]+)?\s*=.*\)!;\s*$/)?.[1])
+    .filter((n): n is string => !!n);
+  const canThrow = (l: string) => /\bthrow new Error\(/.test(l) || /\)!/.test(l)
+    || assertedLocals.some(n => new RegExp(`\\b${n}(?:\\.|\\[)`).test(l));
+  const needsRollback = firstMutation >= 0 && lines.slice(firstMutation + 1).some(canThrow);
   if (needsRollback) {
     const className = `${speckName}Machine`;
     return `  ${action.name}(${params}) {

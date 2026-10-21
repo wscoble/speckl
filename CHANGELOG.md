@@ -152,14 +152,16 @@ First npm release. The package was renamed from the unpublished
     and string literals inside record literals are translated. Anything else
     (an unreadable statement, a loop over a whole map, a name nothing declares)
     emits `// SPECKL-UNTRANSLATED` and a `throw`. The old `const X = {} as any`
-    placeholders for unknown names are gone. When a guard can fail after the
-    body has changed state (a `require` inside a loop), the action restores the
-    state it started from before rethrowing. Enum members are qualified with
+    placeholders for unknown names are gone. When the body can throw after it
+    has changed state (a `require` inside a loop, or a non-null assertion on a
+    map entry that may be missing), the action restores the state it started
+    from before rethrowing. Enum members are qualified with
     the enum that declares them (they all went to the state enum, so a
     one-line union like `type Entity = Personal | Business` produced
     `StatusEnum.Personal`), and `min`/`max` of two or more numbers become
     `Math.min`/`Math.max`. `append(list, xs)` concatenates when `xs` is a
-    list parameter or list state variable (it pushed the list as one element).
+    list parameter, list state variable or a local bound to a list (it pushed
+    the list as one element).
   - **TypeScript (IR)**: a statement it cannot lower throws instead of
     becoming a comment.
   - **IR statement parser**: a loop and its body stay one raw statement, so

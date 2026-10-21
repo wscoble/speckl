@@ -427,4 +427,72 @@ describe('TypeScript backend: append of a list onto a list', () => {
     m.Extend([{ n: 2 }, { n: 3 }]);
     expect(m.log).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
   });
+
+  it('treats a local bound to a list as a list, and a local bound to an element as an element', async () => {
+    const source = generateTs(`speck Probe {
+    state {
+        log: List(Nat)
+    }
+    init {
+        log := emptyList
+    }
+    action Merge(xs: List(Nat), k: Nat) {
+        let acc := emptyList
+        let more := xs
+        let one := k
+        acc := append(acc, more)
+        acc := append(acc, one)
+        log := append(log, acc)
+    }
+}
+`, 'Probe.ts');
+    expect(source).toContain('this.log = [...this.log, ...acc];');
+    expect(source).toContain('acc = [...acc, one];');
+    expect(typecheck(source, 'Probe.ts')).toEqual([]);
+    const m = new (await load(source, 'ProbeMachine'))();
+    m.Merge([1, 2], 3);
+    expect(m.log).toEqual([1, 2, 3]);
+  });
+});
+
+describe('TypeScript backend: an action that throws after a write leaves no partial state', () => {
+  // A non-null assertion on a missing map entry throws a TypeError, not a
+  // guard error. When that happens after the action has already written
+  // state, the action must roll back like it does for a failed guard.
+  const source = () => generateTs(`speck Probe {
+    type Item = { qty: Nat }
+    state {
+        items: Map(Nat, Item)
+        total: Nat
+    }
+    init {
+        items := emptyMap
+        total := 0
+    }
+    action Move(b: Nat) {
+        total := total + 1
+        items[b].qty := 5
+    }
+    action Bump {
+        total := total + 1
+    }
+}
+`, 'Probe.ts');
+
+  it('rolls back when a missing entry is dereferenced after a write', async () => {
+    const out = source();
+    expect(typecheck(out, 'Probe.ts')).toEqual([]);
+    const m = new (await load(out, 'ProbeMachine'))();
+    expect(() => m.Move(99)).toThrow(TypeError);
+    expect(m.total).toBe(0);
+    m.items.set(1, { qty: 0 });
+    m.Move(1);
+    expect(m.total).toBe(1);
+    expect(m.items.get(1)).toEqual({ qty: 5 });
+  });
+
+  it('does not wrap an action that cannot throw after its first write', () => {
+    const bump = source().match(/  Bump\(\) \{[\s\S]*?\n  \}/)![0];
+    expect(bump).not.toContain('serialize');
+  });
 });
