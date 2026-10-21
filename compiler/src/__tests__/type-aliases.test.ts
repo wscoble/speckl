@@ -76,6 +76,21 @@ describe('type alias parsing', () => {
     expect(stateVar(ast, 'votedFor')).toEqual({ type: 'ident', name: 'ServerId', nullable: true });
   });
 
+  it('reads Option<T> (angle brackets) the same as Option(T)', () => {
+    const src = parseSpeckContent('speck A {\n  type Id = String\n  type MaybeId = Option<Id>\n  state {\n    q: Option<List(Id)>\n  }\n}\n');
+    expect(named(src, 'MaybeId')).toMatchObject({ type: 'type_alias', target: { type: 'ident', name: 'Id', nullable: true } });
+    expect(stateVar(src, 'q')).toEqual({ type: 'list', elementType: { type: 'ident', name: 'Id' }, nullable: true });
+  });
+
+  it('keeps `Option({ ... })` as a nullable alias; only a non-null record becomes a record type', () => {
+    const src = parseSpeckContent('speck A {\n  type MaybePoint = Option({ x: Int, y: Int })\n  state {\n    p: MaybePoint\n  }\n}\n');
+    const alias = named(src, 'MaybePoint') as TypeAliasNode;
+    expect(alias.type).toBe('type_alias');
+    expect(alias.target).toMatchObject({ type: 'record', nullable: true });
+    expect(alias.target.fields!.map((f) => f.name)).toEqual(['x', 'y']);
+    expect(stateVar(expandTypeAliases(src), 'p')).toMatchObject({ type: 'record', nullable: true });
+  });
+
   it('prints aliases back as `type X = T`', () => {
     const printed = printAST(ast);
     expect(printed).toContain('type ServerId = String');
@@ -133,6 +148,9 @@ describe('expandTypeAliases', () => {
     const src = parseSpeckContent('speck A {\n  type X = Y\n  type Y = X\n  state {\n    v: X\n  }\n}\n');
     expect(resolveAliases(src.specks[0].members).size).toBe(0);
     expect(stateVar(expandTypeAliases(src), 'v')).toEqual({ type: 'ident', name: 'X' });
+    // The alias members keep the targets they were written with.
+    expect((named(expandTypeAliases(src), 'X') as TypeAliasNode).target).toEqual({ type: 'ident', name: 'Y' });
+    expect((named(expandTypeAliases(src), 'Y') as TypeAliasNode).target).toEqual({ type: 'ident', name: 'X' });
   });
 });
 
