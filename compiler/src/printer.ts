@@ -297,18 +297,18 @@ function printType(t: TypeExpr | undefined): string {
       return (t.name ?? 'Unknown') + (t.nullable ? ' | null' : '');
     case 'ident':
       return (t.name ?? 'Unknown') + (t.nullable ? ' | null' : '');
-    case 'record':
-      return '{ '
-        + (t.fields ?? []).map(f => `${f.name}: ${printType(f.type)}`).join(', ')
-        + ' }';
+    case 'record': {
+      const body = '{ ' + (t.fields ?? []).map(f => `${f.name}: ${printType(f.type)}`).join(', ') + ' }';
+      // `{ ... } | null` does not parse; Option(...) does, and keeps the
+      // alias a nullable record instead of a record type.
+      return t.nullable ? `Option(${body})` : body;
+    }
     case 'list':
       return `List(${printType(t.elementType)})` + (t.nullable ? ' | null' : '');
     case 'set':
       return `Set(${printType(t.elementType)})` + (t.nullable ? ' | null' : '');
     case 'map':
       return `Map(${printType(t.keyType)}, ${printType(t.valueType)})` + (t.nullable ? ' | null' : '');
-    case 'record':
-      return printType({ ...t, nullable: t.nullable });
     default:
       return 'Unknown';
   }
