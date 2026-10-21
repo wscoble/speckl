@@ -833,6 +833,7 @@ function emitSpeck(speck: SpeckNode): string {
   } : undefined;
   const actions = members.filter(m => m.type === 'action') as ActionNode[];
   const events = members.filter(m => m.type === 'event') as EventNode[];
+  hasEventLog = events.length > 0;
   const constraints = members.filter(m => m.type === 'constraint') as ConstraintNode[];
   const allInterfaces = members.filter(m => m.type === 'interface') as any[];
 
@@ -1579,6 +1580,9 @@ function emitAction(
  * map key, which specklRecover turns from a panic into the error. Deferred
  * functions run last-in first-out, so the recover runs before the restore.
  */
+/** Set per generated machine: whether it has an EventLog field. */
+let hasEventLog = false;
+
 function rollbackPrologue(action: ActionNode, body: string, nameMap: Map<string, string>, speckName: string, enumMap: Map<string, string[]>): string {
   const lines: string[] = [];
   if (statementsWrite(action.statements)) {
@@ -1586,13 +1590,18 @@ function rollbackPrologue(action: ActionNode, body: string, nameMap: Map<string,
     const goFields = new Set(fields.map((f) => f.go));
     const callsMethod = [...body.matchAll(/\bm\.(\w+)\s*\(/g)].some((x) => !goFields.has(x[1]));
     const saved = callsMethod ? fields : fields.filter((f) => new RegExp(`\\bm\\.${f.go}\\b`).test(body));
-    if (saved.length > 0) {
+    // The event log only grows (append), so its old slice header is enough
+    // to drop events emitted by the failed call.
+    const saveLog = hasEventLog && (callsMethod || /\bm\.EventLog\b/.test(body));
+    if (saved.length > 0 || saveLog) {
       for (const f of saved) {
         const ty = goType(f.t, speckName, enumMap);
         const copy = ty.startsWith('map[') ? `specklCloneMap(m.${f.go})` : ty.startsWith('[]') ? `specklCloneSlice(m.${f.go})` : `m.${f.go}`;
         lines.push(`\t__saved${f.go} := ${copy}`);
       }
-      lines.push('\tdefer func() {', '\t\tif err != nil {', ...saved.map((f) => `\t\t\tm.${f.go} = __saved${f.go}`), '\t\t}', '\t}()');
+      if (saveLog) lines.push('\t__savedEventLog := m.EventLog');
+      const restore = [...saved.map((f) => f.go), ...(saveLog ? ['EventLog'] : [])];
+      lines.push('\tdefer func() {', '\t\tif err != nil {', ...restore.map((g) => `\t\t\tm.${g} = __saved${g}`), '\t\t}', '\t}()');
     }
   }
   if (body.includes('specklGet(')) lines.push('\tdefer specklRecover(&err)');

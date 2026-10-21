@@ -2,8 +2,8 @@
 // opened periods keep running totals, and reading a period never opened
 // fails loudly, naming the map and the key (SPEC.md 2.5): an Err from the
 // Rust method, an error from the Go method, a Java NoSuchElementException.
-// Move writes totals[src] before it reads totals[dst]; when dst is missing
-// every target puts totals[src] back. The TypeScript side is in
+// Move writes totals[src] and emits Moved before it reads totals[dst]; when
+// dst is missing every target puts totals[src] and the event log back. The TypeScript side is in
 // map-missing-key.test.ts. See helpers/toolchains.ts for how a missing
 // toolchain is reported.
 import { describe, it, expect } from 'vitest';
@@ -57,10 +57,12 @@ mod map_totals_runtime {
         let e = m.r#move(1, 9, 4).unwrap_err();
         assert_eq!(e, "SPECKL-MISSING-KEY: totals[9] is not set");
         assert_eq!(m.totals[&1], 10);
+        assert!(m.decision_log.is_empty(), "the Moved event emitted before the miss is dropped");
         m.open(2).unwrap();
         m.r#move(1, 2, 4).unwrap();
         assert_eq!(m.totals[&1], 6);
         assert_eq!(m.totals[&2], 4);
+        assert_eq!(m.decision_log.len(), 1);
     }
 }
 `);
@@ -127,14 +129,17 @@ func TestMoveToUnopenedPeriodUndoesTheDebit(t *testing.T) {
 	if m.Totals[1] != 10 {
 		t.Fatalf("totals[1] = %d, want 10 (the debit undone)", m.Totals[1])
 	}
+	if len(m.EventLog) != 0 {
+		t.Fatalf("event log %v, want the Moved event emitted before the miss dropped", m.EventLog)
+	}
 	if err := m.Open(2); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Move(1, 2, 4); err != nil {
 		t.Fatal(err)
 	}
-	if m.Totals[1] != 6 || m.Totals[2] != 4 {
-		t.Fatalf("totals=%v", m.Totals)
+	if m.Totals[1] != 6 || m.Totals[2] != 4 || len(m.EventLog) != 1 {
+		t.Fatalf("totals=%v events=%v", m.Totals, m.EventLog)
 	}
 }
 `);

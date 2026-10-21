@@ -126,14 +126,16 @@ describe('TypeScript: a missing key throws, naming the map and the key', () => {
     const m = new MapTotals();
     m.Open(1);
     m.Record(1, 10);
-    // Move writes totals[1] and then reads totals[9], which was never opened.
+    // Move writes totals[1], emits Moved, then reads totals[9], never opened.
     expect(() => m.Move(1, 9, 4)).toThrow(/SPECKL-MISSING-KEY: totals\[9\] is not set/);
     expect(m.totals.get(1)).toBe(10);
     expect(m.totals.has(9)).toBe(false);
+    expect(m.decisionLog).toHaveLength(0);
     m.Open(2);
     m.Move(1, 2, 4);
     expect(m.totals.get(1)).toBe(6);
     expect(m.totals.get(2)).toBe(4);
+    expect(m.decisionLog).toHaveLength(1);
   });
 
   it('applies to dot-access reads and to every non-nullable value type', () => {
@@ -207,6 +209,7 @@ describe('Rust, Camel and Go fail loudly on a missing key', () => {
     // Move writes totals[src] before it reads totals[dst]: the public method
     // saves totals, runs the body, and puts totals back when the body fails.
     expect(out).toContain('let __saved_totals = self.totals.clone();');
+    expect(out).toContain('let __saved_decision_log = self.decision_log.len();');
     expect(out).toContain('let __r = self.__speckl_move(src, dst, amount);');
     expect(out).toContain('if __r.is_err() {\n            self.totals = __saved_totals;');
     expect(out).not.toContain('SPECKL-UNTRANSLATED: init');
@@ -236,7 +239,7 @@ describe('Rust, Camel and Go fail loudly on a missing key', () => {
     expect(out).toContain('if !(specklGet(m.Totals, period, "totals") > 0) {');
     expect(out).toContain('panic(specklMissingKey{fmt.Sprintf("SPECKL-MISSING-KEY: %s[%v] is not set", name, k)})');
     expect(out).toContain('__savedTotals := specklCloneMap(m.Totals)');
-    expect(out).toContain('\tdefer func() {\n\t\tif err != nil {\n\t\t\tm.Totals = __savedTotals\n\t\t}\n\t}()\n\tdefer specklRecover(&err)');
+    expect(out).toContain('\t__savedEventLog := m.EventLog\n\tdefer func() {\n\t\tif err != nil {\n\t\t\tm.Totals = __savedTotals\n\t\t\tm.EventLog = __savedEventLog\n\t\t}\n\t}()\n\tdefer specklRecover(&err)');
     expect(out).toContain('m.Totals = map[int64]int64{}');
     expect(out).not.toContain('emptyMap');
   });

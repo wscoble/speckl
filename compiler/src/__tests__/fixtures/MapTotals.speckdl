@@ -1,15 +1,22 @@
 // Fixture for reading a key a map does not hold (SPEC.md 2.5). Such a read
-// fails loudly in generated code (TypeScript throws, Rust and Go panic, Java
-// throws), naming the map and the key; nothing reads as 0. Z3 assumes no
+// fails loudly in generated code (TypeScript and Java throw, Rust and Go
+// actions return an error), naming the map and the key; nothing reads as 0. Z3 assumes no
 // value for it either. Open starts a period at 0; Record and Reset on a
-// period never opened fail. Move writes the source period before it reads
-// the target, so moving into a period never opened must roll that write
-// back (every target restores earlier writes of a failed action).
+// period never opened fail. Move writes the source period and records an
+// event before it reads the target, so moving into a period never opened
+// must roll both back (every target restores earlier writes of a failed
+// action).
 speck MapTotals {
     state {
         totals: Map(Nat, Int)
         counts: Map(Nat, Nat)
         grand: Int
+    }
+
+    event Moved {
+        src: Nat
+        dst: Nat
+        amount: Int
     }
 
     init {
@@ -40,6 +47,7 @@ speck MapTotals {
     action Move(src: Nat, dst: Nat, amount: Int) {
         require amount >= 0
         totals[src] := totals[src] - amount
+        emit Moved { src: src, dst: dst, amount: amount }
         totals[dst] := totals[dst] + amount
     }
 }

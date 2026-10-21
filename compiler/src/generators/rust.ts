@@ -580,10 +580,16 @@ function emitAction(ctx: Ctx, action: IRAction): string {
   return [
     `    /// ${doc}`,
     `    ${sig(fname, outer, 'pub ')} {`,
-    ...keys.map((k) => `        let __saved_${k.replace(/^r#/, "")} = self.${k}.clone();`),
+    // The decision log only grows, so its length is enough to drop what the
+    // failed call pushed; other fields are cloned.
+    ...keys.map((k) => k === 'decision_log'
+      ? `        let __saved_decision_log = self.decision_log.len();`
+      : `        let __saved_${k.replace(/^r#/, "")} = self.${k}.clone();`),
     `        let __r = self.${inner}(${args.join(', ')});`,
     `        if __r.is_err() {`,
-    ...keys.map((k) => `            self.${k} = __saved_${k.replace(/^r#/, "")};`),
+    ...keys.map((k) => k === 'decision_log'
+      ? `            self.decision_log.truncate(__saved_decision_log);`
+      : `            self.${k} = __saved_${k.replace(/^r#/, "")};`),
     `        }`,
     `        __r`,
     `    }`,

@@ -212,10 +212,12 @@ First npm release. The package was renamed from the unpublished
   - A failed action leaves no partial write in Rust, Go and Camel either,
     using the TypeScript rule for which actions write (an assignment, an
     emit, an untranslated statement, or a call that is not a known pure
-    read). Rust: the public method saves the fields the body uses, calls a
-    private `__speckl_<name>` with the body, and restores them on `Err`. Go:
-    the method saves the fields (maps and slices copied) and a deferred
-    function restores them when `err` is set. Camel: the processor copies
+    read). Rust: the public method saves the fields the body uses (the
+    event log by its length), calls a private `__speckl_<name>` with the
+    body, and restores them on `Err`. Go: the method saves the fields (maps
+    and slices copied, the event log by its slice header) and a deferred
+    function restores them when `err` is set. Events emitted before the
+    failure are dropped too. Camel: the processor copies
     the fields it uses and restores them in a `catch (RuntimeException)`
     before rethrowing; before this change Camel did not roll back at all.
     A failing guard after a write is undone the same way.
@@ -229,9 +231,10 @@ First npm release. The package was renamed from the unpublished
     are opened before totals are read): checked with `tsc --strict` and run
     in `npm test`; run with `cargo test` and `go test`, and compiled with
     `javac` with the Java read helper and the `Move` processor run, in
-    `npm run test:compile`. Its `Move` action writes `totals[src]` before it
-    reads `totals[dst]`; each target is checked to leave `totals[src]`
-    unchanged when `dst` was never opened.
+    `npm run test:compile`. Its `Move` action writes `totals[src]` and emits
+    `Moved` before it reads `totals[dst]`; each target is checked to leave
+    `totals[src]` (and, in TypeScript, Rust and Go, the event log) unchanged
+    when `dst` was never opened.
 
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 
