@@ -1,4 +1,4 @@
-import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ConstraintNode, VerifyNode, EventNode, TypeExpr } from '../parser.js';
+import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ActionStatement, ConstraintNode, VerifyNode, EventNode, TypeExpr } from '../parser.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -176,6 +176,15 @@ function emitSpeck(speck: SpeckNode): string {
       }
     }
   }
+  // Each enum member belongs to the enum that declares it. Members declared
+  // by exactly one enum are qualified with that enum (not with the state
+  // enum, which used to receive every member: `EntityEnum.Inventory`).
+  enumOwner = new Map();
+  const memberCount = new Map<string, number>();
+  for (const values of enumMap.values()) for (const v of new Set(values)) memberCount.set(v, (memberCount.get(v) ?? 0) + 1);
+  for (const [enumName, values] of enumMap) {
+    for (const v of values) if (memberCount.get(v) === 1) enumOwner.set(v, `${speck.name}${enumName}`);
+  }
   const allEnums: string[] = [];
   for (const [enumName, values] of enumMap) {
     const fullEnumName = `${speck.name}${enumName}`;
@@ -258,6 +267,7 @@ function emitSpeck(speck: SpeckNode): string {
   const mapVarNames = new Set(stateVars
     .filter(v => v.typeExpr?.type === 'map' || (v.typeExpr?.type === 'ident' && v.typeExpr?.name && /^Map/i.test(v.typeExpr.name)))
     .map(v => v.name));
+  listStateVars = new Set(stateVars.filter(v => v.typeExpr?.type === 'list').map(v => v.name));
 
   const stateProperties = stateVars.map(v => {
     return `  ${v.name}: ${tsType(v.typeExpr, speck.name, enumMap)};`;
@@ -274,12 +284,21 @@ function emitSpeck(speck: SpeckNode): string {
         const name = cleanName(a.name);
         const expr = cleanExpr(a.expr);
         // Replace bare state literals with enum refs in init
-        const enumRef = replaceStateWithEnum(expr, stateEnumName, allKnownStateValues);
+        const enumRef = replaceStateWithEnum(expr, stateEnumName, allKnownStateValues)
+          .replace(/^emptyMap(\(\))?$/, 'new Map()')
+          .replace(/^emptySet(\(\))?$/, 'new Set()')
+          .replace(/^emptyList(\(\))?$/, '[]');
         return `    this.${name} = ${enumRef};`;
       }).join('\n')
     : '';
 
-  const actionMethods = actions.map(a => emitAction(a, stateVarNames, mapVarNames, speck.name, stateEnumName, allKnownStateValues, enumMap)).join('\n\n');
+  // Module-level names an action body may use: enum objects, record and
+  // event interfaces.
+  const moduleNames = new Set<string>([stateEnumName, ...[...enumMap.keys()].map(e => `${speck.name}${e}`)]);
+  for (const m of members) {
+    if ((m.type === 'interface' || m.type === 'event') && m.name) moduleNames.add(m.name);
+  }
+  const actionMethods = actions.map(a => emitAction(a, stateVarNames, mapVarNames, speck.name, stateEnumName, allKnownStateValues, enumMap, moduleNames)).join('\n\n');
 
   const constraintChecks = constraints.map((c, i) => {
     // Translate constraint expression to a real TS boolean check.
@@ -596,6 +615,18 @@ ${table}
     return { speck: '${speckName}', version: 1, state, decisionLog: specklEncode(this.decisionLog) as unknown[] };
   }
 
+  /** Encoded copies of the named fields; an action's rollback point. */
+  private __save(keys: readonly string[]): [string, unknown][] {
+    const self = this as unknown as Record<string, unknown>;
+    return keys.map(k => [k, specklEncode(self[k])]);
+  }
+
+  /** Put back the fields saved by __save. */
+  private __load(saved: [string, unknown][]): void {
+    const self = this as unknown as Record<string, unknown>;
+    for (const [k, v] of saved) self[k] = specklDecode(v);
+  }
+
   /** Rebuild a machine from serialize() output without re-running init. */
   static restore(snapshot: ${speckName}Snapshot): ${className} {
     if (!snapshot || snapshot.speck !== '${speckName}' || snapshot.version !== 1) {
@@ -632,105 +663,193 @@ ${table}
   return { preamble: preamble + `export type ${actionsType} = keyof typeof ${className}.ACTIONS;\n\n`, members };
 }
 
-function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames: Set<string>, speckName: string, stateEnumName: string, knownStateValues: string[], enumMap: Map<string, string[]>): string {
+function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames: Set<string>, speckName: string, stateEnumName: string, knownStateValues: string[], enumMap: Map<string, string[]>, moduleNames: Set<string> = new Set()): string {
   // Collect local parameter names so we DON'T prefix them with this.
   const localNames = new Set(action.params.map(p => p.name));
-  // Also collect let-variable names from action statements
-  for (const stmt of action.statements) {
-    if (stmt.type === 'let' && stmt.name) localNames.add(stmt.name);
-  }
+  // Expressions known to be lists, as they read after rewriting.
+  listExprs = new Set([
+    ...action.params.filter(p => (p.type as any)?.type === 'list').map(p => p.name),
+    ...[...listStateVars].filter(v => !localNames.has(v)).map(v => `this.${v}`),
+  ]);
+  // let-bound names and loop variables, at any nesting depth, and the locals
+  // that are assigned after their `let` (those need `let`, not `const`).
+  const reassigned = new Set<string>();
+  const walk = (stmts: ActionStatement[]) => {
+    for (const st of stmts) {
+      if (st.type === 'let' && st.name) localNames.add(st.name);
+      else if (st.type === 'assign' && /^\w+$/.test(st.target)) reassigned.add(st.target);
+      else if (st.type === 'forblock' && st.loop) { localNames.add(st.loop.variable); walk(st.loop.body); }
+      else if (st.type === 'ifblock' && st.branches) st.branches.forEach(b => walk(b.body));
+    }
+  };
+  walk(action.statements);
 
   const params = action.params
     .map(p => `${p.name}: ${tsType(p.type, speckName, enumMap)}`)
     .join(', ');
 
+  const rw = (e: string) => rewriteExpr(e, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+  // A statement this backend cannot translate: say so and throw, so the
+  // action fails closed instead of running with the statement missing.
+  const untranslated = (indent: string, what: string): string => {
+    const text = what.replace(/\s+/g, ' ').trim();
+    const msg = `SPECKL-UNTRANSLATED: ${action.name}: ${text}`;
+    return `${indent}// ${msg.replace(/\*\//g, '* /')}\n${indent}throw new Error(${JSON.stringify(msg)});`;
+  };
+
   // Statements in SpeckDL order: emit lets before guards so guards can reference them
   // (SpeckDL allows guards to reference let-bound variables that appear before them)
+  const emitStatements = (stmts: ActionStatement[], indent: string): string[] => {
   const bodyParts: string[] = [];
-  for (const stmt of action.statements) {
+  for (const stmt of stmts) {
     switch (stmt.type) {
       case 'precondition': {
-        const expr = rewriteExpr(stmt.expr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        bodyParts.push(`    // precondition: ${expr}\n    if (!(${expr})) throw new Error('Precondition failed: ${expr.replace(/'/g, "\\'")}');`);
+        const expr = rw(stmt.expr);
+        bodyParts.push(`${indent}// precondition: ${expr}\n${indent}if (!(${expr})) throw new Error('Precondition failed: ${expr.replace(/'/g, "\\'")}');`);
         break;
       }
       case 'require': {
-        const expr = rewriteExpr(stmt.expr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        bodyParts.push(`    if (!(${expr})) throw new Error('Guard failed: ${expr.replace(/'/g, "\\'")}');`);
+        const expr = rw(stmt.expr);
+        bodyParts.push(`${indent}if (!(${expr})) throw new Error('Guard failed: ${expr.replace(/'/g, "\\'")}');`);
         break;
       }
       case 'let': {
-        let expr = rewriteExpr(stmt.expr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        // Fix: if rewriteExpr converted if-expression to a comment (incomplete conditional),
-        // replace the const declaration with undefined + comment
+        let expr = rw(stmt.expr);
+        // An if-expression without an else has no value: fail closed.
         if (expr.match(/^\/\* if /)) {
-          expr = `undefined;  // ${expr.replace(/^\/\* | \*\/$/g, '')}`;
+          bodyParts.push(untranslated(indent, `let ${stmt.name} := ${stmt.expr}`));
+          break;
         }
-        // Check if this variable is reassigned later in the same action
-        const isReassigned = action.statements.some((s: any, i: number) => i > action.statements.indexOf(stmt) && s.type === 'assign' && s.target === stmt.name);
-        const keyword = isReassigned ? 'let' : 'const';
-        bodyParts.push(`    ${keyword} ${stmt.name} = ${expr};`);
+        const keyword = reassigned.has(stmt.name) ? 'let' : 'const';
+        // A reassigned local initialised with an enum member would be typed
+        // as that one literal; widen it to the enum type.
+        const enumInit = expr.match(/^(\w+)\.(\w+)$/);
+        const annot = keyword === 'let' && enumInit && enumOwner.get(enumInit[2]) === enumInit[1] ? `: ${enumInit[1]}` : '';
+        // A local bound to a list (literal, emptyList, list param/state var or
+        // another list local) is a list for append(xs, local) below.
+        if (/^\[|^\(\[\] as any\[\]\)$/.test(expr) || listExprs.has(expr)) listExprs.add(stmt.name);
+        bodyParts.push(`${indent}${keyword} ${stmt.name}${annot} = ${expr};`);
         break;
       }
       case 'assign': {
         const target = cleanName(stmt.target);
-        const expr = rewriteExpr(stmt.expr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+        const expr = rw(stmt.expr);
         // Handle Map bracket assignment: mapVar[index] := value -> this.mapVar.set(index, value)
         // Support nested brackets by finding the outermost [ ] pair
         const mapBracketMatch = target.match(/^(\w+)\[([\s\S]+)\]$/);
-        if (mapBracketMatch && mapVarNames.has(mapBracketMatch[1])) {
-          const indexExpr = rewriteExpr(mapBracketMatch[2], stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+        // mapVar[index].field := value -> this.mapVar.get(index)!.field = value
+        const mapFieldMatch = target.match(/^(\w+)\[((?:[^\[\]]|\[[^\[\]]*\])+)\]((?:\.\w+)+)$/);
+        if (mapFieldMatch && mapVarNames.has(mapFieldMatch[1]) && !localNames.has(mapFieldMatch[1])) {
+          bodyParts.push(`${indent}this.${mapFieldMatch[1]}.get(${rw(mapFieldMatch[2])})!${mapFieldMatch[3]} = ${expr};`);
+        } else if (mapBracketMatch && mapVarNames.has(mapBracketMatch[1])) {
+          const indexExpr = rw(mapBracketMatch[2]);
           // Detect compound key: { key1: val1, key2: val2 } -> nested Map access
           const compoundKeyMatch = indexExpr.match(/^\{\s*(\w+)\s*:\s*([^,{}]+),\s*(\w+)\s*:\s*([^,{}]+)\s*\}$/);
           if (compoundKeyMatch) {
             // Map<K1, Map<K2, V> -> this.mapVar.get(k1)!.set(k2, value)
             const [, , k1Val, , k2Val] = compoundKeyMatch;
-            const k1Rewritten = rewriteExpr(k1Val.trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-            const k2Rewritten = rewriteExpr(k2Val.trim(), stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+            const k1Rewritten = rw(k1Val.trim());
+            const k2Rewritten = rw(k2Val.trim());
             if (expr.trim() === 'null') {
-              bodyParts.push(`    this.${mapBracketMatch[1]}.get(${k1Rewritten})!.delete(${k2Rewritten});`);
+              bodyParts.push(`${indent}this.${mapBracketMatch[1]}.get(${k1Rewritten})!.delete(${k2Rewritten});`);
             } else {
-              bodyParts.push(`    this.${mapBracketMatch[1]}.get(${k1Rewritten})!.set(${k2Rewritten}, ${expr});`);
+              bodyParts.push(`${indent}this.${mapBracketMatch[1]}.get(${k1Rewritten})!.set(${k2Rewritten}, ${expr});`);
             }
           } else if (expr.trim() === 'null') {
-            bodyParts.push(`    this.${mapBracketMatch[1]}.delete(${indexExpr});`);
+            bodyParts.push(`${indent}this.${mapBracketMatch[1]}.delete(${indexExpr});`);
           } else {
-            bodyParts.push(`    this.${mapBracketMatch[1]}.set(${indexExpr}, ${expr});`);
+            bodyParts.push(`${indent}this.${mapBracketMatch[1]}.set(${indexExpr}, ${expr});`);
           }
-        } else if (localNames.has(target)) {
-          bodyParts.push(`    ${target} = ${expr};`);
+        } else if (localNames.has(target.replace(/[.\[].*$/, ''))) {
+          bodyParts.push(`${indent}${target} = ${expr};`);
+        } else if (/^\w+(\.\w+)*$/.test(target)) {
+          bodyParts.push(`${indent}this.${target} = ${expr};`);
+        } else if (mapFieldMatch || mapBracketMatch) {
+          // A list (or other indexable) state variable: index it directly.
+          const [, base, index, path] = mapFieldMatch ?? [...mapBracketMatch!, ''];
+          bodyParts.push(`${indent}this.${base}[${rw(index)}]${path ?? ''} = ${expr};`);
         } else {
-          bodyParts.push(`    this.${target} = ${expr};`);
+          bodyParts.push(untranslated(indent, `${stmt.target} := ${stmt.expr}`));
         }
         break;
       }
       case 'emit': {
         const fields = stmt.fields.map(f => {
           const name = cleanName(f.name);
-          const val = rewriteExpr(f.value, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-          return `      ${name}: ${val}`;
+          const val = rw(f.value);
+          return `${indent}  ${name}: ${val}`;
         }).join(',\n');
-        bodyParts.push(`    this.decisionLog.push({\n${fields}\n    } as ${stmt.event});`);
+        bodyParts.push(`${indent}this.decisionLog.push({\n${fields}\n${indent}} as ${stmt.event});`);
         break;
       }
       case 'ifblock': {
-        bodyParts.push(`    // TODO: SpeckDL conditional block (if/else) - manual translation required`);
+        if (!stmt.branches) {
+          bodyParts.push(untranslated(indent, stmt.raw));
+          break;
+        }
+        const parts: string[] = [];
+        stmt.branches.forEach((b, k) => {
+          const head = b.cond === null ? 'else' : `${k === 0 ? 'if' : 'else if'} (${rw(b.cond)})`;
+          parts.push(`${k === 0 ? indent : ' '}${head} {\n${emitStatements(b.body, indent + '  ').join('\n')}\n${indent}}`);
+        });
+        bodyParts.push(parts.join(''));
+        break;
+      }
+      case 'forblock': {
+        const loop = stmt.loop;
+        if (!loop) {
+          bodyParts.push(untranslated(indent, stmt.raw));
+          break;
+        }
+        const body = emitStatements(loop.body, indent + '  ').join('\n');
+        if (loop.from !== undefined && loop.to !== undefined) {
+          // Bounds are inclusive and evaluated once, before the first pass.
+          const hi = `__${loop.variable}_to`;
+          bodyParts.push(`${indent}for (let ${loop.variable} = ${rw(loop.from)}, ${hi} = ${rw(loop.to)}; ${loop.variable} <= ${hi}; ${loop.variable}++) {\n${body}\n${indent}}`);
+          break;
+        }
+        // `for v in coll`: lists and sets iterate their elements, `m.keys` a
+        // map's keys. A bare map has no single meaning (keys? values?), so
+        // that is left untranslated.
+        const coll = (loop.collection ?? '').trim();
+        const keysOf = coll.match(/^(\w+)\.keys$/);
+        const bare = coll.match(/^\w+$/);
+        if (keysOf && mapVarNames.has(keysOf[1]) && !localNames.has(keysOf[1])) {
+          bodyParts.push(`${indent}for (const ${loop.variable} of Array.from(this.${keysOf[1]}.keys())) {\n${body}\n${indent}}`);
+        } else if (bare && mapVarNames.has(coll) && !localNames.has(coll)) {
+          bodyParts.push(untranslated(indent, stmt.raw));
+        } else {
+          // Snapshot the collection so body writes cannot change the iteration.
+          bodyParts.push(`${indent}for (const ${loop.variable} of Array.from(${rw(coll)})) {\n${body}\n${indent}}`);
+        }
+        break;
+      }
+      case 'unparsed': {
+        bodyParts.push(untranslated(indent, stmt.raw));
         break;
       }
       case 'return': {
-        const expr = rewriteExpr(stmt.expr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
-        bodyParts.push(`    return ${expr};`);
+        if (!stmt.expr) { bodyParts.push(`${indent}return;`); break; }
+        const expr = rw(stmt.expr);
+        bodyParts.push(`${indent}return ${expr};`);
         break;
       }
       case 'postcondition': {
-        const expr = rewriteExpr(stmt.expr, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues);
+        const expr = rw(stmt.expr);
         const needsTsIgnore = /===\s*\{|===\s*\[/.test(expr);
-        const tsIgnore = needsTsIgnore ? '    // @ts-expect-error TS2839 — generated spec comparison (structural equality not available in JS)\n' : '';
-        bodyParts.push(`${tsIgnore}    // postcondition: ${expr}\n    if (!(${expr})) throw new Error('Postcondition failed: ${expr.replace(/'/g, "\\'")}');`);
+        const tsIgnore = needsTsIgnore ? `${indent}// @ts-expect-error TS2839 — generated spec comparison (structural equality not available in JS)\n` : '';
+        bodyParts.push(`${tsIgnore}${indent}// postcondition: ${expr}\n${indent}if (!(${expr})) throw new Error('Postcondition failed: ${expr.replace(/'/g, "\\'")}');`);
         break;
+      }
+      default: {
+        const unknown = stmt as { type: string; raw?: string };
+        bodyParts.push(untranslated(indent, `${unknown.type} statement${unknown.raw ? `: ${unknown.raw}` : ''}`));
       }
     }
   }
+  return bodyParts;
+  };
+  const bodyParts = emitStatements(action.statements, '    ');
   const bodyPartsStr = bodyParts.filter(Boolean).join('\n');
 
   // Detect parser-dropped variables (let/forall blocks the parser doesn't emit)
@@ -750,16 +869,25 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
     "add", "concat", "filter", "map", "forEach", "join", "indexOf", "includes", "toString",
     "valueOf", "some", "every", "reduce", "find", "slice", "splice", "sort"
   ]);
-  const known = new Set([...localNames, ...stateVarNames, ...reservedWords]);
+  const known = new Set([...localNames, ...stateVarNames, ...reservedWords, ...moduleNames]);
   for (const sv of knownStateValues) known.add(sv);
   for (const m of bodyPartsStr.matchAll(/\b(?:const|let|var)\s+(\w+)/g)) known.add(m[1]);
+  // the inclusive upper bound a range loop declares alongside its variable
+  for (const m of bodyPartsStr.matchAll(/,\s*(__\w+_to)\s*=/g)) known.add(m[1]);
+  // arrow-function parameters: `x => ...`, `(x) => ...`, `([k, v]) => ...`
+  for (const m of bodyPartsStr.matchAll(/(?:\(([^()]*)\)|\b(\w+))\s*=>/g)) {
+    for (const id of (m[1] ?? m[2]).matchAll(/\b([A-Za-z_]\w*)\b/g)) known.add(id[1]);
+  }
 
   // Clean body: remove strings, comments, property/type names, type assertions
   const cleaned = bodyPartsStr
-    .replace(/"[^"]*"/g, '""')
-    .replace(/'[^']*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/`[^`]*`/g, "''")
     .replace(/\/\/[^\n]*/g, "")
     .replace(/\b([A-Z]\w+)\s*:/g, "    :")
+    // object-literal keys (`{ id: x, total: y }`)
+    .replace(/([{,]\s*)\w+\s*:(?!=)/g, "$1 :")
     .replace(/\.\s*\w+/g, "")
     .replace(/\bas\s+\w+/g, "   ");
 
@@ -767,18 +895,115 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
   for (const m of cleaned.matchAll(/\b([a-zA-Z_]\w*)\b/g)) found.add(m[1]);
   const undefined_ = [...found].filter(id => !known.has(id));
 
-  const preamble = undefined_.map(id => '    const ' + id + ': any = {} as any;  // FIXME: parser dropped let/forall').join('\n');
+  // Names the body uses but nothing declares: some statement or binding the
+  // parser could not read was dropped. Fail closed. The declarations only
+  // keep the (unreachable) rest of the method type-checking.
+  const preamble = undefined_.length === 0 ? '' : [
+    untranslated('    ', `unresolved name(s) ${undefined_.join(', ')} (a binding or statement was not translated)`),
+    ...undefined_.map(id => `    const ${id}: any = undefined;`),
+  ].join('\n');
   const finalBody = preamble ? preamble + '\n' + bodyPartsStr : bodyPartsStr;
+
+  // A failed guard (or any other throw) means the action did not happen.
+  // Every action that can write state saves the state it can reach and puts
+  // it back if anything in the body throws. Whether an action writes is read
+  // off its parsed statements, not the generated text: assignments, emits
+  // and statements this backend could not read count as writes.
+  if (statementsWrite(action.statements)) {
+    const keys = rollbackKeys(finalBody, stateVarNames);
+    const lines = finalBody.split('\n');
+    return `  ${action.name}(${params}) {
+    const __saved = this.__save(${keys});
+    try {
+${lines.map(l => (l ? '  ' + l : l)).join('\n')}
+    } catch (e) {
+      this.__load(__saved);
+      throw e;
+    }
+  }`;
+  }
 
   return `  ${action.name}(${params}) {
 ${finalBody}
   }`;
 }
+/**
+ * True if running `stmts` can change machine state: an assignment (state or
+ * a field reached through a local), an emit (the decision log), a statement
+ * whose shape was not recognised, or any expression that calls something
+ * not known to be a pure read (`let s := seen.add(x)` mutates `seen`; a
+ * domain function is assumed to be able to write). Guards,
+ * lets and returns over pure expressions only read.
+ */
+export function statementsWrite(stmts: ActionStatement[]): boolean {
+  return stmts.some(st => {
+    switch (st.type) {
+      case 'let': case 'require': case 'precondition': case 'postcondition': case 'return':
+        return exprMayWrite(st.expr);
+      case 'ifblock':
+        return !st.branches || st.branches.some(b => (b.cond !== null && exprMayWrite(b.cond)) || statementsWrite(b.body));
+      case 'forblock':
+        return !st.loop || [st.loop.from, st.loop.to, st.loop.collection].some(e => e !== undefined && exprMayWrite(e))
+          || statementsWrite(st.loop.body);
+      default:
+        return true;
+    }
+  });
+}
+
+/** Method names that only read their receiver. */
+const PURE_METHODS = new Set([
+  'has', 'get', 'contains', 'containsKey', 'keys', 'values', 'entries', 'size', 'length', 'len',
+  'includes', 'indexOf', 'some', 'every', 'filter', 'map', 'find', 'slice', 'concat', 'toString',
+  'startsWith', 'endsWith', 'toLowerCase', 'toUpperCase', 'trim', 'split', 'join', 'count', 'sum',
+  'min', 'max', 'abs', 'floor', 'ceil', 'round', 'isEmpty', 'first', 'last',
+]);
+
+/** Free functions the generator translates to pure expressions. */
+const PURE_FUNCTIONS = new Set([
+  'len', 'min', 'max', 'abs', 'floor', 'ceil', 'round', 'sum', 'count', 'now', 'size', 'contains',
+  'keys', 'values', 'isEmpty', 'append', 'concat', 'old', 'not', 'and', 'or', 'has', 'str', 'int',
+]);
+
+/**
+ * True if `expr` calls anything not known to be a pure read: a method not in
+ * PURE_METHODS, or a free function (a domain function or another action)
+ * not in PURE_FUNCTIONS.
+ */
+export function exprMayWrite(expr: string): boolean {
+  const text = expr.replace(/"[^"]*"/g, '""');
+  for (const m of text.matchAll(/(\.\s*)?\b([A-Za-z_]\w*)\s*\(/g)) {
+    if (m[1] ? !PURE_METHODS.has(m[2]) : !PURE_FUNCTIONS.has(m[2])) return true;
+  }
+  return false;
+}
+
+/**
+ * The fields an action body can reach, as a TS array literal for __save.
+ * State is only reachable through `this.<field>` (a local can only alias
+ * state it read through `this.`), so the fields named that way cover every
+ * write. A call to another method on `this` could reach anything: save all.
+ */
+function rollbackKeys(body: string, stateVarNames: Set<string>): string {
+  const all = [...stateVarNames, 'decisionLog'];
+  const methodCall = [...body.matchAll(/\bthis\.(\w+)\s*\(/g)].some(m => !stateVarNames.has(m[1]) && m[1] !== 'decisionLog');
+  const keys = methodCall ? all : all.filter(k => new RegExp(`\\bthis\\.${k}\\b`).test(body));
+  return `[${keys.map(k => `'${k}'`).join(', ')}]`;
+}
+
 // Rewrite SpeckDL expressions to valid TypeScript
 // Only prefix identifiers with `this.` if they are state variables AND not local params
 function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<string>, localNames: Set<string>, stateEnumName: string, knownStateValues: string[]): string {
   function shouldPrefix(id: string): boolean {
     return stateVarNames.has(id) && !localNames.has(id);
+  }
+
+  // A whole-expression record literal `{ k: v, ... }`: rewrite each value on
+  // its own, from the source text (the passes below protect object literals
+  // and would leave their values, string literals included, untouched).
+  const rec = splitRecordLiteral(expr.trim());
+  if (rec) {
+    return `{ ${rec.map(([k, v]) => `${k}: ${rewriteExpr(v, stateVarNames, mapVarNames, localNames, stateEnumName, knownStateValues)}`).join(', ')} }`;
   }
 
   let ts = expr;
@@ -810,7 +1035,7 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   ['Open','Grooming','Groomed','Assigned','InProgress','InReview','Merged','Blocked','Closed','Idle','Parsing','Parsed','ProvenanceGenerated','BOMsGenerated','TypeScriptGenerated','Done'].forEach(s => allStateValues.add(s));
   if (allStateValues.size > 0) {
     const stateValueRegex = new RegExp('\\b(' + Array.from(allStateValues).join('|') + ')\\b', 'g');
-    ts = ts.replace(stateValueRegex, `${stateEnumName}.$1`);
+    ts = ts.replace(stateValueRegex, (_m, v: string) => `${enumOwner.get(v) ?? stateEnumName}.${v}`);
   }
 
   // NOTE: Do NOT restore string literals yet — keep them protected through step 3b
@@ -986,14 +1211,26 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   });
 
   // 5d6: emptySet -> new Set()
-  ts = ts.replace(/\bemptySet\b/g, 'new Set()');
+  ts = ts.replace(/\bemptySet\b(\(\))?/g, 'new Set()');
+  ts = ts.replace(/\bemptyMap\b(\(\))?/g, 'new Map()');
+  // Element type unknown here; an explicit any[] keeps --strict happy.
+  ts = ts.replace(/\bemptyList\b(\(\))?/g, '([] as any[])');
 
   // 5e: Clean up trailing empty comparisons (===) — expression has no RHS after old() removal
   //     "accounts[t.from].debits_posted ===" -> "accounts[t.from].debits_posted === accounts[t.from].debits_posted"
   ts = ts.replace(/(\S+)\s*===\s*$/g, '$1 === $1');
 
   // 5f: append(X, Y) -> [...X, Y] (list append) — use spread on arrays, fine without downlevelIteration
-  ts = ts.replace(/\bappend\(([^,{}]+),\s*([^)]+)\)/g, '[...$1, $2]');
+  // append(list, x): x is one element, unless it is itself a list of the
+  // same kind (a list parameter or list state variable), which concatenates.
+  ts = rewriteCalls(ts, 'append', args => (args.length === 2
+    ? (listExprs.has(args[1]) ? `[...${args[0]}, ...${args[1]}]` : `[...${args[0]}, ${args[1]}]`)
+    : undefined));
+  // min/max of numbers (two or more arguments; a one-argument form would be a
+  // collection reduction, left untranslated)
+  for (const fn of ['min', 'max'] as const) {
+    ts = rewriteCalls(ts, fn, args => (args.length >= 2 ? `Math.${fn}(${args.join(', ')})` : undefined));
+  }
 
   // 5g: Map access via bracket -> .get()  (e.g. "transfers[id]" -> "transfers.get(id)")
   //     Only applies to state variables that are Map types
@@ -1061,11 +1298,76 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
     });
     return rewritten;
   });
+  // String literals inside restored object literals (`{ type: "x" }`) were
+  // protected along with them; put them back too.
+  ts = ts.replace(/__STR_LIT_(\d+)__/g, (m, i) => stringLiterals[parseInt(i)] ?? m);
 
   return ts.trim();
 }
 
 // Helpers ------------------------------------------------------------------
+
+/**
+ * Replace every `name(arg, ...)` call in `text` using `build`, splitting the
+ * arguments on top-level commas (so nested parens and brackets survive).
+ * A call `build` declines (returns undefined) is left as written.
+ */
+function rewriteCalls(text: string, name: string, build: (args: string[]) => string | undefined): string {
+  const re = new RegExp(`\\b${name}\\(`, 'g');
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index < last) continue;
+    let depth = 0;
+    let k = m.index + m[0].length - 1;
+    const args: string[] = [];
+    let start = k + 1;
+    for (; k < text.length; k++) {
+      const ch = text[k];
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch)) { depth--; if (depth === 0) break; }
+      else if (ch === ',' && depth === 1) { args.push(text.slice(start, k).trim()); start = k + 1; }
+    }
+    if (k >= text.length) break;
+    args.push(text.slice(start, k).trim());
+    const inner = args.map(a => rewriteCalls(a, name, build));
+    const replacement = build(inner);
+    if (replacement === undefined) continue;
+    out += text.slice(last, m.index) + replacement;
+    last = k + 1;
+    re.lastIndex = k + 1;
+  }
+  return out + text.slice(last);
+}
+
+/**
+ * `{ a: x, b: f(y, z) }` -> [['a', 'x'], ['b', 'f(y, z)']]; undefined unless
+ * the whole text is one record literal with `key: value` fields.
+ */
+function splitRecordLiteral(text: string): [string, string][] | undefined {
+  if (!text.startsWith('{') || !text.endsWith('}') || text.startsWith('{{')) return undefined;
+  const inner = text.slice(1, -1);
+  const parts: string[] = [];
+  let depth = 0, inStr = false, start = 0;
+  for (let k = 0; k < inner.length; k++) {
+    const ch = inner[k];
+    if (ch === '"' && inner[k - 1] !== '\\') inStr = !inStr;
+    if (inStr) continue;
+    if ('([{'.includes(ch)) depth++;
+    else if (')]}'.includes(ch)) { depth--; if (depth < 0) return undefined; }
+    else if (ch === ',' && depth === 0) { parts.push(inner.slice(start, k)); start = k + 1; }
+  }
+  if (depth !== 0 || inStr) return undefined;
+  parts.push(inner.slice(start));
+  const fields: [string, string][] = [];
+  for (const p of parts) {
+    const m = p.trim().match(/^([A-Za-z_]\w*)\s*:(?!=)\s*([\s\S]+)$/);
+    if (!m) return undefined;
+    fields.push([m[1], m[2].trim()]);
+  }
+  return fields.length > 0 ? fields : undefined;
+}
 
 function memberKey(m: MemberNode): string {
   if (m.type === 'action') return `action:${m.name}`;
@@ -1107,8 +1409,15 @@ function replaceStateWithEnum(expr: string, enumName: string, knownStateValues: 
   ['Open','Grooming','Groomed','Assigned','InProgress','InReview','Merged','Blocked','Closed','Idle','Parsing','Parsed','ProvenanceGenerated','BOMsGenerated','TypeScriptGenerated','Done'].forEach(s => allStateValues.add(s));
   if (allStateValues.size === 0) return expr;
   const stateValueRegex = new RegExp('\\b(' + Array.from(allStateValues).join('|') + ')\\b', 'g');
-  return expr.replace(stateValueRegex, `${enumName}.$1`);
+  return expr.replace(stateValueRegex, (_m, v: string) => `${enumOwner.get(v) ?? enumName}.${v}`);
 }
+
+/** Enum member -> the enum const that declares it (members unique to one enum), for the speck being emitted. */
+let enumOwner = new Map<string, string>();
+/** List-typed state variables of the speck being emitted. */
+let listStateVars = new Set<string>();
+/** List-valued expressions (as rewritten) in the action being emitted. */
+let listExprs = new Set<string>();
 
 function cleanExpr(s: string): string {
   return s.replace(/,$/, '').trim();

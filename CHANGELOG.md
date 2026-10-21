@@ -134,6 +134,65 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
+- **Loops in action bodies were dropped without a trace.** The TypeScript
+  target kept an action's guards but emitted nothing for a `for` loop, so a
+  split-style action "succeeded" with none of the loop's effects (no children
+  created, the running sum left at 0) and no `SPECKL-UNTRANSLATED` marker.
+  A statement-level if/else was dropped the same way (a `// TODO ... manual
+  translation required` comment), so a missing-key guard such as
+  `if k in m.keys { m[k] := m[k] + v } else { m[k] := v }` vanished and the
+  first entry of a running total was never written.
+  Other backends had the same pattern for loops, if-blocks or unreadable
+  statements. Regression fixture: `src/__tests__/fixtures/LoopSplit.speckdl`.
+  - **Parser**: if-blocks and loops (brace or indented colon form, including
+    `forall v in S:` statement loops and `else if` chains) are now parsed into
+    nested statements. Multi-line `emit`, typed `let x: T = ...`, continuation
+    lines, bare `return` and targets such as `m[a.b]` are read instead of
+    dropped. A line it still cannot read is kept as an `unparsed` statement.
+    The printer round-trips the nested form.
+  - **TypeScript**: `for i from a to b` becomes an inclusive range loop;
+    `for x in list` and `for k in m.keys` iterate; if/else-if/else chains,
+    `m[k].field := v` on maps, `emptyList`/`emptyMap`, balanced `append(...)`
+    and string literals inside record literals are translated. Anything else
+    (an unreadable statement, a loop over a whole map, a name nothing declares)
+    emits `// SPECKL-UNTRANSLATED` and a `throw`. The old `const X = {} as any`
+    placeholders for unknown names are gone. Every action that can write state
+    (an assignment, an emit, a statement the backend could not read, or an
+    expression calling a method or function that is not a known pure read,
+    at any depth)
+    saves the state fields its body refers to (all of them if it calls
+    another method on the machine) and restores them if anything in the body
+    throws, then rethrows. Actions with only guards, lets and returns save
+    nothing. Enum members are qualified with
+    the enum that declares them (they all went to the state enum, so a
+    one-line union like `type Entity = Personal | Business` produced
+    `StatusEnum.Personal`), and `min`/`max` of two or more numbers become
+    `Math.min`/`Math.max`. `append(list, xs)` concatenates when `xs` is a
+    list parameter, list state variable or a local bound to a list (it pushed
+    the list as one element).
+  - **TypeScript (IR)**: a statement it cannot lower throws instead of
+    becoming a comment.
+  - **IR statement parser**: a loop and its body stay one raw statement, so
+    Rust and Camel fail closed on the loop. Before, the body was flattened into
+    the action and ran once, outside any loop, with the loop variable unbound.
+  - **Go**: loops (`from..to` ranges and `in` collections) and if-chains are
+    lowered from the parsed structure, nested to any depth. An unlowerable
+    statement sets `err` to `SPECKL-UNTRANSLATED: ...` and returns, instead of
+    a `// TODO` comment or `_ = <text>`. `k in m.keys` / `notIn` / `.values`
+    on a state map (or with a dotted left side) becomes `mapHas`/`inValues`;
+    it was left as `k in m.Totals.keys`, which is not Go.
+  - **Elm**: an action with any statement the client translator cannot express
+    no longer applies the rest of its transition optimistically. Only its
+    guards run, and the server's state arrives on refetch.
+  - **Z3**: a state variable assigned inside an if-block or loop was framed as
+    unchanged by the step. This could prove an invariant the loop breaks.
+    Such variables are now left unconstrained (a sound over-approximation),
+    and an unreadable statement leaves every variable unconstrained. The
+    verify baseline is unchanged (48/79).
+
+  The compile baseline gains no entries. Some first-error messages were
+  refreshed.
+
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 
   It now works from the IR, like the Camel target, and translates expressions with their types:

@@ -1,11 +1,11 @@
 {
   "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java), Rust and Kubernetes have no entries: all examples compile.",
   "typescript": {
-    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(179,108): error TS2339: Property 'or' does not exist on type 'string'.",
+    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(245,172): error TS2339: Property 'session_id' does not exist on type 'string'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
-    "Raft": "Raft.ts(115,5): error TS7052: Element implicitly has an 'any' type because type 'Map<string, ServerState>' has no index signature. Did you mean to call 'get'?",
+    "Raft": "Raft.ts(149,9): error TS2322: Type 'null' is not assignable to type 'string'.",
     "RetryHandler": "RetryHandler.ts(124,12): error TS2304: Cannot find name 'maxRetries'.",
-    "SQLiteWAL": "SQLiteWAL.ts(264,32): error TS1005: ';' expected.",
+    "SQLiteWAL": "SQLiteWAL.ts(263,32): error TS1005: ';' expected.",
     "tef": "TEF.ts(294,22): error TS1005: ',' expected."
   },
   "go": {
@@ -18,7 +18,7 @@
     "RetryHandler": "./retry_handler.go:54:9: undefined: maxDelay",
     "SQLitePager": "./sq_lite_pager.go:136:30: syntax error: unexpected name union at end of statement",
     "SQLiteWAL": "./sq_lite_wal.go:264:16: syntax error: unexpected {, expected expression",
-    "tef": "./tef.go:305:73: syntax error: unexpected type, expected )",
+    "tef": "./tef.go:322:73: syntax error: unexpected type, expected )",
     "TigerBeetleLedger": "./tiger_beetle_ledger.go:42:12: syntax error: unexpected name notIn, expected )",
     "TwoPhaseCommit": "./two_phase_commit.go:38:10: syntax error: unexpected name in, expected )"
   },

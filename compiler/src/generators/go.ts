@@ -390,10 +390,10 @@ function rewriteGoExpr(
     .replace(/([\w.\u0000]+)\s+starts with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasPrefix($1, $2)')
     .replace(/([\w.\u0000]+)\s+ends with\s+("[^"]*"|\u0000\d+\u0000|[\w.]+)/g, 'strings.HasSuffix($1, $2)')
     .replace(/([\w.]+)\.append\(([^()]*)\)/g, 'append($1, $2)')
-    .replace(/(\w+)\s+notIn\s+(\w+)\.keys/g, '!mapHas($2, $1)')
-    .replace(/(\w+)\s+in\s+(\w+)\.keys/g, 'mapHas($2, $1)')
-    .replace(/(\w+)\s+notIn\s+(\w+)\.values/g, '!inValues($2, $1)')
-    .replace(/(\w+)\s+in\s+(\w+)\.values/g, 'inValues($2, $1)')
+    .replace(/([\w.]+)\s+notIn\s+([\w.]+)\.keys/g, '!mapHas($2, $1)')
+    .replace(/([\w.]+)\s+in\s+([\w.]+)\.keys/g, 'mapHas($2, $1)')
+    .replace(/([\w.]+)\s+notIn\s+([\w.]+)\.values/g, '!inValues($2, $1)')
+    .replace(/([\w.]+)\s+in\s+([\w.]+)\.values/g, 'inValues($2, $1)')
     .replace(/\bnot\s*\(/g, '!(')
     .replace(/old\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g, '$1')
     .replace(/\.size\(\)/g, '.len')
@@ -1353,135 +1353,27 @@ function emitAction(
     return `\tm.${gname} = ${val}`;
   };
 
-  // Lower a brace-form conditional captured by the parser pre-pass:
-  //   "if <cond> { <stmts> } [else { <stmts> }]"
-  const emitIfBlock = (raw: string): string => {
-    const open = raw.indexOf('{');
-    if (open < 0) return `\t// TODO: conditional not lowered: ${raw.replace(/\n/g, ' ')}`;
-    const cond = raw.slice(3, open).trim().replace(/:\s*$/, '');
-    // find the top-level '} else {' (if any) and the final top-level '}'
-    let depth = 0, elseSplit = -1, closeIdx = -1;
-    for (let i = open; i < raw.length; i++) {
-      const ch = raw[i];
-      if (ch === '{') depth++;
-      else if (ch === '}') {
-        depth--;
-        if (depth === 0) {
-          if (raw.startsWith('} else {', i)) { elseSplit = i; continue; }
-          closeIdx = i; break;
-        }
-      }
-    }
-    if (closeIdx < 0) return `\t// TODO: conditional not lowered (unbalanced): ${raw.replace(/\n/g, ' ')}`;
-    const thenPart = raw.slice(open + 1, elseSplit >= 0 ? elseSplit : closeIdx);
-    const elsePart = elseSplit >= 0 ? raw.slice(elseSplit + '} else {'.length, closeIdx) : null;
-    const condGo = goImplications(rewriteGoExpr(cond, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords));
-    const thenLines = emitStmts(thenPart.trim());
-    let out = `\tif ${condGo} {\n${thenLines.join('\n') || '\t'}\n\t}`;
-    if (elsePart !== null) {
-      const elseLines = emitStmts(elsePart.trim());
-      out += ` else {\n${elseLines.join('\n') || '\t'}\n\t}`;
-    }
-    return out;
-  };
-
-  // Emit statements for a branch body (assigns/lets) - shared by the main
-// loop, ifblocks, and forblocks.
-  const emitStmts = (text: string): string[] => {
-    const lines: string[] = [];
-    for (const st of splitAssignStmts(text)) {
-      const letM = st.match(/^let\s+(\w+)\s*:=\s*([\s\S]*)$/);
-      if (letM) {
-        const nm = cleanName(letM[1]);
-        localNames.add(nm);
-        const callM = letM[2].trim().match(/^([a-z_]\w*)\s*\(/);
-        if (callM && currentFnRetTypes.get(callM[1]) === 'string') currentLetStringVars.add(nm);
-        const val = rewriteGoExpr(letM[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
-        if (/^[A-Za-z_]\w*$/.test(val) && currentNullableVars.has(val)) currentNullableVars.add(nm);
-        lines.push(`\t${camelCase(nm)} := ${val}`);
-        const litM = letM[2].trim().match(/^([A-Za-z_]\w*)\s*\{/);
-        if (litM) letRecords.set(nm, cleanName(litM[1]));
-        const brM = letM[2].trim().match(/^(\w+)\[([\s\S]+)\]$/);
-        if (brM) {
-          const vt = stateVarTypes.get(cleanName(brM[1]));
-          if (vt?.type === 'map' && vt.valueType?.type === 'ident') letRecords.set(nm, cleanName(vt.valueType.name));
-          else if (vt?.type === 'list' && vt.elementType?.type === 'ident') letRecords.set(nm, cleanName(vt.elementType.name));
-        }
-        continue;
-      }
-      if (st.startsWith('emit ')) {
-        const em = st.match(/^emit\s+(\w+)\s*\{([\s\S]*)\}\s*$/);
-        if (em) {
-          const parts: string[] = [];
-          let d = 0, inStr = false, start = 0;
-          const fstr = em[2];
-          for (let k = 0; k < fstr.length; k++) {
-            const ch = fstr[k];
-            if (ch === '"') inStr = !inStr;
-            if (inStr) continue;
-            if (ch === '(' || ch === '[' || ch === '{') d++;
-            else if (ch === ')' || ch === ']' || ch === '}') d--;
-            else if (ch === ',' && d === 0) { parts.push(fstr.slice(start, k)); start = k + 1; }
-          }
-          if (fstr.trim()) parts.push(fstr.slice(start));
-          const fields = parts.map(p => {
-            const ci = p.indexOf(':');
-            if (ci < 0) return null;
-            const name = p.slice(0, ci).trim();
-            const value = rewriteGoExpr(p.slice(ci + 1).trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
-            return `${goName(name)}: ${value}`;
-          }).filter(Boolean).join(', ');
-          lines.push(`\tm.EventLog = append(m.EventLog, ${goName(em[1])}{ ${fields} })`);
-          continue;
-        }
-      }
-      const retM = st.match(/^return\s+([\s\S]+)$/);
-      if (retM) {
-        lines.push(`\tret = ${rewriteGoExpr(retM[1], nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`);
-        lines.push('\treturn');
-        continue;
-      }
-      if (st.trim() === 'return') { lines.push('\treturn'); continue; }
-      const am = st.match(/^([\s\S]+?)\s*:=\s*([\s\S]*)$/);
-      if (am) { lines.push(emitAssign({ type: 'assign', target: am[1], expr: am[2] } as any)); continue; }
-      lines.push(`\t_ = ${st}`);
-    }
-    return lines;
-  };
-
-
-  // Lower a brace-form range loop captured by the parser pre-pass:
-  //   "for v in coll { <stmts> }"
-  const emitForBlock = (raw: string): string => {
-    const open = raw.indexOf('{');
-    if (open < 0) return `\t// TODO: for-loop not lowered: ${raw.replace(/\n/g, ' ')}`;
-    const header = raw.slice(4, open).trim();   // "v in coll"
-    const hm = header.match(/^(\w+)\s+in\s+([\s\S]+)$/);
-    if (!hm) return `\t// TODO: for-loop not lowered: ${raw.replace(/\n/g, ' ')}`;
-    let v = hm[1];
-    if (v === 'm' || nameMap.has(v)) v = `${v}Iter`;   // receiver/state-name collision
-    const collGo = rewriteGoExpr(hm[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
-    const bodyText2 = raw.slice(open + 1, raw.lastIndexOf('}'));
-    const saved = localNames.has(v);
-    localNames.add(v);
-    const lines = emitStmts(bodyText2.trim());
-    if (!saved) localNames.delete(v);
-    const usesVar = lines.some(l => new RegExp(`\\b${escapeRegex(v)}\\b`).test(l));
-    return usesVar
-      ? `\tfor _, ${v} := range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`
-      : `\tfor range ${collGo} {\n${lines.join('\n') || '\t'}\n\t}`;
-  };
-
   // emit statements in source order so lets declared before guards/assigns
   // that reference them are emitted in the correct sequence
   const letRecords = new Map<string, string>();
   currentLetStringVars = new Set<string>();
   currentNullableVars = new Set(nullableParams);
-  const bodyLines: string[] = [];
-  for (const s of action.statements as any[]) {
+  // An action statement this backend cannot lower: the generated method
+  // refuses to run past it instead of silently skipping it.
+  const untranslated = (what: string): string => {
+    const msg = `SPECKL-UNTRANSLATED: ${action.name}: ${what.replace(/\s+/g, ' ').trim()}`;
+    return `\t// ${msg.replace(/\*\//g, '* /')}\n\terr = fmt.Errorf(${JSON.stringify(msg).replace(/%/g, '%%')})\n\treturn`;
+  };
+  // Statements of a nested block, one tab deeper.
+  const nested = (stmts: any[]): string => {
+    const lines = stmts.flatMap(st => emitStmt(st, 1));
+    return lines.join('\n').split('\n').map(l => (l ? '\t' + l : l)).join('\n') || '\t\t// (empty)';
+  };
+  const emitStmt = (s: any, depth: number): string[] => {
+    const out: string[] = [];
     if (s.type === 'require' || s.type === 'precondition') {
       const expr = goImplications(rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords));
-      bodyLines.push(`\tif !(${expr}) {\n\t\terr = fmt.Errorf("guard failed: ${String(s.expr).replace(/"/g, "'")}")\n\t\treturn\n\t}`);
+      out.push(`\tif !(${expr}) {\n\t\terr = fmt.Errorf("guard failed: ${String(s.expr).replace(/"/g, "'")}")\n\t\treturn\n\t}`);
     } else if (s.type === 'let') {
       localNames.add(s.name);
       const callM = String(s.expr ?? '').trim().match(/^([a-z_]\w*)\s*\(/);
@@ -1492,7 +1384,7 @@ function emitAction(
       const val = isDateNow ? 'nowString()' : rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
       if (/^[A-Za-z_]\w*$/.test(val) && currentNullableVars.has(val)) currentNullableVars.add(cleanName(s.name));
       const litInt = val.match(/^\d+$/);
-      bodyLines.push(`\t${camelCase(s.name)} := ${litInt ? `int64(${val})` : val}`);
+      out.push(`\t${camelCase(s.name)} := ${litInt ? `int64(${val})` : val}`);
       // track the record type of the let-bound local (for nullable field assigns)
       const exprRaw = String(s.expr ?? '');
       const bracketM = exprRaw.match(/^(\w+)\[(.+)\]$/s);
@@ -1505,21 +1397,56 @@ function emitAction(
         if (litM) letRecords.set(cleanName(s.name), cleanName(litM[1]));
       }
     } else if (s.type === 'assign') {
-      bodyLines.push(emitAssign(s));
+      out.push(emitAssign(s));
     } else if (s.type === 'ifblock') {
-      bodyLines.push(emitIfBlock(String((s as any).raw ?? '')));
+      const branches = (s as any).branches as { cond: string | null; body: any[] }[] | undefined;
+      if (!branches) { out.push(untranslated(String((s as any).raw ?? 'if-block'))); return out; }
+      let text = '';
+      branches.forEach((b, k) => {
+        const head = b.cond === null ? ' else {'
+          : `${k === 0 ? '\tif' : ' else if'} ${goImplications(rewriteGoExpr(b.cond, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords))} {`;
+        text += `${head}\n${nested(b.body)}\n\t}`;
+      });
+      out.push(text);
     } else if (s.type === 'forblock') {
-      bodyLines.push(emitForBlock(String((s as any).raw ?? '')));
+      const loop = (s as any).loop as { variable: string; from?: string; to?: string; collection?: string; body: any[] } | undefined;
+      if (!loop) { out.push(untranslated(String((s as any).raw ?? 'for-loop'))); return out; }
+      let v = cleanName(loop.variable);
+      if (v === 'm' || nameMap.has(v)) { out.push(untranslated(`loop variable ${v} collides with a generated name: ${String((s as any).raw ?? '')}`)); return out; }
+      const saved = localNames.has(v);
+      localNames.add(v);
+      const goV = camelCase(v);
+      const rw = (e: string) => rewriteGoExpr(e, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
+      const bodyText = nested(loop.body);
+      if (loop.from !== undefined && loop.to !== undefined) {
+        // inclusive range, evaluated once like the spec's `for i from a to b`
+        out.push(`\tfor ${goV}, ${goV}To := int64(${rw(loop.from)}), int64(${rw(loop.to)}); ${goV} <= ${goV}To; ${goV}++ {\n${bodyText}\n\t}`);
+      } else {
+        const usesVar = new RegExp(`\\b${escapeRegex(goV)}\\b`).test(bodyText);
+        out.push(usesVar
+          ? `\tfor _, ${goV} := range ${rw(String(loop.collection))} {\n${bodyText}\n\t}`
+          : `\tfor range ${rw(String(loop.collection))} {\n${bodyText}\n\t}`);
+      }
+      if (!saved) localNames.delete(v);
     } else if (s.type === 'emit') {
       const fields = ((s.fields ?? []) as any[])
         .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`)
         .join(', ');
-      bodyLines.push(`\tm.EventLog = append(m.EventLog, ${goName(s.event)}{ ${fields} })`);
+      out.push(`\tm.EventLog = append(m.EventLog, ${goName(s.event)}{ ${fields} })`);
     } else if (s.type === 'return') {
-      bodyLines.push(`\tret = ${rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`);
+      if (String(s.expr ?? '').trim()) {
+        out.push(`\tret = ${rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`);
+      }
+      // A return inside a block leaves the action there.
+      if (depth > 0 || !String(s.expr ?? '').trim()) out.push('\treturn');
+    } else {
+      // A statement the parser could not read, or a kind this backend has no
+      // lowering for: fail closed instead of dropping it.
+      out.push(untranslated(String((s as any).raw ?? s.type)));
     }
-  }
-
+    return out;
+  };
+  const bodyLines: string[] = (action.statements as any[]).flatMap(s => emitStmt(s, 0));
 
   // let-bound locals that are never used: declare as _ (Go requires use)
   for (const lineIdx in bodyLines) {
@@ -1528,8 +1455,15 @@ function emitAction(
     }
   }
   const declMatch = /(?:^|\n)\t([A-Za-z_]\w*) :?= /g;
-  for (const st of action.statements as any[]) {
-    if (st.type !== 'let') continue;
+  const allLets: any[] = [];
+  (function walkLets(stmts: any[]) {
+    for (const st of stmts) {
+      if (st.type === 'let') allLets.push(st);
+      else if (st.type === 'ifblock') for (const b of st.branches ?? []) walkLets(b.body);
+      else if (st.type === 'forblock' && st.loop) walkLets(st.loop.body);
+    }
+  })(action.statements as any[]);
+  for (const st of allLets) {
     const nm = camelCase(cleanName(st.name));
     const varRe = new RegExp(`\\b${escapeRegex(nm)}\\b`);
     const used = bodyLines.some(l => varRe.test(l.replace(declMatch.source, ''))) &&
@@ -1788,41 +1722,6 @@ function cleanName(s: string): string { return s.replace(/,$/, '').trim(); }
 function cleanExpr(s: string): string { return s.replace(/,$/, '').trim(); }
 function escapeRegex(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-// Split a brace-form branch body into top-level statements. A statement
-// starts at each depth-0 `:=` (walking back to the lvalue token start, or
-// to a `let` keyword). Record-literal `field:` pairs sit inside braces and
-// are never statement boundaries.
-function splitAssignStmts(text: string): string[] {
-  const starts: number[] = [];
-  let depth = 0;
-  let inStr = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '"') inStr = !inStr;
-    if (inStr) continue;
-    if (ch === '{' || ch === '[' || ch === '(') depth++;
-    else if (ch === '}' || ch === ']' || ch === ')') depth--;
-    else if (ch === ':' && depth === 0 && text[i + 1] === '=') {
-      let j = i - 1;
-      while (j >= 0 && text[j] === ' ') j--;
-      while (j >= 0 && /[\w\]\[.]/.test(text[j])) j--;
-      const before = text.slice(0, j + 1).trimEnd();
-      if (before.endsWith('let')) { starts.push(before.length - 3); continue; }
-      starts.push(j + 1);
-    }
-    else if (depth === 0 && (text.startsWith('emit ', i) || text.startsWith('return ', i))
-             && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1]))) {
-      starts.push(i);
-    }
-  }
-  const stmts: string[] = [];
-  for (let k = 0; k < starts.length; k++) {
-    const end = k + 1 < starts.length ? starts[k + 1] : text.length;
-    const st = text.slice(starts[k], end).trim();
-    if (st) stmts.push(st);
-  }
-  return stmts;
-}
 
 function goName(s: string): string {
   return s.split(/[^a-zA-Z0-9]+/).filter(Boolean)

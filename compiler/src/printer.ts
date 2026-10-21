@@ -211,46 +211,67 @@ function printInit(node: { assignments: { name: string; expr: string }[] }): str
   return lines;
 }
 
-function printAction(action: { name: string; params: { name: string; type: TypeExpr }[]; statements: { type: string; [k: string]: unknown }[] }): string[] {
+type PrintableStatement = { type: string; [k: string]: unknown };
+
+function printAction(action: { name: string; params: { name: string; type: TypeExpr }[]; statements: PrintableStatement[] }): string[] {
   const params = action.params.map(p => `${p.name}: ${printType(p.type)}`).join(', ');
-  const lines = [`action ${action.name}(${params}) {`];
-  for (const stmt of action.statements) {
+  return [`action ${action.name}(${params}) {`, ...printStatements(action.statements, '    '), '}'];
+}
+
+/** Action statements; structured if/for blocks are printed nested, one keyword per line. */
+function printStatements(statements: PrintableStatement[], indent: string): string[] {
+  const lines: string[] = [];
+  for (const stmt of statements) {
     switch (stmt.type) {
       case 'assign':
-        lines.push(`    ${stmt.target} := ${stmt.expr}`);
+        lines.push(`${indent}${stmt.target} := ${stmt.expr}`);
         break;
       case 'let':
-        lines.push(`    let ${stmt.name} := ${stmt.expr}`);
+        lines.push(`${indent}let ${stmt.name} := ${stmt.expr}`);
         break;
       case 'require':
-        lines.push(`    require ${stmt.expr}`);
+        lines.push(`${indent}require ${stmt.expr}`);
         break;
       case 'precondition':
-        lines.push(`    precondition: ${stmt.expr}`);
+        lines.push(`${indent}precondition: ${stmt.expr}`);
         break;
       case 'postcondition':
-        lines.push(`    postcondition: ${stmt.expr}`);
+        lines.push(`${indent}postcondition: ${stmt.expr}`);
         break;
       case 'emit': {
         const fields = (stmt.fields as { name: string; value: string }[] | undefined) ?? [];
         const fieldText = fields.map(f => `${f.name}: ${f.value}`).join(', ');
-        lines.push(`    emit ${stmt.event} { ${fieldText} }`);
+        lines.push(`${indent}emit ${stmt.event} { ${fieldText} }`);
         break;
       }
       case 'return':
-        lines.push(`    return ${stmt.expr}`);
+        lines.push(stmt.expr ? `${indent}return ${stmt.expr}` : `${indent}return`);
         break;
-      case 'ifblock':
-        lines.push(String(stmt.raw));
+      case 'ifblock': {
+        const branches = stmt.branches as { cond: string | null; body: PrintableStatement[] }[] | undefined;
+        if (!branches) { lines.push(`${indent}${stmt.raw}`); break; }
+        branches.forEach((b, k) => {
+          const head = b.cond === null ? 'else' : `if ${b.cond}`;
+          lines.push(k === 0 ? `${indent}${head} {` : `${indent}} ${b.cond === null ? 'else' : `else if ${b.cond}`} {`);
+          lines.push(...printStatements(b.body, indent + '    '));
+        });
+        lines.push(`${indent}}`);
         break;
-      case 'forblock':
-        lines.push(String(stmt.raw));
+      }
+      case 'forblock': {
+        const loop = stmt.loop as { variable: string; from?: string; to?: string; collection?: string; body: PrintableStatement[] } | undefined;
+        if (!loop) { lines.push(`${indent}${stmt.raw}`); break; }
+        const range = loop.collection !== undefined ? `in ${loop.collection}` : `from ${loop.from} to ${loop.to}`;
+        lines.push(`${indent}for ${loop.variable} ${range} {`, ...printStatements(loop.body, indent + '    '), `${indent}}`);
+        break;
+      }
+      case 'unparsed':
+        lines.push(`${indent}${stmt.raw}`);
         break;
       default:
-        lines.push(`    // unprinted statement: ${stmt.type}`);
+        lines.push(`${indent}// unprinted statement: ${stmt.type}`);
     }
   }
-  lines.push('}');
   return lines;
 }
 
