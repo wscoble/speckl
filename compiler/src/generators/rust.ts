@@ -192,7 +192,7 @@ class Ctx {
         const p = PRIMITIVE_NAMES[name];
         if (p) return wrap(p);
         if (/^[A-Za-z_]\w*$/.test(name) && !this.events.has(name)) {
-          return wrap(this.unresolved(typeIdent(name), `type ${name} is not declared in this spec (or is an alias the parser dropped)`));
+          return wrap(this.unresolved(typeIdent(name), `type ${name} is not declared in this spec`));
         }
         if (this.events.has(name)) return wrap(this.unresolved(UNPARSED_TYPE, `event ${name} used as a type`));
         return wrap(this.unresolved(UNPARSED_TYPE, `type \`${name}\` could not be parsed`));

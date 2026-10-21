@@ -25,22 +25,15 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
     // Clean up double-backslash from old parser (SpeckDL set diff is single \)
     // The old parser stores \\ as two chars; the expression parser expects single \\n    // Actually, keep double backslash as-is since the tokenizer handles both
 
-    // --- forall block: keep as raw ifblock ---
-    if (trimmed.startsWith('forall ')) {
-      // Collect entire forall block
-      let blockText = trimmed;
-      let j = i + 1;
-      while (j < lines.length) {
-        const next = lines[j];
-        if (!next || !next.trim()) break;
-        const nt = next.trim();
-        if (nt.startsWith('require ') || nt.startsWith('let ') || nt.startsWith('return ') ||
-            nt.startsWith('emit ') || /^\w+\s*:=/.test(nt)) break;
-        blockText += ' ' + nt;
-        j++;
-      }
+    // --- for / forall loop: the IR has no loop node, so keep the whole loop
+    // (header and body) as one raw statement. Backends report it as not
+    // lowered; splitting it would run the body once, outside any loop, with
+    // the loop variable unbound.
+    if (/^for(all)?\s/.test(trimmed)) {
+      const end = loopBlockEnd(lines, i);
+      const blockText = lines.slice(i, end + 1).map(l => stripLineComment(l.trim())).filter(Boolean).join(' ');
       stmts.push({ type: 'ifblock', raw: blockText });
-      i = j - 1;
+      i = end;
       continue;
     }
 
@@ -193,6 +186,41 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
 }
 
 // --- Helpers ---
+
+/**
+ * Index of the last line of the loop starting at `start`: a colon-form loop
+ * (`for i from 0 to n - 1:`) runs over the following lines indented deeper
+ * than its header; a brace-form loop runs until its braces balance; a
+ * one-line `forall x in S: expr` is just its own line.
+ */
+function loopBlockEnd(lines: string[], start: number): number {
+  const header = stripLineComment(lines[start].trim());
+  const indentOf = (l: string) => l.length - l.trimStart().length;
+  if (header.endsWith(':')) {
+    const base = indentOf(lines[start]);
+    let end = start;
+    for (let j = start + 1; j < lines.length; j++) {
+      const l = lines[j];
+      if (!l || !l.trim()) continue;
+      if (indentOf(l) <= base) break;
+      end = j;
+    }
+    return end;
+  }
+  if (header.includes('{')) {
+    let depth = 0;
+    for (let j = start; j < lines.length; j++) {
+      const t = stripLineComment(lines[j]?.trim() ?? '').replace(/"(?:[^"\\]|\\.)*"/g, '""');
+      for (const ch of t) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      if (depth <= 0) return j;
+    }
+    return lines.length - 1;
+  }
+  return start;
+}
 
 /** Parse a single expression string to an Expr AST. */
 function parseExprSingle(src: string): Expr {

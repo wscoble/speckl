@@ -388,7 +388,9 @@ function translateAction(action: ActionNode, ctx: ExprCtx, recordTypes: Map<stri
       // events are mirrored client-side as an event-log entry; server is authoritative
       out.bodyElm.push(`            |> logEvent "${(stmt as any).event}"`);
     } else {
-      out.unhandledBody.push(JSON.stringify(stmt));
+      // if-blocks, loops, returns, statements the parser could not read
+      const raw = (stmt as any).raw ?? JSON.stringify(stmt);
+      out.unhandledBody.push(String(raw));
     }
   }
   return out;
@@ -1034,13 +1036,17 @@ a Result describing guard failure (Err) or success with the event log (Ok).
       }
     }
     if (tr.unhandledBody.length > 0) {
+      // Part of the transition has no Elm translation. Applying the rest
+      // would leave the optimistic model in a state the spec never reaches,
+      // so the client applies none of it (guards only) and the server's
+      // state arrives on refetch.
       for (const b of tr.unhandledBody) {
-        L.push(`            -- transition applied server-side: ${b.replace(/\n/g, ' ')}`);
+        L.push(`            -- SPECKL-UNTRANSLATED (transition applied server-side only): ${b.replace(/\n/g, ' ')}`);
       }
     }
     L.push(`            ( model, Ok [] )`);
     for (const g of tr.guardElm) L.push(g);
-    for (const b of tr.bodyElm) L.push(b);
+    if (tr.unhandledBody.length === 0) for (const b of tr.bodyElm) L.push(b);
     L.push(``);
   }
 

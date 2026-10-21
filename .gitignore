@@ -20,7 +20,7 @@ fix-z3-again.py
 .idea/
 # Internal / non-public
 .last-build
-node_modules/
+node_modules
 # OS
 out/
 out_fresh/

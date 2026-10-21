@@ -27,15 +27,35 @@ First npm release. The package was renamed from the unpublished
 
   | Target | Compiling today |
   |---|---|
-  | TypeScript | 4/16 |
-  | Agent rails | 0/2 |
+  | TypeScript | 10/16 |
+  | Agent rails (incl. all 13 harness adapters) | 2/2 |
   | Go | 4/16 |
-  | Rust | 1/16 |
+  | Rust | 16/16 |
   | Elm | 0/16 |
-  | Protobuf | 7/16 |
+  | Protobuf | 10/16 |
   | OpenAPI | 15/16 |
   | Camel | 16/16 |
   | k8s | 16/16 |
+- **Type aliases** (#24). `type ServerId = String`, `type Ids = List(ServerId)`
+  and `type Maybe = ServerId | null` are now parsed (they were silently dropped)
+  and expanded to their targets before any backend runs, so protoc, OpenAPI,
+  TypeScript, Go, Rust, Elm, Camel and Z3 see ordinary types. The IR also keeps
+  each alias as a named type, and OpenAPI emits it as a component.
+  - `type State = A | B | C` on one line declares an enum.
+  - `type X = { a: Nat, b: Value }` on one line is a record with only those
+    fields (it used to absorb the members after it).
+  - `Option(T)` is read as the nullable `T | null`.
+- **Agent rails type-check** (#25). The generated TypeScript machine inlined
+  only the first invariant a `verify Always(Inv)` named (invariants were
+  folded into one member when deduplicated), so `-t agent` output for
+  AgentPolicy and ClaudeCodePolicy failed `tsc` with
+  `Cannot find name 'PrNeedsApproval'`. Every invariant is inlined now. An
+  invariant the TypeScript backend can't translate (primes, quantifiers,
+  multi-clause bodies) makes `verifyN()` throw `SPECKL-UNTRANSLATED` instead
+  of emitting a bare name. The agent compile check now also covers each
+  harness adapter's output: `node --check` for the plugin `.js` files,
+  JSON/YAML parsing for configs, `sh -n` for Cline hooks, and a failure for
+  any unchecked file type.
 - **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
   `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
   `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with
@@ -114,6 +134,58 @@ First npm release. The package was renamed from the unpublished
 
 ### Fixed
 
+- **Loops in action bodies were dropped without a trace.** The TypeScript
+  target kept an action's guards but emitted nothing for a `for` loop, so a
+  split-style action "succeeded" with none of the loop's effects (no children
+  created, the running sum left at 0) and no `SPECKL-UNTRANSLATED` marker.
+  Other backends had the same pattern for loops, if-blocks or unreadable
+  statements. Regression fixture: `src/__tests__/fixtures/LoopSplit.speckdl`.
+  - **Parser**: if-blocks and loops (brace or indented colon form, including
+    `forall v in S:` statement loops and `else if` chains) are now parsed into
+    nested statements. Multi-line `emit`, typed `let x: T = ...`, continuation
+    lines, bare `return` and targets such as `m[a.b]` are read instead of
+    dropped. A line it still cannot read is kept as an `unparsed` statement.
+    The printer round-trips the nested form.
+  - **TypeScript**: `for i from a to b` becomes an inclusive range loop;
+    `for x in list` and `for k in m.keys` iterate; if/else-if/else chains,
+    `m[k].field := v` on maps, `emptyList`/`emptyMap`, balanced `append(...)`
+    and string literals inside record literals are translated. Anything else
+    (an unreadable statement, a loop over a whole map, a name nothing declares)
+    emits `// SPECKL-UNTRANSLATED` and a `throw`. The old `const X = {} as any`
+    placeholders for unknown names are gone. Every action that can write state
+    (an assignment, an emit, a statement the backend could not read, or an
+    expression calling a method or function that is not a known pure read,
+    at any depth)
+    saves the state fields its body refers to (all of them if it calls
+    another method on the machine) and restores them if anything in the body
+    throws, then rethrows. Actions with only guards, lets and returns save
+    nothing. Enum members are qualified with
+    the enum that declares them (they all went to the state enum, so a
+    one-line union like `type Entity = Personal | Business` produced
+    `StatusEnum.Personal`), and `min`/`max` of two or more numbers become
+    `Math.min`/`Math.max`. `append(list, xs)` concatenates when `xs` is a
+    list parameter, list state variable or a local bound to a list (it pushed
+    the list as one element).
+  - **TypeScript (IR)**: a statement it cannot lower throws instead of
+    becoming a comment.
+  - **IR statement parser**: a loop and its body stay one raw statement, so
+    Rust and Camel fail closed on the loop. Before, the body was flattened into
+    the action and ran once, outside any loop, with the loop variable unbound.
+  - **Go**: loops (`from..to` ranges and `in` collections) and if-chains are
+    lowered from the parsed structure, nested to any depth. An unlowerable
+    statement sets `err` to `SPECKL-UNTRANSLATED: ...` and returns, instead of
+    a `// TODO` comment or `_ = <text>`.
+  - **Elm**: an action with any statement the client translator cannot express
+    no longer applies the rest of its transition optimistically. Only its
+    guards run, and the server's state arrives on refetch.
+  - **Z3**: a state variable assigned inside an if-block or loop was framed as
+    unchanged by the step. This could prove an invariant the loop breaks.
+    Such variables are now left unconstrained (a sound over-approximation),
+    and an unreadable statement leaves every variable unconstrained. The
+    verify baseline is unchanged (48/79).
+
+  The compile baseline gains no entries. Some first-error messages were
+  refreshed.
 - **Reading a map key that is not set now fails loudly in every target; Z3 no longer assumes 0** (#27).
   Before, a read of a key never written was `undefined` in TypeScript (a
   running total `m[k] := m[k] + x` stored NaN, and later guards on it were
@@ -226,7 +298,7 @@ First npm release. The package was renamed from the unpublished
   - `examples/.speckl-unchecked.json` acknowledges the 31 example obligations
     that are not yet proven. They print as UNCHECKED and never count as
     passed. An entry that becomes proven or no longer exists fails as
-    `STALE-BASELINE`. Today 3 of 34 example verify blocks are proven.
+    `STALE-BASELINE`. Today 5 of 36 example verify blocks are proven.
   - `-t agent` refuses to emit rails if a guard still contains an
     untranslated placeholder (the bogus `const x = {}` lines are gone).
   - The AST Z3 output no longer ends with `(get-model)` after `unsat`, so a

@@ -1,0 +1,79 @@
+// Fixture for for-loops in action bodies, modeled on a "split one record
+// into N children" action: the loop creates each child, links it, and sums
+// a per-child share that must add up to the parent's total afterwards.
+// Every backend must either translate the loop or fail closed.
+speck LoopSplit {
+    interface LotStatus {
+        Open
+        Split
+    }
+
+    type Lot = {
+        id: Nat,
+        total: Int,
+        label: String,
+        parentId: Nat,
+        status: LotStatus
+    }
+
+    type Part = {
+        share: Int,
+        label: String
+    }
+
+    state {
+        lots: Map(Nat, Lot)
+        children: Map(Nat, List(Nat))
+        labels: Map(String, Nat)
+        splitCount: Nat
+    }
+
+    init {
+        lots := emptyMap
+        children := emptyMap
+        labels := emptyMap
+        splitCount := 0
+    }
+
+    event LotSplit {
+        parentId: Nat,
+        childCount: Nat
+    }
+
+    action AddLot(id: Nat, total: Int, label: String) {
+        require id > 0
+        require id notIn lots.keys
+        require total >= 0
+        lots[id] := { id: id, total: total, label: label, parentId: 0, status: Open }
+    }
+
+    action SplitLot(parentId: Nat, firstChildId: Nat, parts: List(Part)) {
+        require parentId in lots.keys
+        require lots[parentId].status == Open
+        require length(parts) >= 2
+        require firstChildId > 0
+
+        let p := lots[parentId]
+        let n := length(parts)
+        let allocSum := 0
+        let kids := emptyList
+        for i from 0 to n - 1:
+            let c := parts[i]
+            let cid := firstChildId + i
+            require cid notIn lots.keys
+            require c.share >= 0
+            lots[cid] := { id: cid, total: c.share, label: c.label, parentId: parentId, status: Open }
+            if c.label != "" {
+                labels[c.label] := cid
+            }
+            kids := append(kids, cid)
+            allocSum := allocSum + c.share
+        // The shares must add up exactly; a mismatch rejects the whole call.
+        require allocSum == p.total
+
+        lots[parentId].status := Split
+        children[parentId] := kids
+        splitCount := splitCount + 1
+        emit LotSplit { parentId: parentId, childCount: n }
+    }
+}

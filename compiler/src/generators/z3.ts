@@ -1036,6 +1036,43 @@ function convertOpGroup(expr: string, ops: [string, string][], rightAssoc = fals
 
 // --- Action transition predicate emission ---
 
+/**
+ * State variables an action may change inside if-blocks and loops, which
+ * the transition encoding does not model statement by statement. Those
+ * variables are left unconstrained in the step (havoc): an over-approximation,
+ * so an unsat result stays sound. Asserting them unchanged (the old frame)
+ * or keeping a top-level assignment to them would claim behaviour the action
+ * does not have. A statement the parser could not read may change anything.
+ */
+function blockHavoc(action: ActionNode, renameMap?: Map<string, string>): { vars: Set<string>; all: boolean } {
+  const vars = new Set<string>();
+  let all = false;
+  const base = (target: string) => {
+    const b = target.replace(/[.\[].*$/, '');
+    return renameMap?.get(b) ?? b;
+  };
+  const walk = (stmts: ActionStatement[], inBlock: boolean) => {
+    for (const st of stmts) {
+      if (st.type === 'assign' && inBlock) vars.add(base(st.target));
+      else if (st.type === 'ifblock') {
+        if (!st.branches) all = true;
+        else for (const b of st.branches) walk(b.body, true);
+      } else if (st.type === 'forblock') {
+        if (!st.loop) all = true;
+        else walk(st.loop.body, true);
+      } else if (st.type === 'unparsed') all = true;
+    }
+  };
+  walk(action.statements, false);
+  return { vars, all };
+}
+
+function havocComment(action: ActionNode, h: { vars: Set<string>; all: boolean }): string | null {
+  if (h.all) return `; speckl: ${action.name} has a statement that is not modeled; its step leaves every state variable unconstrained (over-approximation)`;
+  if (h.vars.size > 0) return `; speckl: ${action.name} assigns ${[...h.vars].sort().join(', ')} inside if/for blocks; the step leaves them unconstrained (over-approximation)`;
+  return null;
+}
+
 function emitActionTransition(lines: string[], action: ActionNode, stateVars: StateVar[], renameMap?: Map<string, string>): void {
   const funName = `${action.name}Enabled`;
   const nextName = `${action.name}Step`;
@@ -1044,10 +1081,15 @@ function emitActionTransition(lines: string[], action: ActionNode, stateVars: St
   const guards: string[] = [];
   const assigns: { target: string; expr: string }[] = [];
 
+  const havoc = blockHavoc(action, renameMap);
+  const note = havocComment(action, havoc);
+  if (note) lines.push(note);
   for (const s of action.statements) {
     if (s.type === 'precondition' || s.type === 'require') {
       guards.push(s.expr);
     } else if (s.type === 'assign') {
+      const b = s.target.replace(/[.\[].*$/, '');
+      if (havoc.all || havoc.vars.has(renameMap?.get(b) ?? b)) continue;
       assigns.push({ target: s.target, expr: s.expr });
     }
   }
@@ -1110,7 +1152,9 @@ function emitNextTransition(
 
       // Check if enabled and step predicates exist
       const hasEnabled = action.statements.some(s => s.type === 'precondition' || s.type === 'require');
-      const hasStep = action.statements.some(s => s.type === 'assign');
+      const havoc = blockHavoc(action);
+      const hasStep = action.statements.some(s => s.type === 'assign' &&
+        !havoc.all && !havoc.vars.has(s.target.replace(/[.\[].*$/, '')));
 
       if (hasEnabled && hasStep) {
         // Nullary define-funs are referenced by bare name, not application.
@@ -1119,6 +1163,7 @@ function emitNextTransition(
         lines.push(`    (and (${enabled})`);
         lines.push('      (and');
         for (const v of stateVars) {
+          if (havoc.all || havoc.vars.has(v.name)) continue;
           lines.push(`        (= ${v.name}_post ${v.name})`);
         }
         lines.push('      )');
@@ -1251,10 +1296,21 @@ function emitBMC(
 
       const guards: string[] = [];
       const stepAssigns: string[] = [];
+      const havoc = blockHavoc(action, renameMap);
+      const isHavoc = (target: string) => {
+        const b = target.replace(/[.\[].*$/, '');
+        return havoc.all || havoc.vars.has(renameMap?.get(b) ?? b);
+      };
+      if (i === 0) {
+        const note = havocComment(action, havoc);
+        if (note) lines.push(`    ${note}`);
+      }
 
       for (const s of action.statements) {
         if (s.type === 'precondition' || s.type === 'require') {
           guards.push(s.expr);
+        } else if (s.type === 'assign' && isHavoc(s.target)) {
+          continue;
         } else if (s.type === 'assign') {
           // Rename assignment targets the same way state vars were renamed,
           // so `exists` targets match the renamed declaration `exists_v`.
@@ -1270,7 +1326,7 @@ function emitBMC(
         }
       }
 
-      if (guards.length > 0 || stepAssigns.length > 0) {
+      if (guards.length > 0 || stepAssigns.length > 0 || havoc.all || havoc.vars.size > 0) {
         lines.push(`    (and ; Action: ${aName}`);
 
         // Guards at step i
@@ -1289,7 +1345,7 @@ function emitBMC(
           .filter(s => s.type === 'assign')
           .map(s => renameMap?.get(s.target.replace(/\[.*\]/, '')) ?? s.target.replace(/\[.*\]/, '')));
         for (const v of stateVars) {
-          if (!changedVars.has(v.name)) {
+          if (!changedVars.has(v.name) && !havoc.all && !havoc.vars.has(v.name)) {
             lines.push(`      (= ${v.name}_${i + 1} ${v.name}_${i})`);
           }
         }

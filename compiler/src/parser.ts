@@ -237,7 +237,31 @@ export type ActionStatement =
   | { type: 'postcondition'; expr: string }
   | { type: 'emit'; event: string; fields: { name: string; value: string }[] }
   | { type: 'return'; expr: string }
-  | { type: 'ifblock'; raw: string };
+  | { type: 'ifblock'; raw: string; branches?: IfBranch[] }
+  | { type: 'forblock'; raw: string; loop?: ForLoop }
+  | { type: 'unparsed'; raw: string };
+
+/**
+ * One branch of an `if` block: `cond` is null for the final `else`. Present
+ * only when the block's shape was recognised; generators that need the
+ * structure must fail closed when it is missing.
+ */
+export interface IfBranch {
+  cond: string | null;
+  body: ActionStatement[];
+}
+
+/**
+ * `for v from a to b` (inclusive bounds) or `for v in coll`, with its body
+ * parsed into statements. Present only when the loop's shape was recognised.
+ */
+export interface ForLoop {
+  variable: string;
+  from?: string;
+  to?: string;
+  collection?: string;
+  body: ActionStatement[];
+}
 
 /** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
 export interface LineSpan {
@@ -269,7 +293,20 @@ export type MemberNode = (
   | InvariantMemberNode
   | NextMemberNode
   | AgentMemberNode
+  | TypeAliasNode
 ) & LineSpan;
+
+/**
+ * `type X = T` where T is not a record: a named alias for another type
+ * (`type ServerId = String`, `type Ids = List(ServerId)`). Generators see
+ * every reference to X resolved to T (see expandTypeAliases); the IR also
+ * keeps the alias as a named type.
+ */
+export interface TypeAliasNode {
+  type: 'type_alias';
+  name: string;
+  target: TypeExpr;
+}
 
 /**
  * `next:` transition relation: the disjunction of actions the system may
@@ -587,6 +624,17 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
         i++;
         continue;
       }
+    }
+
+    // `type X = T` on one line: an enum (`A | B | C`), a one-line record
+    // (`type X = { a: Nat, b: Value }`), or an alias of another type.
+    // Records spanning lines are block members handled below.
+    const aliasMatch = openCount === closeCount ? stripLineComment(line).match(/^type\s+(\w+)\s*=\s*(.+)$/) : null;
+    if (aliasMatch) {
+      members.push(Object.assign(parseTypeAliasLine(aliasMatch[1], aliasMatch[2].trim()), { startLine: i + 1, endLine: i + 1 }));
+      speckEndLine = i + 1;
+      i++;
+      continue;
     }
 
     if (isBlockStarter && openCount > 0) {
@@ -1199,6 +1247,12 @@ function parseTypeExpr(expr: string): TypeExpr {
     return { type: 'primitive', name: expr };
   }
   
+  // Option(T) / Option<T>: T or nothing, i.e. the nullable `T | null`.
+  const optionMatch = expr.match(/^Option\s*(?:\((.+)\)|<(.+)>)$/);
+  if (optionMatch) {
+    return { ...parseTypeExpr((optionMatch[1] ?? optionMatch[2]).trim()), nullable: true };
+  }
+
   // List<T>
   if (expr.startsWith('List<') && expr.endsWith('>')) {
     const inner = expr.substring(5, expr.length - 1).trim();
@@ -1336,6 +1390,30 @@ function parseTypeExpr(expr: string): TypeExpr {
 
   // Identifier (for interface references, etc.)
   return { type: 'ident', name: expr };
+}
+
+/** Bare names joined by `|` (`Follower | Candidate | Leader`) declare an enum. */
+const ENUM_ALTERNATIVES = /^[A-Za-z_]\w*(\s*\|\s*[A-Za-z_]\w*)+$/;
+
+function parseTypeAliasLine(name: string, rhs: string): InterfaceNode | TypeAliasNode {
+  if (ENUM_ALTERNATIVES.test(rhs)) {
+    const variants = rhs.split('|').map((v) => v.trim());
+    // `T | null` is a nullable alias, not an enum.
+    if (!variants.includes('null')) {
+      return {
+        type: 'interface',
+        name,
+        kind: 'enum',
+        methods: variants.map((v) => ({ name: v, params: [], returnType: { type: 'ident', name: 'Void' } })),
+        fields: [],
+      };
+    }
+  }
+  const target = parseTypeExpr(rhs);
+  if (target.type === 'record' && !target.nullable) {
+    return { type: 'interface', name, kind: 'record', methods: [], fields: target.fields ?? [] };
+  }
+  return { type: 'type_alias', name, target };
 }
 
 function parseInterface(line: string): InterfaceNode {
@@ -1607,60 +1685,19 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   // Keep blank lines as null to separate statements, filter only comments.
   // Preserve indentation: it bounds colon-form if/else regions.
-  type BodyEntry = { text: string; indent: number } | null;
   const bodyEntries: BodyEntry[] = lines.slice(startIndex + 1, endIndex).map(l => {
     const trimmed = l.trim();
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
     return { text: trimmed, indent: l.length - l.trimStart().length };
   });
 
-  // Pre-pass: lower colon-form if/else regions (`if cond:` / `else:`) into
-  // brace form so the brace scanner below captures the whole region as one
-  // ifblock. The then-branch is the run of deeper-indented lines after
-  // `if cond:`; an `else:` at the if's indent switches branches; a line at
-  // or below the if's indent ends the region.
-  const prePass: (string | null)[] = [];
-  {
-    let i = 0;
-    while (i < bodyEntries.length) {
-      const cur = bodyEntries[i];
-      if (cur && /^for\b[^{]*:\s*$/.test(cur.text)) {
-        // colon-form for loop: `for v in coll:` - brace it; go.ts lowers the
-        // range and body
-        const forIndent = cur.indent;
-        prePass.push(cur.text.replace(/:\s*$/, ' {'));
-        i++;
-        while (i < bodyEntries.length) {
-          const l2 = bodyEntries[i];
-          if (l2 === null) { prePass.push(null); i++; continue; }
-          if (l2.indent <= forIndent) break;
-          prePass.push(l2.text);
-          i++;
-        }
-        prePass.push('}');
-        continue;
-      }
-      if (!cur || !/^if\b[^{]*:\s*$/.test(cur.text) || cur.text.includes('{')) {
-        prePass.push(cur ? cur.text : null);
-        i++;
-        continue;
-      }
-      const ifIndent = cur.indent;
-      prePass.push(cur.text.replace(/:\s*$/, ' {'));
-      i++;
-      while (i < bodyEntries.length) {
-        const l2 = bodyEntries[i];
-        if (l2 === null) { prePass.push(null); i++; continue; }
-        if (l2.indent <= ifIndent) {
-          if (/^else\s*:\s*$/.test(l2.text)) { prePass.push('} else {'); i++; continue; }
-          break;
-        }
-        prePass.push(l2.text);
-        i++;
-      }
-      prePass.push('}');
-    }
-  }
+  // Pre-pass: lower colon-form blocks (`for ...:`, `if cond:` / `else:`)
+  // into brace form so the brace scanner below captures the whole region.
+  // A block's body is the run of deeper-indented lines after its header; an
+  // `else:` at the if's indent switches branches; a line at or below the
+  // header's indent ends it. Bodies are lowered recursively, so a colon-form
+  // `if` inside a colon-form `for` is braced too.
+  const prePass = braceColonBlocks(bodyEntries);
   // Collapse consecutive nulls and strip trailing nulls
   const collapsed: (string | null)[] = [];
   for (const line of prePass) {
@@ -1674,6 +1711,169 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   }
   const bodyLines = collapsed;
 
+  const statements = parseBodyStatements(bodyLines);
+
+  return { ...header, statements };
+}
+
+type BodyEntry = { text: string; indent: number } | null;
+
+/** See parseActionBlockMultiline: colon-form blocks become brace form. */
+function braceColonBlocks(entries: BodyEntry[]): (string | null)[] {
+  const out: (string | null)[] = [];
+  let i = 0;
+  while (i < entries.length) {
+    const cur = entries[i];
+    // `for v in coll:`, `for v from a to b:`, and the statement form of
+    // `forall v in coll:` (a loop over coll; quantifier forms in expressions
+    // carry their body on the same line and do not end with `:`).
+    const isFor = !!cur && /^for(?:all)?\s+[A-Za-z_]\w*\s+(?:in|from)\s+.+:\s*$/.test(cur.text);
+    const isIf = !!cur && /^if\b.+:\s*$/.test(cur.text);
+    if (!cur || (!isFor && !isIf)) {
+      out.push(cur ? cur.text : null);
+      i++;
+      continue;
+    }
+    const indent = cur.indent;
+    out.push(cur.text.replace(/^forall\b/, 'for').replace(/:\s*$/, ' {'));
+    i++;
+    let branch: BodyEntry[] = [];
+    const flush = () => { out.push(...braceColonBlocks(branch)); branch = []; };
+    while (i < entries.length) {
+      const l2 = entries[i];
+      if (l2 === null) { branch.push(null); i++; continue; }
+      if (l2.indent <= indent) {
+        if (isIf && /^else\s*:\s*$/.test(l2.text)) { flush(); out.push('} else {'); i++; continue; }
+        break;
+      }
+      branch.push(l2);
+      i++;
+    }
+    flush();
+    out.push('}');
+  }
+  return out;
+}
+
+/** Lines of a brace block starting at bodyLines[i]; returns them and the next index. */
+function collectBraceBlock(bodyLines: (string | null)[], i: number): { lines: string[]; next: number } {
+  let braceDepth = 0;
+  let j = i;
+  const lines: string[] = [];
+  let opened = false;
+  while (j < bodyLines.length) {
+    const line = bodyLines[j];
+    if (line === null) { j++; continue; }
+    // A header split across lines (`if a and` / `b {`) is one line here.
+    if (lines.length > 0 && !opened) lines[lines.length - 1] += ' ' + line.trim();
+    else lines.push(line);
+    braceDepth += braceDelta(line);
+    if (line.includes('{')) opened = true;
+    j++;
+    if (braceDepth === 0 && opened) break;
+    // Never run past a header that has no block at all.
+    if (!opened && !continuesStatement(lines[0], bodyLines[j] ?? null) && !/(\band|\bor|&&|\|\|)\s*$/.test(lines[0])) break;
+  }
+  return { lines, next: j };
+}
+
+/** `{` minus `}` outside string literals. */
+function braceDelta(line: string): number {
+  let d = 0;
+  let inStr = false;
+  for (let k = 0; k < line.length; k++) {
+    const ch = line[k];
+    if (ch === '"' && line[k - 1] !== '\\') inStr = !inStr;
+    else if (!inStr && ch === '{') d++;
+    else if (!inStr && ch === '}') d--;
+  }
+  return d;
+}
+
+/**
+ * `for v from a to b {` / `for v in coll {` header, body lines, closing `}`.
+ * Anything else (a one-line loop, trailing text after the brace) is left
+ * unstructured so generators fail closed on it.
+ */
+function parseForStructure(lines: string[]): ForLoop | undefined {
+  if (lines.length < 2 || lines[lines.length - 1].trim() !== '}') return undefined;
+  const head = stripLineComment(lines[0]);
+  const range = head.match(/^for\s+([A-Za-z_]\w*)\s+from\s+(.+?)\s+to\s+(.+?)\s*\{$/);
+  const each = head.match(/^for\s+([A-Za-z_]\w*)\s+in\s+(.+?)\s*\{$/);
+  if (!range && !each) return undefined;
+  const inner = lines.slice(1, -1);
+  if (inner.some((l, k) => blockDepthAt(inner, k) < 0)) return undefined;
+  const body = parseBodyStatements(inner);
+  return range
+    ? { variable: range[1], from: range[2].trim(), to: range[3].trim(), body }
+    : { variable: each![1], collection: each![2].trim(), body };
+}
+
+/** Running brace depth after line k of `lines`. */
+function blockDepthAt(lines: string[], k: number): number {
+  let d = 0;
+  for (let n = 0; n <= k; n++) d += braceDelta(lines[n]);
+  return d;
+}
+
+/**
+ * `if c {` ... (`} else if c {` | `} else {`) ... `}`, one keyword per line.
+ * Other shapes (one-line `if c { x := 1 }`) stay unstructured.
+ */
+function parseIfStructure(lines: string[]): IfBranch[] | undefined {
+  if (lines.length < 2 || lines[lines.length - 1].trim() !== '}') return undefined;
+  const head = stripLineComment(lines[0]).match(/^if\s+(.+?)\s*\{$/);
+  if (!head) return undefined;
+  const branches: IfBranch[] = [];
+  let cond: string | null = head[1];
+  let body: string[] = [];
+  let depth = 1;
+  for (let k = 1; k < lines.length; k++) {
+    const t = lines[k].trim();
+    if (depth === 1) {
+      const elseIf = t.match(/^\}\s*else\s+if\s+(.+?)\s*\{$/);
+      if (elseIf || /^\}\s*else\s*\{$/.test(t)) {
+        if (cond === null) return undefined; // nothing may follow a bare else
+        branches.push({ cond, body: parseBodyStatements(body) });
+        cond = elseIf ? elseIf[1] : null;
+        body = [];
+        continue;
+      }
+      if (t === '}') {
+        if (k !== lines.length - 1) return undefined;
+        branches.push({ cond, body: parseBodyStatements(body) });
+        return branches;
+      }
+    }
+    depth += braceDelta(t);
+    if (depth < 1) return undefined;
+    body.push(lines[k]);
+  }
+  return undefined;
+}
+
+/**
+ * True when `next` continues the statement whose text so far is `text`:
+ * the text is syntactically open (bracket, trailing operator, a trailing `:`
+ * of a multi-line if-expression) or `next` starts with a binary operator or
+ * `else`. Statement starters never continue.
+ */
+function continuesStatement(text: string, next: string | null): boolean {
+  if (next === null) return false;
+  const nt = next.trim();
+  if (!nt || /^\}\s*else\b/.test(nt)) return false;
+  // An open bracket always continues (multi-line record or call), even
+  // onto a line holding just its closing `}`.
+  if (exprIncomplete(text)) return true;
+  if (nt === '}') return false;
+  if (/^(require|precondition:|postcondition:|return\b|emit\s|let\s|if\s|for\s|forall\s)/.test(nt)) return false;
+  if (/^[A-Za-z_][\w\[\].{}:, ]*\s:=/.test(nt)) return false;
+  return exprIncomplete(text) || /:\s*$/.test(text.trim())
+    || /^(\|\||&&|or\b|and\b|implies\b|else\b|[+*/]|-\s)/.test(nt);
+}
+
+/** Parse brace-lowered action body lines (null = blank separator) into statements. */
+function parseBodyStatements(bodyLines: (string | null)[]): ActionStatement[] {
   const statements: ActionStatement[] = [];
   for (let i = 0; i < bodyLines.length; i++) {
     const stmtOrNull = bodyLines[i];
@@ -1683,12 +1883,13 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     // precondition: expr
     if (stmt.startsWith('precondition:')) {
       let expr = stmt.substring(13).trim();
-      // support 'or' continuation lines
+      // support 'or' continuation lines and expressions split across lines
       while (i + 1 < bodyLines.length) {
         const nextLine = bodyLines[i + 1];
-        if (nextLine === null || !nextLine.startsWith('or ')) break;
+        if (nextLine !== null && nextLine.startsWith('or ')) { i++; expr += ' || ' + nextLine.substring(3).trim(); continue; }
+        if (!continuesStatement(expr, nextLine)) break;
         i++;
-        expr += ' || ' + nextLine.substring(3).trim();
+        expr += ' ' + nextLine!.trim();
       }
       statements.push({ type: 'precondition', expr });
       continue;
@@ -1696,12 +1897,13 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     // postcondition: expr
     if (stmt.startsWith('postcondition:')) {
       let expr = stmt.substring(14).trim();
-      // support 'or' continuation lines
+      // support 'or' continuation lines and expressions split across lines
       while (i + 1 < bodyLines.length) {
         const nextLine = bodyLines[i + 1];
-        if (nextLine === null || !nextLine.startsWith('or ')) break;
+        if (nextLine !== null && nextLine.startsWith('or ')) { i++; expr += ' || ' + nextLine.substring(3).trim(); continue; }
+        if (!continuesStatement(expr, nextLine)) break;
         i++;
-        expr += ' || ' + nextLine.substring(3).trim();
+        expr += ' ' + nextLine!.trim();
       }
       statements.push({ type: 'postcondition', expr });
       continue;
@@ -1717,8 +1919,8 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (nextLine.startsWith('precondition:') || nextLine.startsWith('postcondition:') ||
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
-            nextLine.startsWith('if ') ||
-            nextLine.includes(':=')) {
+            nextLine.startsWith('if ') || nextLine.startsWith('for ') ||
+            nextLine === '}' || nextLine.includes(':=')) {
           break;
         }
         i++;
@@ -1728,12 +1930,26 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       continue;
     }
     // return expr
-    if (stmt.startsWith('return ')) {
-      statements.push({ type: 'return', expr: stmt.substring(7).trim() });
+    if (stmt === 'return') {
+      statements.push({ type: 'return', expr: '' });
       continue;
     }
-    // emit Event { fields }
-    const emitMatch = stmt.match(/^emit\s+(\w+)\s*\{\s*(.*)\s*\}$/);
+    if (stmt.startsWith('return ')) {
+      let expr = stmt.substring(7).trim();
+      while (i + 1 < bodyLines.length && continuesStatement(expr, bodyLines[i + 1])) { i++; expr += ' ' + bodyLines[i]!.trim(); }
+      statements.push({ type: 'return', expr });
+      continue;
+    }
+    // emit Event { fields }, possibly spanning lines until the braces close
+    let emitText = stmt;
+    if (/^emit\s+\w+\s*\{/.test(stmt)) {
+      while (exprIncomplete(emitText) && i + 1 < bodyLines.length && bodyLines[i + 1] !== null) {
+        i++;
+        const piece = bodyLines[i]!.trim();
+        emitText += (/[{,]\s*$/.test(emitText) || piece.startsWith('}') ? ' ' : ', ') + piece;
+      }
+    }
+    const emitMatch = emitText.match(/^emit\s+(\w+)\s*\{\s*(.*)\s*\}$/);
     if (emitMatch) {
       const eventName = emitMatch[1];
       const fieldsStr = emitMatch[2];
@@ -1755,49 +1971,26 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     }
     // for v in coll { ... } - range loop captured as a forblock statement
     if (stmt.startsWith('for ')) {
-      let braceDepth = 0;
-      let j = i;
-      const blockLines2: string[] = [];
-      while (j < bodyLines.length) {
-        const line = bodyLines[j];
-        if (line === null) { j++; continue; }
-        blockLines2.push(line);
-        for (const ch of line) {
-          if (ch === '{') braceDepth++;
-          else if (ch === '}') braceDepth--;
-        }
-        j++;
-        if (braceDepth === 0) break;
-      }
-      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
-      i = j - 1;
+      const { lines: blockLines2, next } = collectBraceBlock(bodyLines, i);
+      const loop = parseForStructure(blockLines2);
+      statements.push({ type: 'forblock', raw: blockLines2.join(' '), ...(loop ? { loop } : {}) });
+      i = next - 1;
       continue;
     }
     // if condition { ... } else if condition { ... } else { ... }
     // SpeckDL conditional blocks - parse as a special statement type
     if (stmt.startsWith('if ')) {
-      // Find matching } for this if block (may span multiple bodyLines entries)
-      let braceDepth = 0;
-      let j = i;
-      const blockLines: string[] = [];
-      while (j < bodyLines.length) {
-        const line = bodyLines[j];
-        if (line === null) { j++; continue; }
-        blockLines.push(line);
-        for (const ch of line) {
-          if (ch === '{') braceDepth++;
-          else if (ch === '}') braceDepth--;
-        }
-        j++;
-        if (braceDepth === 0) break;
-      }
-      // For now, treat as a raw 'ifblock' statement that the generator can handle
-      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
-      i = j - 1; // skip to end of if block
+      const { lines: blockLines, next } = collectBraceBlock(bodyLines, i);
+      const branches = parseIfStructure(blockLines);
+      // raw stays for generators that lower the text themselves (Go, IR).
+      statements.push({ type: 'ifblock', raw: blockLines.join(' '), ...(branches ? { branches } : {}) });
+      i = next - 1;
       continue;
     }
     // let name := expr (may span multiple lines, e.g. a record constructor)
-    const letMatch = stmt.match(/^let\s+(\w+)\s*:=\s*(.+)$/);
+    // `let name := expr`, or the typed form `let name: Type = expr`.
+    const letMatch = stmt.match(/^let\s+(\w+)\s*:=\s*(.+)$/)
+      ?? stmt.match(/^let\s+([A-Za-z_]\w*)\s*:\s*[\w.<>\[\](), ]+?\s*=(?!=)\s*(.+)$/);
     if (letMatch) {
       let rhs = letMatch[2].trim();
       // Multi-line expressions: join continuation lines while the right-hand
@@ -1813,7 +2006,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
             /\w+\s*:=/.test(nt)) {
           break;
         }
-        if (!exprIncomplete(rhs)) break;
+        if (!continuesStatement(rhs, nt)) break;
         rhs += ' ' + nt;
         i++;
       }
@@ -1821,20 +2014,28 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       continue;
     }
     // assignment: target := expr (may span multiple lines)
-    const assignMatch = stmt.match(/^([\w\[\]]+(?:\.\w+)?)\s*:=\s*(.+)$/);
+    // Target: name, optional [index] (which may contain dots, calls and one
+    // level of nested brackets), optional .field path.
+    const assignMatch = stmt.match(/^([A-Za-z_]\w*(?:\[(?:[^\[\]]|\[[^\[\]]*\])+\])?(?:\.\w+)*)\s*:=\s*(.*)$/);
     if (assignMatch) {
       let target = assignMatch[1];
       let expr = assignMatch[2].trim();
-      // Handle multiline expressions: join subsequent lines until braces/parens are balanced
-      while (i + 1 < bodyLines.length && !isExpressionComplete(expr)) {
+      // Multi-line right-hand side: an empty one continues on the next line;
+      // otherwise join while brackets are open or the expression continues.
+      if (!expr && i + 1 < bodyLines.length && bodyLines[i + 1] !== null) { i++; expr = bodyLines[i]!.trim(); }
+      while (i + 1 < bodyLines.length && (!isExpressionComplete(expr) || continuesStatement(expr, bodyLines[i + 1]))) {
+        if (bodyLines[i + 1] === null) break;
         i++;
         expr += ' ' + bodyLines[i];
       }
       statements.push({ type: 'assign', target, expr });
+      continue;
     }
+    // Anything else is kept as raw text so every generator sees it and can
+    // fail closed, instead of the statement silently vanishing.
+    statements.push({ type: 'unparsed', raw: stmt });
   }
-
-  return { ...header, statements };
+  return statements;
 }
 
 function parseEventBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): EventNode {

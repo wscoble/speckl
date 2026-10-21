@@ -5,8 +5,8 @@
 // Used by the round-trip property test: parse → print → parse must yield a
 // structurally identical AST. The printer is faithful to what the parser
 // captures — comments and original formatting are not preserved (the AST
-// does not contain them), as are `next:` relations (parsed separately from
-// raw source) and `type` aliases (not captured as members).
+// does not contain them), nor are `next:` relations (parsed separately from
+// raw source) or `import` lines (the parser does not keep them).
 
 import { AST, SpeckNode, MemberNode, TypeExpr } from './parser.js';
 
@@ -82,6 +82,8 @@ function printMember(member: MemberNode): string[] {
     }
     case 'interface':
       return printInterface(member);
+    case 'type_alias':
+      return [`type ${member.name} = ${printType(member.target)}`];
     case 'service': {
       const lines = [`service ${member.name} {`];
       for (const rpc of member.rpcs) {
@@ -92,12 +94,17 @@ function printMember(member: MemberNode): string[] {
     }
     case 'oneof': {
       const lines = [`oneof ${member.name} {`];
-      for (const v of member.variants) lines.push(`    ${v.typeName} ${v.fieldName}`);
+      // The parser reads `field_name: TypeName` (the proto order is only
+      // used in generated .proto files).
+      for (const v of member.variants) lines.push(`    ${v.fieldName}: ${v.typeName}`);
       lines.push('}');
       return lines;
     }
     case 'transition': {
       const lines = [`transition ${member.name} {`];
+      // `type:` and `payload:` are parsed into their own fields, not `fields`.
+      if (member.typeDiscriminator) lines.push(`    type: ${member.typeDiscriminator}`);
+      if (member.payloadOneof) lines.push(`    payload: ${member.payloadOneof}`);
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
       lines.push('}');
       return lines;
@@ -204,46 +211,67 @@ function printInit(node: { assignments: { name: string; expr: string }[] }): str
   return lines;
 }
 
-function printAction(action: { name: string; params: { name: string; type: TypeExpr }[]; statements: { type: string; [k: string]: unknown }[] }): string[] {
+type PrintableStatement = { type: string; [k: string]: unknown };
+
+function printAction(action: { name: string; params: { name: string; type: TypeExpr }[]; statements: PrintableStatement[] }): string[] {
   const params = action.params.map(p => `${p.name}: ${printType(p.type)}`).join(', ');
-  const lines = [`action ${action.name}(${params}) {`];
-  for (const stmt of action.statements) {
+  return [`action ${action.name}(${params}) {`, ...printStatements(action.statements, '    '), '}'];
+}
+
+/** Action statements; structured if/for blocks are printed nested, one keyword per line. */
+function printStatements(statements: PrintableStatement[], indent: string): string[] {
+  const lines: string[] = [];
+  for (const stmt of statements) {
     switch (stmt.type) {
       case 'assign':
-        lines.push(`    ${stmt.target} := ${stmt.expr}`);
+        lines.push(`${indent}${stmt.target} := ${stmt.expr}`);
         break;
       case 'let':
-        lines.push(`    let ${stmt.name} := ${stmt.expr}`);
+        lines.push(`${indent}let ${stmt.name} := ${stmt.expr}`);
         break;
       case 'require':
-        lines.push(`    require ${stmt.expr}`);
+        lines.push(`${indent}require ${stmt.expr}`);
         break;
       case 'precondition':
-        lines.push(`    precondition: ${stmt.expr}`);
+        lines.push(`${indent}precondition: ${stmt.expr}`);
         break;
       case 'postcondition':
-        lines.push(`    postcondition: ${stmt.expr}`);
+        lines.push(`${indent}postcondition: ${stmt.expr}`);
         break;
       case 'emit': {
         const fields = (stmt.fields as { name: string; value: string }[] | undefined) ?? [];
         const fieldText = fields.map(f => `${f.name}: ${f.value}`).join(', ');
-        lines.push(`    emit ${stmt.event} { ${fieldText} }`);
+        lines.push(`${indent}emit ${stmt.event} { ${fieldText} }`);
         break;
       }
       case 'return':
-        lines.push(`    return ${stmt.expr}`);
+        lines.push(stmt.expr ? `${indent}return ${stmt.expr}` : `${indent}return`);
         break;
-      case 'ifblock':
-        lines.push(String(stmt.raw));
+      case 'ifblock': {
+        const branches = stmt.branches as { cond: string | null; body: PrintableStatement[] }[] | undefined;
+        if (!branches) { lines.push(`${indent}${stmt.raw}`); break; }
+        branches.forEach((b, k) => {
+          const head = b.cond === null ? 'else' : `if ${b.cond}`;
+          lines.push(k === 0 ? `${indent}${head} {` : `${indent}} ${b.cond === null ? 'else' : `else if ${b.cond}`} {`);
+          lines.push(...printStatements(b.body, indent + '    '));
+        });
+        lines.push(`${indent}}`);
         break;
-      case 'forblock':
-        lines.push(String(stmt.raw));
+      }
+      case 'forblock': {
+        const loop = stmt.loop as { variable: string; from?: string; to?: string; collection?: string; body: PrintableStatement[] } | undefined;
+        if (!loop) { lines.push(`${indent}${stmt.raw}`); break; }
+        const range = loop.collection !== undefined ? `in ${loop.collection}` : `from ${loop.from} to ${loop.to}`;
+        lines.push(`${indent}for ${loop.variable} ${range} {`, ...printStatements(loop.body, indent + '    '), `${indent}}`);
+        break;
+      }
+      case 'unparsed':
+        lines.push(`${indent}${stmt.raw}`);
         break;
       default:
-        lines.push(`    // unprinted statement: ${stmt.type}`);
+        lines.push(`${indent}// unprinted statement: ${stmt.type}`);
     }
   }
-  lines.push('}');
   return lines;
 }
 
@@ -274,18 +302,18 @@ function printType(t: TypeExpr | undefined): string {
       return (t.name ?? 'Unknown') + (t.nullable ? ' | null' : '');
     case 'ident':
       return (t.name ?? 'Unknown') + (t.nullable ? ' | null' : '');
-    case 'record':
-      return '{ '
-        + (t.fields ?? []).map(f => `${f.name}: ${printType(f.type)}`).join(', ')
-        + ' }';
+    case 'record': {
+      const body = '{ ' + (t.fields ?? []).map(f => `${f.name}: ${printType(f.type)}`).join(', ') + ' }';
+      // `{ ... } | null` does not parse; Option(...) does, and keeps the
+      // alias a nullable record instead of a record type.
+      return t.nullable ? `Option(${body})` : body;
+    }
     case 'list':
       return `List(${printType(t.elementType)})` + (t.nullable ? ' | null' : '');
     case 'set':
       return `Set(${printType(t.elementType)})` + (t.nullable ? ' | null' : '');
     case 'map':
       return `Map(${printType(t.keyType)}, ${printType(t.valueType)})` + (t.nullable ? ' | null' : '');
-    case 'record':
-      return printType({ ...t, nullable: t.nullable });
     default:
       return 'Unknown';
   }

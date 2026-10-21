@@ -1,26 +1,16 @@
 {
   "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java), Rust and Kubernetes have no entries: all examples compile.",
   "typescript": {
-    "AgentPolicy": "AgentPolicy.ts(144,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
-    "ClaudeCodePolicy": "ClaudeCodePolicy.ts(157,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
-    "KafkaKRaft": "KafkaKRaft.ts(164,11): error TS2304: Cannot find name 'TermMonotonicity'.",
-    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(12,15): error TS2304: Cannot find name 'TokenType'.",
+    "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(245,172): error TS2339: Property 'session_id' does not exist on type 'string'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
-    "Raft": "Raft.ts(11,9): error TS2304: Cannot find name 'Term'.",
+    "Raft": "Raft.ts(149,9): error TS2322: Type 'null' is not assignable to type 'string'.",
     "RetryHandler": "RetryHandler.ts(124,12): error TS2304: Cannot find name 'maxRetries'.",
-    "ReviewGate": "ReviewGate.ts(145,11): error TS2304: Cannot find name 'MergeNeedsApproval'.",
-    "SQLitePager": "SQLitePager.ts(288,11): error TS2304: Cannot find name 'CommitAtomicity'.",
-    "SQLiteWAL": "SQLiteWAL.ts(264,32): error TS1005: ';' expected.",
-    "tef": "TEF.ts(301,22): error TS1005: ',' expected.",
-    "TigerBeetleLedger": "TigerBeetleLedger.ts(247,11): error TS2304: Cannot find name 'AccountBalanceInvariant'."
-  },
-  "agent": {
-    "AgentPolicy": "agent/AgentPolicy.ts(156,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
-    "ClaudeCodePolicy": "agent/ClaudeCodePolicy.ts(169,11): error TS2304: Cannot find name 'PrNeedsGreenTests'."
+    "SQLiteWAL": "SQLiteWAL.ts(263,32): error TS1005: ';' expected.",
+    "tef": "TEF.ts(294,22): error TS1005: ',' expected."
   },
   "go": {
     "AccountLedger": "./account_ledger.go:36:14: syntax error: unexpected name notIn, expected )",
-    "KafkaKRaft": "./kafka_k_raft.go:55:34: syntax error: unexpected name union at end of statement",
+    "KafkaKRaft": "./kafka_k_raft.go:57:34: syntax error: unexpected name union at end of statement",
     "OAuth2AuthorizationCode": "./o_auth_2_authorization_code.go:50:14: syntax error: unexpected name in, expected )",
     "Paxos": "./paxos.go:46:7: syntax error: unexpected {, expected expression",
     "PreconditionTest": "./handlers.go:17:46: undefined: PreconditionTestMachine",
@@ -28,7 +18,7 @@
     "RetryHandler": "./retry_handler.go:54:9: undefined: maxDelay",
     "SQLitePager": "./sq_lite_pager.go:136:30: syntax error: unexpected name union at end of statement",
     "SQLiteWAL": "./sq_lite_wal.go:264:16: syntax error: unexpected {, expected expression",
-    "tef": "./tef.go:305:73: syntax error: unexpected type, expected )",
+    "tef": "./tef.go:322:73: syntax error: unexpected type, expected )",
     "TigerBeetleLedger": "./tiger_beetle_ledger.go:42:12: syntax error: unexpected name notIn, expected )",
     "TwoPhaseCommit": "./two_phase_commit.go:38:10: syntax error: unexpected name in, expected )"
   },
@@ -52,11 +42,8 @@
   },
   "protobuf": {
     "AccountLedger": "account_ledger.proto: \"PendingTransfer\" is not defined.",
-    "KafkaKRaft": "kafka_k_raft.proto:14:9: Expected field name.",
-    "OAuth2AuthorizationCode": "o_auth2_authorization_code.proto:12:3: \"AccessToken\" is not defined.",
     "Paxos": "paxos.proto: \"Ballot\" is not defined.",
     "PreconditionTest": "precondition_test.proto:12:3: \"Integer\" is not defined.",
-    "Raft": "raft.proto:12:3: \"Term\" is not defined.",
     "tef": "tef.proto:311:22: \"CreateCustomerRequest\" is not defined.",
     "TigerBeetleLedger": "tiger_beetle_ledger.proto: \"Account\" is not defined.",
     "TwoPhaseCommit": "two_phase_commit.proto:15:12: \"Message\" is not defined."
