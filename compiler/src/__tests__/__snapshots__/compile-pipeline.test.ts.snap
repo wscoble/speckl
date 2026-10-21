@@ -18,7 +18,7 @@ exports[`generated output is pinned for every example > AccountLedger.speckdl -t
   "account_ledger-elm/src/Types.elm": "4ebb0e98799640cc",
   "account_ledger.proto": "41077356f56c8bcc",
   "account_ledger/Dockerfile": "e22ef9c8c12c9b0b",
-  "account_ledger/account_ledger.go": "86d63e03073c6065",
+  "account_ledger/account_ledger.go": "ed00a6a2731b6905",
   "account_ledger/cmd/server/main.go": "5aa1b8bb860bc43f",
   "account_ledger/go.mod": "94f070ca9d55f9f9",
   "account_ledger/handlers.go": "0b05aee097e58aa0",
@@ -321,7 +321,7 @@ exports[`generated output is pinned for every example > OAuth2AuthorizationCode.
   "o_auth_2_authorization_code/cmd/server/main.go": "638d4f8748ca2b22",
   "o_auth_2_authorization_code/go.mod": "91dc805b5921c53b",
   "o_auth_2_authorization_code/handlers.go": "7f4b0a21258987e2",
-  "o_auth_2_authorization_code/o_auth_2_authorization_code.go": "d92cdd928d15f3f2",
+  "o_auth_2_authorization_code/o_auth_2_authorization_code.go": "38f8b9b6463ba096",
   "o_auth_2_authorization_code/prelude.go": "5b7eb1b3d198fde0",
   "o_auth_2_authorization_code/store.go": "31f7de75e2a3493e",
   "oauth2_authorization_code-elm/elm.json": "ad72359d7379fd62",
@@ -394,7 +394,7 @@ exports[`generated output is pinned for every example > Paxos.speckdl -t all 1`]
   "paxos/cmd/server/main.go": "ec447c4eb8598a4d",
   "paxos/go.mod": "6495480d82faa856",
   "paxos/handlers.go": "f7834278848a28dc",
-  "paxos/paxos.go": "bfaff372d8c159d4",
+  "paxos/paxos.go": "449c9a1fd29d8074",
   "paxos/prelude.go": "1edf549cb3adb563",
   "paxos/store.go": "9fcb6511d8c8087a",
 }
@@ -848,7 +848,7 @@ exports[`generated output is pinned for every example > TigerBeetleLedger.speckd
   "tiger_beetle_ledger/handlers.go": "6b910f51f35ec9e0",
   "tiger_beetle_ledger/prelude.go": "10616f768caffd8b",
   "tiger_beetle_ledger/store.go": "587ecd66825f5f71",
-  "tiger_beetle_ledger/tiger_beetle_ledger.go": "def9bd5063ee8c0a",
+  "tiger_beetle_ledger/tiger_beetle_ledger.go": "2ae63353c12e4060",
 }
 `;
 

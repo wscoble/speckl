@@ -138,6 +138,10 @@ First npm release. The package was renamed from the unpublished
   target kept an action's guards but emitted nothing for a `for` loop, so a
   split-style action "succeeded" with none of the loop's effects (no children
   created, the running sum left at 0) and no `SPECKL-UNTRANSLATED` marker.
+  A statement-level if/else was dropped the same way (a `// TODO ... manual
+  translation required` comment), so a missing-key guard such as
+  `if k in m.keys { m[k] := m[k] + v } else { m[k] := v }` vanished and the
+  first entry of a running total was never written.
   Other backends had the same pattern for loops, if-blocks or unreadable
   statements. Regression fixture: `src/__tests__/fixtures/LoopSplit.speckdl`.
   - **Parser**: if-blocks and loops (brace or indented colon form, including
@@ -174,7 +178,9 @@ First npm release. The package was renamed from the unpublished
   - **Go**: loops (`from..to` ranges and `in` collections) and if-chains are
     lowered from the parsed structure, nested to any depth. An unlowerable
     statement sets `err` to `SPECKL-UNTRANSLATED: ...` and returns, instead of
-    a `// TODO` comment or `_ = <text>`.
+    a `// TODO` comment or `_ = <text>`. `k in m.keys` / `notIn` / `.values`
+    on a state map (or with a dotted left side) becomes `mapHas`/`inValues`;
+    it was left as `k in m.Totals.keys`, which is not Go.
   - **Elm**: an action with any statement the client translator cannot express
     no longer applies the rest of its transition optimistically. Only its
     guards run, and the server's state arrives on refetch.
