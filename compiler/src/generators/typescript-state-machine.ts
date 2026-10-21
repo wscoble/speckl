@@ -615,6 +615,18 @@ ${table}
     return { speck: '${speckName}', version: 1, state, decisionLog: specklEncode(this.decisionLog) as unknown[] };
   }
 
+  /** Encoded copies of the named fields; an action's rollback point. */
+  private __save(keys: readonly string[]): [string, unknown][] {
+    const self = this as unknown as Record<string, unknown>;
+    return keys.map(k => [k, specklEncode(self[k])]);
+  }
+
+  /** Put back the fields saved by __save. */
+  private __load(saved: [string, unknown][]): void {
+    const self = this as unknown as Record<string, unknown>;
+    for (const [k, v] of saved) self[k] = specklDecode(v);
+  }
+
   /** Rebuild a machine from serialize() output without re-running init. */
   static restore(snapshot: ${speckName}Snapshot): ${className} {
     if (!snapshot || snapshot.speck !== '${speckName}' || snapshot.version !== 1) {
@@ -892,38 +904,20 @@ function emitAction(action: ActionNode, stateVarNames: Set<string>, mapVarNames:
   ].join('\n');
   const finalBody = preamble ? preamble + '\n' + bodyPartsStr : bodyPartsStr;
 
-  // A failed guard means the action did not happen. When a guard (or an
-  // untranslated throw) can fire after the body has already changed state, as
-  // a require inside a loop does, roll the state back before rethrowing.
-  const lines = finalBody.split('\n');
-  // A local bound to part of the state (`const it = this.items.get(b)!`)
-  // shares the object, so writing a field through it changes the state too.
-  const stateBoundLocals = lines
-    .map(l => l.match(/^\s*(?:const|let)\s+(\w+)(?::[^=]+)?\s*=\s*(.*)$/))
-    .filter((m): m is RegExpMatchArray => !!m && /\bthis\./.test(m[2]))
-    .map(m => m[1]);
-  const firstMutation = lines.findIndex(l =>
-    /\bthis\.\w+(?:\.get\([^\n]*\)!)?(?:\.\w+|\[[^\n]*\])*\s*=[^=]/.test(l) ||
-    /\bthis\.\w+\.(?:set|delete|add|push|clear)\(/.test(l) ||
-    stateBoundLocals.some(n => new RegExp(`^\\s*${n}(?:\\.\\w+|\\[[^\\n]*\\])+\\s*=[^=]`).test(l)
-      || new RegExp(`^\\s*${n}(?:\\.\\w+)*\\.(?:set|delete|add|push|clear)\\(`).test(l)));
-  // Besides explicit throws, a non-null assertion (`m.get(k)!`) throws a
-  // TypeError when the key is missing: directly when dereferenced on the same
-  // line, or later through a local bound to it.
-  const assertedLocals = lines
-    .map(l => l.match(/^\s*(?:const|let)\s+(\w+)(?::[^=]+)?\s*=.*\)!;\s*$/)?.[1])
-    .filter((n): n is string => !!n);
-  const canThrow = (l: string) => /\bthrow new Error\(/.test(l) || /\)!/.test(l)
-    || assertedLocals.some(n => new RegExp(`\\b${n}(?:\\.|\\[)`).test(l));
-  const needsRollback = firstMutation >= 0 && lines.slice(firstMutation + 1).some(canThrow);
-  if (needsRollback) {
-    const className = `${speckName}Machine`;
+  // A failed guard (or any other throw) means the action did not happen.
+  // Every action that can write state saves the state it can reach and puts
+  // it back if anything in the body throws. Whether an action writes is read
+  // off its parsed statements, not the generated text: assignments, emits
+  // and statements this backend could not read count as writes.
+  if (statementsWrite(action.statements)) {
+    const keys = rollbackKeys(finalBody, stateVarNames);
+    const lines = finalBody.split('\n');
     return `  ${action.name}(${params}) {
-    const __before = this.serialize();
+    const __saved = this.__save(${keys});
     try {
 ${lines.map(l => (l ? '  ' + l : l)).join('\n')}
     } catch (e) {
-      Object.assign(this, ${className}.restore(__before));
+      this.__load(__saved);
       throw e;
     }
   }`;
@@ -933,6 +927,40 @@ ${lines.map(l => (l ? '  ' + l : l)).join('\n')}
 ${finalBody}
   }`;
 }
+/**
+ * True if running `stmts` can change machine state: an assignment (state or
+ * a field reached through a local), an emit (the decision log), or a
+ * statement whose shape was not recognised. Guards, lets and returns only
+ * read.
+ */
+export function statementsWrite(stmts: ActionStatement[]): boolean {
+  return stmts.some(st => {
+    switch (st.type) {
+      case 'let': case 'require': case 'precondition': case 'postcondition': case 'return':
+        return false;
+      case 'ifblock':
+        return !st.branches || st.branches.some(b => statementsWrite(b.body));
+      case 'forblock':
+        return !st.loop || statementsWrite(st.loop.body);
+      default:
+        return true;
+    }
+  });
+}
+
+/**
+ * The fields an action body can reach, as a TS array literal for __save.
+ * State is only reachable through `this.<field>` (a local can only alias
+ * state it read through `this.`), so the fields named that way cover every
+ * write. A call to another method on `this` could reach anything: save all.
+ */
+function rollbackKeys(body: string, stateVarNames: Set<string>): string {
+  const all = [...stateVarNames, 'decisionLog'];
+  const methodCall = [...body.matchAll(/\bthis\.(\w+)\s*\(/g)].some(m => !stateVarNames.has(m[1]) && m[1] !== 'decisionLog');
+  const keys = methodCall ? all : all.filter(k => new RegExp(`\\bthis\\.${k}\\b`).test(body));
+  return `[${keys.map(k => `'${k}'`).join(', ')}]`;
+}
+
 // Rewrite SpeckDL expressions to valid TypeScript
 // Only prefix identifiers with `this.` if they are state variables AND not local params
 function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<string>, localNames: Set<string>, stateEnumName: string, knownStateValues: string[]): string {

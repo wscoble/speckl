@@ -16,7 +16,7 @@ import ts from 'typescript';
 import { parseSpeckContent, parseSpeckFile, ActionStatement } from '../parser.js';
 import { parseActionStatements } from '../expr/stmt-parser.js';
 import { lower } from '../ir/lower.js';
-import { generateTypeScriptStateMachine } from '../generators/typescript-state-machine.js';
+import { generateTypeScriptStateMachine, statementsWrite } from '../generators/typescript-state-machine.js';
 import { generateTypeScriptFromIR } from '../generators/typescript-from-ir.js';
 import { generateGo } from '../generators/go.js';
 import { generateElm } from '../generators/elm.js';
@@ -516,8 +516,62 @@ describe('TypeScript backend: an action that throws after a write leaves no part
     expect(m.items.get(1)).toEqual({ qty: 3 });
   });
 
-  it('does not wrap an action that cannot throw after its first write', () => {
+  it('rolls back any throw after a write, whatever raised it (TypeError on a null field)', async () => {
+    // The old check looked for `throw` or `!` in the generated text; this
+    // TypeError comes from neither.
+    const out = generateTs(`speck Probe {
+    type Item = { qty: Nat }
+    state {
+        cur: Item | null
+        total: Nat
+        n: Nat
+    }
+    init {
+        cur := null
+        total := 0
+        n := 0
+    }
+    action Take {
+        total := total + 1
+        n := cur.qty
+    }
+    action Check(x: Nat) {
+        require x < 10
+        let y := x + total
+        require y < 20
+    }
+}
+`, 'Probe.ts');
+    const m = new (await load(out, 'ProbeMachine'))();
+    expect(() => m.Take()).toThrow(TypeError);
+    expect(m.total).toBe(0);
+    // An action with only guards and lets writes nothing and saves nothing.
+    const check = out.match(/  Check\(x: number\) \{[\s\S]*?\n  \}/)![0];
+    expect(check).not.toContain('__save');
+    expect(() => m.Check(50)).toThrow('Guard failed');
+  });
+
+  it('saves only the fields the action can reach, and the decision log when it emits', () => {
     const bump = source().match(/  Bump\(\) \{[\s\S]*?\n  \}/)![0];
-    expect(bump).not.toContain('serialize');
+    expect(bump).toContain("this.__save(['total'])");
+    const move = source().match(/  Move\(b: number\) \{[\s\S]*?\n  \}/)![0];
+    expect(move).toContain("this.__save(['items', 'total'])");
+  });
+});
+
+describe('statementsWrite: which actions get a rollback point', () => {
+  const st = (src: string) => action(withBody(src), 'Run').statements as ActionStatement[];
+  it('guards, lets and returns do not write', () => {
+    expect(statementsWrite(st('require total > 0\nlet t := total + 1'))).toBe(false);
+  });
+  it('assignments, emits and unreadable statements write, also inside blocks', () => {
+    expect(statementsWrite(st('total := 1'))).toBe(true);
+    expect(statementsWrite(st('notify(total)'))).toBe(true);
+    expect(statementsWrite(st('if total > 1 {\n    total := 0\n}'))).toBe(true);
+    expect(statementsWrite(st('if total > 1 {\n    require total < 5\n}'))).toBe(false);
+    expect(statementsWrite(st('forall x in xs:\n    total := total + x'))).toBe(true);
+    expect(statementsWrite([{ type: 'ifblock', raw: 'if ??' }])).toBe(true);
+    expect(statementsWrite([{ type: 'forblock', raw: 'for ??' }])).toBe(true);
+    expect(statementsWrite([{ type: 'emit', event: 'E', fields: [] }])).toBe(true);
   });
 });
