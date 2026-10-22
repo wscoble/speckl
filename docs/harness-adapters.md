@@ -207,8 +207,9 @@ node .speckl/agent/signal.mjs apply --state .speckl/state.json --key "$KEY" \
 ```
 
 Then the push goes through. Run `/hooks` inside Claude Code to see the four
-Speckl hooks. Production setups drop `--dev` and approve with a signed
-`file-drop` verifier (see `agent-signals.md`).
+Speckl hooks. Production setups drop `--dev`, pin reviewer keys with
+`signal.mjs init --signer`, and approve with a signed `file-drop` verifier
+(see `agent-signals.md`). A `--pubkey` that was not pinned is refused.
 
 ## Quickstart: GitHub Copilot CLI, Goose and Hermes
 
