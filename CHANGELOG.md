@@ -137,7 +137,8 @@ alias.
   lock, or decision-record failure prints a fixed sentence and not the Node error.
   A key path shorter than 8 characters is refused with a fixed sentence. The
   state key and each pinned signer key are also removed as base64, base64url,
-  uppercase hex, and SPKI DER-base64 or PEM.
+  uppercase hex, and SPKI DER-base64 or PEM. `status` and `doctor` print the
+  key path as `<keyfile>` after that same redaction.
   An adapter failure before it can decide prints a fixed line and not the exception. A throw while
   building the sentence still denies. Each harness keeps its own output shape. Adapter
   denials (unmapped tool, shell metacharacters, a protected path, a bad

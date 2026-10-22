@@ -13,7 +13,7 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *   node adapter.mjs <harness> pre|post|post-failure|batch --state <file> [--key <file>]
  *       stdin: the harness's own hook JSON. Maps the call through the spec's
  *       harness block, runs hook.mjs, and answers in the harness's format.
- *   node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>]
+ *   node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>] [--dry-run]
  *       merges the hook wiring into .claude/settings.json, .cursor/hooks.json,
  *       .codex/hooks.json, .gemini/settings.json, .github/hooks/speckl.json
  *       (Copilot) or .agents/plugins/speckl/ (Goose); Hermes takes
@@ -21,11 +21,26 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *       Pi, OpenCode and OpenClaw get a generated plugin in .pi/extensions/,
  *       .opencode/plugins/ or .openclaw/plugins/speckl/ that pipes each
  *       tool event to this adapter and blocks unless it answers allow.
+ *       --dry-run prints the files it would create or change and writes nothing.
+ *       A file install modifies is copied under .speckl/harness-install/backups/ first.
+ *   node adapter.mjs status <harness> --project <dir> --state <file> [--key <file>]
+ *       checks the installed config, the key file and the state file. It does not run the hook.
+ *   node adapter.mjs doctor <harness> --project <dir> --state <file> [--key <file>]
+ *       does what status does, then runs the installed pre hook on a tool the spec
+ *       does not map and requires that hook to deny it. A missing hook or an allow is a failure.
+ *   node adapter.mjs uninstall <harness> --project <dir> [--key <file>]
+ *       removes files this install created and restores backups, and only for a
+ *       path install itself writes inside the project. A symlink, a symlinked
+ *       parent, or any other path is left in place. When the record has a mac,
+ *       --key must be the same state key. Without a valid mac, a modified file
+ *       is not restored, and a created file is removed only when its bytes
+ *       still equal a fresh install (pass --state, and --hermes-home for Hermes).
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -67,14 +82,84 @@ const deps = {
   agentDir,
   readFile(p) { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
   writeFile(p, text, mode) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); if (mode) fs.chmodSync(p, mode); },
+  removeFile(p) {
+    try {
+      if (!fs.lstatSync(p).isFile()) return false;
+      fs.unlinkSync(p);
+      return true;
+    } catch { return false; }
+  },
+  lstatKind(p) {
+    try {
+      const st = fs.lstatSync(p);
+      if (st.isSymbolicLink()) return 'symlink';
+      if (st.isFile()) return 'file';
+      if (st.isDirectory()) return 'dir';
+      return 'other';
+    } catch { return 'missing'; }
+  },
+  realPath(p) { try { return fs.realpathSync(p); } catch { return null; } },
+  mac(keyText, text) {
+    const hex = String(keyText || '').trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+    return crypto.createHmac('sha256', Buffer.from(hex, 'hex')).update(text).digest('hex');
+  },
+  runCommand(command, stdin, cwd, extraEnv) {
+    const t = Number(process.env.SPECKL_HOOK_TIMEOUT_MS);
+    const timeout = Number.isFinite(t) && t > 0 ? t : 20000;
+    const env = { ...process.env, ...(extraEnv || {}) };
+    // Shell wrappers (|| exit 2, $(...), $VAR) run under sh, which is how those
+    // harnesses launch them. A plain argv is spawned directly so a missing
+    // binary is reported rather than hidden by a shell.
+    const shell = /[|&;<>$()]/.test(command) || command.indexOf('\\n') >= 0 || command.indexOf('\`') >= 0 || command.indexOf('[') >= 0;
+    let r;
+    if (shell) r = spawnSync('sh', ['-c', command], { input: stdin, encoding: 'utf-8', timeout, cwd, env, killSignal: 'SIGKILL' });
+    else {
+      const args = splitHookArgs(command);
+      r = args.length
+        ? spawnSync(args[0], args.slice(1), { input: stdin, encoding: 'utf-8', timeout, cwd, env, killSignal: 'SIGKILL' })
+        : { error: new Error('empty command'), status: null, stdout: '', stderr: '', signal: null };
+    }
+    const err = r.error;
+    return hookCommandResult(
+      typeof r.status === 'number' ? r.status : null,
+      err && err.code ? String(err.code) : '',
+      err ? String(err) : '',
+      r.signal ? String(r.signal) : '',
+      r.stdout || '',
+      r.stderr || '',
+      timeout,
+    );
+  },
 };
+
+function splitHookArgs(command) {
+  const args = [];
+  let cur = '';
+  let q = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (q) {
+      if (c === '\\\\') { cur += command[++i] ?? ''; continue; }
+      if (c === '"') { q = false; continue; }
+      cur += c;
+      continue;
+    }
+    if (c === '"') { q = true; continue; }
+    if (c === ' ' || c === '\\t') { if (cur) { args.push(cur); cur = ''; } continue; }
+    cur += c;
+  }
+  if (cur) args.push(cur);
+  return args;
+}
 
 async function main() {
   const argv = process.argv.slice(2);
   let out;
   try {
     const config = JSON.parse(fs.readFileSync(path.join(agentDir, 'agent-config.json'), 'utf-8'));
-    const stdinText = argv[0] === 'install' ? '' : await readStdin();
+    const setupCmd = argv[0] === 'install' || argv[0] === 'uninstall' || argv[0] === 'status' || argv[0] === 'doctor';
+    const stdinText = setupCmd ? '' : await readStdin();
     out = runAdapter(argv, process.env, stdinText, config, deps);
   } catch {
     // The exception text can carry a key path or key bytes, so it is not printed.

@@ -71,7 +71,7 @@ describe('Claude Code wiring (real payloads through .claude/settings.json)', () 
   it('installs the four hook events with fail-closed pre', () => {
     expect(Object.keys(settings.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch']);
     expect(settings.hooks.PreToolUse[0].hooks[0].onFailure).toBe('block');
-    expect(cmd('PreToolUse')).toBe(`node \${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs claude-code pre --state \${CLAUDE_PROJECT_DIR}/.speckl/state.json --key ${ctx.key}`);
+    expect(cmd('PreToolUse')).toBe(`node "\${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs" claude-code pre --state "\${CLAUDE_PROJECT_DIR}/.speckl/state.json" --key ${ctx.key}`);
   });
 
   it('walks edit → failing test → green test → review → approval → push', () => {

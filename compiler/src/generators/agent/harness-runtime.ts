@@ -42,6 +42,10 @@ export interface HarnessRule {
 
 export interface AdapterConfig {
   harness?: Record<string, { rules: HarnessRule[] }>;
+  /** Present in agent-config.json; status/doctor use them to name the stage. */
+  stageVariable?: string;
+  stages?: Record<string, number>;
+  awaits?: { state: string; stateValue: number; signal: string; mode: string }[];
 }
 
 export interface HookResult { status: number | null; stdout: string; stderr: string }
@@ -66,9 +70,40 @@ export interface AdapterDeps {
    * path cannot be resolved; the caller then adds nothing.
    */
   realpath?(p: string): string;
+  /**
+   * Remove one regular file this tooling created. Never recursive, never a
+   * symlink. Returns false when the path is missing or cannot be removed.
+   * The generated adapter always provides it; without it uninstall refuses.
+   */
+  removeFile?(p: string): boolean;
+  /**
+   * Run an installed hook command with `stdin`. `env` is merged over the
+   * process environment (harness project-dir variables). status null means
+   * the command did not finish (missing binary, timeout, signal). The
+   * generated adapter always provides it; without it doctor refuses.
+   */
+  runCommand?(command: string, stdin: string, cwd: string, env: Record<string, string>): HookResult;
+  /**
+   * 'file', 'dir', 'symlink', 'missing', or 'other'. Does not follow symlinks.
+   * Uninstall refuses when this is absent.
+   */
+  lstatKind?(p: string): string;
+  /** Canonical path, or null if it cannot be resolved. Follows symlinks. */
+  realPath?(p: string): string | null;
+  /**
+   * HMAC-SHA256 hex of `text` under a 64-hex state key, or null if the key
+   * is not 64 hex characters. Used to authenticate the install record.
+   */
+  mac?(keyText: string, text: string): string | null;
 }
 
-export interface AdapterOutput { code: number; stdout: string; stderr: string }
+export interface AdapterOutput {
+  code: number;
+  stdout: string;
+  stderr: string;
+  /** Planned file contents. Set by install planning; hook verdicts omit it. */
+  writes?: { path: string; text: string; mode?: number }[];
+}
 
 export type MapResult =
   | { ok: true; tool: string; input: Record<string, unknown>; rule: number }
@@ -611,6 +646,9 @@ export function harnessProtectedDirs(harnesses: string[]): string[] {
     windsurf: ['.devin', '.windsurf'],
   };
   for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
+  // Install records, backups and saved copies. An agent that can write these
+  // can point uninstall at a file it should not touch.
+  dirs.push('.speckl/harness-install');
   return dirs;
 }
 
@@ -789,15 +827,46 @@ export function parseAdapterFlags(args: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a.startsWith('--')) out[a.slice(2)] = args[i + 1] ?? '';
-    if (a.startsWith('--')) i++;
+    if (!a.startsWith('--')) continue;
+    const name = a.slice(2);
+    const next = args[i + 1];
+    // --dry-run takes no value, so it must not swallow the next flag.
+    // Every other flag still consumes the following argument, and a missing
+    // one stays '' (`--project` at the end of the line).
+    if (name === 'dry-run') out[name] = 'true';
+    else { out[name] = next ?? ''; if (next !== undefined) i++; }
   }
   return out;
 }
 
-/** Shell-quote one argument for a hook command line. */
+/**
+ * What a spawn of the installed hook actually did.
+ * EPIPE after the child has already exited means it closed stdin without
+ * reading the probe; the exit code still counts. A timeout, a signal, or an
+ * error with no exit code means the command did not finish.
+ */
+export function hookCommandResult(
+  status: number | null, errorCode: string, errorText: string, signal: string,
+  stdout: string, stderr: string, timeout: number,
+): HookResult {
+  const epipe = errorCode === 'EPIPE' && typeof status === 'number';
+  const failed = ((!!errorCode || !!errorText) && !epipe) || !!signal;
+  const why = !failed ? ''
+    : errorCode === 'ETIMEDOUT' ? 'command timed out after ' + timeout + 'ms'
+    : errorText ? errorText
+    : signal ? 'command killed by ' + signal
+    : errorCode;
+  return { status: failed ? null : status, stdout: stdout || '', stderr: why || stderr || '' };
+}
+
+/**
+ * Shell-quote one argument for a hook command line.
+ * `$`, `{` and `}` are quoted too: an unquoted `${CLAUDE_PROJECT_DIR}`
+ * word-splits when the project path contains a space. The `$` is not
+ * escaped, so the double quotes still expand the variable as one word.
+ */
 export function shellQuote(s: string): string {
-  return /^[A-Za-z0-9_./${}:@%+=-]+$/.test(s) ? s : '"' + s.replace(/(["\\`])/g, '\\$1') + '"';
+  return /^[A-Za-z0-9_./:@%+=-]+$/.test(s) ? s : '"' + s.replace(/(["\\`])/g, '\\$1') + '"';
 }
 
 /**
@@ -1198,13 +1267,18 @@ export function installHermes(project: string, ours: Record<string, unknown>, he
   for (const ev of Object.keys(hooks)) {
     for (const h of hooks[ev]) approvals.push({ event: ev, command: h.command, approved_at: now, script_mtime_at_approval: null });
   }
-  deps.writeFile(target, next);
-  deps.writeFile(allowPath, JSON.stringify({ ...allow, approvals }, null, 2) + '\n');
+  // installHarness commits these (backup, dry-run, install record). Nothing
+  // is written here, so a later refusal cannot leave a half-applied profile.
+  const writes = [
+    { path: target, text: next },
+    { path: allowPath, text: JSON.stringify({ ...allow, approvals }, null, 2) + '\n' },
+  ];
   return {
     code: 0,
     stdout: 'Speckl hermes hooks written to ' + target + ' for project ' + project + '\n'
       + 'Recorded consent for these ' + approvals.filter(isOurs).length + ' hook commands in ' + allowPath + ' (revoke with: hermes hooks revoke <command>)\n',
     stderr: '',
+    writes,
   };
 }
 
@@ -1212,11 +1286,20 @@ export function installHermes(project: string, ours: Record<string, unknown>, he
 export function installHarness(harness: string, flags: Record<string, string>, deps: AdapterDeps): AdapterOutput {
   if (!flags.project || !flags.state || (harness === 'hermes' && !flags['hermes-home'])) {
     const extra = harness === 'hermes' ? ' --hermes-home <profile dir, e.g. ~/.hermes>' : '';
-    return { code: 1, stdout: '', stderr: 'usage: adapter.mjs install ' + harness + ' --project <dir> --state <file> [--key <file>]' + extra + '\n' };
+    return { code: 1, stdout: '', stderr: 'usage: adapter.mjs install ' + harness + ' --project <dir> --state <file> [--key <file>] [--dry-run]' + extra + '\n' };
   }
   const project = deps.resolvePath(deps.cwd, flags.project);
   const stateAbs = deps.resolvePath(deps.cwd, flags.state);
   const keyAbs = flags.key ? deps.resolvePath(deps.cwd, flags.key) : null;
+  // A --key that is missing or not 64 hex would produce an unsigned record.
+  // Refuse before any write. Trailing whitespace (a final newline) is allowed.
+  let keyText: string | null = null;
+  if (keyAbs) {
+    const kt = deps.readFile(keyAbs);
+    if (kt === null) return { code: 1, stdout: '', stderr: 'refusing to install: --key file ' + keyAbs + ' is missing; the install record would be unsigned\n' };
+    if (!/^[0-9a-fA-F]{64}\s*$/.test(kt)) return { code: 1, stdout: '', stderr: 'refusing to install: --key file ' + keyAbs + ' is not 64 hex characters; the install record would be unsigned\n' };
+    keyText = kt.trim();
+  }
   const rel = (p: string) => deps.relativePath(project, p).replace(/\\/g, '/');
   const inside = (p: string) => !rel(p).startsWith('..') && !/^[A-Za-z]:|^\//.test(rel(p));
   // Codex runs hooks from the session cwd and Gemini sets GEMINI_PROJECT_DIR
@@ -1251,10 +1334,21 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   });
   let warn = '';
   if (keyAbs && inside(keyAbs)) warn = 'WARN: the state key is inside the project; keep it where the agent cannot read it\n';
-  if (!keyAbs) warn = 'WARN: no --key; hooks will use SPECKL_STATE_KEY_FILE from the harness environment\n';
+  if (!keyAbs) {
+    warn = 'WARN: no --key; hooks will use SPECKL_STATE_KEY_FILE from the harness environment\n';
+    warn += 'WARN: the install record is unsigned; uninstall will not restore modified files from it without a matching mac\n';
+  }
+  const dry = flags['dry-run'] === 'true';
+  const finish = (message: string, writes: { path: string; text: string; mode?: number }[]): AdapterOutput => {
+    const c = commitInstallWrites(project, harness, writes, deps, dry, keyText);
+    if (c.error) return { code: 1, stdout: '', stderr: c.error };
+    if (dry) return { code: 0, stdout: c.note, stderr: warn, writes };
+    return { code: 0, stdout: message + c.note, stderr: warn, writes };
+  };
   if (hermesHome) {
     const r = installHermes(project, ours, hermesHome, deps);
-    return { code: r.code, stdout: r.stdout, stderr: r.stderr + (r.code === 0 ? warn : '') };
+    if (r.code !== 0) return { code: r.code, stdout: r.stdout, stderr: r.stderr };
+    return finish(r.stdout, r.writes || []);
   }
   if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
     // A plugin file Speckl did not write is never overwritten.
@@ -1271,14 +1365,15 @@ export function installHarness(harness: string, flags: Record<string, string>, d
       }
     }
     const main = Object.keys(files)[0];
-    for (const [name, text] of Object.entries(files)) deps.writeFile(name === main ? mainPath : deps.resolvePath(dir, name), text);
+    const pluginWrites: { path: string; text: string }[] = [];
+    for (const [name, text] of Object.entries(files)) pluginWrites.push({ path: name === main ? mainPath : deps.resolvePath(dir, name), text });
     const next: Record<string, string> = {
       pi: pluginsDir ? 'Pi loads this user-level extension in every session; it judges calls made inside ' + project + '.\n'
         : 'Pi loads project extensions only for a trusted project: run /trust once, or pass --approve (or -e ' + mainPath + ') in print/JSON/RPC mode. Untrusted, the extension is skipped and nothing is checked; --plugins-dir ~/.pi/agent/extensions avoids that.\n',
       opencode: 'OpenCode loads ' + (pluginsDir ? pluginsDir : '.opencode/plugins/') + ' at startup; restart running sessions.\n',
       openclaw: 'Enable it in your OpenClaw config: plugins.load.paths += ["' + dir + '"], plugins.entries.speckl.enabled = true, and set the agent workspace (or `openclaw agent exec --cwd`) to ' + project + '.\n',
     };
-    return { code: 0, stdout: 'Speckl ' + harness + ' plugin written to ' + mainPath + '\n' + next[harness], stderr: warn };
+    return finish('Speckl ' + harness + ' plugin written to ' + mainPath + '\n' + next[harness], pluginWrites);
   }
   if (harness === 'cline') {
     // .clinerules/hooks/ is read by both the Cline CLI and the VS Code
@@ -1293,13 +1388,13 @@ export function installHarness(harness: string, flags: Record<string, string>, d
         }
       }
     }
-    for (const [name, text] of Object.entries(scripts)) deps.writeFile(deps.resolvePath(dir, name), text, 0o755);
-    return {
-      code: 0,
-      stdout: 'Speckl cline hooks written to ' + dir + '/ (' + Object.keys(scripts).join(', ') + ')\n'
+    const clineWrites: { path: string; text: string; mode?: number }[] = [];
+    for (const [name, text] of Object.entries(scripts)) clineWrites.push({ path: deps.resolvePath(dir, name), text, mode: 0o755 });
+    return finish(
+      'Speckl cline hooks written to ' + dir + '/ (' + Object.keys(scripts).join(', ') + ')\n'
         + 'Cline runs them while hooks are enabled (the default). A Speckl deny cancels the whole task, not only the call.\n',
-      stderr: warn,
-    };
+      clineWrites,
+    );
   }
   const pluginDir = pluginsDir ? deps.resolvePath(pluginsDir, pluginName) : deps.resolvePath(project, '.agents/plugins/speckl');
   const target = harness === 'goose' ? deps.resolvePath(pluginDir, 'hooks/hooks.json') : deps.resolvePath(project, harnessConfigFile(harness));
@@ -1327,21 +1422,828 @@ export function installHarness(harness: string, flags: Record<string, string>, d
     extraTargets.push({ path: legacy, settings: mergeHarnessSettings(harness, le, ours) });
   }
   const merged = mergeHarnessSettings(harness, existing, ours);
-  deps.writeFile(target, JSON.stringify(merged, null, 2) + '\n');
-  for (const x of extraTargets) deps.writeFile(x.path, JSON.stringify(x.settings, null, 2) + '\n');
+  const jsonWrites: { path: string; text: string }[] = [{ path: target, text: JSON.stringify(merged, null, 2) + '\n' }];
+  for (const x of extraTargets) jsonWrites.push({ path: x.path, text: JSON.stringify(x.settings, null, 2) + '\n' });
   if (harness === 'goose') {
     // The plugin manifest next to hooks/ makes the directory a Goose plugin.
     const manifest = { name: pluginName, version: '1.0.0', description: 'Speckl rails for ' + project + ': every tool call is checked against the compiled policy (fail closed).' };
-    deps.writeFile(deps.resolvePath(pluginDir, 'plugin.json'), JSON.stringify(manifest, null, 2) + '\n');
+    jsonWrites.push({ path: deps.resolvePath(pluginDir, 'plugin.json'), text: JSON.stringify(manifest, null, 2) + '\n' });
   }
   const also = extraTargets.length ? ' and ' + extraTargets.map(x => x.path).join(', ') : '';
   const note = harness === 'windsurf' ? 'Cascade does not run hooks while the workspace is in Restricted Mode: trust the workspace.\n' : '';
-  return { code: 0, stdout: 'Speckl ' + harness + ' hooks written to ' + target + also + '\n' + note, stderr: warn };
+  return finish('Speckl ' + harness + ' hooks written to ' + target + also + '\n' + note, jsonWrites);
+}
+
+/** True when `p` is `root` or a path inside it. */
+export function pathInside(root: string, p: string, deps: AdapterDeps): boolean {
+  const rel = deps.relativePath(root, p).replace(/\\/g, '/');
+  if (rel === '') return true;
+  return rel !== '..' && !rel.startsWith('../') && !/^[A-Za-z]:|^\//.test(rel);
 }
 
 /**
- * Adapter entry point: `<harness> pre|post|post-failure|batch --state <file> [--key <file>]`
- * or `install <harness> ...`. Returns what the process should print and its exit code.
+ * One hunk covering the changed middle of a file (shared prefix and suffix
+ * kept). Identical texts return ''. A missing before is a create.
+ */
+export function unifiedDiff(filePath: string, before: string | null, after: string): string {
+  const left = before === null ? [] : before.replace(/\n$/, '').split('\n');
+  const right = after.replace(/\n$/, '').split('\n');
+  let s = 0;
+  while (s < left.length && s < right.length && left[s] === right[s]) s++;
+  let eL = left.length - 1;
+  let eR = right.length - 1;
+  while (eL >= s && eR >= s && left[eL] === right[eR]) { eL--; eR--; }
+  if (before !== null && eL < s && eR < s) return '';
+  const del = eL >= s ? eL - s + 1 : 0;
+  const add = eR >= s ? eR - s + 1 : 0;
+  const lines = [
+    '--- ' + (before === null ? '/dev/null' : filePath),
+    '+++ ' + filePath,
+    '@@ -' + (del === 0 ? s : s + 1) + ',' + del + ' +' + (add === 0 ? s : s + 1) + ',' + add + ' @@',
+  ];
+  for (let i = s; i <= eL; i++) lines.push('-' + left[i]);
+  for (let i = s; i <= eR; i++) lines.push('+' + right[i]);
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * Paths `install` writes, in the same order and places as installHarness.
+ * The first path is the one that holds the pre-tool hook.
+ */
+export function installFilePaths(
+  harness: string,
+  project: string,
+  opts: { hermesHome: string; pluginsDir: string; pluginName: string },
+  deps: AdapterDeps,
+): string[] {
+  if (harness === 'hermes') {
+    return [deps.resolvePath(opts.hermesHome, 'config.yaml'), deps.resolvePath(opts.hermesHome, 'shell-hooks-allowlist.json')];
+  }
+  if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
+    const mainPath = opts.pluginsDir ? deps.resolvePath(opts.pluginsDir, opts.pluginName + '.js') : deps.resolvePath(project, harnessConfigFile(harness));
+    const dir = deps.dirname(mainPath);
+    const names = harness === 'openclaw' ? ['index.js', 'openclaw.plugin.json', 'package.json'] : ['speckl.js'];
+    const out: string[] = [];
+    for (let i = 0; i < names.length; i++) out.push(i === 0 ? mainPath : deps.resolvePath(dir, names[i]));
+    return out;
+  }
+  if (harness === 'cline') {
+    const dir = deps.dirname(deps.resolvePath(project, harnessConfigFile(harness)));
+    return ['PreToolUse', 'PostToolUse', 'TaskComplete', 'TaskCancel', 'TaskError'].map(n => deps.resolvePath(dir, n));
+  }
+  const pluginDir = opts.pluginsDir ? deps.resolvePath(opts.pluginsDir, opts.pluginName) : deps.resolvePath(project, '.agents/plugins/speckl');
+  if (harness === 'goose') return [deps.resolvePath(pluginDir, 'hooks/hooks.json'), deps.resolvePath(pluginDir, 'plugin.json')];
+  if (harness === 'windsurf') return [deps.resolvePath(project, '.devin/hooks.json'), deps.resolvePath(project, '.windsurf/hooks.json')];
+  return [deps.resolvePath(project, harnessConfigFile(harness))];
+}
+
+/**
+ * Compact JSON the install-record mac covers: `{v, harness, files}` only.
+ * Not the pretty-printed file, and not the mac field itself.
+ */
+export function installRecordPayload(harness: string, files: unknown): string {
+  return JSON.stringify({ v: 1, harness, files });
+}
+
+/**
+ * Apply install's planned writes. Copies the previous contents of any file
+ * it changes into `.speckl/harness-install/backups/` (keeping that original
+ * on a later install) and records what it wrote. `--dry-run` only reports.
+ * A record that is not ours, whose mac does not match the state key, or that
+ * names a path this install is not rewriting, is left untouched.
+ */
+export function commitInstallWrites(
+  project: string,
+  harness: string,
+  writes: { path: string; text: string; mode?: number }[],
+  deps: AdapterDeps,
+  dryRun: boolean,
+  keyText: string | null = null,
+): { note: string; error: string } {
+  const root = deps.resolvePath(project, '.speckl/harness-install');
+  const manifestPath = deps.resolvePath(root, harness + '.json');
+  let prevFiles: { path: string; action: string; backup: string | null; written: string }[] = [];
+  const raw = deps.readFile(manifestPath);
+  if (raw !== null && raw.trim() !== '') {
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch {
+      return { note: '', error: manifestPath + ' is not valid JSON; not touching it\n' };
+    }
+    const rec = parsed as { v?: unknown; harness?: unknown; files?: unknown; mac?: unknown };
+    if (!rec || rec.v !== 1 || rec.harness !== harness || !Array.isArray(rec.files)) {
+      return { note: '', error: manifestPath + ' is not a Speckl install record for ' + harness + '; not touching it\n' };
+    }
+    const recMac = typeof rec.mac === 'string' ? rec.mac : '';
+    if (recMac || keyText) {
+      if (!keyText) return { note: '', error: manifestPath + ' install-record mac does not match the state key; not touching it\n' };
+      if (typeof deps.mac !== 'function') return { note: '', error: 'install record cannot be authenticated with this runtime; nothing was written\n' };
+      const want = deps.mac(keyText, installRecordPayload(harness, rec.files));
+      if (!want || want !== recMac) return { note: '', error: manifestPath + ' install-record mac does not match the state key; not touching it\n' };
+    }
+    prevFiles = rec.files as typeof prevFiles;
+  }
+  const byPath: Record<string, { path: string; action: string; backup: string | null; written: string }> = {};
+  for (const f of prevFiles) if (f && typeof f.path === 'string') byPath[f.path] = f;
+  const rewriting: Record<string, boolean> = {};
+  for (const w of writes) rewriting[w.path] = true;
+  for (const f of prevFiles) {
+    if (!f || typeof f.path !== 'string' || !rewriting[f.path]) {
+      const label = f && typeof f.path === 'string' ? f.path : 'an entry with no path';
+      return { note: '', error: 'refusing to install: the install record has ' + label + ' and this install is not rewriting it\n' };
+    }
+  }
+  const nextFiles: { path: string; action: string; backup: string | null; written: string }[] = [];
+  const enc = (p: string) => p.replace(/[^A-Za-z0-9._-]/g, (c) => '_' + c.charCodeAt(0).toString(16));
+  const lines: string[] = [];
+  const planned: { path: string; text: string; mode?: number; action: string; backup: string | null; written: string; current: string | null }[] = [];
+  for (const w of writes) {
+    const current = deps.readFile(w.path);
+    const old = byPath[w.path];
+    if (current === w.text) {
+      if (old && (old.action === 'create' || old.action === 'modify') && typeof old.written === 'string') nextFiles.push(old);
+      if (dryRun) lines.push('unchanged ' + w.path);
+      continue;
+    }
+    let action = 'create';
+    let backup: string | null = null;
+    if (current !== null) {
+      if (old && old.action === 'create') action = 'create';
+      else if (old && old.action === 'modify' && typeof old.backup === 'string' && old.backup) { action = 'modify'; backup = old.backup; }
+      else { action = 'modify'; backup = deps.resolvePath(root, 'backups/' + harness + '/' + enc(w.path)); }
+    }
+    const written = old && typeof old.written === 'string' && pathInside(root, old.written, deps)
+      ? old.written
+      : deps.resolvePath(root, 'written/' + harness + '/' + enc(w.path));
+    nextFiles.push({ path: w.path, action, backup, written });
+    planned.push({ path: w.path, text: w.text, mode: w.mode, action, backup, written, current });
+  }
+  let recordMac = '';
+  if (keyText) {
+    if (typeof deps.mac !== 'function') return { note: '', error: 'install record cannot be authenticated with this runtime; nothing was written\n' };
+    const m = deps.mac(keyText, installRecordPayload(harness, nextFiles));
+    if (!m) return { note: '', error: 'could not authenticate the install record; nothing was written\n' };
+    recordMac = m;
+  }
+  if (dryRun) {
+    for (const p of planned) {
+      lines.push((p.action === 'create' ? 'create ' : 'modify ') + p.path);
+      if (p.action === 'modify' && p.backup) lines.push('backup ' + p.backup + (byPath[p.path] && byPath[p.path].backup === p.backup ? ' (keep existing)' : ''));
+      if (p.action === 'create' || p.action === 'modify') lines.push('snapshot ' + p.written);
+      const diff = unifiedDiff(p.path, p.current, p.text);
+      if (diff) lines.push(diff.replace(/\n$/, ''));
+    }
+    if (planned.length > 0) lines.push('record ' + manifestPath);
+    lines.push('dry-run: no files written');
+    return { note: lines.join('\n') + '\n', error: '' };
+  }
+  let backups = 0;
+  for (const p of planned) {
+    if (p.action === 'modify') {
+      if (!p.backup || !pathInside(root, p.backup, deps)) return { note: '', error: 'refusing to back up ' + p.path + ' outside ' + root + '\n' };
+      if (deps.readFile(p.backup) === null && p.current !== null) {
+        deps.writeFile(p.backup, p.current);
+        backups++;
+      }
+    }
+    if (!pathInside(root, p.written, deps)) return { note: '', error: 'refusing to record a copy of ' + p.path + ' outside ' + root + '\n' };
+    deps.writeFile(p.path, p.text, p.mode);
+    deps.writeFile(p.written, p.text);
+  }
+  if (planned.length > 0) {
+    const body: { v: number; harness: string; files: typeof nextFiles; mac?: string } = { v: 1, harness, files: nextFiles };
+    if (recordMac) body.mac = recordMac;
+    deps.writeFile(manifestPath, JSON.stringify(body, null, 2) + '\n');
+  }
+  if (backups > 0) lines.push('backed up ' + backups + ' file(s) under ' + deps.resolvePath(root, 'backups/' + harness));
+  return { note: lines.length ? lines.join('\n') + '\n' : '', error: '' };
+}
+
+/**
+ * Remove what `install` recorded and put modified files back from their
+ * backups. A path is touched only when it is one of the config paths
+ * `install` writes for this harness, it is inside the project, its real
+ * path stays inside the project, and neither it nor a parent is a symlink.
+ * Anything else is left in place and kept in the record. A record that
+ * carries a mac, or an uninstall that was given a key, is trusted only when
+ * the mac matches that key. With no valid mac, a modify is not restored, and
+ * a create is deleted only when its current bytes equal a fresh install plan
+ * (pass --state, and --hermes-home for Hermes). Anything else asks for --key.
+ */
+export function uninstallHarness(harness: string, flags: Record<string, string>, deps: AdapterDeps): AdapterOutput {
+  if (!flags.project) return { code: 1, stdout: '', stderr: 'usage: adapter.mjs uninstall ' + harness + ' --project <dir> [--key <file>]\n' };
+  const project = deps.resolvePath(deps.cwd, flags.project);
+  const root = deps.resolvePath(project, '.speckl/harness-install');
+  const manifestPath = deps.resolvePath(root, harness + '.json');
+  const text = deps.readFile(manifestPath);
+  if (text === null) return { code: 1, stdout: '', stderr: 'no install record for ' + harness + ' at ' + manifestPath + '; refusing to delete anything\n' };
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch {
+    return { code: 1, stdout: '', stderr: manifestPath + ' is not valid JSON; refusing to delete anything\n' };
+  }
+  const rec = parsed as { v?: unknown; harness?: unknown; files?: unknown; mac?: unknown };
+  if (!rec || rec.v !== 1 || rec.harness !== harness || !Array.isArray(rec.files)) {
+    return { code: 1, stdout: '', stderr: manifestPath + ' is not a Speckl install record for ' + harness + '; refusing to delete anything\n' };
+  }
+  let keyText = '';
+  if (flags.key) {
+    const kt = deps.readFile(deps.resolvePath(deps.cwd, flags.key));
+    if (kt !== null && /^[0-9a-fA-F]{64}\s*$/.test(kt)) keyText = kt.trim();
+  }
+  const recMac = typeof rec.mac === 'string' ? rec.mac : '';
+  if (recMac || keyText || flags.key) {
+    if (!keyText) return { code: 1, stdout: '', stderr: 'install record mac does not match the state key; nothing was changed\n' };
+    if (typeof deps.mac !== 'function') return { code: 1, stdout: '', stderr: 'this runtime cannot check the install-record mac; nothing was changed\n' };
+    const want = deps.mac(keyText, installRecordPayload(harness, rec.files));
+    if (!want || want !== recMac) return { code: 1, stdout: '', stderr: 'install record mac does not match the state key; nothing was changed\n' };
+  }
+  // A matching mac authenticated this record. No mac and no --key did not.
+  const authed = recMac !== '' && keyText !== '';
+  if (typeof deps.removeFile !== 'function') return { code: 1, stdout: '', stderr: 'uninstall cannot remove files with this runtime; nothing was changed\n' };
+  const remove = deps.removeFile;
+  const userScope = harness === 'goose' || harness === 'pi' || harness === 'opencode';
+  const pluginsDir = userScope && flags['plugins-dir'] ? deps.resolvePath(deps.cwd, flags['plugins-dir']) : '';
+  let pluginName = 'speckl';
+  if (pluginsDir) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < project.length; i++) { h ^= project.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    pluginName = 'speckl-' + h.toString(16).padStart(8, '0');
+  }
+  const hermesHome = harness === 'hermes' && flags['hermes-home'] ? deps.resolvePath(deps.cwd, flags['hermes-home']) : '';
+  const allowed: Record<string, boolean> = {};
+  for (const p of installFilePaths(harness, project, { hermesHome, pluginsDir, pluginName }, deps)) allowed[p] = true;
+  // Recomputed install paths only. The record's own path is not consulted.
+  // The project directory itself may be a symlink (macOS /tmp); a parent
+  // between the file and the project may not.
+  const owned = (target: string): string => {
+    if (!allowed[target] || !pathInside(project, target, deps)) {
+      if (!pathInside(project, target, deps)) return 'outside the project';
+      return 'not a file install writes for this harness';
+    }
+    if (typeof deps.lstatKind !== 'function' || typeof deps.realPath !== 'function') return 'this runtime cannot resolve the path';
+    const projectReal = deps.realPath(project);
+    if (!projectReal) return 'the project cannot be resolved';
+    const kind = deps.lstatKind(target);
+    if (kind === 'symlink') return 'the path is a symlink';
+    if (kind !== 'file' && kind !== 'missing') return 'not a regular file';
+    let cur = deps.dirname(target);
+    const stop = deps.resolvePath(project, '.');
+    while (deps.resolvePath(cur, '.') !== stop) {
+      const k = deps.lstatKind(cur);
+      if (k === 'symlink') return 'a parent directory is a symlink';
+      if (k !== 'dir') return 'a parent is not a directory';
+      const parent = deps.dirname(cur);
+      if (deps.resolvePath(parent, '.') === deps.resolvePath(cur, '.')) return 'outside the project';
+      cur = parent;
+    }
+    const anchor = kind === 'missing' ? deps.dirname(target) : target;
+    const real = deps.realPath(anchor);
+    if (!real) return 'this runtime cannot resolve the path';
+    if (!pathInside(projectReal, real, deps)) return 'resolves outside the project';
+    const lexicalRel = deps.relativePath(project, anchor).replace(/\\/g, '/');
+    const realRel = deps.relativePath(projectReal, real).replace(/\\/g, '/');
+    if (lexicalRel !== realRel) return 'a parent directory is a symlink';
+    return '';
+  };
+  // One dry-run install, shared by every unsigned create. The plan's texts
+  // are what install would write now. The record's saved copy is not used.
+  // A missing --state, or a plan that refuses, authorizes nothing.
+  let planMap: Record<string, string> | null = null;
+  const expectedText = (target: string): string | undefined => {
+    if (!planMap) {
+      const built: Record<string, string> = {};
+      if (flags.state) {
+        const plan = installHarness(harness, { ...flags, 'dry-run': 'true' }, deps);
+        if (plan.code === 0 && plan.writes) {
+          for (let i = 0; i < plan.writes.length; i++) built[plan.writes[i].path] = plan.writes[i].text;
+        }
+      }
+      planMap = built;
+    }
+    return planMap[target];
+  };
+  const notes: string[] = [];
+  const problems: string[] = [];
+  // Entries that are not fully cleaned stay in the record. Finished ones are
+  // dropped so a later uninstall can retry the rest without tripping over
+  // files it has already removed.
+  const remaining: { path?: unknown; action?: unknown; backup?: unknown; written?: unknown }[] = [];
+  for (const f of rec.files as { path?: unknown; action?: unknown; backup?: unknown; written?: unknown }[]) {
+    const keep = () => { remaining.push(f); };
+    if (!f || typeof f.path !== 'string' || (f.action !== 'create' && f.action !== 'modify') || typeof f.written !== 'string') {
+      problems.push('install record has an entry this uninstall does not understand; refusing to touch it');
+      keep();
+      continue;
+    }
+    const why = owned(f.path);
+    if (why) {
+      problems.push('refusing to touch ' + f.path + ': ' + why);
+      keep();
+      continue;
+    }
+    if (!authed) {
+      // No backup is read. A modify can only be restored with a matching mac.
+      if (f.action === 'modify') {
+        problems.push('refusing to restore ' + f.path + ': the install record has no mac; re-run with --key');
+        keep();
+        continue;
+      }
+      const expected = expectedText(f.path);
+      const current = deps.readFile(f.path);
+      if (expected === undefined || current !== expected) {
+        problems.push('refusing to remove ' + f.path + ': the install record has no mac; re-run with --key');
+        keep();
+        continue;
+      }
+      if (!remove(f.path)) { problems.push('could not remove ' + f.path); keep(); continue; }
+      notes.push('removed ' + f.path + ' (created by install; matched the generated config)');
+      if (pathInside(root, f.written, deps)) {
+        if (!remove(f.written)) { problems.push('could not remove saved copy ' + f.written); keep(); continue; }
+        notes.push('removed saved copy ' + f.written);
+      }
+      continue;
+    }
+    if (!pathInside(root, f.written, deps) || (typeof f.backup === 'string' && f.backup && !pathInside(root, f.backup, deps))) {
+      problems.push('refusing to use a backup or saved copy outside ' + root);
+      keep();
+      continue;
+    }
+    const written = deps.readFile(f.written);
+    const current = deps.readFile(f.path);
+    if (f.action === 'modify') {
+      // A file already put back can be finished on a retry, including when the
+      // saved copy was removed but the backup is still there. A third set of
+      // bytes is refused: uninstall will not overwrite edits made after install.
+      // A missing backup is never treated as success (that would drop the
+      // record while the installed hooks were still in place).
+      if (typeof f.backup !== 'string' || !f.backup) { problems.push('no backup path for ' + f.path); keep(); continue; }
+      const bak = deps.readFile(f.backup);
+      if (bak === null) { problems.push('refusing to change ' + f.path + ': backup missing ' + f.backup); keep(); continue; }
+      if (written === null && current !== bak) {
+        problems.push('refusing to touch ' + f.path + ': the saved copy of what install wrote is missing (' + f.written + ')');
+        keep();
+        continue;
+      }
+      if (current !== null && current !== bak && written !== null && current !== written) {
+        problems.push('refusing to restore ' + f.path + ': its contents no longer match what install wrote');
+        keep();
+        continue;
+      }
+      if (current !== bak) {
+        deps.writeFile(f.path, bak);
+        if (deps.readFile(f.path) !== bak) { problems.push('restore failed for ' + f.path); keep(); continue; }
+        notes.push('restored ' + f.path + ' from ' + f.backup);
+      } else notes.push('already restored ' + f.path);
+      // The saved copy goes first. If it cannot be removed, the backup is
+      // still there for the retry.
+      let copyOk = true;
+      if (written !== null) {
+        if (!remove(f.written)) { problems.push('could not remove saved copy ' + f.written); copyOk = false; }
+        else notes.push('removed saved copy ' + f.written);
+      }
+      if (!copyOk) { keep(); continue; }
+      if (!remove(f.backup)) { problems.push('restored ' + f.path + ' but could not remove backup ' + f.backup); keep(); }
+      else notes.push('removed backup ' + f.backup);
+      continue;
+    }
+    if (written === null) {
+      problems.push('refusing to touch ' + f.path + ': the saved copy of what install wrote is missing (' + f.written + ')');
+      keep();
+      continue;
+    }
+    if (current !== null && current !== written) {
+      problems.push('refusing to remove ' + f.path + ': its contents no longer match what install wrote');
+      keep();
+      continue;
+    } else if (current === null) {
+      notes.push('already absent ' + f.path);
+    } else if (!remove(f.path)) {
+      problems.push('could not remove ' + f.path);
+      keep();
+      continue;
+    } else notes.push('removed ' + f.path + ' (created by install)');
+    if (!remove(f.written)) { problems.push('could not remove saved copy ' + f.written); keep(); }
+    else notes.push('removed saved copy ' + f.written);
+  }
+  const stdout = notes.length ? notes.join('\n') + '\n' : '';
+  if (problems.length) {
+    const recOut: { v: number; harness: string; files: typeof remaining; mac?: string } = { v: 1, harness, files: remaining };
+    if (keyText) {
+      if (typeof deps.mac !== 'function') {
+        return { code: 1, stdout, stderr: problems.join('\n') + '\ncould not authenticate the remaining install record; left the previous record in place\n' };
+      }
+      const m = deps.mac(keyText, installRecordPayload(harness, remaining));
+      if (!m) {
+        return { code: 1, stdout, stderr: problems.join('\n') + '\ncould not authenticate the remaining install record; left the previous record in place\n' };
+      }
+      recOut.mac = m;
+    }
+    deps.writeFile(manifestPath, JSON.stringify(recOut, null, 2) + '\n');
+    return { code: 1, stdout, stderr: problems.join('\n') + '\ninstall record kept at ' + manifestPath + '\n' };
+  }
+  if (!remove(manifestPath)) return { code: 1, stdout, stderr: 'files restored but could not remove install record ' + manifestPath + '\n' };
+  return { code: 0, stdout: stdout + 'removed install record ' + manifestPath + '\n', stderr: '' };
+}
+
+/** ARGV array baked into a generated Pi, OpenCode or OpenClaw plugin, in order. */
+export function pluginArgv(source: string): string[] | null {
+  const m = /const ARGV = \[([\s\S]*?)\];/.exec(source);
+  if (!m) return null;
+  const args: string[] = [];
+  const re = /"(?:\\.|[^"\\])*"/g;
+  let x: RegExpExecArray | null;
+  while ((x = re.exec(m[1]))) {
+    try { args.push(JSON.parse(x[0])); } catch { return null; }
+  }
+  return args.length ? args : null;
+}
+
+/**
+ * A pre-tool payload the spec cannot map, plus the deny text the adapter
+ * prints for it. The tool name is chosen so it is not one of this spec's
+ * map names. Windsurf's tool name is the synthetic mcp__server__tool form.
+ */
+export function doctorProbe(harness: string, project: string, rules: { tools: string[] }[]): { body: Record<string, unknown>; marker: string } {
+  const used: Record<string, boolean> = {};
+  for (const r of rules) for (const t of (r && r.tools) || []) used[t] = true;
+  let n = 2;
+  let raw = '__speckl_doctor__';
+  while (used[raw]) { raw = '__speckl_doctor_' + n + '__'; n++; }
+  if (harness === 'windsurf') {
+    let server = raw;
+    let tool = 'mcp__' + server + '__probe';
+    while (used[tool]) { server = '__speckl_doctor_' + n + '__'; n++; tool = 'mcp__' + server + '__probe'; }
+    return {
+      body: {
+        agent_action_name: 'pre_mcp_tool_use',
+        tool_info: { mcp_server_name: server, mcp_tool_name: 'probe', mcp_tool_arguments: {} },
+        trajectory_id: 'speckl-doctor',
+        cwd: project,
+      },
+      marker: 'unmapped harness tool ' + JSON.stringify(tool),
+    };
+  }
+  const id = 'speckl-doctor';
+  const bodies: Record<string, Record<string, unknown>> = {
+    'claude-code': { hook_event_name: 'PreToolUse', tool_name: raw, tool_input: {}, tool_use_id: id, cwd: project },
+    cursor: { hook_event_name: 'preToolUse', tool_name: raw, tool_input: {}, tool_use_id: id, cwd: project },
+    codex: { hook_event_name: 'PreToolUse', tool_name: raw, tool_input: {}, tool_use_id: id, cwd: project },
+    gemini: { hook_event_name: 'BeforeTool', tool_name: raw, tool_input: {}, session_id: id, cwd: project },
+    copilot: { hook_event_name: 'preToolUse', toolName: raw, toolArgs: {}, sessionId: id },
+    goose: { event: 'PreToolUse', tool_name: raw, tool_input: {}, tool_call_id: id, working_dir: project },
+    hermes: { hook_event_name: 'pre_tool_call', tool_name: raw, tool_input: {}, extra: { tool_call_id: id } },
+    pi: { type: 'tool_call', toolName: raw, input: {}, toolCallId: id, cwd: project },
+    opencode: { hook: 'tool.execute.before', input: { tool: raw, callID: id, sessionID: id }, output: { args: {} }, directory: project },
+    openclaw: { hook: 'before_tool_call', event: { toolName: raw, params: {}, toolCallId: id }, ctx: { sessionId: id } },
+    cline: { hookName: 'PreToolUse', preToolUse: { toolName: raw, parameters: {} }, taskId: id, workspaceRoots: [project] },
+    kiro: { hook_event_name: 'PreToolUse', tool_name: raw, tool_input: {}, session_id: id, cwd: project },
+  };
+  return { body: bodies[harness] || { tool_name: raw }, marker: 'unmapped harness tool ' + JSON.stringify(raw) };
+}
+
+/**
+ * What the installed pre hook did with a probe the spec forbids.
+ * `open` means the harness would let that call run. An exit of 0 is a pass
+ * only when the adapter's own unmapped-tool deny is present and the reply
+ * carries that harness's block field (Cline `cancel: true`, Pi / OpenCode /
+ * OpenClaw `decision: "block"`, Cursor `permission: "deny"`). Every other
+ * exit 0 is fail-open, including deny text with the field missing or wrong.
+ * Claude Code, Codex, Gemini, Copilot, Goose, Hermes, Kiro and Windsurf
+ * block with exit 2, so exit 0 from them is fail-open. Anything that does
+ * not show the adapter's own deny is not a pass.
+ */
+export function classifyProbe(harness: string, r: HookResult, marker: string): { kind: 'denied' | 'open' | 'missing' | 'unproved'; line: string } {
+  const out = r.stdout || '';
+  const err = r.stderr || '';
+  const proved = (out + '\n' + err).includes(marker);
+  let body: Record<string, unknown> | null = null;
+  const lines = out.trim().split('\n').filter(Boolean);
+  if (lines.length) {
+    try {
+      const b = JSON.parse(lines[lines.length - 1]);
+      if (b && typeof b === 'object' && !Array.isArray(b)) body = b as Record<string, unknown>;
+    } catch { body = null; }
+  }
+  if (r.status === 0) {
+    let blocked = false;
+    if (harness === 'cline') blocked = !!body && body.cancel === true;
+    else if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') blocked = !!body && body.decision === 'block';
+    else if (harness === 'cursor') blocked = !!body && body.permission === 'deny';
+    if (blocked && proved) return { kind: 'denied', line: 'probe: denied (' + marker + '). The installed hook is wired and fail closed.' };
+    if (blocked) {
+      const detail = (err || out).trim().split('\n')[0] || 'no output';
+      return {
+        kind: 'unproved',
+        line: 'probe: NOT PROVED — exit 0 without an unmapped-tool deny (' + detail + '). A wrapper can exit 0 while the adapter never ran, so this is not a pass.',
+      };
+    }
+    return {
+      kind: 'open',
+      line: 'probe: FAIL OPEN — the installed hook would allow a tool the spec does not map (' + marker + '). That call must be denied.',
+    };
+  }
+  if (proved) return { kind: 'denied', line: 'probe: denied (' + marker + '). The installed hook is wired and fail closed.' };
+  if (r.status === null || /ENOENT|not found|No such file|cannot find/i.test(err)) {
+    return { kind: 'missing', line: 'probe: HOOK MISSING — the installed command did not run (' + ((err || '').trim().split('\n')[0] || 'no output') + ').' };
+  }
+  const detail = (err || out).trim().split('\n')[0] || 'no output';
+  return {
+    kind: 'unproved',
+    line: 'probe: NOT PROVED — exit ' + String(r.status) + ' without an unmapped-tool deny (' + detail + '). A wrapper can exit 2 while the adapter never ran, so this is not a pass.',
+  };
+}
+
+/**
+ * `status` reads the installed config, the key file and the state file.
+ * `doctor` (probe true) also runs the installed pre hook on a tool the spec
+ * does not map and requires the adapter's own deny. Neither writes, and
+ * neither treats a missing or silent hook as success.
+ */
+export function inspectHarness(
+  harness: string,
+  flags: Record<string, string>,
+  rules: { tools: string[] }[],
+  config: AdapterConfig,
+  deps: AdapterDeps,
+  env: Record<string, string | undefined>,
+  probe: boolean,
+): AdapterOutput {
+  const merged: Record<string, string> = {};
+  for (const k of Object.keys(flags)) merged[k] = flags[k];
+  if (!merged.key && env.SPECKL_STATE_KEY_FILE) merged.key = env.SPECKL_STATE_KEY_FILE;
+  if (!merged.project || !merged.state || (harness === 'hermes' && !merged['hermes-home'])) {
+    const extra = harness === 'hermes' ? ' --hermes-home <profile dir, e.g. ~/.hermes>' : '';
+    return { code: 1, stdout: '', stderr: 'usage: adapter.mjs ' + (probe ? 'doctor' : 'status') + ' ' + harness + ' --project <dir> --state <file> [--key <file>]' + extra + '\n' };
+  }
+  const project = deps.resolvePath(deps.cwd, merged.project);
+  const stateAbs = deps.resolvePath(deps.cwd, merged.state);
+  const keyAbs = merged.key ? deps.resolvePath(deps.cwd, merged.key) : null;
+  const userScope = harness === 'goose' || harness === 'pi' || harness === 'opencode';
+  const pluginsDir = userScope && merged['plugins-dir'] ? deps.resolvePath(deps.cwd, merged['plugins-dir']) : '';
+  let pluginName = 'speckl';
+  if (pluginsDir) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < project.length; i++) { h ^= project.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    pluginName = 'speckl-' + h.toString(16).padStart(8, '0');
+  }
+  const hermesHome = harness === 'hermes' ? deps.resolvePath(deps.cwd, merged['hermes-home']) : '';
+  const paths = installFilePaths(harness, project, { hermesHome, pluginsDir, pluginName }, deps);
+  const lines: string[] = [];
+  const problems: string[] = [];
+  let warn = '';
+  let dev = false;
+  const stText = deps.readFile(stateAbs);
+  if (stText === null) { problems.push('state'); lines.push('state: MISSING ' + stateAbs); }
+  else {
+    let st: Record<string, unknown> | null = null;
+    try {
+      const p = JSON.parse(stText);
+      if (p && typeof p === 'object' && !Array.isArray(p)) st = p as Record<string, unknown>;
+    } catch { st = null; }
+    if (!st) { problems.push('state'); lines.push('state: not a JSON object ' + stateAbs); }
+    else if (typeof st.runId !== 'string' || !Array.isArray(st.log) || !st.machine || typeof st.machine !== 'object' || Array.isArray(st.machine)) {
+      problems.push('state');
+      lines.push('state: missing runId, log or machine ' + stateAbs + ' (re-create it with signal.mjs init)');
+    } else {
+      dev = st.dev === true;
+      const machine = st.machine as Record<string, unknown>;
+      const sv = config.stageVariable || 'stage';
+      const cur = machine[sv];
+      let stage = sv + '=' + (cur === undefined ? '(absent)' : String(cur));
+      if (typeof cur === 'number' && config.stages) {
+        for (const name of Object.keys(config.stages)) if (config.stages[name] === cur) stage = sv + '=' + name + ' (' + String(cur) + ')';
+      }
+      let awaited = '';
+      if (typeof cur === 'number' && config.awaits) {
+        for (const a of config.awaits) if (a && a.stateValue === cur) { awaited = ' awaiting ' + a.signal + ' (' + a.mode + ')'; break; }
+      }
+      const pend = st.pending;
+      const pending = pend && typeof pend === 'object' && !Array.isArray(pend) && typeof (pend as Record<string, unknown>).tool === 'string'
+        ? String((pend as Record<string, unknown>).tool) : 'none';
+      let mac = 'mac=absent';
+      if (typeof st.mac === 'string' && /^[0-9a-fA-F]{64}$/.test(st.mac)) mac = 'mac=present (not replayed; hook.mjs checks it on a real call)';
+      else if (!dev) { problems.push('mac'); mac = 'mac=MISSING on a non-dev state'; }
+      lines.push('state: present ' + stateAbs + ' run=' + st.runId + ' ' + stage + awaited + ' pending=' + pending + ' ' + mac);
+    }
+  }
+  if (!keyAbs) {
+    if (dev) lines.push('key: none (dev state; the MAC is not checked)');
+    else { problems.push('key'); lines.push('key: MISSING (pass --key or set SPECKL_STATE_KEY_FILE)'); }
+  } else {
+    const rel = deps.relativePath(project, keyAbs).replace(/\\/g, '/');
+    const inside = rel !== '' && !rel.startsWith('..') && !rel.startsWith('../') && !/^[A-Za-z]:|^\//.test(rel);
+    const keyText = deps.readFile(keyAbs);
+    if (keyText === null) { problems.push('key'); lines.push('key: MISSING ' + keyAbs); }
+    else if (!/^[0-9a-fA-F]{64}\s*$/.test(keyText)) { problems.push('key'); lines.push('key: not 64 hex characters ' + keyAbs + ' (contents not shown)'); }
+    else if (inside) { warn = 'WARN: the state key is inside the project; keep it where the agent cannot read it\n'; lines.push('key: present ' + keyAbs + ' (inside the project)'); }
+    else lines.push('key: present ' + keyAbs);
+  }
+  const walk = (v: unknown, acc: string[]): void => {
+    if (typeof v === 'string') acc.push(v);
+    else if (Array.isArray(v)) for (const x of v) walk(x, acc);
+    else if (v && typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) walk(x, acc);
+  };
+  const jsonPre = (value: unknown): string | null => {
+    const acc: string[] = [];
+    walk(value, acc);
+    const tag = ' ' + harness + ' pre';
+    for (const s of acc) if (s.includes('adapter.mjs') && s.includes(tag)) return s;
+    return null;
+  };
+  const hermesPre = (yaml: string): string | null => {
+    const found: string[] = [];
+    for (const line of yaml.split('\n')) {
+      const m = /^\s*-?\s*command:\s*(.*)$/.exec(line);
+      if (!m) continue;
+      const raw = m[1].trim();
+      let cmd = raw;
+      if (raw.charAt(0) === '"') { try { cmd = JSON.parse(raw); } catch { cmd = raw; } }
+      found.push(cmd);
+    }
+    for (const c of found) if (c.includes('adapter.mjs') && c.includes(' hermes pre')) return c;
+    return null;
+  };
+  let command = '';
+  let pluginNote = '';
+  if (harness === 'hermes') {
+    const yaml = deps.readFile(paths[0]);
+    const got = yaml ? hermesPre(yaml) : null;
+    if (!got) { problems.push('config'); lines.push('config: HOOK MISSING — ' + paths[0] + ' has no Speckl hermes pre command'); }
+    else {
+      let approved = false;
+      const allowText = deps.readFile(paths[1]);
+      if (allowText) {
+        try {
+          const allow = JSON.parse(allowText) as { approvals?: unknown };
+          const list = allow && Array.isArray(allow.approvals) ? allow.approvals : [];
+          for (const e of list) if (e && typeof e === 'object' && (e as Record<string, unknown>).command === got) approved = true;
+        } catch { approved = false; }
+      }
+      if (!approved) {
+        problems.push('config');
+        lines.push('config: FAIL OPEN — the pre command is not in ' + paths[1] + ' (Hermes skips an unapproved hook and the call runs)');
+      } else lines.push('config: ok ' + paths[0]);
+      command = approved ? got : '';
+    }
+  } else if (harness === 'cline') {
+    const script = deps.readFile(paths[0]);
+    if (script === null || !script.includes('Generated by speckl adapter.mjs install cline') || !script.includes(' cline pre')) {
+      problems.push('config');
+      lines.push('config: HOOK MISSING ' + paths[0] + ' (Speckl PreToolUse script is not installed)');
+    } else { command = 'sh ' + shellQuote(paths[0]); lines.push('config: ok ' + paths[0]); }
+  } else if (harness === 'pi' || harness === 'opencode' || harness === 'openclaw') {
+    const src = deps.readFile(paths[0]);
+    const argv = src && src.includes('Generated by speckl adapter.mjs install ' + harness) ? pluginArgv(src) : null;
+    if (!argv) {
+      problems.push('config');
+      lines.push('config: HOOK MISSING — ' + paths[0] + ' is not a Speckl ' + harness + ' plugin, or its adapter command could not be read');
+    } else {
+      const abs: string[] = [];
+      for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        // The same positions pluginSource resolves: the adapter, and the
+        // values of --state and --key. Flags and other values stay literal
+        // (`--state` is not a path, and neither is `--outside`'s `allow`).
+        const pathArg = i === 0 || argv[i - 1] === '--state' || argv[i - 1] === '--key';
+        const absolute = a.charAt(0) === '/' || /^[A-Za-z]:[\\/]/.test(a);
+        abs.push(pathArg && !absolute ? deps.resolvePath(project, a) : a);
+      }
+      const parts = ['node', shellQuote(abs[0]), harness, 'pre'];
+      for (let i = 1; i < abs.length; i++) parts.push(shellQuote(abs[i]));
+      command = parts.join(' ');
+      lines.push('config: ok ' + paths[0]);
+      pluginNote = 'plugin: ' + (probe ? 'ran' : 'found') + ' the adapter command stored in ' + paths[0]
+        + '. This does not prove ' + harness + ' loaded the plugin (a plugin that fails to load is skipped and tool calls run unchecked).';
+    }
+  } else {
+    let found = '';
+    let foundAt = '';
+    let bad = '';
+    for (const p of paths) {
+      const text = deps.readFile(p);
+      if (text === null || text.trim() === '') continue;
+      let obj: unknown;
+      try { obj = JSON.parse(text); } catch { bad = p + ' is not valid JSON'; continue; }
+      const cmd = jsonPre(obj);
+      if (cmd) { found = cmd; foundAt = p; break; }
+    }
+    if (!found) {
+      problems.push('config');
+      lines.push('config: HOOK MISSING — ' + (bad || paths.join(' and ') + ' has no Speckl ' + harness + ' pre hook'));
+    } else { command = found; lines.push('config: ok ' + foundAt); }
+  }
+  if (!probe) lines.push('probe: not run (status checks files only; doctor sends an unmapped tool through the installed hook)');
+  else if (!command) lines.push('probe: not run (there is no installed hook command to test)');
+  else if (typeof deps.runCommand !== 'function') {
+    problems.push('probe');
+    lines.push('probe: NOT RUN — this runtime cannot execute the installed hook');
+  } else {
+    const spec = doctorProbe(harness, project, rules);
+    const extra: Record<string, string> = {};
+    if (harness === 'claude-code') extra.CLAUDE_PROJECT_DIR = project;
+    if (harness === 'gemini') extra.GEMINI_PROJECT_DIR = project;
+    if (harness === 'cursor') extra.CURSOR_PROJECT_DIR = project;
+    const ran = deps.runCommand(command, JSON.stringify(spec.body), project, extra);
+    const verdict = classifyProbe(harness, ran, spec.marker);
+    lines.push(verdict.line);
+    if (verdict.kind !== 'denied') problems.push('probe');
+  }
+  if (pluginNote) lines.push(pluginNote);
+  // The same key material a denial redacts. status and doctor print paths on
+  // purpose; the key path is not one of them.
+  const secrets: string[] = [];
+  const remember = (p: unknown) => { if (typeof p === 'string' && p) secrets.push(p); };
+  const canonical = (p: string): string | null => {
+    if (typeof deps.realpath === 'function') {
+      try {
+        const real = deps.realpath(p);
+        if (typeof real === 'string' && real) return real;
+      } catch { /* try realPath */ }
+    }
+    if (typeof deps.realPath === 'function') {
+      try {
+        const real = deps.realPath(p);
+        if (typeof real === 'string' && real) return real;
+      } catch { /* add nothing */ }
+    }
+    return null;
+  };
+  const addPath = (p: unknown) => {
+    if (typeof p !== 'string' || !p) return;
+    remember(p);
+    let abs = '';
+    try {
+      const resolved = deps.resolvePath(deps.cwd, p);
+      if (typeof resolved === 'string' && resolved) { remember(resolved); abs = resolved; }
+    } catch { /* resolution must not turn a status line into a throw */ }
+    const real = canonical(p);
+    if (real) {
+      remember(real);
+      const parent = deps.dirname(real);
+      if (typeof parent === 'string' && parent && parent !== real) remember(parent);
+    }
+    if (abs && abs !== p) {
+      const realAbs = canonical(abs);
+      if (realAbs && realAbs !== real) {
+        remember(realAbs);
+        const parent = deps.dirname(realAbs);
+        if (typeof parent === 'string' && parent && parent !== realAbs) remember(parent);
+      }
+    }
+  };
+  addPath(merged.key);
+  addPath(env.SPECKL_STATE_KEY_FILE);
+  const keyFiles: string[] = [];
+  if (typeof merged.key === 'string' && merged.key) keyFiles.push(merged.key);
+  if (typeof env.SPECKL_STATE_KEY_FILE === 'string' && env.SPECKL_STATE_KEY_FILE) keyFiles.push(env.SPECKL_STATE_KEY_FILE);
+  for (const f of keyFiles) {
+    let text: string | null = null;
+    try { text = deps.readFile(f); } catch { text = null; }
+    if (!text) {
+      try {
+        const abs = deps.resolvePath(deps.cwd, f);
+        if (typeof abs === 'string' && abs) text = deps.readFile(abs);
+      } catch { text = null; }
+    }
+    if (typeof text === 'string' && text) {
+      remember(text);
+      const trimmed = text.trim();
+      if (trimmed) remember(trimmed);
+    }
+  }
+  if (stText) {
+    try {
+      const parsed = JSON.parse(stText) as { signers?: unknown };
+      const signers = parsed && parsed.signers;
+      if (Array.isArray(signers)) {
+        for (const s of signers) {
+          if (s && typeof s === 'object' && typeof (s as { key?: unknown }).key === 'string') remember((s as { key: string }).key);
+        }
+      }
+    } catch { /* unreadable state is not a reason to leak */ }
+  }
+  let stdout = scrubDenyText(lines.join('\n') + '\n', secrets);
+  let stderrOut = warn ? scrubDenyText(warn, secrets) : warn;
+  const shorts: string[] = [];
+  for (const secret of secrets) {
+    if (secret.length >= 2 && secret.length < 8 && (secret.indexOf('/') !== -1 || secret === merged.key || secret === env.SPECKL_STATE_KEY_FILE)) shorts.push(secret);
+  }
+  shorts.sort((a, b) => b.length - a.length);
+  const hideShort = (text: string) => {
+    let s = text;
+    for (const p of shorts) {
+      const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      s = s.replace(new RegExp('(^|[\\s"\'=:])' + esc + '($|[\\s"\'=:])', 'g'), '$1<keyfile>$2');
+    }
+    return s;
+  };
+  stdout = hideShort(stdout);
+  stderrOut = hideShort(stderrOut);
+  return { code: problems.length ? 1 : 0, stdout, stderr: stderrOut };
+}
+
+/**
+ * Adapter entry point: `<harness> pre|post|post-failure|batch --state <file> [--key <file>]`,
+ * `install`, `uninstall`, `status` or `doctor`. Returns what the process should print and its exit code.
  */
 export function runAdapter(
   argv: string[],
@@ -1351,12 +2253,15 @@ export function runAdapter(
   deps: AdapterDeps,
 ): AdapterOutput {
   const harnesses = config.harness || {};
-  if (argv[0] === 'install') {
+  if (argv[0] === 'install' || argv[0] === 'uninstall' || argv[0] === 'status' || argv[0] === 'doctor') {
     const h = argv[1] || '';
     if (!harnesses[h]) {
       return { code: 1, stdout: '', stderr: 'unknown or undeclared harness ' + JSON.stringify(h) + ' (declared: ' + (Object.keys(harnesses).join(', ') || 'none') + ')\n' };
     }
-    return installHarness(h, parseAdapterFlags(argv.slice(2)), deps);
+    const flags = parseAdapterFlags(argv.slice(2));
+    if (argv[0] === 'install') return installHarness(h, flags, deps);
+    if (argv[0] === 'uninstall') return uninstallHarness(h, flags, deps);
+    return inspectHarness(h, flags, harnesses[h].rules || [], config, deps, env, argv[0] === 'doctor');
   }
   const harness = argv[0] || '';
   const event = argv[1] || '';
@@ -1634,6 +2539,8 @@ export const ADAPTER_FUNCTIONS = [
   redactSecrets, scrubDenyTextImpl, explainAdapterDenyImpl,
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
-  harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
-  buildHarnessHooks, mergeHarnessSettings, clineScripts, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness, runAdapter,
+  harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, hookCommandResult, shellQuote,
+  buildHarnessHooks, mergeHarnessSettings, clineScripts, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness,
+  pathInside, unifiedDiff, installFilePaths, installRecordPayload, commitInstallWrites, uninstallHarness, pluginArgv, doctorProbe, classifyProbe, inspectHarness,
+  runAdapter,
 ];
