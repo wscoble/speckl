@@ -75,6 +75,16 @@ First npm release. The package was renamed from the unpublished
     Copilot and Goose. Copilot CLI hook timeouts stay fail-open (documented,
     not configurable).
   - Includes `docs/harness-adapters.md`, with an executed 10-minute quickstart.
+- **Actionable deny reasons.** A generated hook's denial names why the call
+  was refused — not allowed in this stage, waiting on a sign-off, a failed
+  precondition, or an internal error (fail closed) — and the next step. A
+  sign-off names the signal and the `signal.mjs apply` command a human runs
+  (file-drop, with the drop shape and the run id). The text never includes
+  the state key, the key path, or the state contents, and a throw while
+  building it still denies. Each harness keeps its own output shape. Adapter
+  denials (unmapped tool, shell metacharacters, a protected path, a bad
+  payload) gain the same fail-closed next step. Examples in
+  `docs/agent-signals.md` and `docs/harness-adapters.md`.
 - `next:` is a first-class IR member (#3). The generated TypeScript machine
   gains `ACTIONS`, a side-effect-free `can(action, args)`, and
   `serialize()` / `restore()`.

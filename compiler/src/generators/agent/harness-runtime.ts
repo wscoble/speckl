@@ -1,3 +1,13 @@
+import { explainAdapterDeny as explainAdapterDenyImpl, redactSecrets } from './deny-reason.js';
+
+// runAdapter is pasted into adapter.mjs via Function#toString. A call to an
+// imported binding is rewritten by the test bundler (and would throw in the
+// generated file). This local wrapper is what the in-process tests run; the
+// emitted file gets explainAdapterDenyImpl, whose source calls nothing imported.
+function explainAdapterDeny(reason: string, secrets: string[]): string {
+  return explainAdapterDenyImpl(reason, secrets);
+}
+
 // Harness adapter runtime: pure functions that turn a real agent harness's
 // hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI,
 // Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro, Windsurf) into a call to the generic
@@ -1345,7 +1355,10 @@ export function runAdapter(
   const flags = parseAdapterFlags(argv.slice(2));
   const isPre = event === 'pre';
   const fail = (reason: string): AdapterOutput => {
-    const msg = 'Speckl: ' + reason;
+    const secrets: string[] = [];
+    if (flags.key) secrets.push(flags.key);
+    if (env.SPECKL_STATE_KEY_FILE) secrets.push(env.SPECKL_STATE_KEY_FILE);
+    const msg = explainAdapterDeny(reason, secrets);
     if (event === 'batch') return { code: 0, stdout: '', stderr: msg + '\n' };
     // A turn-end hook never blocks: on Gemini exit 2 would force a retry turn.
     if (event === 'turn-end') return { code: 0, stdout: harness === 'gemini' ? '{}\n' : '', stderr: msg + '\n' };
@@ -1538,6 +1551,7 @@ export function runAdapter(
 
 /** Functions emitted into adapter.mjs, in order. */
 export const ADAPTER_FUNCTIONS = [
+  redactSecrets, explainAdapterDenyImpl,
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
   harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,

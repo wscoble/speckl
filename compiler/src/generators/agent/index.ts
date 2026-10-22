@@ -415,6 +415,10 @@ function buildAgentsMd(
   lines.push('```');
   lines.push('');
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
+  lines.push('- A deny reason names why, then the next step: not allowed in this stage; waiting on a');
+  lines.push('  sign-off (the signal name and the `signal.mjs apply` command a human runs); a failed');
+  lines.push('  precondition; or an internal error (fail closed). It does not include the state key,');
+  lines.push('  the key path, or the state contents. If the reason cannot be built, the call is still denied.');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
   lines.push('- Spec-hash mismatch denies.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
@@ -462,6 +466,11 @@ the hook. Contract (runtime-agnostic):
 echo '{"tool":"run_tests","input":{},"call_id":"1"}' \\
   | node hook.mjs pre --state ./state.json
 # exit 0 → allow; exit 2 → deny (JSON reason on stdout + stderr); exit 1 → error/deny
+# The reason says which of these happened, then what to do: not allowed in this
+# stage; waiting on a sign-off (the signal and the exact signal.mjs apply
+# command); a failed precondition; or an internal error (fail closed).
+# It does not include the state key or the state contents.
+# See docs/agent-signals.md.
 
 # After the tool finishes:
 echo '{"tool":"run_tests","input":{},"call_id":"1","ok":true}' \\

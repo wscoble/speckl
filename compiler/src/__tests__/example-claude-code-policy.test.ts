@@ -85,7 +85,7 @@ describe('Claude Code wiring (real payloads through .claude/settings.json)', () 
     allow(send('PostToolUseFailure', 'post-failure-npm-test'));
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
 
-    deny(send('PreToolUse', 'pre-git-commit'), /Speckl denied Bash \(spec tool request_review\): can\(\) refused/);
+    deny(send('PreToolUse', 'pre-git-commit'), /Speckl denied Bash \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
 
     allow(send('PreToolUse', 'pre-npm-test-2'));
     allow(send('PostToolUse', 'post-npm-test-2'));

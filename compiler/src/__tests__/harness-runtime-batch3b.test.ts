@@ -152,7 +152,10 @@ describe('cline', () => {
     expect(post).toEqual({ code: 0, stdout: '{"cancel":false}\n', stderr: '' });
     expect(d.calls.at(-1).msg).toEqual({ tool: 'run_tests', input: {}, call_id: 'c1', ok: false });
     const bad = runAdapter(argv('cline', 'pre'), {}, 'not json', config, d);
-    expect(JSON.parse(bad.stdout)).toEqual({ cancel: true, errorMessage: 'Speckl: hook payload is not JSON' });
+    const badBody = JSON.parse(bad.stdout);
+    expect(badBody.cancel).toBe(true);
+    expect(badBody.errorMessage).toContain('hook payload is not JSON');
+    expect(badBody.errorMessage).toContain('fail closed');
     const end = runAdapter(argv('cline', 'turn-end'), {}, JSON.stringify({ hookName: 'agent_error' }), config, d);
     expect(end).toEqual({ code: 0, stdout: '', stderr: '' });
     const wrong = runAdapter(argv('cline', 'pre'), {}, JSON.stringify({ hookName: 'tool_result', tool_result: { id: 'x', name: 'editor', input: {} } }), config, d);

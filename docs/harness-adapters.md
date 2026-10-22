@@ -404,6 +404,37 @@ session started in a subdirectory would otherwise resolve the rails wrong.
 Codex also only runs project hooks after you review and trust them (`/hooks`).
 Gemini fingerprints project hooks and asks again when they change.
 
+### Deny reasons
+
+The decision is unchanged: exit 0 only for an allow, exit 2 for a deny, and
+the adapter still answers in the harness's own shape (Cursor
+`user_message` and `agent_message` carry the same text, Copilot
+`permissionDecisionReason`, Cline `errorMessage`, Goose / Hermes / Pi /
+OpenCode / OpenClaw a `reason` field, Claude Code / Codex / Gemini / Kiro /
+Windsurf the text on stderr). What changed is the sentence.
+
+A denial from `hook.mjs` starts with one of:
+
+- `Speckl denied (not allowed in this stage)` — the spec's guard refused the
+  action in the current stage. Do not retry it here.
+- `Speckl denied (waiting on a sign-off)` — a human records the named signal.
+  The sentence includes the `signal.mjs apply` command and the signed-drop
+  shape. See [agent-signals.md](agent-signals.md).
+- `Speckl denied (precondition failed)` — the call's inputs, or a call already
+  in flight, do not satisfy the spec.
+- `Speckl denied (internal error (fail closed))` — the hook could not trust
+  its input or the state. Do not retry; a human repairs it. If the
+  explanation itself cannot be built, the text is the fixed line
+  `Speckl denied (internal error, fail closed): the explanation could not be built`.
+
+The sentence does not include the state key, the key file path, or the
+contents of `state.json`. If building it throws, the call is still denied.
+
+Denials the adapter makes before `hook.mjs` (an unmapped tool, shell
+metacharacters, a protected path, a payload that is not JSON, a working
+directory outside the project) stay fail-closed and end with a next step.
+A protected-path denial does not repeat the state-key path.
+
 ### Fail closed
 
 Both harnesses let a call through when a hook fails unless told otherwise

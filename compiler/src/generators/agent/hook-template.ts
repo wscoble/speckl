@@ -1,6 +1,9 @@
 // Emits hook.mjs — runtime-agnostic pre/post tool gate.
 
+import { DENY_REASON_FUNCTIONS } from './deny-reason.js';
+
 export function emitHookMjs(speckName: string): string {
+  const denyFns = DENY_REASON_FUNCTIONS.map(fn => fn.toString()).join('\n\n');
   return `#!/usr/bin/env node
 /**
  * Speckl agent hook (generic). Generated for ${speckName}.
@@ -10,6 +13,12 @@ export function emitHookMjs(speckName: string): string {
  *   [--key <file>]  state key (or env SPECKL_STATE_KEY_FILE); keep it unreadable by the agent
  *
  * exit 0 allow · exit 2 deny · exit 1 error (=deny)
+ *
+ * A denial names why, then the next step: not allowed in this stage, waiting
+ * on a sign-off (the signal and the signal.mjs command), a failed
+ * precondition, or an internal error (fail closed). The text never includes
+ * the state key, the key path or the state contents. Building it cannot
+ * change the decision: a throw while building it still denies.
  *
  * The hook never records human answers; signal.mjs does, through a verifier.
  * Keep signal.mjs and any signing key out of the agent's reach: the cli
@@ -28,6 +37,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyState, append, sign, keyPathFrom } from './state-integrity.mjs';
+
+${denyFns}
+
+let hookKeyArg = '';
+function secretPaths() {
+  const out = [];
+  if (typeof hookKeyArg === 'string' && hookKeyArg) out.push(hookKeyArg);
+  const envKey = process.env.SPECKL_STATE_KEY_FILE;
+  if (typeof envKey === 'string' && envKey) out.push(envKey);
+  return out;
+}
+function finishDeny(exitCode, build) {
+  respond('deny', safeDenyText(build), exitCode);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.json'), 'utf-8'));
@@ -60,8 +83,6 @@ function respond(decision, reason, code) {
 }
 
 function allow() { respond('allow', undefined, 0); }
-function deny(reason) { respond('deny', reason, 2); }
-function error(reason) { respond('deny', reason, 1); }
 
 function parseArgs(argv) {
   const out = { cmd: '', state: '', key: '' };
@@ -175,45 +196,50 @@ async function loadMachine(state) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  hookKeyArg = args.key || '';
   if (args.cmd !== 'pre' && args.cmd !== 'post') {
-    error('usage: hook.mjs pre|post --state <file>');
+    finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post --state <file>', internalNext('usage'), secretPaths()));
   }
-  if (!args.state) error('missing --state');
+  if (!args.state) {
+    finishDeny(1, () => renderDenyReason('internal', 'missing --state', internalNext('usage'), secretPaths()));
+  }
 
   let raw;
   try { raw = await readStdin(); }
-  catch (e) { error('stdin read failed: ' + e.message); }
+  catch (e) { finishDeny(1, () => renderDenyReason('internal', 'stdin read failed: ' + e.message, internalNext('stdin'), secretPaths())); }
   let msg;
   try { msg = JSON.parse(raw || '{}'); }
-  catch { error('stdin is not JSON'); }
+  catch { finishDeny(1, () => renderDenyReason('internal', 'stdin is not JSON', internalNext('stdin'), secretPaths())); }
 
   try {
     await acquireLock(args.state);
   } catch (e) {
-    error(e instanceof Error ? e.message : String(e));
+    const msg = e instanceof Error ? e.message : String(e);
+    finishDeny(1, () => renderDenyReason('internal', msg, internalNext(msg.indexOf('state lock timeout') !== -1 ? 'lock' : 'default'), secretPaths()));
   }
 
   try {
     const state = loadState(args.state);
     if (state.specHash !== config.specHash) {
-      deny('specHash mismatch: state is stale relative to compiled spec');
+      finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths()));
     }
     const { Machine, machine } = await loadMachine(state);
     const v = verifyState(state, { keyPath: keyPathFrom(args.key), Machine, config });
-    if (!v.ok) deny('state integrity: ' + v.reason);
+    if (!v.ok) finishDeny(2, () => renderDenyReason('internal', 'state integrity: ' + v.reason, internalNext('integrity'), secretPaths()));
     for (const w of v.warnings) process.stderr.write('WARN: ' + w + '\\n');
     stateKey = v.key;
     const toolByName = new Map(config.tools.map(t => [t.name, t]));
+    const runId = typeof state.runId === 'string' ? state.runId : '';
 
     if (args.cmd === 'pre') {
       const tool = msg.tool;
       const input = msg.input || {};
       const callId = msg.call_id;
       if (!tool || callId === undefined || callId === null || callId === '') {
-        deny('pre: tool and call_id are required');
+        finishDeny(2, () => renderDenyReason('internal', 'pre: tool and call_id are required', internalNext('stdin'), secretPaths()));
       }
       const binding = toolByName.get(tool);
-      if (!binding) deny('unknown tool: ' + tool);
+      if (!binding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths()));
       if (state.pending) {
         const st = pendingStatus(state.pending, Date.now());
         if (st === 'expired') {
@@ -227,23 +253,38 @@ async function main() {
             state.pending.since = new Date().toISOString();
             save(args.state, state);
           }
-          deny('another tool call is already pending (' + state.pending.call_id + '); it clears as failed after '
-            + (config.pendingTimeout ? config.pendingTimeout.durationText : '10m') + ' or via signal.mjs clear-pending');
+          const dur = config.pendingTimeout ? config.pendingTimeout.durationText : '10m';
+          finishDeny(2, () => renderDenyReason('precondition',
+            'another tool call is already pending (' + state.pending.call_id + '); it clears as failed after '
+              + dur + ' or via signal.mjs clear-pending',
+            pendingNext(state.pending.call_id, dur, applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'clear-pending'), runId),
+            secretPaths()));
         }
       }
 
       const waiting = currentAwait(machine, config);
-      if (waiting) {
-        if (waiting.mode === 'in') {
-          deny('HITL: no tools while awaiting signal ' + waiting.signal);
-        }
-        if (binding.effect === 'act') {
-          deny('HNTL: act tool refused while awaiting signal ' + waiting.signal);
-        }
+      // mode in refuses every tool (HITL). mode near refuses act tools only (HNTL).
+      if (waiting && (waiting.mode === 'in' || binding.effect === 'act')) {
+        const detail = waiting.mode === 'in'
+          ? 'HITL: no tools while awaiting signal ' + waiting.signal
+          : 'HNTL: act tool refused while awaiting signal ' + waiting.signal;
+        finishDeny(2, () => renderDenyReason('signoff', detail, signoffNext(
+          waiting.mode, waiting.signal, waiting.outcomes, waiting.claims,
+          applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'apply'), runId,
+        ), secretPaths()));
       }
 
       const can = machine.can(binding.action, input);
-      if (can !== true) deny('can() refused: ' + describeGuard(String(can), machine, config));
+      if (can !== true) {
+        finishDeny(2, () => {
+          const described = describeGuard(String(can), machine, config);
+          const kind = classifyCanRefusal(described, config.stageVariable || '');
+          const next = kind === 'stage'
+            ? stageNext(stageNameOf(machine[config.stageVariable], config.stages))
+            : kind === 'precondition' ? preconditionNext() : internalNext('default');
+          return renderDenyReason(kind, 'can() refused: ' + described, next, secretPaths());
+        });
+      }
 
       append(state, { kind: 'pre', call_id: callId, tool, action: binding.action, input });
       state.pending = { call_id: callId, tool, action: binding.action, input, since: new Date().toISOString() };
@@ -257,18 +298,18 @@ async function main() {
     const callId = msg.call_id;
     const ok = msg.ok === true;
     if (!tool || callId === undefined || callId === null || callId === '') {
-      deny('post: tool and call_id are required');
+      finishDeny(2, () => renderDenyReason('internal', 'post: tool and call_id are required', internalNext('stdin'), secretPaths()));
     }
     if (!state.pending || state.pending.call_id !== callId) {
-      deny('post: no matching pending call_id');
+      finishDeny(2, () => renderDenyReason('internal', 'post: no matching pending call_id', internalNext('post-mismatch'), secretPaths()));
     }
     if (state.pending.tool !== tool) {
-      deny('post: tool does not match pending');
+      finishDeny(2, () => renderDenyReason('internal', 'post: tool does not match pending', internalNext('post-mismatch'), secretPaths()));
     }
     if (pendingStatus(state.pending, Date.now()) === 'expired') {
       clearPendingAsFailed(state, 'timeout');
       save(args.state, state);
-      deny('post: pending call expired; cleared as failed (state not advanced)');
+      finishDeny(2, () => renderDenyReason('internal', 'post: pending call expired; cleared as failed (state not advanced)', internalNext('post-expired'), secretPaths()));
     }
 
     if (!ok) {
@@ -281,7 +322,7 @@ async function main() {
     }
 
     const binding = toolByName.get(tool);
-    if (!binding) deny('unknown tool: ' + tool);
+    if (!binding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths()));
     const params = (machine.constructor.ACTIONS || {})[binding.action] || [];
     const argsList = params.map(p => (state.pending.input || {})[p]);
     machine[binding.action](...argsList);
@@ -293,7 +334,13 @@ async function main() {
     save(args.state, state);
     allow();
   } catch (e) {
-    error(e instanceof Error ? e.message : String(e));
+    const msg = e instanceof Error ? e.message : String(e);
+    const code = msg.indexOf('state file missing') === 0 ? 'missing-state'
+      : msg.indexOf('state lock timeout') !== -1 ? 'lock' : 'default';
+    let text;
+    try { text = safeDenyText(() => renderDenyReason('internal', msg, internalNext(code), secretPaths())); }
+    catch { text = fallbackDenyText(); }
+    respond('deny', text, 1);
   }
 }
 

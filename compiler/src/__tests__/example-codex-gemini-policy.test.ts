@@ -156,7 +156,7 @@ describe('Gemini CLI wiring (real payloads through .gemini/settings.json)', () =
     allow(send('BeforeTool', 'pre-shell-npm-test'));
     posted(send('AfterTool', 'post-shell-npm-test-exit1'));
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
-    deny(send('BeforeTool', 'pre-shell-git-commit'), /Speckl denied run_shell_command \(spec tool request_review\): can\(\) refused/);
+    deny(send('BeforeTool', 'pre-shell-git-commit'), /Speckl denied run_shell_command \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
 
     allow(send('BeforeTool', 'pre-shell-npm-test-2'));
     posted(send('AfterTool', 'post-shell-npm-test-2'));
