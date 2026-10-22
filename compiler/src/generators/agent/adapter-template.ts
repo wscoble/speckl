@@ -74,9 +74,10 @@ async function main() {
     const config = JSON.parse(fs.readFileSync(path.join(agentDir, 'agent-config.json'), 'utf-8'));
     const stdinText = argv[0] === 'install' ? '' : await readStdin();
     out = runAdapter(argv, process.env, stdinText, config, deps);
-  } catch (e) {
-    const msg = 'Speckl adapter error: ' + (e instanceof Error ? e.message : String(e));
-    // Fail closed. A batch or turn-end hook must not stop the agent loop.
+  } catch {
+    // The exception text can carry a key path or key bytes, so it is not printed.
+    // A batch or turn-end hook must not stop the agent loop.
+    const msg = 'Speckl adapter error: the adapter failed closed. The call stays denied.';
     const quiet = argv[1] === 'batch' || argv[1] === 'turn-end';
     out = quiet ? { code: 0, stdout: argv[0] === 'gemini' ? '{}\\n' : '', stderr: msg + '\\n' } : { code: 2, stdout: '', stderr: msg + '\\n' };
   }

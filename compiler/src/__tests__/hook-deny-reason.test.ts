@@ -289,7 +289,7 @@ describe('generated hook deny reasons', () => {
     expect(badTool.body!.reason).toContain('internal error (fail closed)');
     expect(badTool.body!.reason).toContain('unknown tool');
     expect(badTool.body!.reason).not.toContain(keyHex);
-    expect(badTool.body!.reason).toContain('<redacted>');
+    expect(badTool.body!.reason).toContain('<keyfile>');
 
     const hash = stateOf(state);
     hash.specHash = 'deadbeef';
@@ -451,5 +451,114 @@ describe('deny text keeps each harness format', () => {
     expect(blocked.stderr).not.toContain(key);
     expect(blocked.stderr).toContain('<keyfile>');
     expect(deps.calls).toHaveLength(2);
+  });
+
+  it('redacts a resolved key path, the key file contents, and a signer key on each adapter denial', () => {
+    const rel = 'sekret/state.key';
+    const abs = '/proj/sekret/state.key';
+    const envRel = './env-sekret.key';
+    const envAbs = '/proj/env-sekret.key';
+    const contents = 'STATE-KEY-CONTENTS-NOT-HEX';
+    const signer = 'SIGNER-KEY-MATERIAL';
+    const secrets = [rel, abs, envRel, envAbs, contents, signer, '/proj/sekret', '/proj/<keyfile>'];
+    const deps = {
+      runHook() {
+        return { status: 2, stdout: JSON.stringify({ decision: 'deny', reason: 'nope ' + abs + ' ' + contents + ' ' + signer }) + '\n', stderr: '' };
+      },
+      resolvePath: (b: string, p: string) => path.posix.resolve(b, p),
+      relativePath: (a: string, b: string) => path.posix.relative(a, b),
+      dirname: (p: string) => path.posix.dirname(p),
+      cwd: '/proj',
+      agentDir: '/proj/.speckl/agent',
+      readFile(p: string) {
+        if (p === abs || p === rel || p === envAbs || p === envRel) return contents + '\n';
+        if (p.endsWith('s.json')) return JSON.stringify({ signers: [{ name: 'alice', key: signer }] });
+        return null;
+      },
+      writeFile() {},
+    } as AdapterDeps;
+    const bash = [{ tools: ['Bash', 'bash'], field: 'command', pattern: 'npm test', target: 'run_tests', inputs: [] }];
+    const config = { harness: { 'claude-code': { rules: bash }, opencode: { rules: bash } } };
+    const env = { SPECKL_STATE_KEY_FILE: envRel, CLAUDE_PROJECT_DIR: '/proj' };
+    const flags = ['--state', 's.json', '--project', '/proj', '--key', rel];
+    const pre = (harness: string, event: string, payload: unknown, extra: string[] = flags) =>
+      runAdapter([harness, event, ...extra], env, typeof payload === 'string' ? payload : JSON.stringify(payload), config, deps);
+    const cases: [string, { code: number; stdout: string; stderr: string }][] = [
+      ['unknown harness', pre(abs, 'pre', {})],
+      ['unknown event', pre('claude-code', abs, {})],
+      ['not json', pre('claude-code', 'pre', '{')],
+      ['not an object', pre('claude-code', 'pre', [])],
+      ['wrong event name', pre('claude-code', 'pre', { hook_event_name: abs })],
+      ['missing state', pre('claude-code', 'pre', { hook_event_name: 'PreToolUse', tool_name: abs }, ['--project', '/proj', '--key', rel])],
+      ['protected path', pre('claude-code', 'pre', { hook_event_name: 'PreToolUse', tool_name: contents, tool_input: { path: abs }, tool_use_id: 't', cwd: '/proj' })],
+      ['unmapped tool', pre('claude-code', 'pre', { hook_event_name: 'PreToolUse', tool_name: signer + ' ' + envAbs, tool_input: {}, tool_use_id: 't', cwd: '/proj' })],
+      ['shell metacharacters', pre('claude-code', 'pre', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test; ' + abs }, tool_use_id: 't', cwd: '/proj' })],
+      ['foreign workdir', pre('opencode', 'pre', { hook_event_name: 'tool.execute.before', tool_name: 'bash', tool_input: { command: 'npm test', workdir: abs }, tool_use_id: 't', cwd: '/proj' })],
+      ['no tool id', pre('claude-code', 'pre', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, cwd: '/proj' })],
+      ['forwarded hook deny', pre('claude-code', 'pre', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: '/proj' })],
+    ];
+    for (const [name, out] of cases) {
+      expect(out.code, name).toBe(2);
+      const text = out.stdout + out.stderr;
+      for (const secret of secrets) expect(text, name + ' leaked ' + secret).not.toContain(secret);
+    }
+    expect(cases.find(c => c[0] === 'protected path')![1].stderr).toContain('<keyfile>');
+    expect(cases.find(c => c[0] === 'forwarded hook deny')![1].stderr).toContain('<keyfile>');
+  });
+
+  it('adapter main() prints a fixed line and not the exception text', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-adapter-catch-'));
+    const spec = join(dir, 'Mini.speckdl');
+    writeFileSync(spec, [
+      'speck Mini {',
+      '    state {',
+      '        stage: Nat',
+      '    }',
+      '    init {',
+      '        stage := 0',
+      '    }',
+      '    action Go {',
+      '        require stage == 0',
+      '        stage := 1',
+      '    }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Done = 1',
+      '        }',
+      '        tool go -> Go effect act',
+      '        harness claude-code {',
+      '            map Bash command ~ "npm test" -> go',
+      '        }',
+      '    }',
+      '    next: Go',
+      '}',
+      '',
+    ].join('\n'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try { compileSpec(spec, { outputDir: join(dir, 'out'), target: 'agent', bomFormat: 'cdx', verifyDepth: 0 }); }
+    finally { log.mockRestore(); }
+    const agent = join(dir, 'out', 'agent');
+    const keyDir = mkdtempSync(join(tmpdir(), 'speckl-adapter-key-'));
+    const rel = './state-sekret.key';
+    writeFileSync(join(keyDir, 'state-sekret.key'), keyHex + '\n');
+    const abs = path.resolve(keyDir, rel);
+    writeFileSync(join(agent, 'agent-config.json'), '{not-json ' + abs + ' ' + rel + ' ' + keyHex + ' SIGNER-KEY-MATERIAL');
+    const run = (event: string) => spawnSync(process.execPath, [join(agent, 'adapter.mjs'), 'claude-code', event, '--key', rel], {
+      cwd: keyDir, input: '{}', encoding: 'utf-8',
+    });
+    const denied = run('pre');
+    expect(denied.status, denied.stderr).toBe(2);
+    expect(denied.stderr).toContain('Speckl adapter error: the adapter failed closed. The call stays denied.');
+    for (const secret of [abs, rel, keyHex, 'SIGNER-KEY-MATERIAL', 'not-json', 'SyntaxError']) {
+      expect(denied.stderr, secret).not.toContain(secret);
+      expect(denied.stdout, secret).not.toContain(secret);
+    }
+    const batch = run('batch');
+    expect(batch.status, batch.stderr).toBe(0);
+    expect(batch.stderr).toContain('failed closed');
+    expect(batch.stderr).not.toContain(abs);
+    expect(batch.stderr).not.toContain(keyHex);
+    expect(batch.stdout).toBe('');
   });
 });

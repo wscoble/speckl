@@ -77,6 +77,16 @@ describe('deny reason text', () => {
     expect(redactSecrets('plain', { not: 'an array' })).toBe('plain');
     expect(redactSecrets('x'.repeat(1801), []).endsWith('…')).toBe(true);
     expect(redactSecrets('x'.repeat(1801), []).length).toBe(1801);
+    const digest = 'cd'.repeat(32);
+    const kept = redactSecrets('sign call ' + digest + ' canonical {"branch":"/proj/sekret.key"}',
+      ['./sekret.key', '/proj/sekret.key'], [digest]);
+    expect(kept).toContain(digest);
+    expect(kept).not.toContain('/proj');
+    expect(kept).not.toContain('sekret.key');
+    expect(kept).toContain('<keyfile>');
+    // A known secret wins over the keep-list, even when both are the same 64 hex chars.
+    expect(redactSecrets('want ' + digest, [digest], [digest])).toBe('want <keyfile>');
+    expect(redactSecrets('want ' + digest.toUpperCase(), [], [digest])).toContain(digest.toUpperCase());
   });
 
   it('classifies a can() refusal without treating a lookalike name as the stage', () => {

@@ -1,27 +1,63 @@
 # Changelog
 
-All notable changes to the Speckl compiler (npm package `speckl`). The format
-follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
-project uses [Semantic Versioning](https://semver.org/) (0.x: minor versions
-may change generated output).
+All notable changes to the Speckl compiler. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
+[Semantic Versioning](https://semver.org/) (0.x: minor versions may change
+generated output).
 
 ## [0.4.0] - unreleased
 
-First npm release. The package was renamed from the unpublished
-`speckl-compile` to `speckl`; `speckl-compile` stays as a bin alias.
+0.4.0 is not published to npm. Install it from a source checkout, or from a
+local `npm pack` tarball (see the [README](README.md)). The compiler was
+renamed from `speckl-compile` to `speckl`; `speckl-compile` stays as a bin
+alias.
 
 ### Added
 
+- **Decision record.** After the state verifies, generated hooks append each
+  allow and each deny (deny reason clipped at 500 characters) to
+  `<state>.decisions/log.jsonl`. Each line is SHA-256 chained and HMAC-SHA256'd
+  with the state key. The stored deny reason is the same redacted sentence the
+  hook prints: a key path (given or resolved), the key file's contents, and a
+  signer key are not written, including when they appear in the tool name or
+  the call id. That HMAC is not a signature a third party can check;
+  anyone who can read the key can rebuild the record. The line is the gate's
+  verdict, not proof the tool ran. Denials are not written into `state.json`.
+  Calls that fail before the state verifies (usage, stdin, lock timeout, a
+  missing or bad key, a broken state signature) are denied and not appended.
+  If the record cannot be written, the call is denied. While `log.jsonl` is
+  within 256 KiB the hook rechecks the whole decision chain; past that it
+  checks the keyed head and the last 64 KiB. `signal.mjs verify` always walks
+  every line, so a same-length edit above that tail is caught there and not
+  by the next hook call. A crash after the allow line is written and before
+  `state.json` is replaced can leave an allow with no matching `state.log`
+  entry; the process does not exit 0. A `signers` rotation and a call binding
+  stay in `state.log`. A bound-call mismatch deny, and the later allow of the
+  matching call, are decision lines and do not consume the binding on the
+  deny. `rotate-signers` refuses to rotate when the decision chain does not
+  verify. See `docs/agent-signals.md`.
 - **Pinned sign-off signers.** `signal.mjs init --signer name=pubkey` (repeatable)
   records the ed25519 public keys that may sign a `file-drop` approval. The
-  initial set is covered by the state HMAC and by the log genesis hash.
+  sha256 of the canonical initial set is part of the log genesis hash, and
+  the current set is covered by the state HMAC and re-derived from the log.
   Verification accepts a signature only from that set: a `--pubkey` that is
   not pinned is refused, on dev states as well as production. A state created
   before this field existed still trusts a per-call `--pubkey` (its genesis
-  is unchanged). `signal.mjs rotate-signers` appends a sealed log entry that
+  omits the field). `signal.mjs rotate-signers` appends a sealed log entry that
   replaces the current set; the drop must be signed by a key that is pinned
   now. Any one pinned key can sign or rotate (not a threshold). An empty set
   refuses every file-drop signature.
+- **Call-bound sign-off.** An `await` may say `bind call` (or `bind call on approve`).
+  The signed drop then carries `call`, the sha256 of one canonical spec tool call
+  (tool name plus mapped arguments, full value, keys sorted). The hook allows
+  that call once, on a matching `post` with `ok: true`, and denies any other
+  call while the approval is outstanding. A `file-drop` signature is still
+  accepted only from the current pinned signers; the hash is not a trust
+  anchor. Run, expiry, nonce and replay checks are unchanged and run at
+  apply. Expiry is not checked again when the bound call runs, and rotating
+  signers does not revoke a binding already stored. An await without the
+  clause stays a stage-level sign-off, and a `call` hash on one of those is
+  refused. See `docs/agent-signals.md`.
 - **Compile tests** (#20, #21). `src/__tests__/compiles-*.test.ts` checks every
   example's generated code with a real toolchain:
   - `tsc --strict` for TypeScript and the agent machines, plus `node --check` for the hook scripts;
@@ -92,9 +128,13 @@ First npm release. The package was renamed from the unpublished
   (file-drop, with the drop shape and the run id). On a state created with
   `init --signer`, that command names the pinned signer and does not tell
   anyone to pass `--pubkey`; a legacy state (no pin field) still prints
-  `--pubkey <pubkey>`. The text never includes
-  the state key, the key path, or the state contents, and a throw while
-  building it still denies. Each harness keeps its own output shape. Adapter
+  `--pubkey <pubkey>`. A call-bound await uses that same command and appends
+  `sign call <digest> canonical <preimage>`, and the digest is left in the
+  sentence. The text never includes the state key, the key file path as given
+  or resolved, the key file's contents, or a pinned signer key, and that same
+  sentence is what `<state>.decisions/log.jsonl` stores. An adapter failure
+  before it can decide prints a fixed line and not the exception. A throw while
+  building the sentence still denies. Each harness keeps its own output shape. Adapter
   denials (unmapped tool, shell metacharacters, a protected path, a bad
   payload) gain the same fail-closed next step. Examples in
   `docs/agent-signals.md` and `docs/harness-adapters.md`.

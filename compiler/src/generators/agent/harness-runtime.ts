@@ -1,4 +1,4 @@
-import { explainAdapterDeny as explainAdapterDenyImpl, redactSecrets } from './deny-reason.js';
+import { explainAdapterDeny as explainAdapterDenyImpl, redactSecrets, scrubDenyText as scrubDenyTextImpl } from './deny-reason.js';
 
 // runAdapter is pasted into adapter.mjs via Function#toString. A call to an
 // imported binding is rewritten by the test bundler (and would throw in the
@@ -6,6 +6,9 @@ import { explainAdapterDeny as explainAdapterDenyImpl, redactSecrets } from './d
 // emitted file gets explainAdapterDenyImpl, whose source calls nothing imported.
 function explainAdapterDeny(reason: string, secrets: string[]): string {
   return explainAdapterDenyImpl(reason, secrets);
+}
+function scrubDenyText(text: string, secrets: string[]): string {
+  return scrubDenyTextImpl(text, secrets);
 }
 
 // Harness adapter runtime: pure functions that turn a real agent harness's
@@ -1354,11 +1357,60 @@ export function runAdapter(
   const event = argv[1] || '';
   const flags = parseAdapterFlags(argv.slice(2));
   const isPre = event === 'pre';
-  const fail = (reason: string): AdapterOutput => {
+  const envDir = harness === 'cursor' ? env.CURSOR_PROJECT_DIR
+    : harness === 'gemini' ? env.GEMINI_PROJECT_DIR
+      : harness === 'claude-code' ? env.CLAUDE_PROJECT_DIR : undefined;
+  let projectDir = flags.project || envDir || deps.cwd;
+  const secretsFor = (): string[] => {
     const secrets: string[] = [];
-    if (flags.key) secrets.push(flags.key);
-    if (env.SPECKL_STATE_KEY_FILE) secrets.push(env.SPECKL_STATE_KEY_FILE);
-    const msg = explainAdapterDeny(reason, secrets);
+    const addPath = (p: unknown) => {
+      if (typeof p !== 'string' || !p) return;
+      secrets.push(p);
+      try {
+        const abs = deps.resolvePath(projectDir, p);
+        if (typeof abs === 'string' && abs) secrets.push(abs);
+      } catch { /* resolution must not turn a deny into a throw */ }
+      try {
+        const fromCwd = deps.resolvePath(deps.cwd, p);
+        if (typeof fromCwd === 'string' && fromCwd) secrets.push(fromCwd);
+      } catch { /* ignore */ }
+    };
+    addPath(flags.key);
+    addPath(env.SPECKL_STATE_KEY_FILE);
+    const files: string[] = [];
+    if (typeof flags.key === 'string' && flags.key) files.push(flags.key);
+    if (typeof env.SPECKL_STATE_KEY_FILE === 'string' && env.SPECKL_STATE_KEY_FILE) files.push(env.SPECKL_STATE_KEY_FILE);
+    for (const f of files) {
+      let text: string | null = null;
+      try { text = deps.readFile(f); } catch { text = null; }
+      if (!text) {
+        try {
+          const abs = deps.resolvePath(projectDir, f);
+          if (typeof abs === 'string' && abs) text = deps.readFile(abs);
+        } catch { text = null; }
+      }
+      if (typeof text === 'string' && text) {
+        secrets.push(text);
+        const trimmed = text.trim();
+        if (trimmed) secrets.push(trimmed);
+      }
+    }
+    if (flags.state) {
+      try {
+        const raw = deps.readFile(deps.resolvePath(projectDir, flags.state));
+        const st = raw ? JSON.parse(raw) : null;
+        const signers = st && st.signers;
+        if (Array.isArray(signers)) {
+          for (const s of signers) {
+            if (s && typeof s.key === 'string' && s.key) secrets.push(s.key);
+          }
+        }
+      } catch { /* unreadable state is not a reason to leak */ }
+    }
+    return secrets;
+  };
+  const fail = (reason: string): AdapterOutput => {
+    const msg = explainAdapterDeny(reason, secretsFor());
     if (event === 'batch') return { code: 0, stdout: '', stderr: msg + '\n' };
     // A turn-end hook never blocks: on Gemini exit 2 would force a retry turn.
     if (event === 'turn-end') return { code: 0, stdout: harness === 'gemini' ? '{}\n' : '', stderr: msg + '\n' };
@@ -1380,17 +1432,12 @@ export function runAdapter(
   } catch {
     return fail('hook payload is not JSON');
   }
+  if (!flags.project && !envDir && typeof payload.cwd === 'string' && payload.cwd) projectDir = payload.cwd;
   if (payload.hook_event_name !== undefined && payload.hook_event_name !== expected) {
     return fail('payload is ' + JSON.stringify(payload.hook_event_name) + ' but this hook is wired as ' + expected);
   }
   if (!flags.state) return fail('missing --state');
 
-  const projectDir = flags.project
-    || (harness === 'cursor' ? env.CURSOR_PROJECT_DIR
-      : harness === 'gemini' ? env.GEMINI_PROJECT_DIR
-        : harness === 'claude-code' ? env.CLAUDE_PROJECT_DIR : undefined)
-    || (typeof payload.cwd === 'string' ? payload.cwd : '')
-    || deps.cwd;
   const stateAbs = deps.resolvePath(projectDir, flags.state);
   const keyAbs = flags.key ? deps.resolvePath(projectDir, flags.key) : null;
   const callCwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : projectDir;
@@ -1434,7 +1481,7 @@ export function runAdapter(
     } catch { /* hook.mjs reports a broken state on the next call */ }
     if (!pending || typeof pending.tool !== 'string' || pending.call_id === undefined) return { code: 0, stdout: quiet, stderr: '' };
     const r = deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: pending.call_id, ok: false }, stateAbs, keyAbs);
-    if (r.status !== 0) return { code: 0, stdout: quiet, stderr: 'Speckl: could not clear the pending call: ' + interpretHook(r).reason + '\n' };
+    if (r.status !== 0) return { code: 0, stdout: quiet, stderr: scrubDenyText('Speckl: could not clear the pending call: ' + interpretHook(r).reason, secretsFor()) + '\n' };
     return { code: 0, stdout: quiet, stderr: 'Speckl cleared pending call ' + String(pending.call_id) + ' (no result reported); recorded as failed\n' };
   }
 
@@ -1471,7 +1518,7 @@ export function runAdapter(
       } catch { /* hook.mjs reports a broken state on the next call */ }
       if (!pending || callId === null || pending.call_id !== callId || typeof pending.tool !== 'string') return formatPost(harness, null);
       const r = interpretHook(deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: callId, ok: false }, stateAbs, keyAbs));
-      return formatPost(harness, r.allow ? null : 'Speckl could not record blocked call ' + callId + ': ' + r.reason);
+      return formatPost(harness, r.allow ? null : scrubDenyText('Speckl could not record blocked call ' + callId + ': ' + r.reason, secretsFor()));
     }
   }
   const clawDetails = harness === 'openclaw' && event === 'post' && payload.event && typeof payload.event === 'object'
@@ -1505,7 +1552,7 @@ export function runAdapter(
     if (pending && callId !== null && pending.call_id === callId && typeof pending.tool === 'string') {
       const ok = postSucceeded(harness, event, payload);
       const r = interpretHook(deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: callId, ok }, stateAbs, keyAbs));
-      return formatPost(harness, r.allow ? null : 'Speckl could not record ' + String(toolName) + ' (spec tool ' + pending.tool + '): ' + r.reason);
+      return formatPost(harness, r.allow ? null : scrubDenyText('Speckl could not record ' + String(toolName) + ' (spec tool ' + pending.tool + '): ' + r.reason, secretsFor()));
     }
   }
   const pin = { ok: true, input: normalizeToolInput(harness, toolName, pin0.input) };
@@ -1535,7 +1582,7 @@ export function runAdapter(
   if (isPre) {
     const r = interpretHook(deps.runHook('pre', { tool: m.tool, input: m.input, call_id: callId }, stateAbs, keyAbs));
     if (r.allow) return formatPre(harness, true, '');
-    return formatPre(harness, false, 'Speckl denied ' + label + ' (spec tool ' + m.tool + '): ' + r.reason);
+    return formatPre(harness, false, scrubDenyText('Speckl denied ' + label + ' (spec tool ' + m.tool + '): ' + r.reason, secretsFor()));
   }
   const ok = postSucceeded(harness, event, payload);
   const r = interpretHook(deps.runHook('post', { tool: m.tool, input: m.input, call_id: callId, ok }, stateAbs, keyAbs));
@@ -1546,12 +1593,12 @@ export function runAdapter(
     return formatPost(harness, 'Speckl recorded ' + label + ' (spec tool ' + m.tool + ') as not successful: Codex does not report a Bash exit status, so a shell call never advances the policy. Use the tool mapped for this step instead.');
   }
   if (r.allow) return formatPost(harness, null);
-  return formatPost(harness, 'Speckl could not record ' + label + ' (spec tool ' + m.tool + '): ' + r.reason);
+  return formatPost(harness, scrubDenyText('Speckl could not record ' + label + ' (spec tool ' + m.tool + '): ' + r.reason, secretsFor()));
 }
 
 /** Functions emitted into adapter.mjs, in order. */
 export const ADAPTER_FUNCTIONS = [
-  redactSecrets, explainAdapterDenyImpl,
+  redactSecrets, scrubDenyTextImpl, explainAdapterDenyImpl,
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
   harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,

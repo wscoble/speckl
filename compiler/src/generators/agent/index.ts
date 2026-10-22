@@ -149,6 +149,8 @@ export interface AgentRuntimeConfig {
     claims: { name: string; typeName: string }[];
     on: { outcome: string; target: string; targetValue: number; action: string }[];
     timeout?: { durationMs: number; durationText: string; outcome: string };
+    /** Outcomes that require a call digest. Empty = stage-level sign-off. */
+    bindCall: string[];
   }[];
 }
 
@@ -190,6 +192,7 @@ function buildConfig(
         action: signalActionName(a.signal, o.outcome),
       })),
       timeout: a.timeout ? { ...a.timeout } : undefined,
+      bindCall: [...a.bindCall],
     })),
   };
   if (agent.harnesses && agent.harnesses.length > 0) {
@@ -363,6 +366,9 @@ function buildAgentsMd(
       if (a.timeout) {
         lines.push(`- Timeout \`${a.timeout.durationText}\` → \`${a.timeout.outcome}\` (must be a \`!\`-marked reject outcome)`);
       }
+      if (a.bindCall.length > 0) {
+        lines.push(`- Call-bound: ${a.bindCall.map(o => `\`${o}\``).join(', ')} (the signed drop carries \`call\`, the sha256 of one canonical tool call; the hook allows that call once)`);
+      }
       lines.push('');
     }
   }
@@ -417,11 +423,22 @@ function buildAgentsMd(
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
   lines.push('- A deny reason names why, then the next step: not allowed in this stage; waiting on a');
   lines.push('  sign-off (the signal name and the `signal.mjs apply` command a human runs — `--signer`');
-  lines.push('  for a pinned state, `--pubkey <pubkey>` only when the state has no pins); a failed');
+  lines.push('  for a pinned state, `--pubkey <pubkey>` only when the state has no pins; a call-bound');
+  lines.push('  sign-off uses that command and `sign call <digest>`); a failed');
   lines.push('  precondition; or an internal error (fail closed). It does not include the state key,');
-  lines.push('  the key path, or the state contents. If the reason cannot be built, the call is still denied.');
+  lines.push('  the key path (given or resolved), the key file contents, or a signer key. The decision');
+  lines.push('  record stores that same redacted sentence. If the reason cannot be built, the call is still denied.');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
   lines.push('- Spec-hash mismatch denies.');
+  lines.push('- After the state verifies, each allow and deny is appended to `<state>.decisions/`');
+  lines.push('  (SHA-256 chain, HMAC-SHA256 with the state key). That is a keyed record, not a');
+  lines.push('  signature a third party can check. A denial does not modify the state file.');
+  lines.push('  Calls that fail before the state verifies are denied and not recorded. If the');
+  lines.push('  record cannot be written, the call is denied. Within 256 KiB the hook rechecks');
+  lines.push('  the whole decision chain; past that it checks the keyed head and the last 64 KiB.');
+  lines.push('  `signal.mjs verify` always walks every line. A crash after the allow line is');
+  lines.push('  written and before `state.json` is replaced can leave an allow with no matching');
+  lines.push('  `state.log` entry; the process does not exit 0.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
   lines.push('');
@@ -429,17 +446,35 @@ function buildAgentsMd(
   lines.push('');
   lines.push('The state file is not trusted as written. Every change is appended to a');
   lines.push('hash-chained log; on load the hook and `signal.mjs` replay the log and check');
-  lines.push('that the machine, pending call, used nonces and applied evidence match it, and');
-  lines.push('verify an HMAC-SHA256 over the whole state. The key file (`--key` or');
+  lines.push('that the machine, pending call, used nonces, applied evidence, pinned signers');
+  lines.push('and any call-bound sign-off match it, and verify an HMAC-SHA256 over the');
+  lines.push('whole state. The key file (`--key` or');
   lines.push('`SPECKL_STATE_KEY_FILE`) must be readable by the hook and signal tooling and');
   lines.push('**not by the agent**. Any mismatch, a missing signature or a missing key denies');
   lines.push('(exit 2). Editing `state.json` by hand (e.g. setting the stage) is refused.');
+  lines.push('');
+  lines.push('Allows and denies after the state verifies are recorded again, separately, in');
+  lines.push('`<state>.decisions/`, HMAC-SHA256 with the same key. Anyone who can read the key');
+  lines.push('can rebuild that record; it is not third-party proof and it is not replayed into');
+  lines.push('the machine, so a denial cannot advance the spec or rewrite `state.json`. Denials');
+  lines.push('before the state verifies are not recorded. Past 256 KiB the hook checks the keyed');
+  lines.push('head and the last 64 KiB; `verify` still walks every line. A crash between the');
+  lines.push('allow line and the `state.json` rename can leave an allow with no matching');
+  lines.push('`state.log` entry. A signer rotation is a `state.log` entry (`signers`), not a');
+  lines.push('decision line. A bound-call mismatch deny and the later allow of the matching');
+  lines.push('call are decision lines; the binding itself stays in `state.log`.');
+  lines.push('`node signal.mjs verify --state <file>` replays both and checks both chains.');
   lines.push('');
   lines.push('## Who may record a signal');
   lines.push('');
   lines.push('Signals are recorded with `signal.mjs`, never by the agent. Production must use a');
   lines.push('**signed** verifier (`file-drop` or a plug-in); a signed drop is bound to this');
   lines.push('run (`run`), expires (`expires`) and is single-use (`nonce`).');
+  lines.push('An outcome marked `bind call` is narrower: the drop also carries `call`, the');
+  lines.push('sha256 of one canonical tool call, and the hook allows that call once. The');
+  lines.push('signature is still checked against the pinned signers. Expiry is checked');
+  lines.push('when the drop is applied, not when that call later runs. A sign-off');
+  lines.push('without `bind call` is unchanged, and a `call` hash on one is refused.');
   lines.push('');
   lines.push('`signal.mjs init --signer name=pubkey` (repeatable) pins the ed25519 keys that');
   lines.push('`file-drop` will accept. The set is sealed into the state at init. A signature');
@@ -475,9 +510,11 @@ echo '{"tool":"run_tests","input":{},"call_id":"1"}' \\
 # The reason says which of these happened, then what to do: not allowed in this
 # stage; waiting on a sign-off (the signal and the exact signal.mjs apply
 # command). A pinned state names the signer and does not offer --pubkey.
-# A state with no pins still says --pubkey <pubkey>. A failed precondition
+# A state with no pins still says --pubkey <pubkey>. A call-bound sign-off
+# uses that same command and shows sign call <digest>. A failed precondition
 # or an internal error (fail closed) has its own next step.
-# It does not include the state key, signer key material, or the state contents.
+# It does not include the state key, the key path, signer key material, or the state contents.
+# The decision record stores that same redacted sentence.
 # See docs/agent-signals.md.
 
 # After the tool finishes:
@@ -499,6 +536,12 @@ node signal.mjs init --state ./state.json --dev
 
 # Pass the same key to every hook/signal call (or set SPECKL_STATE_KEY_FILE):
 export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
+
+# State chain plus the decision record. The record is an HMAC with the state
+# key, not a third-party signature. It is empty until the first verdict after
+# the state verifies; denials before that are not recorded. verify walks every
+# decision line (the hook's check stops at the tail once the log passes 256 KiB).
+node signal.mjs verify --state ./state.json
 \`\`\`
 
 ## Signals (HITL / HNTL)
@@ -514,6 +557,11 @@ node signal.mjs apply --state ./state.json --verifier file-drop \\
 # The signed JSON names its signal and is bound to this run:
 #   {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...},
 #    "run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}
+# When the await says \`bind call\` for that outcome, the same object also
+# carries "call":"<sha256>". Compute it (this prints the digest and the exact
+# preimage) and sign the whole file. The signature must still be from a
+# pinned key. Expiry is checked here, not when the bound call later runs.
+#   echo '{"tool":"open_pr","input":{}}' | node signal.mjs digest
 
 # CLI verifier — DEV ONLY (state must be created with init --dev). Whoever can
 # run this can approve, including an agent with shell access.

@@ -21,14 +21,28 @@ export function shellQuote(value: unknown): string {
  * are always removed. The result is capped so a huge call id cannot dump
  * a state file into the harness.
  */
-export function redactSecrets(text: string, secrets: unknown): string {
+export function redactSecrets(text: string, secrets: unknown, keep?: unknown): string {
   let s = String(text);
-  const list = Array.isArray(secrets) ? secrets : [];
-  for (const secret of list) {
-    if (typeof secret === 'string' && secret.length >= 8) s = s.split(secret).join('<keyfile>');
+  const list: string[] = [];
+  if (Array.isArray(secrets)) {
+    for (const secret of secrets) {
+      if (typeof secret === 'string' && secret.length >= 8) list.push(secret);
+    }
+  }
+  // Longer first, so a resolved absolute path is removed whole and a shorter
+  // relative path cannot leave its directory prefix behind.
+  list.sort((a, b) => b.length - a.length);
+  for (const secret of list) s = s.split(secret).join('<keyfile>');
+  const kept = new Set<string>();
+  if (Array.isArray(keep)) {
+    for (const token of keep) {
+      if (typeof token === 'string' && /^[0-9a-fA-F]{64}$/.test(token)) kept.add(token.toLowerCase());
+    }
   }
   s = s.replace(/-----BEGIN [A-Z0-9 ]+-----[\s\S]*?-----END [A-Z0-9 ]+-----/g, '<redacted>');
-  s = s.replace(/\b[0-9a-fA-F]{64}\b/g, '<redacted>');
+  // A call digest is 64 hex too. Keep only tokens named by the caller, and
+  // only if a known secret did not already claim them.
+  s = s.replace(/\b[0-9a-fA-F]{64}\b/g, (m) => kept.has(m.toLowerCase()) ? m : '<redacted>');
   if (s.length > 1800) s = s.slice(0, 1800) + '…';
   return s;
 }
@@ -211,7 +225,7 @@ export function internalNext(code: string): string {
 }
 
 /** Assemble one deny sentence. Throws on a bad kind or an empty part. */
-export function renderDenyReason(kind: string, detail: string, next: string, secrets: unknown): string {
+export function renderDenyReason(kind: string, detail: string, next: string, secrets: unknown, keep?: unknown): string {
   const labels: Record<string, string> = {
     stage: 'not allowed in this stage',
     signoff: 'waiting on a sign-off',
@@ -222,7 +236,7 @@ export function renderDenyReason(kind: string, detail: string, next: string, sec
   if (!label) throw new Error('unknown deny kind');
   if (typeof detail !== 'string' || detail.length === 0) throw new Error('missing deny detail');
   if (typeof next !== 'string' || next.length === 0) throw new Error('missing deny next step');
-  const out = redactSecrets('Speckl denied (' + label + '): ' + detail + '. Next: ' + next, secrets);
+  const out = redactSecrets('Speckl denied (' + label + '): ' + detail + '. Next: ' + next, secrets, keep);
   if (out.indexOf('Speckl denied (') !== 0) throw new Error('deny text lost its class');
   return out;
 }
@@ -261,6 +275,11 @@ export function explainAdapterDeny(reason: unknown, secrets: unknown): string {
     next = 'Next: Speckl only accepts a command run in the project root (fail closed). Drop the other working directory and call again.';
   }
   return redactSecrets('Speckl: ' + r + ' ' + next, secrets);
+}
+
+/** Redact a sentence the adapter built around a hook reason or a tool name. */
+export function scrubDenyText(text: unknown, secrets: unknown, keep?: unknown): string {
+  return redactSecrets(String(text), secrets, keep);
 }
 
 /** Emitted into hook.mjs, in order. explainAdapterDeny stays in the adapter. */

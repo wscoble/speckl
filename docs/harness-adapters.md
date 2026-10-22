@@ -422,8 +422,9 @@ A denial from `hook.mjs` starts with one of:
   The sentence includes the `signal.mjs apply` command and the signed-drop
   shape. A pinned state names those signers (`--signer <name>` when there is
   one, and no `--pubkey` when several may sign). A legacy state, which has
-  no pin field, still prints `--pubkey <pubkey>`. The public keys themselves
-  are not printed. See [agent-signals.md](agent-signals.md).
+  no pin field, still prints `--pubkey <pubkey>`. A call-bound sign-off uses
+  that same command and also shows `sign call <digest>`. The public keys
+  themselves are not printed. See [agent-signals.md](agent-signals.md).
 - `Speckl denied (precondition failed)` — the call's inputs, or a call already
   in flight, do not satisfy the spec.
 - `Speckl denied (internal error (fail closed))` — the hook could not trust
@@ -431,13 +432,20 @@ A denial from `hook.mjs` starts with one of:
   explanation itself cannot be built, the text is the fixed line
   `Speckl denied (internal error, fail closed): the explanation could not be built`.
 
-The sentence does not include the state key, the key file path, or the
-contents of `state.json`. If building it throws, the call is still denied.
+The sentence does not include the state key, the key file path (the path
+that was passed or the absolute path it resolves to), the bytes in that
+file, a pinned signer key, or the contents of `state.json`. The decision
+record stores that same sentence. If building it throws, the call is still
+denied.
 
 Denials the adapter makes before `hook.mjs` (an unmapped tool, shell
 metacharacters, a protected path, a payload that is not JSON, a working
 directory outside the project) stay fail-closed and end with a next step.
-A protected-path denial does not repeat the state-key path.
+A protected-path denial does not repeat the state-key path, including when
+`--key` or `SPECKL_STATE_KEY_FILE` was relative and the rails check saw the
+absolute path. If the adapter throws before it can decide, stderr is the
+fixed line `Speckl adapter error: the adapter failed closed. The call stays denied.`
+and the exception text is not printed.
 
 ### Fail closed
 

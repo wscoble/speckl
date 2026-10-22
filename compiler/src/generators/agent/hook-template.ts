@@ -17,8 +17,10 @@ export function emitHookMjs(speckName: string): string {
  * A denial names why, then the next step: not allowed in this stage, waiting
  * on a sign-off (the signal and the signal.mjs command), a failed
  * precondition, or an internal error (fail closed). The text never includes
- * the state key, the key path or the state contents. Building it cannot
- * change the decision: a throw while building it still denies.
+ * the state key, the key path (given or resolved), the key file contents, a
+ * signer key, or the state contents. The same redacted sentence is what the
+ * decision record stores. Building it cannot change the decision: a throw
+ * while building it still denies.
  *
  * The hook never records human answers; signal.mjs does, through a verifier.
  * Keep signal.mjs and any signing key out of the agent's reach: the cli
@@ -32,24 +34,70 @@ export function emitHookMjs(speckName: string): string {
  * hash-chained log that is replayed and checked on load, and the whole
  * state is HMAC-signed with a key the agent must not be able to read.
  * Any mismatch, a missing signature or a missing key (non-dev) denies.
+ *
+ * After the state verifies, each allow and deny is appended to a separate
+ * decision record (<state>.decisions/), SHA-256 chained and HMAC-SHA256'd
+ * with the same key. That is a keyed record, not a signature a third party
+ * can check. A denial does not modify state.json. Calls that fail before
+ * the state verifies are denied and not recorded. If the record cannot be
+ * written, the call is denied.
+ *
+ * A call-bound sign-off (await \`bind call\`) allows one later call whose
+ * digest matches the signed \`call\` hash, and only once that call's post
+ * succeeds. Any other call is denied and that denial is recorded. The hash
+ * is sha256 of the canonical spec tool name and mapped arguments (see
+ * state-integrity.mjs callDigest). The binding itself stays in state.log.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyState, append, sign, keyPathFrom } from './state-integrity.mjs';
+import { verifyState, append, sign, keyPathFrom, verifyDecisions, appendDecision, digestInput, callDigest, canonical } from './state-integrity.mjs';
 
 ${denyFns}
 
 let hookKeyArg = '';
-function secretPaths() {
+function secretPaths(state) {
   const out = [];
-  if (typeof hookKeyArg === 'string' && hookKeyArg) out.push(hookKeyArg);
+  const add = (p) => {
+    if (typeof p !== 'string' || !p) return;
+    out.push(p);
+    try {
+      const abs = path.resolve(p);
+      if (abs) out.push(abs);
+    } catch { /* a bad path must not stop the deny */ }
+  };
+  add(hookKeyArg);
   const envKey = process.env.SPECKL_STATE_KEY_FILE;
-  if (typeof envKey === 'string' && envKey) out.push(envKey);
+  add(envKey);
+  const files = [];
+  if (typeof hookKeyArg === 'string' && hookKeyArg) files.push(hookKeyArg);
+  if (typeof envKey === 'string' && envKey) files.push(envKey);
+  for (let i = 0; i < files.length; i++) {
+    try {
+      const text = fs.readFileSync(files[i], 'utf-8');
+      if (typeof text === 'string' && text) {
+        out.push(text);
+        const trimmed = text.trim();
+        if (trimmed) out.push(trimmed);
+      }
+    } catch { /* missing or unreadable key */ }
+  }
+  const signers = state && state.signers;
+  if (Array.isArray(signers)) {
+    for (let i = 0; i < signers.length; i++) {
+      const entry = signers[i];
+      if (entry && typeof entry.key === 'string' && entry.key) out.push(entry.key);
+    }
+  }
   return out;
 }
 function finishDeny(exitCode, build) {
-  respond('deny', safeDenyText(build), exitCode);
+  const text = safeDenyText(build);
+  if (audit && !audit.sealed) {
+    try { seal('deny', text); }
+    catch (e) { decisionUnavailable(e, exitCode); }
+  }
+  respond('deny', text, exitCode);
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -82,7 +130,44 @@ function respond(decision, reason, code) {
   process.exit(code);
 }
 
-function allow() { respond('allow', undefined, 0); }
+// Set once the state has verified. Absent for usage, stdin, lock and
+// integrity failures: those deny, but there is no trustworthy chain to extend.
+let audit = null;
+
+function seal(verdict, reason) {
+  if (!audit || audit.sealed) return;
+  const secrets = secretPaths(audit.state);
+  const keep = audit.keep || [];
+  const clean = (v) => v == null ? null : redactSecrets(String(v), secrets, keep);
+  appendDecision(audit.file, audit.key, audit.state, {
+    phase: audit.phase,
+    tool: clean(audit.tool),
+    call_id: audit.callId == null || audit.callId === '' ? null : clean(audit.callId),
+    action: audit.action,
+    verdict,
+    reason: verdict === 'deny' ? clean(reason) : reason,
+    input_sha256: digestInput(audit.input),
+  });
+  audit.sealed = true;
+  audit.verdict = verdict;
+}
+
+function decisionUnavailable(e, code) {
+  audit = null;
+  const msg = e instanceof Error ? e.message : String(e);
+  const text = safeDenyText(() => renderDenyReason('internal', 'decision record unavailable: ' + msg, internalNext('default'), secretPaths()));
+  respond('deny', text, code);
+}
+
+// Record the allow before state.json is replaced. A record failure denies
+// and leaves the spec state untouched. A later save failure is recorded as
+// a deny when it can be, and the process still exits non-zero.
+function commitAllow(stateFile, state) {
+  try { seal('allow', null); }
+  catch (e) { decisionUnavailable(e, 2); }
+  save(stateFile, state);
+  respond('allow', undefined, 0);
+}
 
 function parseArgs(argv) {
   const out = { cmd: '', state: '', key: '' };
@@ -186,6 +271,15 @@ function currentAwait(machine, cfg) {
   return cfg.awaits.find(a => a.stateValue === stage) || null;
 }
 
+/** Digest of the call the hook will judge. input is already coerced (null/missing → {}). */
+function describeCall(tool, input) {
+  try {
+    return { ok: true, digest: callDigest(tool, input), canonical: canonical({ tool, input }) };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 async function loadMachine(state) {
   const mod = await import(pathToFileURL(path.join(__dirname, config.machineModule)).href);
   const Machine = mod[config.machineExport];
@@ -220,26 +314,57 @@ async function main() {
 
   try {
     const state = loadState(args.state);
-    if (state.specHash !== config.specHash) {
-      finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths()));
-    }
     const { Machine, machine } = await loadMachine(state);
     const v = verifyState(state, { keyPath: keyPathFrom(args.key), Machine, config });
-    if (!v.ok) finishDeny(2, () => renderDenyReason('internal', 'state integrity: ' + v.reason, internalNext('integrity'), secretPaths()));
+    // A stale spec is reported as such even when the chain no longer matches
+    // (genesis covers specHash). Record that denial only when the state and
+    // the decision record both verify; otherwise there is nothing trustworthy
+    // to append to, and the call is still denied.
+    if (!v.ok) {
+      if (state.specHash !== config.specHash) {
+        finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));
+      }
+      finishDeny(2, () => renderDenyReason('internal', 'state integrity: ' + v.reason, internalNext('integrity'), secretPaths(state)));
+    }
     for (const w of v.warnings) process.stderr.write('WARN: ' + w + '\\n');
     stateKey = v.key;
-    const toolByName = new Map(config.tools.map(t => [t.name, t]));
+    const decisions = verifyDecisions(args.state, stateKey, state, { full: false });
+    if (!decisions.ok) {
+      if (state.specHash !== config.specHash) {
+        finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));
+      }
+      finishDeny(2, () => renderDenyReason('internal', 'decision record: ' + decisions.reason, internalNext('default'), secretPaths(state)));
+    }
     const runId = typeof state.runId === 'string' ? state.runId : '';
+    audit = {
+      file: args.state,
+      key: stateKey,
+      state,
+      phase: args.cmd,
+      tool: typeof msg.tool === 'string' ? msg.tool : (msg.tool == null ? null : String(msg.tool)),
+      callId: msg.call_id === undefined || msg.call_id === null || msg.call_id === '' ? null : msg.call_id,
+      action: null,
+      input: msg.input === undefined ? null : msg.input,
+      keep: [],
+      sealed: false,
+      verdict: null,
+    };
+    if (state.specHash !== config.specHash) {
+      finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));
+    }
+    const toolByName = new Map(config.tools.map(t => [t.name, t]));
 
     if (args.cmd === 'pre') {
       const tool = msg.tool;
       const input = msg.input || {};
+      audit.input = input;
       const callId = msg.call_id;
       if (!tool || callId === undefined || callId === null || callId === '') {
-        finishDeny(2, () => renderDenyReason('internal', 'pre: tool and call_id are required', internalNext('stdin'), secretPaths()));
+        finishDeny(2, () => renderDenyReason('internal', 'pre: tool and call_id are required', internalNext('stdin'), secretPaths(state)));
       }
       const binding = toolByName.get(tool);
-      if (!binding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths()));
+      if (!binding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths(state)));
+      audit.action = binding.action;
       if (state.pending) {
         const st = pendingStatus(state.pending, Date.now());
         if (st === 'expired') {
@@ -248,33 +373,67 @@ async function main() {
           clearPendingAsFailed(state, 'timeout');
           save(args.state, state);
         } else {
-          if (st === 'unstamped') {
-            // Pending from an older state file: start its clock now.
-            state.pending.since = new Date().toISOString();
-            save(args.state, state);
-          }
           const dur = config.pendingTimeout ? config.pendingTimeout.durationText : '10m';
-          finishDeny(2, () => renderDenyReason('precondition',
+          const pendingText = safeDenyText(() => renderDenyReason('precondition',
             'another tool call is already pending (' + state.pending.call_id + '); it clears as failed after '
               + dur + ' or via signal.mjs clear-pending',
             pendingNext(state.pending.call_id, dur,
               applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'clear-pending', state.signers),
               runId, signerNote(state.signers)),
-            secretPaths()));
+            secretPaths(state)));
+          if (st === 'unstamped') {
+            // Pending from an older state file: start its clock now. The
+            // denial is sealed first, so a record failure does not write state.
+            state.pending.since = new Date().toISOString();
+            try { seal('deny', pendingText); }
+            catch (e) { decisionUnavailable(e, 2); }
+            save(args.state, state);
+            respond('deny', pendingText, 2);
+          }
+          finishDeny(2, () => pendingText);
         }
       }
 
       const waiting = currentAwait(machine, config);
       // mode in refuses every tool (HITL). mode near refuses act tools only (HNTL).
+      // A trailing space keeps a call digest a single token, ahead of ". Next:".
       if (waiting && (waiting.mode === 'in' || binding.effect === 'act')) {
-        const detail = waiting.mode === 'in'
+        const bound = (waiting.bindCall || []).length > 0;
+        const described = bound ? describeCall(tool, input) : null;
+        const suffix = !bound ? ''
+          : (described.ok
+            ? '; call-bound sign-off: sign call ' + described.digest + ' canonical ' + described.canonical + ' '
+            : '; call-bound sign-off refused: ' + described.reason + ' ');
+        const detail = (waiting.mode === 'in'
           ? 'HITL: no tools while awaiting signal ' + waiting.signal
-          : 'HNTL: act tool refused while awaiting signal ' + waiting.signal;
+          : 'HNTL: act tool refused while awaiting signal ' + waiting.signal) + suffix;
+        const keep = described && described.ok ? [described.digest] : [];
+        audit.keep = keep;
         finishDeny(2, () => renderDenyReason('signoff', detail, signoffNext(
           waiting.mode, waiting.signal, waiting.outcomes, waiting.claims,
           applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'apply', state.signers),
           runId, signerNote(state.signers),
-        ), secretPaths()));
+        ), secretPaths(state), keep));
+      }
+
+      // Outstanding call-bound sign-off: only the matching call may proceed.
+      // A mismatch is denied and the approval is kept. It is consumed on post ok.
+      if (state.boundCall != null) {
+        if (typeof state.boundCall.hash !== 'string') {
+          finishDeny(2, () => renderDenyReason('internal', 'call-bound sign-off is malformed', internalNext('default'), secretPaths(state)));
+        }
+        const d = describeCall(tool, input);
+        if (!d.ok) {
+          finishDeny(2, () => renderDenyReason('internal', 'call-bound sign-off refused: ' + d.reason, internalNext('default'), secretPaths(state)));
+        }
+        if (d.digest !== state.boundCall.hash) {
+          audit.keep = [state.boundCall.hash, d.digest];
+          finishDeny(2, () => renderDenyReason('precondition',
+            'call-bound sign-off does not cover this call (denied): want ' + state.boundCall.hash
+              + ' got ' + d.digest + ' canonical ' + d.canonical,
+            'run the call that was signed. This call stays denied. Do not edit the state file to change the binding.',
+            secretPaths(state), audit.keep));
+        }
       }
 
       const can = machine.can(binding.action, input);
@@ -285,15 +444,14 @@ async function main() {
           const next = kind === 'stage'
             ? stageNext(stageNameOf(machine[config.stageVariable], config.stages))
             : kind === 'precondition' ? preconditionNext() : internalNext('default');
-          return renderDenyReason(kind, 'can() refused: ' + described, next, secretPaths());
+          return renderDenyReason(kind, 'can() refused: ' + described, next, secretPaths(state));
         });
       }
 
       append(state, { kind: 'pre', call_id: callId, tool, action: binding.action, input });
       state.pending = { call_id: callId, tool, action: binding.action, input, since: new Date().toISOString() };
       state.machine = machine.serialize();
-      save(args.state, state);
-      allow();
+      commitAllow(args.state, state);
     }
 
     // post
@@ -301,48 +459,70 @@ async function main() {
     const callId = msg.call_id;
     const ok = msg.ok === true;
     if (!tool || callId === undefined || callId === null || callId === '') {
-      finishDeny(2, () => renderDenyReason('internal', 'post: tool and call_id are required', internalNext('stdin'), secretPaths()));
+      finishDeny(2, () => renderDenyReason('internal', 'post: tool and call_id are required', internalNext('stdin'), secretPaths(state)));
     }
+    const postBinding = toolByName.get(tool);
+    if (postBinding) audit.action = postBinding.action;
     if (!state.pending || state.pending.call_id !== callId) {
-      finishDeny(2, () => renderDenyReason('internal', 'post: no matching pending call_id', internalNext('post-mismatch'), secretPaths()));
+      finishDeny(2, () => renderDenyReason('internal', 'post: no matching pending call_id', internalNext('post-mismatch'), secretPaths(state)));
     }
     if (state.pending.tool !== tool) {
-      finishDeny(2, () => renderDenyReason('internal', 'post: tool does not match pending', internalNext('post-mismatch'), secretPaths()));
+      finishDeny(2, () => renderDenyReason('internal', 'post: tool does not match pending', internalNext('post-mismatch'), secretPaths(state)));
     }
     if (pendingStatus(state.pending, Date.now()) === 'expired') {
       clearPendingAsFailed(state, 'timeout');
+      const expiredText = safeDenyText(() => renderDenyReason('internal', 'post: pending call expired; cleared as failed (state not advanced)', internalNext('post-expired'), secretPaths(state)));
+      try { seal('deny', expiredText); }
+      catch (e) { decisionUnavailable(e, 2); }
       save(args.state, state);
-      finishDeny(2, () => renderDenyReason('internal', 'post: pending call expired; cleared as failed (state not advanced)', internalNext('post-expired'), secretPaths()));
+      respond('deny', expiredText, 2);
     }
 
     if (!ok) {
       append(state, { kind: 'post', call_id: callId, ok: false });
       state.pending = null;
       state.machine = machine.serialize();
-      save(args.state, state);
-      allow();
+      commitAllow(args.state, state);
       return;
     }
 
-    const binding = toolByName.get(tool);
-    if (!binding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths()));
-    const params = (machine.constructor.ACTIONS || {})[binding.action] || [];
+    if (!postBinding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths(state)));
+    if (state.boundCall != null) {
+      if (typeof state.boundCall.hash !== 'string') {
+        finishDeny(2, () => renderDenyReason('internal', 'call-bound sign-off is malformed', internalNext('default'), secretPaths(state)));
+      }
+      // Only the matching call consumes the approval. A different pending
+      // call was allowed before the sign-off (observe, while waiting) and
+      // must be able to finish; the binding stays for the approved call.
+      // The allow or deny of this post is sealed by commitAllow / deny.
+      let digest = null;
+      try { digest = callDigest(state.pending.tool, state.pending.input); } catch { digest = null; }
+      if (digest === state.boundCall.hash) state.boundCall = null;
+    }
+    const params = (machine.constructor.ACTIONS || {})[postBinding.action] || [];
     const argsList = params.map(p => (state.pending.input || {})[p]);
-    machine[binding.action](...argsList);
+    machine[postBinding.action](...argsList);
     append(state, { kind: 'post', call_id: callId, ok: true });
     state.pending = null;
     const waitingAfter = currentAwait(machine, config);
     state.awaitingSince = waitingAfter ? (state.awaitingSince || new Date().toISOString()) : null;
     state.machine = machine.serialize();
-    save(args.state, state);
-    allow();
+    commitAllow(args.state, state);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const code = msg.indexOf('state file missing') === 0 ? 'missing-state'
       : msg.indexOf('state lock timeout') !== -1 ? 'lock' : 'default';
-    let text;
-    try { text = safeDenyText(() => renderDenyReason('internal', msg, internalNext(code), secretPaths())); }
-    catch { text = fallbackDenyText(); }
+    const detail = audit && audit.sealed && audit.verdict === 'allow' ? 'state save failed: ' + msg : msg;
+    const text = safeDenyText(() => renderDenyReason('internal', detail, internalNext(code), secretPaths(audit && audit.state)));
+    if (audit && audit.sealed && audit.verdict === 'allow') {
+      try {
+        audit.sealed = false;
+        seal('deny', text);
+      } catch { /* the call is still denied below */ }
+    } else if (audit && !audit.sealed) {
+      try { seal('deny', text); }
+      catch (e2) { decisionUnavailable(e2, 1); }
+    }
     respond('deny', text, 1);
   }
 }
