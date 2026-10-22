@@ -171,6 +171,16 @@ describe('2. signed drops are bound to a run, an expiry and a nonce', () => {
     expect(hook(agentDir, 'pre', s, { tool: 'open_pr', input: {}, call_id: '3' }).status).toBe(0);
   });
 
+  it('a stage-level sign-off refuses a call hash and does not advance', () => {
+    const s = awaiting();
+    const r = signal(agentDir, ['apply', '--state', s, ...drop(s, { ...approve, call: 'ab'.repeat(32) })]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('stage-level sign-off must not carry a call hash');
+    expect(read(s).machine.state.stage).toBe(2);
+    expect(read(s).signalLog).toEqual([]);
+    expect(read(s).boundCall).toBeNull();
+  });
+
   it('a drop signed for another run is refused', () => {
     const other = awaiting();
     const s = awaiting();

@@ -23,11 +23,24 @@ export function emitHookMjs(speckName: string): string {
  * hash-chained log that is replayed and checked on load, and the whole
  * state is HMAC-signed with a key the agent must not be able to read.
  * Any mismatch, a missing signature or a missing key (non-dev) denies.
+ *
+ * After the state verifies, each allow and deny is appended to a separate
+ * decision record (<state>.decisions/), SHA-256 chained and HMAC-SHA256'd
+ * with the same key. That is a keyed record, not a signature a third party
+ * can check. A denial does not modify state.json. Calls that fail before
+ * the state verifies are denied and not recorded. If the record cannot be
+ * written, the call is denied.
+ *
+ * A call-bound sign-off (await \`bind call\`) allows one later call whose
+ * digest matches the signed \`call\` hash, and only once that call's post
+ * succeeds. Any other call is denied and that denial is recorded. The hash
+ * is sha256 of the canonical spec tool name and mapped arguments (see
+ * state-integrity.mjs callDigest). The binding itself stays in state.log.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyState, append, sign, keyPathFrom } from './state-integrity.mjs';
+import { verifyState, append, sign, keyPathFrom, verifyDecisions, appendDecision, digestInput, callDigest, canonical } from './state-integrity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.json'), 'utf-8'));
@@ -59,8 +72,47 @@ function respond(decision, reason, code) {
   process.exit(code);
 }
 
-function allow() { respond('allow', undefined, 0); }
-function deny(reason) { respond('deny', reason, 2); }
+// Set once the state has verified. Absent for usage, stdin, lock and
+// integrity failures: those deny, but there is no trustworthy chain to extend.
+let audit = null;
+
+function seal(verdict, reason) {
+  if (!audit || audit.sealed) return;
+  appendDecision(audit.file, audit.key, audit.state, {
+    phase: audit.phase,
+    tool: audit.tool,
+    call_id: audit.callId,
+    action: audit.action,
+    verdict,
+    reason,
+    input_sha256: digestInput(audit.input),
+  });
+  audit.sealed = true;
+  audit.verdict = verdict;
+}
+
+function decisionUnavailable(e, code) {
+  audit = null;
+  const msg = e instanceof Error ? e.message : String(e);
+  respond('deny', 'decision record unavailable: ' + msg, code);
+}
+
+function deny(reason) {
+  try { seal('deny', reason); }
+  catch (e) { decisionUnavailable(e, 2); }
+  respond('deny', reason, 2);
+}
+
+// Record the allow before state.json is replaced. A record failure denies
+// and leaves the spec state untouched. A later save failure is recorded as
+// a deny when it can be, and the process still exits non-zero.
+function commitAllow(stateFile, state) {
+  try { seal('allow', null); }
+  catch (e) { decisionUnavailable(e, 2); }
+  save(stateFile, state);
+  respond('allow', undefined, 0);
+}
+
 function error(reason) { respond('deny', reason, 1); }
 
 function parseArgs(argv) {
@@ -165,6 +217,21 @@ function currentAwait(machine, cfg) {
   return cfg.awaits.find(a => a.stateValue === stage) || null;
 }
 
+/** Digest of the call the hook will judge. input is already coerced (null/missing → {}). */
+function describeCall(tool, input) {
+  try {
+    return { ok: true, digest: callDigest(tool, input), canonical: canonical({ tool, input }) };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function callBoundHint(tool, input) {
+  const d = describeCall(tool, input);
+  if (!d.ok) return '; call-bound sign-off refused: ' + d.reason;
+  return '; call-bound sign-off: sign call ' + d.digest + ' canonical ' + d.canonical;
+}
+
 async function loadMachine(state) {
   const mod = await import(pathToFileURL(path.join(__dirname, config.machineModule)).href);
   const Machine = mod[config.machineExport];
@@ -195,25 +262,51 @@ async function main() {
 
   try {
     const state = loadState(args.state);
+    const { Machine, machine } = await loadMachine(state);
+    const v = verifyState(state, { keyPath: keyPathFrom(args.key), Machine, config });
+    // A stale spec is reported as such even when the chain no longer matches
+    // (genesis covers specHash). Record that denial only when the state and
+    // the decision record both verify; otherwise there is nothing trustworthy
+    // to append to, and the call is still denied.
+    if (!v.ok) {
+      if (state.specHash !== config.specHash) deny('specHash mismatch: state is stale relative to compiled spec');
+      deny('state integrity: ' + v.reason);
+    }
+    for (const w of v.warnings) process.stderr.write('WARN: ' + w + '\\n');
+    stateKey = v.key;
+    const decisions = verifyDecisions(args.state, stateKey, state, { full: false });
+    if (!decisions.ok) {
+      if (state.specHash !== config.specHash) deny('specHash mismatch: state is stale relative to compiled spec');
+      deny('decision record: ' + decisions.reason);
+    }
+    audit = {
+      file: args.state,
+      key: stateKey,
+      state,
+      phase: args.cmd,
+      tool: typeof msg.tool === 'string' ? msg.tool : (msg.tool == null ? null : String(msg.tool)),
+      callId: msg.call_id === undefined || msg.call_id === null || msg.call_id === '' ? null : msg.call_id,
+      action: null,
+      input: msg.input === undefined ? null : msg.input,
+      sealed: false,
+      verdict: null,
+    };
     if (state.specHash !== config.specHash) {
       deny('specHash mismatch: state is stale relative to compiled spec');
     }
-    const { Machine, machine } = await loadMachine(state);
-    const v = verifyState(state, { keyPath: keyPathFrom(args.key), Machine, config });
-    if (!v.ok) deny('state integrity: ' + v.reason);
-    for (const w of v.warnings) process.stderr.write('WARN: ' + w + '\\n');
-    stateKey = v.key;
     const toolByName = new Map(config.tools.map(t => [t.name, t]));
 
     if (args.cmd === 'pre') {
       const tool = msg.tool;
       const input = msg.input || {};
+      audit.input = input;
       const callId = msg.call_id;
       if (!tool || callId === undefined || callId === null || callId === '') {
         deny('pre: tool and call_id are required');
       }
       const binding = toolByName.get(tool);
       if (!binding) deny('unknown tool: ' + tool);
+      audit.action = binding.action;
       if (state.pending) {
         const st = pendingStatus(state.pending, Date.now());
         if (st === 'expired') {
@@ -222,23 +315,41 @@ async function main() {
           clearPendingAsFailed(state, 'timeout');
           save(args.state, state);
         } else {
+          const pendingReason = 'another tool call is already pending (' + state.pending.call_id + '); it clears as failed after '
+            + (config.pendingTimeout ? config.pendingTimeout.durationText : '10m') + ' or via signal.mjs clear-pending';
           if (st === 'unstamped') {
-            // Pending from an older state file: start its clock now.
+            // Pending from an older state file: start its clock now. The
+            // denial is sealed first, so a record failure does not write state.
             state.pending.since = new Date().toISOString();
+            try { seal('deny', pendingReason); }
+            catch (e) { decisionUnavailable(e, 2); }
             save(args.state, state);
+            respond('deny', pendingReason, 2);
           }
-          deny('another tool call is already pending (' + state.pending.call_id + '); it clears as failed after '
-            + (config.pendingTimeout ? config.pendingTimeout.durationText : '10m') + ' or via signal.mjs clear-pending');
+          deny(pendingReason);
         }
       }
 
       const waiting = currentAwait(machine, config);
       if (waiting) {
+        const suffix = (waiting.bindCall || []).length > 0 ? callBoundHint(tool, input) : '';
         if (waiting.mode === 'in') {
-          deny('HITL: no tools while awaiting signal ' + waiting.signal);
+          deny('HITL: no tools while awaiting signal ' + waiting.signal + suffix);
         }
         if (binding.effect === 'act') {
-          deny('HNTL: act tool refused while awaiting signal ' + waiting.signal);
+          deny('HNTL: act tool refused while awaiting signal ' + waiting.signal + suffix);
+        }
+      }
+
+      // Outstanding call-bound sign-off: only the matching call may proceed.
+      // A mismatch is denied and the approval is kept. It is consumed on post ok.
+      if (state.boundCall != null) {
+        if (typeof state.boundCall.hash !== 'string') deny('call-bound sign-off is malformed');
+        const d = describeCall(tool, input);
+        if (!d.ok) deny('call-bound sign-off refused: ' + d.reason);
+        if (d.digest !== state.boundCall.hash) {
+          deny('call-bound sign-off does not cover this call (denied): want ' + state.boundCall.hash
+            + ' got ' + d.digest + ' canonical ' + d.canonical);
         }
       }
 
@@ -248,8 +359,7 @@ async function main() {
       append(state, { kind: 'pre', call_id: callId, tool, action: binding.action, input });
       state.pending = { call_id: callId, tool, action: binding.action, input, since: new Date().toISOString() };
       state.machine = machine.serialize();
-      save(args.state, state);
-      allow();
+      commitAllow(args.state, state);
     }
 
     // post
@@ -259,6 +369,8 @@ async function main() {
     if (!tool || callId === undefined || callId === null || callId === '') {
       deny('post: tool and call_id are required');
     }
+    const postBinding = toolByName.get(tool);
+    if (postBinding) audit.action = postBinding.action;
     if (!state.pending || state.pending.call_id !== callId) {
       deny('post: no matching pending call_id');
     }
@@ -267,33 +379,53 @@ async function main() {
     }
     if (pendingStatus(state.pending, Date.now()) === 'expired') {
       clearPendingAsFailed(state, 'timeout');
+      const expiredReason = 'post: pending call expired; cleared as failed (state not advanced)';
+      try { seal('deny', expiredReason); }
+      catch (e) { decisionUnavailable(e, 2); }
       save(args.state, state);
-      deny('post: pending call expired; cleared as failed (state not advanced)');
+      respond('deny', expiredReason, 2);
     }
 
     if (!ok) {
       append(state, { kind: 'post', call_id: callId, ok: false });
       state.pending = null;
       state.machine = machine.serialize();
-      save(args.state, state);
-      allow();
+      commitAllow(args.state, state);
       return;
     }
 
-    const binding = toolByName.get(tool);
-    if (!binding) deny('unknown tool: ' + tool);
-    const params = (machine.constructor.ACTIONS || {})[binding.action] || [];
+    if (!postBinding) deny('unknown tool: ' + tool);
+    if (state.boundCall != null) {
+      if (typeof state.boundCall.hash !== 'string') deny('call-bound sign-off is malformed');
+      // Only the matching call consumes the approval. A different pending
+      // call was allowed before the sign-off (observe, while waiting) and
+      // must be able to finish; the binding stays for the approved call.
+      // The allow or deny of this post is sealed by commitAllow / deny.
+      let digest = null;
+      try { digest = callDigest(state.pending.tool, state.pending.input); } catch { digest = null; }
+      if (digest === state.boundCall.hash) state.boundCall = null;
+    }
+    const params = (machine.constructor.ACTIONS || {})[postBinding.action] || [];
     const argsList = params.map(p => (state.pending.input || {})[p]);
-    machine[binding.action](...argsList);
+    machine[postBinding.action](...argsList);
     append(state, { kind: 'post', call_id: callId, ok: true });
     state.pending = null;
     const waitingAfter = currentAwait(machine, config);
     state.awaitingSince = waitingAfter ? (state.awaitingSince || new Date().toISOString()) : null;
     state.machine = machine.serialize();
-    save(args.state, state);
-    allow();
+    commitAllow(args.state, state);
   } catch (e) {
-    error(e instanceof Error ? e.message : String(e));
+    const msg = e instanceof Error ? e.message : String(e);
+    if (audit && audit.sealed && audit.verdict === 'allow') {
+      try {
+        audit.sealed = false;
+        seal('deny', 'state save failed: ' + msg);
+      } catch { /* the call is still denied below */ }
+    } else if (audit && !audit.sealed) {
+      try { seal('deny', msg); }
+      catch (e2) { decisionUnavailable(e2, 1); }
+    }
+    error(msg);
   }
 }
 

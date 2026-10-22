@@ -12,6 +12,8 @@ export function emitSignalMjs(speckName: string): string {
  *   node signal.mjs timeout --state <file>   # fire timeout → !-marked reject only
  *   node signal.mjs clear-pending --state <file> --verifier file-drop|cli [args...]
  *   node signal.mjs rotate-signers --state <file> --verifier file-drop --file <drop>
+ *   node signal.mjs digest          # stdin {"tool","input"} → sha256 of that call
+ *   node signal.mjs verify --state <file>    # state chain (signers entries and any call binding) and the full decision record
  *
  * This is the human channel; the agent must not be able to run it. The cli
  * verifier (and unsigned drops) trust whoever runs them, so they are refused
@@ -21,7 +23,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyState, append, sign, keyPathFrom, ensureKey, keyIdOf, genesis } from './state-integrity.mjs';
+import { verifyState, append, sign, keyPathFrom, ensureKey, keyIdOf, genesis, verifyDecisions, callDigest, canonical } from './state-integrity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.json'), 'utf-8'));
@@ -39,6 +41,16 @@ function fail(msg, code = 1) {
   const err = new Error(msg);
   err.exitCode = code;
   throw err;
+}
+
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    process.stdin.setEncoding('utf-8');
+    process.stdin.on('data', c => chunks.push(c));
+    process.stdin.on('end', () => resolve(chunks.join('')));
+    process.stdin.on('error', reject);
+  });
 }
 
 function parseArgs(argv) {
@@ -120,7 +132,11 @@ async function loadVerified(args) {
   if (!v.ok) fail('state integrity: ' + v.reason, 2);
   for (const w of v.warnings) process.stderr.write('WARN: ' + w + '\\n');
   stateKey = v.key;
-  return { state, machine };
+  // Full walk, including a long decision log. A broken record blocks the
+  // human channel too, so a signal cannot land while denies are unverifiable.
+  const d = verifyDecisions(args.state, stateKey, state, { full: true });
+  if (!d.ok) fail('decision record: ' + d.reason, 2);
+  return { state, machine, decisions: d };
 }
 
 const SIGNER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
@@ -222,6 +238,7 @@ async function cmdInit(stateFile, dev, keyArg, signerArgs) {
     signalLog: [],
     pendingLog: [],
     awaitingSince: null,
+    boundCall: null,
   };
   state.head = genesis(state);
   if (currentAwait(machine)) state.awaitingSince = new Date().toISOString();
@@ -284,6 +301,15 @@ async function verifySignal(args, state, expect) {
   return vs;
 }
 
+/** undefined = absent. A present value must be 64 hex chars; stored lowercase. */
+function takenCall(vs) {
+  if (vs.call === undefined) return { ok: true, call: undefined };
+  if (typeof vs.call !== 'string' || !/^[0-9a-fA-F]{64}$/.test(vs.call)) {
+    return { ok: false, reason: 'call hash must be 64 hex chars (sha256 of the canonical tool call)' };
+  }
+  return { ok: true, call: vs.call.toLowerCase() };
+}
+
 function recordSignal(state, vs) {
   state.appliedEvidence = state.appliedEvidence || [];
   state.appliedEvidence.push(vs.evidence);
@@ -314,18 +340,34 @@ async function cmdApply(args) {
     const on = waiting.on.find(o => o.outcome === vs.outcome);
     if (!on) fail('no on-transition for outcome ' + vs.outcome, 2);
 
+    const needsCall = (waiting.bindCall || []).includes(vs.outcome);
+    const taken = takenCall(vs);
+    if (!taken.ok) fail(taken.reason, 2);
+    if (needsCall && !taken.call) {
+      fail('call-bound sign-off requires call (sha256 of the canonical tool call); see signal.mjs digest', 2);
+    }
+    if (!needsCall && taken.call) fail('stage-level sign-off must not carry a call hash', 2);
+
     const can = machine.can(on.action, {});
     if (can !== true) fail('synthetic transition refused: ' + can, 2);
     machine[on.action]();
 
-    append(state, { kind: 'signal', signal: vs.signal, outcome: vs.outcome, evidence: vs.evidence, nonce: vs.nonce });
+    const entry = { kind: 'signal', signal: vs.signal, outcome: vs.outcome, evidence: vs.evidence, nonce: vs.nonce };
+    if (taken.call) entry.call = taken.call;
+    append(state, entry);
     recordSignal(state, vs);
-    state.signalLog.push({ ...vs, at: vs.at || new Date().toISOString() });
+    const recorded = { ...vs, at: vs.at || new Date().toISOString() };
+    if (taken.call) recorded.call = taken.call;
+    else delete recorded.call;
+    state.signalLog.push(recorded);
+    state.boundCall = taken.call ? { hash: taken.call } : null;
     state.awaitingSince = null;
     // Leave state.pending alone: an in-flight observe tool (HNTL) still owns it.
     state.machine = machine.serialize();
     save(args.state, state);
-    process.stdout.write(JSON.stringify({ ok: true, outcome: vs.outcome, evidence: vs.evidence }) + '\\n');
+    const applied = { ok: true, outcome: vs.outcome, evidence: vs.evidence };
+    if (taken.call) applied.call = taken.call;
+    process.stdout.write(JSON.stringify(applied) + '\\n');
   } finally {
     releaseLock();
   }
@@ -376,6 +418,7 @@ async function cmdTimeout(args) {
       evidence,
     });
     state.awaitingSince = null;
+    state.boundCall = null;
     state.machine = machine.serialize();
     save(args.state, state);
     process.stdout.write(JSON.stringify({ ok: true, outcome, evidence }) + '\\n');
@@ -395,6 +438,7 @@ async function cmdClearPending(args) {
     const vs = await verifySignal(args, state, expect);
     if (vs.signal !== 'clear-pending') fail('wrong signal: expected clear-pending got ' + vs.signal, 2);
     if (vs.outcome !== 'clear') fail('disallowed outcome: ' + vs.outcome, 2);
+    if (vs.call !== undefined) fail('clear-pending does not accept a call hash', 2);
     if (vs.callId === undefined || String(vs.callId) !== String(state.pending.call_id)) {
       fail('call_id does not match the pending call (' + state.pending.call_id + ')', 2);
     }
@@ -421,6 +465,44 @@ async function cmdClearPending(args) {
   }
 }
 
+async function cmdVerify(args) {
+  if (!args.state) fail('missing --state');
+  await acquireLock(args.state);
+  try {
+    const { decisions } = await loadVerified(args);
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      decisions: decisions.count,
+      uncommitted: decisions.uncommitted,
+      head: decisions.head,
+    }) + '\\n');
+  } finally {
+    releaseLock();
+  }
+}
+
+/** Print the digest and exact preimage of one spec call. Does not touch state. */
+async function cmdDigest() {
+  let raw;
+  try { raw = await readStdin(); }
+  catch (e) { fail('stdin read failed: ' + (e && e.message ? e.message : String(e))); }
+  let msg;
+  try { msg = JSON.parse(raw || ''); }
+  catch { fail('stdin is not JSON'); }
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) fail('digest input must be a JSON object');
+  if (typeof msg.tool !== 'string' || msg.tool.length === 0) fail('digest requires tool (the spec tool name)');
+  if (!Object.prototype.hasOwnProperty.call(msg, 'input')) fail('digest requires input (an arguments object; use {} when the call has none)');
+  let digest;
+  let preimage;
+  try {
+    digest = callDigest(msg.tool, msg.input);
+    preimage = canonical({ tool: msg.tool, input: msg.input });
+  } catch (e) {
+    fail(e instanceof Error ? e.message : String(e));
+  }
+  process.stdout.write(JSON.stringify({ ok: true, digest, canonical: preimage }) + '\\n');
+}
+
 async function cmdRotate(args) {
   if (!args.state) fail('missing --state');
   if (!args.verifier) fail('missing --verifier');
@@ -430,6 +512,8 @@ async function cmdRotate(args) {
   }
   await acquireLock(args.state);
   try {
+    // loadVerified replays state.log (including earlier signers entries) and
+    // walks the whole decision record. A rotation is not a decision line.
     const { state } = await loadVerified(args);
     if (!Array.isArray(state.signers)) {
       fail('this state has no pinned signers (it predates signer pinning); re-init with --signer', 2);
@@ -471,7 +555,9 @@ async function main() {
     else if (args.cmd === 'timeout') await cmdTimeout(args);
     else if (args.cmd === 'clear-pending') await cmdClearPending(args);
     else if (args.cmd === 'rotate-signers') await cmdRotate(args);
-    else fail('usage: signal.mjs init|apply|timeout|clear-pending|rotate-signers --state <file> ...');
+    else if (args.cmd === 'digest') await cmdDigest();
+    else if (args.cmd === 'verify') await cmdVerify(args);
+    else fail('usage: signal.mjs init|apply|timeout|clear-pending|rotate-signers|digest|verify --state <file> ...');
   } catch (e) {
     releaseLock();
     const msg = e instanceof Error ? e.message : String(e);

@@ -439,6 +439,56 @@ describe('rotate-signers', () => {
     writeSigned(s2, genesisEdit);
     expect(hook(s2, 'pre', { tool: 'read_file', input: { path: 'a' }, call_id: 'q' }).stdout).toContain('log chain broken');
   });
+
+  it('a rotation leaves the decision record untouched, and verify replays the signers entry', () => {
+    const s = awaiting([`alice=${alice.hex}`, `bob=${bob.hex}`]);
+    const logPath = join(s + '.decisions', 'log.jsonl');
+    const headPath = join(s + '.decisions', 'head.json');
+    const logBefore = readFileSync(logPath, 'utf-8');
+    const headBefore = readFileSync(headPath, 'utf-8');
+    const decisions = logBefore.trim().split('\n').length;
+    const file = drop(s, {
+      signal: 'rotate-signers', outcome: 'rotate',
+      signers: [{ name: 'carol', key: carol.hex }],
+    }, bob);
+    const r = signal(['rotate-signers', '--state', s, '--verifier', 'file-drop', '--file', file]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(logPath, 'utf-8')).toBe(logBefore);
+    expect(readFileSync(headPath, 'utf-8')).toBe(headBefore);
+    expect(read(s).log.at(-1)).toMatchObject({ kind: 'signers', by: 'bob' });
+    expect(read(s).initialSigners.map((x: { name: string }) => x.name)).toEqual(['alice', 'bob']);
+    const v = signal(['verify', '--state', s]);
+    expect(v.status, v.stderr).toBe(0);
+    expect(JSON.parse(v.stdout)).toMatchObject({ ok: true, decisions, uncommitted: 0 });
+
+    const pinned = read(s).signers;
+    const logLen = read(s).log.length;
+    const broken = logBefore.replace('"verdict":"allow"', '"verdict":"deny"');
+    expect(broken).not.toBe(logBefore);
+    writeFileSync(logPath, broken);
+    const again = drop(s, {
+      signal: 'rotate-signers', outcome: 'rotate',
+      signers: [{ name: 'dave', key: dave.hex }],
+    }, carol);
+    const blocked = signal(['rotate-signers', '--state', s, '--verifier', 'file-drop', '--file', again]);
+    expect(blocked.status).toBe(2);
+    expect(blocked.stderr).toContain('decision record');
+    expect(read(s).signers).toEqual(pinned);
+    expect(read(s).log).toHaveLength(logLen);
+
+    writeFileSync(logPath, logBefore);
+    const st = read(s);
+    const last = st.log[st.log.length - 1] as Record<string, unknown>;
+    delete last.signers;
+    const { hash: _hash, ...body } = last;
+    const h = sha(canonical(body));
+    st.log[st.log.length - 1] = { ...body, hash: h };
+    st.head = h;
+    writeSigned(s, st);
+    const replay = signal(['verify', '--state', s]);
+    expect(replay.status).toBe(2);
+    expect(replay.stderr).toContain('signers entry missing set');
+  });
 });
 
 describe('generated docs name the pin', () => {
