@@ -44,7 +44,7 @@ First npm release. The package was renamed from the unpublished
     the loop.
   - State is tamper-evident: an HMAC-signed, hash-chained log.
   - One call in flight, with a pending timeout and `clear-pending`.
-- **Verifier plug-ins.** `signal.mjs init --plugins <file>` pins plug-in
+- **Verifier plug-ins** (#29). `signal.mjs init --plugins <file>` pins plug-in
   verifier modules (realpath, sha256, timeout, config) in the signed state and
   in the log's genesis hash; `--verifier plugin:<name>` loads only the pinned
   bytes. A missing, changed or re-linked module, an import or `verify` throw,
