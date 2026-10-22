@@ -20,16 +20,42 @@ No LLMs in the compilation path. Same spec, same output, every time.
 
 ## Install
 
+Speckl is not published to npm. Build it from this repository. `compiler/package.json` `engines` declares Node.js `>=20`. These steps were run on Node 20.20.2 and Node 22.23.4.
+
 ```bash
-npm install -g speckl        # Node.js 20+
-speckl --help
-speckl spec.speckdl -t all -o out
-speckl verify spec.speckdl   # Z3 check of every verify block (needs the z3 binary)
+git clone https://github.com/wscoble/speckl.git
+cd speckl/compiler
+npm ci
+npm run build
 ```
 
-Or without installing: `npx speckl spec.speckdl -t agent -o .speckl`.
-`speckl-compile` is the same CLI under its older name. Changes are listed in
-[CHANGELOG.md](CHANGELOG.md).
+`npm ci` installs the lockfile, including the TypeScript compiler used by `npm run build`. If `NODE_ENV=production`, that compiler is skipped and the build cannot find `tsc`; run `npm ci --include=dev` instead.
+
+Run it from `compiler/`:
+
+```bash
+node dist/index.js --help
+node dist/index.js ../examples/ToggleSwitch.speckdl -t all -o out
+node dist/index.js verify ../examples/ToggleSwitch.speckdl   # Z3 check of every verify block (needs the z3 binary)
+```
+
+`speckl` and `speckl-compile` are that same program (`speckl-compile` is the older name). To put both on your `PATH`, pack the checkout and install the tarball into a user prefix. The tarball stays on your machine:
+
+```bash
+npm pack
+npm install -g --prefix "$HOME/.local" ./speckl-*.tgz
+export PATH="$HOME/.local/bin:$PATH"
+speckl --help
+speckl-compile --help
+speckl ../examples/ToggleSwitch.speckdl -t all -o out
+speckl verify ../examples/ToggleSwitch.speckdl
+```
+
+Add `$HOME/.local/bin` to your shell profile if you want the commands in new terminals. `npm pack` writes `speckl-<version>.tgz` in `compiler/`; delete it when you are done. `speckl verify` needs the `z3` binary (`pacman -S z3`, `apt-get install z3`, or set `Z3_BIN`).
+
+The packed `speckl` does not include `examples/`. `speckl verify` with no spec paths looks for that directory next to the installed package and fails. Pass a spec file or directory, or `--examples <dir>` to use that directory's `.speckl-unchecked.json`. In a checkout, `node dist/index.js verify` with no paths uses this repository's `examples/`.
+
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 For agent rails in Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot
 CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro or Windsurf, see
@@ -45,7 +71,7 @@ npm run build
 npm run verify          # compiles examples, runs z3, checks solver results
 ```
 
-Installed from npm, the same verifier runs on your own specs: `speckl verify <spec.speckdl|dir>`.
+After the build in [Install](#install), the same verifier runs on your own specs: `node dist/index.js verify <spec.speckdl|dir>`, or `speckl verify <spec.speckdl|dir>` once `speckl` is on your `PATH`.
 
 Every obligation that is not proven fails the run, with one exception: an
 unchecked baseline (`.speckl-unchecked.json`) is read only when you run the
@@ -54,9 +80,11 @@ verifier **without spec paths**, over an examples directory: the repository's
 Obligations listed there are reported as UNCHECKED, never as passed, and an
 entry that is now proven or no longer exists fails as stale. Named specs or
 directories (`speckl verify spec.speckdl`, `speckl verify specs/`) get no
-baseline, so any UNCHECKED obligation fails. An npm install does not ship
-`examples/`, so use `--examples <dir>` to verify a directory against its own
-baseline.
+baseline, so any UNCHECKED obligation fails. A checkout includes `examples/`,
+so `node dist/index.js verify` with no paths uses that directory. The packed
+`speckl` command does not include it: with no spec paths it cannot find the
+directory. Pass a spec, or `--examples <dir>`, to verify a directory against
+its own baseline.
 
 Each generated `.smt2` file carries a `; speckl-expect:` marker declaring what the solver should return. When a property is violated, the verifier renders a human-readable counterexample — a per-step state trace from the solver model. Constructs the translators cannot yet handle are skipped with visible comments rather than emitted as invalid SMT.
 
@@ -90,10 +118,11 @@ Third-party inputs are pinned by SHA-256 in `compiler/scripts/fetch-compile-deps
 ```bash
 git clone https://github.com/wscoble/speckl.git
 cd speckl/compiler
-npm install
+npm ci
+npm run build
 npm test
 
-# Compile a spec
+# Same compiler as in Install
 node dist/index.js ../examples/ToggleSwitch.speckdl -o out/switch
 ls out/switch/
 ```

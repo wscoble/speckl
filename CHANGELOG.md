@@ -1,14 +1,16 @@
 # Changelog
 
-All notable changes to the Speckl compiler (npm package `speckl`). The format
-follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
-project uses [Semantic Versioning](https://semver.org/) (0.x: minor versions
-may change generated output).
+All notable changes to the Speckl compiler. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
+[Semantic Versioning](https://semver.org/) (0.x: minor versions may change
+generated output).
 
 ## [0.4.0] - unreleased
 
-First npm release. The package was renamed from the unpublished
-`speckl-compile` to `speckl`; `speckl-compile` stays as a bin alias.
+0.4.0 is not published to npm. Install it from a source checkout, or from a
+local `npm pack` tarball (see the [README](README.md)). The compiler was
+renamed from `speckl-compile` to `speckl`; `speckl-compile` stays as a bin
+alias.
 
 ### Added
 
