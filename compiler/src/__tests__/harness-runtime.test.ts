@@ -164,9 +164,10 @@ describe('flags and quoting', () => {
   it('parses flags', () => {
     expect(parseAdapterFlags(['--state', 's', '--key', 'k', '--project'])).toEqual({ state: 's', key: 'k', project: '' });
   });
-  it('quotes only when needed', () => {
-    expect(shellQuote('${CLAUDE_PROJECT_DIR}/.speckl/state.json')).toBe('${CLAUDE_PROJECT_DIR}/.speckl/state.json');
+  it('quotes placeholders and characters the shell would split', () => {
+    expect(shellQuote('${CLAUDE_PROJECT_DIR}/.speckl/state.json')).toBe('"${CLAUDE_PROJECT_DIR}/.speckl/state.json"');
     expect(shellQuote('/a b/"c"')).toBe('"/a b/\\"c\\""');
+    expect(shellQuote('/k/s.key')).toBe('/k/s.key');
   });
 });
 
@@ -177,7 +178,7 @@ describe('hook wiring', () => {
     expect(pre.matcher).toBe('*');
     expect(pre.hooks[0]).toEqual({
       type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs claude-code pre --state ${CLAUDE_PROJECT_DIR}/.speckl/state.json --key /k/s.key',
+      command: 'node "${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs" claude-code pre --state "${CLAUDE_PROJECT_DIR}/.speckl/state.json" --key /k/s.key',
       timeout: 30,
       onFailure: 'block',
     });
@@ -361,7 +362,7 @@ describe('install', () => {
     const s = JSON.parse(d.files['/p/.claude/settings.json']);
     expect(s.permissions.allow).toEqual(['Bash(npm test)']);
     expect(s.hooks.PreToolUse[0].hooks[0].command)
-      .toBe('node ${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs claude-code pre --state ${CLAUDE_PROJECT_DIR}/.speckl/state.json --key /home/u/k.key');
+      .toBe('node "${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs" claude-code pre --state "${CLAUDE_PROJECT_DIR}/.speckl/state.json" --key /home/u/k.key');
   });
   it('writes Cursor wiring; absolute paths when the rails live outside the project', () => {
     const d = fakeDeps({ agentDir: '/opt/rails/agent' });
@@ -486,7 +487,7 @@ describe('Codex CLI and Gemini CLI', () => {
     expect(c.hooks.PreToolUse[0].hooks[0]).toEqual({ type: 'command', command: 'node a/adapter.mjs codex pre --state s.json --key /k || exit 2', timeout: 30 });
     expect(c.hooks.Stop[0].matcher).toBeUndefined();
     const g = buildHarnessHooks('gemini', { adapter: 'a/adapter.mjs', state: 's.json', key: null, relative: true }) as any;
-    expect(g.hooks.BeforeTool[0]).toEqual({ matcher: '.*', hooks: [{ type: 'command', command: 'node ${GEMINI_PROJECT_DIR}/a/adapter.mjs gemini pre --state ${GEMINI_PROJECT_DIR}/s.json || exit 2', timeout: 30000, name: 'speckl-pre' }] });
+    expect(g.hooks.BeforeTool[0]).toEqual({ matcher: '.*', hooks: [{ type: 'command', command: 'node "${GEMINI_PROJECT_DIR}/a/adapter.mjs" gemini pre --state "${GEMINI_PROJECT_DIR}/s.json" || exit 2', timeout: 30000, name: 'speckl-pre' }] });
     expect(g.hooks.AfterAgent[0].hooks[0].command).not.toContain('exit 2');
     for (const h of ['codex', 'gemini']) {
       const d = fakeDeps();

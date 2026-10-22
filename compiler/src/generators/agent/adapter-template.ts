@@ -98,9 +98,16 @@ const deps = {
         ? spawnSync(args[0], args.slice(1), { input: stdin, encoding: 'utf-8', timeout, cwd, env, killSignal: 'SIGKILL' })
         : { error: new Error('empty command'), status: null, stdout: '', stderr: '', signal: null };
     }
-    const why = r.error ? (r.error.code === 'ETIMEDOUT' ? 'command timed out after ' + timeout + 'ms' : String(r.error))
-      : (r.signal ? 'command killed by ' + r.signal : '');
-    return { status: r.error || r.signal ? null : r.status, stdout: r.stdout || '', stderr: why || r.stderr || '' };
+    const err = r.error;
+    return hookCommandResult(
+      typeof r.status === 'number' ? r.status : null,
+      err && err.code ? String(err.code) : '',
+      err ? String(err) : '',
+      r.signal ? String(r.signal) : '',
+      r.stdout || '',
+      r.stderr || '',
+      timeout,
+    );
   },
 };
 

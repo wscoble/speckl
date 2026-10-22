@@ -806,9 +806,34 @@ export function parseAdapterFlags(args: string[]): Record<string, string> {
   return out;
 }
 
-/** Shell-quote one argument for a hook command line. */
+/**
+ * What a spawn of the installed hook actually did.
+ * EPIPE after the child has already exited means it closed stdin without
+ * reading the probe; the exit code still counts. A timeout, a signal, or an
+ * error with no exit code means the command did not finish.
+ */
+export function hookCommandResult(
+  status: number | null, errorCode: string, errorText: string, signal: string,
+  stdout: string, stderr: string, timeout: number,
+): HookResult {
+  const epipe = errorCode === 'EPIPE' && typeof status === 'number';
+  const failed = ((!!errorCode || !!errorText) && !epipe) || !!signal;
+  const why = !failed ? ''
+    : errorCode === 'ETIMEDOUT' ? 'command timed out after ' + timeout + 'ms'
+    : errorText ? errorText
+    : signal ? 'command killed by ' + signal
+    : errorCode;
+  return { status: failed ? null : status, stdout: stdout || '', stderr: why || stderr || '' };
+}
+
+/**
+ * Shell-quote one argument for a hook command line.
+ * `$`, `{` and `}` are quoted too: an unquoted `${CLAUDE_PROJECT_DIR}`
+ * word-splits when the project path contains a space. The `$` is not
+ * escaped, so the double quotes still expand the variable as one word.
+ */
 export function shellQuote(s: string): string {
-  return /^[A-Za-z0-9_./${}:@%+=-]+$/.test(s) ? s : '"' + s.replace(/(["\\`])/g, '\\$1') + '"';
+  return /^[A-Za-z0-9_./:@%+=-]+$/.test(s) ? s : '"' + s.replace(/(["\\`])/g, '\\$1') + '"';
 }
 
 /**
@@ -2146,7 +2171,7 @@ export function runAdapter(
 export const ADAPTER_FUNCTIONS = [
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
-  harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
+  harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, hookCommandResult, shellQuote,
   buildHarnessHooks, mergeHarnessSettings, clineScripts, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness,
   pathInside, unifiedDiff, installFilePaths, commitInstallWrites, uninstallHarness, pluginArgv, doctorProbe, classifyProbe, inspectHarness,
   runAdapter,

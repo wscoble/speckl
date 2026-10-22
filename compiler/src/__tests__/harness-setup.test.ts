@@ -9,7 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { emitAdapterMjs } from '../generators/agent/adapter-template.js';
 import {
-  ADAPTER_FUNCTIONS, parseAdapterFlags, doctorProbe, classifyProbe, pathInside, unifiedDiff,
+  ADAPTER_FUNCTIONS, parseAdapterFlags, doctorProbe, classifyProbe, hookCommandResult, pathInside, unifiedDiff,
   installFilePaths, installHarness, uninstallHarness, inspectHarness, runAdapter,
   AdapterDeps, HookResult,
 } from '../generators/agent/harness-runtime.js';
@@ -130,6 +130,34 @@ describe('doctorProbe', () => {
   });
   it('still names a tool for an unknown harness', () => {
     expect(doctorProbe('no-such', '/p', []).body).toEqual({ tool_name: '__speckl_doctor__' });
+  });
+});
+
+describe('hookCommandResult', () => {
+  it('keeps an exit code when the child closes stdin unread (EPIPE)', () => {
+    expect(hookCommandResult(2, 'EPIPE', 'Error: spawnSync sh EPIPE', '', '', '', 20000))
+      .toEqual({ status: 2, stdout: '', stderr: '' });
+    expect(hookCommandResult(0, 'EPIPE', 'Error: spawnSync sh EPIPE', '', 'out', 'err', 20000))
+      .toEqual({ status: 0, stdout: 'out', stderr: 'err' });
+  });
+  it('drops the exit code for a timeout, a signal, or a spawn error', () => {
+    expect(hookCommandResult(null, 'ETIMEDOUT', 'Error: spawnSync sh ETIMEDOUT', '', '', '', 20000).stderr)
+      .toBe('command timed out after 20000ms');
+    expect(hookCommandResult(null, 'ETIMEDOUT', 'Error: spawnSync sh ETIMEDOUT', '', '', '', 20000).status).toBe(null);
+    expect(hookCommandResult(null, 'ENOENT', 'Error: spawnSync sh ENOENT', '', '', '', 20000))
+      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh ENOENT' });
+    expect(hookCommandResult(null, '', 'Error: empty command', '', '', '', 20000))
+      .toEqual({ status: null, stdout: '', stderr: 'Error: empty command' });
+    expect(hookCommandResult(1, 'EACCES', '', '', 'out', 'err', 20000))
+      .toEqual({ status: null, stdout: 'out', stderr: 'EACCES' });
+    expect(hookCommandResult(null, 'EPIPE', 'Error: spawnSync sh EPIPE', '', '', '', 20000))
+      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh EPIPE' });
+    expect(hookCommandResult(null, '', '', 'SIGKILL', 'out', '', 20000))
+      .toEqual({ status: null, stdout: 'out', stderr: 'command killed by SIGKILL' });
+    expect(hookCommandResult(2, 'EPIPE', 'Error: spawnSync sh EPIPE', 'SIGKILL', '', '', 20000))
+      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh EPIPE' });
+    expect(hookCommandResult(0, '', '', '', '', 'hook said no', 20000))
+      .toEqual({ status: 0, stdout: '', stderr: 'hook said no' });
   });
 });
 
@@ -893,5 +921,37 @@ describe('emitted adapter.mjs', () => {
     const codex = run(['doctor', 'codex', ...common]);
     expect(codex.status, codex.stderr + codex.stdout).toBe(0);
     expect(codex.stdout).toContain('probe: denied (');
+  }, 30_000);
+
+  it('quotes ${CLAUDE_PROJECT_DIR} so a project path with a space stays one argument', () => {
+    const parent = mkdtempSync(path.join(tmpdir(), 'speckl-setup-'));
+    const project = path.join(parent, 'my project');
+    const key = path.join(parent, 'state.key');
+    mkdirSync(path.join(project, '.speckl', 'agent'), { recursive: true });
+    const adapter = path.join(project, '.speckl', 'agent', 'adapter.mjs');
+    writeFileSync(adapter, emitAdapterMjs('Setup', ['claude-code']));
+    writeFileSync(path.join(project, '.speckl', 'agent', 'agent-config.json'), JSON.stringify({
+      ...config,
+      harness: { 'claude-code': config.harness['claude-code'] },
+    }, null, 2) + '\n');
+    const statePath = path.join(project, '.speckl', 'state.json');
+    const state = stateBody() + '\n';
+    writeFileSync(statePath, state);
+    writeFileSync(key, KEY);
+    const run = (args: string[]) => spawnSync(process.execPath, [adapter, ...args], {
+      cwd: project, encoding: 'utf-8', env: { ...process.env, SPECKL_STATE_KEY_FILE: '' },
+    });
+    const common = ['--project', project, '--state', statePath, '--key', key];
+    const inst = run(['install', 'claude-code', ...common]);
+    expect(inst.status, inst.stderr + inst.stdout).toBe(0);
+    const settings = JSON.parse(readFileSync(path.join(project, '.claude', 'settings.json'), 'utf-8'));
+    const command = settings.hooks.PreToolUse[0].hooks[0].command as string;
+    expect(command).toContain('"${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs"');
+    expect(command).toContain('"${CLAUDE_PROJECT_DIR}/.speckl/state.json"');
+    expect(command).not.toMatch(/node \$\{CLAUDE_PROJECT_DIR\}/);
+    const doc = run(['doctor', 'claude-code', ...common]);
+    expect(doc.status, doc.stderr + doc.stdout).toBe(0);
+    expect(doc.stdout).toContain('probe: denied (');
+    expect(readFileSync(statePath, 'utf-8')).toBe(state);
   }, 30_000);
 });

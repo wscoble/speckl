@@ -75,6 +75,9 @@ on `install`, `status` and `doctor` (the install record remembers the paths for
   contains the adapter's unmapped-tool deny and the harness would block the
   call. `HOOK MISSING`, `FAIL OPEN` and `NOT PROVED` (exit 2 with no deny text,
   which a `|| exit 2` wrapper prints when `node` never started) are failures.
+  Claude Code commands quote `${CLAUDE_PROJECT_DIR}` (Gemini relative commands
+  quote `${GEMINI_PROJECT_DIR}` the same way) so a project path that contains
+  a space stays one argument when the shell expands it.
 - `uninstall` restores backups and deletes files the record says `install`
   created, and only when the current bytes still match the saved copy (a file
   already restored to its backup is finished, not refused). A file it is
