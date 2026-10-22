@@ -126,6 +126,7 @@ Browse all in [examples/](examples/).
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop, plug-ins; CLI is dev-only)
+- [Verifier plug-ins](docs/verifier-plugins.md) — writing and pinning a signal verifier; Sigstore reference plug-in in [plugins/verifier-sigstore](plugins/verifier-sigstore/)
 - [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
 
 ## Status

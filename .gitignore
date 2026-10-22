@@ -38,3 +38,4 @@ Thumbs.db
 # Tmp
 typescript
 compiler/coverage/
+plugins/*/coverage/

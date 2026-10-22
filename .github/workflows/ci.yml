@@ -150,3 +150,31 @@ jobs:
       # runs every compile test; a missing toolchain fails here.
       - name: Compile tests
         run: npm run test:compile
+
+  verifier-sigstore:
+    name: Sigstore verifier plug-in (offline tests + coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: compiler/package.json
+          cache: npm
+          cache-dependency-path: |
+            compiler/package-lock.json
+            plugins/verifier-sigstore/package-lock.json
+
+      # The end-to-end test compiles a spec with the compiler.
+      - name: Install compiler dependencies
+        working-directory: compiler
+        run: npm ci
+
+      - name: Install plug-in dependencies
+        working-directory: plugins/verifier-sigstore
+        run: npm ci
+
+      - name: Test with coverage (floors in vitest.config.mjs; no network)
+        working-directory: plugins/verifier-sigstore
+        run: npm run coverage

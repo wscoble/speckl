@@ -44,6 +44,17 @@ First npm release. The package was renamed from the unpublished
     the loop.
   - State is tamper-evident: an HMAC-signed, hash-chained log.
   - One call in flight, with a pending timeout and `clear-pending`.
+- **Verifier plug-ins** (#29). `signal.mjs init --plugins <file>` pins plug-in
+  verifier modules (realpath, sha256, timeout, config) in the signed state and
+  in the log's genesis hash; `--verifier plugin:<name>` loads only the pinned
+  bytes. A missing, changed or re-linked module, an import or `verify` throw,
+  a timeout or a malformed result denies. Guide:
+  `docs/verifier-plugins.md`, with a tested HMAC webhook example.
+  - `plugins/verifier-sigstore/`: Sigstore keyless approvals verified with
+    `@sigstore/verify` (signature, Fulcio chain, SCTs, Rekor entry) against an
+    OIDC issuer and identity pinned per signal, plus the file-drop bindings
+    (run, expiry, nonce, outcome). A separate package, so the generated rails
+    stay dependency-free. Not published.
 - **Harness adapters** (#5, #6, #9, #10, #11). A `harness <name> { map ... }` block maps a
   harness's own tool calls onto spec tools. Unmapped calls are denied.
   - Generates `adapter.mjs` and reference wiring for Claude Code
