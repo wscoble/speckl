@@ -17,8 +17,9 @@ export function emitHookMjs(speckName: string): string {
  * A denial names why, then the next step: not allowed in this stage, waiting
  * on a sign-off (the signal and the signal.mjs command), a failed
  * precondition, or an internal error (fail closed). The text never includes
- * the state key, the key path (given or resolved), the key file contents, a
- * signer key, or the state contents. The same redacted sentence is what the
+ * the state key, the key path (given, resolved, or the symlink target), the
+ * key file contents, a signer key, or the state contents. The same redacted
+ * sentence is what the
  * decision record stores. Building it cannot change the decision: a throw
  * while building it still denies.
  *
@@ -58,13 +59,25 @@ ${denyFns}
 let hookKeyArg = '';
 function secretPaths(state) {
   const out = [];
+  const addReal = (p) => {
+    try {
+      const real = fs.realpathSync(p);
+      if (typeof real !== 'string' || !real) return;
+      out.push(real);
+      const parent = path.dirname(real);
+      if (parent && parent !== real) out.push(parent);
+    } catch { /* realpath failed: add nothing */ }
+  };
   const add = (p) => {
     if (typeof p !== 'string' || !p) return;
     out.push(p);
+    let abs = '';
     try {
-      const abs = path.resolve(p);
+      abs = path.resolve(p);
       if (abs) out.push(abs);
     } catch { /* a bad path must not stop the deny */ }
+    addReal(p);
+    if (abs && abs !== p) addReal(abs);
   };
   add(hookKeyArg);
   const envKey = process.env.SPECKL_STATE_KEY_FILE;
@@ -152,10 +165,12 @@ function seal(verdict, reason) {
   audit.verdict = verdict;
 }
 
-function decisionUnavailable(e, code) {
+function decisionUnavailable(_e, code) {
+  const state = audit && audit.state;
   audit = null;
-  const msg = e instanceof Error ? e.message : String(e);
-  const text = safeDenyText(() => renderDenyReason('internal', 'decision record unavailable: ' + msg, internalNext('default'), secretPaths()));
+  // appendDecision throws Node errors whose message is the file it could not
+  // write. The sentence stays fixed; the path is not printed.
+  const text = safeDenyText(() => renderDenyReason('internal', 'decision record unavailable', internalNext('default'), secretPaths(state)));
   respond('deny', text, code);
 }
 
@@ -191,7 +206,7 @@ async function acquireLock(stateFile) {
       lockHeld = lp;
       return;
     } catch (e) {
-      if (e && e.code !== 'EEXIST') throw e;
+      if (!e || e.code !== 'EEXIST') throw new Error('state lock could not be taken');
       // Break a lock left behind by a crashed holder (older than 30s).
       try {
         if (Date.now() - fs.statSync(lp).mtimeMs > 30000) { fs.unlinkSync(lp); continue; }
@@ -210,10 +225,14 @@ function atomicWrite(file, data) {
 }
 
 function loadState(stateFile) {
-  if (!fs.existsSync(stateFile)) {
-    throw new Error('state file missing; run: node signal.mjs init --state ' + stateFile);
+  let text;
+  try { text = fs.readFileSync(stateFile, 'utf-8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') throw new Error('state file missing');
+    throw new Error('state file could not be read');
   }
-  return JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+  try { return JSON.parse(text); }
+  catch { throw new Error('state file is not JSON'); }
 }
 
 function pendingTimeoutMs() {
@@ -276,7 +295,10 @@ function describeCall(tool, input) {
   try {
     return { ok: true, digest: callDigest(tool, input), canonical: canonical({ tool, input }) };
   } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    const msg = e instanceof Error ? e.message : '';
+    const safe = msg === 'call digest needs a tool name' || msg === 'call digest needs an arguments object'
+      ? msg : 'call digest could not be computed';
+    return { ok: false, reason: safe };
   }
 }
 
@@ -300,7 +322,7 @@ async function main() {
 
   let raw;
   try { raw = await readStdin(); }
-  catch (e) { finishDeny(1, () => renderDenyReason('internal', 'stdin read failed: ' + e.message, internalNext('stdin'), secretPaths())); }
+  catch { finishDeny(1, () => renderDenyReason('internal', 'stdin read failed', internalNext('stdin'), secretPaths())); }
   let msg;
   try { msg = JSON.parse(raw || '{}'); }
   catch { finishDeny(1, () => renderDenyReason('internal', 'stdin is not JSON', internalNext('stdin'), secretPaths())); }
@@ -308,8 +330,9 @@ async function main() {
   try {
     await acquireLock(args.state);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    finishDeny(1, () => renderDenyReason('internal', msg, internalNext(msg.indexOf('state lock timeout') !== -1 ? 'lock' : 'default'), secretPaths()));
+    const msg = e instanceof Error ? e.message : '';
+    const known = msg === 'state lock timeout' ? msg : 'state lock could not be taken';
+    finishDeny(1, () => renderDenyReason('internal', known, internalNext(known === 'state lock timeout' ? 'lock' : 'default'), secretPaths()));
   }
 
   try {
@@ -509,10 +532,13 @@ async function main() {
     state.machine = machine.serialize();
     commitAllow(args.state, state);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const code = msg.indexOf('state file missing') === 0 ? 'missing-state'
-      : msg.indexOf('state lock timeout') !== -1 ? 'lock' : 'default';
-    const detail = audit && audit.sealed && audit.verdict === 'allow' ? 'state save failed: ' + msg : msg;
+    const msg = e instanceof Error ? e.message : '';
+    let code = 'default';
+    let detail = 'hook failed closed';
+    if (msg === 'state file missing') { code = 'missing-state'; detail = msg; }
+    else if (msg === 'state file is not JSON' || msg === 'state file could not be read') detail = msg;
+    else if (msg === 'state lock timeout' || msg === 'state lock could not be taken') { code = 'lock'; detail = msg; }
+    if (audit && audit.sealed && audit.verdict === 'allow') detail = 'state save failed';
     const text = safeDenyText(() => renderDenyReason('internal', detail, internalNext(code), secretPaths(audit && audit.state)));
     if (audit && audit.sealed && audit.verdict === 'allow') {
       try {

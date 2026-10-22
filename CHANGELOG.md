@@ -130,10 +130,12 @@ alias.
   anyone to pass `--pubkey`; a legacy state (no pin field) still prints
   `--pubkey <pubkey>`. A call-bound await uses that same command and appends
   `sign call <digest> canonical <preimage>`, and the digest is left in the
-  sentence. The text never includes the state key, the key file path as given
-  or resolved, the key file's contents, or a pinned signer key, and that same
-  sentence is what `<state>.decisions/log.jsonl` stores. An adapter failure
-  before it can decide prints a fixed line and not the exception. A throw while
+  sentence. The text never includes the state key, the key file path as given,
+  resolved, or followed through a symlink (and not the real directory that
+  contains the key), the key file's contents, or a pinned signer key, and that
+  same sentence is what `<state>.decisions/log.jsonl` stores. A state-load, key-read,
+  lock, or decision-record failure prints a fixed sentence and not the Node error.
+  An adapter failure before it can decide prints a fixed line and not the exception. A throw while
   building the sentence still denies. Each harness keeps its own output shape. Adapter
   denials (unmapped tool, shell metacharacters, a protected path, a bad
   payload) gain the same fail-closed next step. Examples in

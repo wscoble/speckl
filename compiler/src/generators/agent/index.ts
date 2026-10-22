@@ -426,7 +426,7 @@ function buildAgentsMd(
   lines.push('  for a pinned state, `--pubkey <pubkey>` only when the state has no pins; a call-bound');
   lines.push('  sign-off uses that command and `sign call <digest>`); a failed');
   lines.push('  precondition; or an internal error (fail closed). It does not include the state key,');
-  lines.push('  the key path (given or resolved), the key file contents, or a signer key. The decision');
+  lines.push('  the key path (given, resolved, or the symlink target), the key file contents, or a signer key. The decision');
   lines.push('  record stores that same redacted sentence. If the reason cannot be built, the call is still denied.');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
   lines.push('- Spec-hash mismatch denies.');
@@ -513,7 +513,7 @@ echo '{"tool":"run_tests","input":{},"call_id":"1"}' \\
 # A state with no pins still says --pubkey <pubkey>. A call-bound sign-off
 # uses that same command and shows sign call <digest>. A failed precondition
 # or an internal error (fail closed) has its own next step.
-# It does not include the state key, the key path, signer key material, or the state contents.
+# It does not include the state key, the key path (given, resolved, or the symlink target), signer key material, or the state contents.
 # The decision record stores that same redacted sentence.
 # See docs/agent-signals.md.
 

@@ -305,7 +305,7 @@ describe('generated hook deny reasons', () => {
     const integrity = hook(agentDir, 'pre', sealed, { tool: 'run_tests', input: {}, call_id: '3' }, ['--key', gone]);
     expect(integrity.status).toBe(2);
     expect(integrity.body!.reason).toContain('state integrity');
-    expect(integrity.body!.reason).toContain('<keyfile>');
+    expect(integrity.body!.reason).toContain('state key not found');
     expect(integrity.stdout + integrity.stderr).not.toContain(gone);
     expect(integrity.body!.reason).toContain('state seal failed');
     expect(stateOf(sealed).pending).toBeNull();

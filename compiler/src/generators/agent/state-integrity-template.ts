@@ -61,9 +61,16 @@ export function keyPathFrom(argKey) {
 
 export function readKey(keyPath) {
   if (!keyPath) return null;
-  if (!fs.existsSync(keyPath)) throw new Error('state key not found: ' + keyPath);
-  const text = fs.readFileSync(keyPath, 'utf-8').trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(text)) throw new Error('state key must be 32 bytes as 64 hex chars: ' + keyPath);
+  // The OS error names the path it opened, including a symlink target, so it
+  // is not the reason the hook prints.
+  let text;
+  try { text = fs.readFileSync(keyPath, 'utf-8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') throw new Error('state key not found');
+    throw new Error('state key could not be read');
+  }
+  text = text.trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(text)) throw new Error('state key must be 32 bytes as 64 hex chars');
   return Buffer.from(text, 'hex');
 }
 
@@ -184,7 +191,7 @@ function derive(state, Machine, config) {
         break;
       }
       default:
-        throw new Error('unknown log entry ' + e.kind);
+        throw new Error('unknown log entry');
     }
     if (e.evidence !== undefined) appliedEvidence.push(e.evidence);
     if (e.nonce !== undefined) usedNonces.push(e.nonce);
@@ -230,7 +237,12 @@ export function verifyState(state, { keyPath, Machine, config }) {
   if ((state.head || genesis(state)) !== prev) return { ok: false, reason: 'log chain head mismatch (log truncated or extended)' };
   // Derived fields.
   let d;
-  try { d = derive(state, Machine, config); } catch (e) { return { ok: false, reason: 'log replay failed: ' + e.message }; }
+  try { d = derive(state, Machine, config); } catch (e) {
+    // derive() throws fixed sentences. An OS error would name a path.
+    if (e && e.code) return { ok: false, reason: 'log replay failed' };
+    const msg = e instanceof Error ? e.message : '';
+    return { ok: false, reason: msg ? 'log replay failed: ' + msg : 'log replay failed' };
+  }
   if (canonical(d.machine) !== canonical(state.machine)) return { ok: false, reason: 'machine state does not match the log' };
   const p = state.pending ? { call_id: state.pending.call_id, tool: state.pending.tool, action: state.pending.action, input: state.pending.input } : null;
   if (canonical(d.pending) !== canonical(p)) return { ok: false, reason: 'pending call does not match the log' };
@@ -491,7 +503,9 @@ export function verifyDecisions(stateFile, key, state, opts) {
       genesis: ev.head.genesis,
     };
   } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    // A Node error's message is the path it opened. Our own throws have no code.
+    if (e && typeof e === 'object' && e.code) return { ok: false, reason: 'decision record could not be read' };
+    return { ok: false, reason: e instanceof Error ? e.message : 'decision record could not be read' };
   }
 }
 

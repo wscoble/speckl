@@ -503,8 +503,10 @@ Each harness keeps its own output shape (see
 shape carries. Exit codes stay 0 allow, 2 deny, 1 error (also a deny).
 
 The sentence names one of four situations, then the next step. It does not
-include the state key, the key file path (given or resolved), the key
-file's contents, a pinned signer key, or the contents of `state.json`.
+include the state key, the key file path (given, resolved with `path.resolve`,
+or the path `realpath` follows through a symlink, including that key's real
+parent directory), the key file's contents, a pinned signer key, or the
+contents of `state.json`.
 The run id is included when a signed drop needs it. A call-bound denial
 keeps the `sign call <digest>` suffix and the same pin-aware command.
 `<state>.decisions/log.jsonl` stores that redacted sentence, not a second
@@ -564,5 +566,7 @@ node '/path/to/agent/signal.mjs' clear-pending --state '/path/to/state.json' --v
 **Internal error (fail closed).** The payload was not usable, the tool is not
 in the spec, the spec hash does not match, or the state seal failed. Do not
 retry the same call. A human re-inits or restores the state with
-`signal.mjs init`. The key path from a missing-key error is replaced with
-`<keyfile>`.
+`signal.mjs init`. A missing key, an unreadable key, a missing or unreadable
+state file, a lock failure, and a decision record that cannot be written each
+use a fixed sentence. The Node error, which names the path it opened, is not
+appended.

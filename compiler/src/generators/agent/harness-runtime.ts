@@ -61,6 +61,11 @@ export interface AdapterDeps {
   readFile(p: string): string | null;
   /** Write a file (creating directories); `mode` (e.g. 0o755) also chmods it. */
   writeFile(p: string, text: string, mode?: number): void;
+  /**
+   * fs.realpathSync. Optional so a test double can omit it. Throws when the
+   * path cannot be resolved; the caller then adds nothing.
+   */
+  realpath?(p: string): string;
 }
 
 export interface AdapterOutput { code: number; stdout: string; stderr: string }
@@ -1016,19 +1021,19 @@ export function pluginSource(harness: string, ours: Record<string, unknown>): st
     'const ARGV = [' + lit.join(', ') + '];',
     'function speckl(event, payload) {',
     '  let input;',
-    '  try { input = JSON.stringify(payload); } catch (e) { return { ok: false, reason: "Speckl: the hook payload could not be serialised (" + e + ")" }; }',
+    '  try { input = JSON.stringify(payload); } catch { return { ok: false, reason: "Speckl: the hook payload could not be serialised" }; }',
     '  if (typeof input !== "string") return { ok: false, reason: "Speckl: the hook payload could not be serialised" };',
     '  let r;',
     '  try {',
     '    r = spawnSync("node", [ARGV[0], ' + JSON.stringify(harness) + ', event, ...ARGV.slice(1)], { input, encoding: "utf-8", timeout: 25000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });',
-    '  } catch (e) { return { ok: false, reason: "Speckl: could not run the adapter (" + e + ")" }; }',
+    '  } catch { return { ok: false, reason: "Speckl: could not run the adapter" }; }',
     '  const lines = String(r.stdout || "").trim().split("\\n").filter(Boolean);',
     '  let body = null;',
     '  try { body = lines.length ? JSON.parse(lines[lines.length - 1]) : null; } catch { body = null; }',
     '  const err = String(r.stderr || "").trim();',
     '  if (r.error || r.status !== 0) {',
     '    const why = (body && typeof body.reason === "string" && body.reason) || err.split("\\n")[0]',
-    '      || (r.error ? String(r.error.message || r.error) : r.signal ? "killed by " + r.signal : "exit " + r.status);',
+    '      || (r.error ? "spawn " + String(r.error.code || "error") : r.signal ? "killed by " + r.signal : "exit " + r.status);',
     '    return { ok: false, reason: (/^Speckl/.test(why) ? "" : "Speckl adapter failed: ") + why };',
     '  }',
     '  return { ok: true, body };',
@@ -1363,17 +1368,30 @@ export function runAdapter(
   let projectDir = flags.project || envDir || deps.cwd;
   const secretsFor = (): string[] => {
     const secrets: string[] = [];
+    const addReal = (p: string) => {
+      if (typeof deps.realpath !== 'function') return;
+      try {
+        const real = deps.realpath(p);
+        if (typeof real !== 'string' || !real) return;
+        secrets.push(real);
+        const parent = deps.dirname(real);
+        if (typeof parent === 'string' && parent && parent !== real) secrets.push(parent);
+      } catch { /* realpath failed: add nothing */ }
+    };
     const addPath = (p: unknown) => {
       if (typeof p !== 'string' || !p) return;
       secrets.push(p);
+      let abs = '';
       try {
-        const abs = deps.resolvePath(projectDir, p);
-        if (typeof abs === 'string' && abs) secrets.push(abs);
+        const resolved = deps.resolvePath(projectDir, p);
+        if (typeof resolved === 'string' && resolved) { secrets.push(resolved); abs = resolved; }
       } catch { /* resolution must not turn a deny into a throw */ }
       try {
         const fromCwd = deps.resolvePath(deps.cwd, p);
         if (typeof fromCwd === 'string' && fromCwd) secrets.push(fromCwd);
       } catch { /* ignore */ }
+      addReal(p);
+      if (abs && abs !== p) addReal(abs);
     };
     addPath(flags.key);
     addPath(env.SPECKL_STATE_KEY_FILE);

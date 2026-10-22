@@ -433,10 +433,13 @@ A denial from `hook.mjs` starts with one of:
   `Speckl denied (internal error, fail closed): the explanation could not be built`.
 
 The sentence does not include the state key, the key file path (the path
-that was passed or the absolute path it resolves to), the bytes in that
-file, a pinned signer key, or the contents of `state.json`. The decision
-record stores that same sentence. If building it throws, the call is still
-denied.
+that was passed, the absolute path it resolves to, or the path `realpath`
+follows when that file or its directory is a symlink, including the real
+parent directory), the bytes in that file, a pinned signer key, or the
+contents of `state.json`. The decision record stores that same sentence.
+If building it throws, the call is still denied. A failure to load the
+state, read the key, take the lock, or append the decision record prints a
+fixed sentence and not the Node error.
 
 Denials the adapter makes before `hook.mjs` (an unmapped tool, shell
 metacharacters, a protected path, a payload that is not JSON, a working
@@ -549,7 +552,30 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   the agent must not reach the key or `signal.mjs` that way.
 - `Grep`/`Glob` over the whole project can return lines from `.speckl/` (the
   state is integrity-protected, not secret). Keep the key outside the project.
-- Path checks see paths as written; they don't follow symlinks.
+- Path checks see paths as written; they don't follow symlinks. Deny text does
+  follow them: the redaction list includes `realpath` of `--key` and of
+  `SPECKL_STATE_KEY_FILE`, and the real directory that contains the key. If
+  `realpath` throws, those entries are not added and the given path stays.
+- A secret or path shorter than 8 characters is left in the sentence, so a
+  short token cannot erase it. Key bytes in another encoding are not matched:
+  base64, a hex string that is not one whole 64-character token, or the file
+  contents split by a newline. PEM blocks and the exact key-file text are
+  removed.
+- These sentences stay fixed and do not include the Node error: `state file
+  missing`, `state file is not JSON`, `state file could not be read`,
+  `state key not found`, `state key could not be read`, `state key must be
+  32 bytes as 64 hex chars`, `state lock timeout`, `state lock could not be
+  taken`, `stdin read failed`, `decision record unavailable`, and `state save
+  failed`. What can still carry text that is not a known secret: a decision-chain
+  sentence the hook writes (`decision chain broken at seq N`, `decision head
+  is not JSON`, and the other record checks — those names are not paths);
+  `log replay failed:` plus a fixed replay sentence; `can()` guard text; and
+  the call-bound canonical preimage, which is redacted where it matches a
+  known secret (the printed canonical may then not hash to the digest). The
+  Pi, OpenCode, and OpenClaw plugin reports a spawn code (`ENOENT`,
+  `ETIMEDOUT`) and not the exception's path. If the key's real parent
+  directory is also the state file's directory, that directory is removed
+  from the printed sign-off command.
 - Cursor can also load Claude Code hooks ("third-party hooks"). Wire one
   harness per project, or Cursor may call the Claude Code adapter with Cursor
   tool names, which it will deny.

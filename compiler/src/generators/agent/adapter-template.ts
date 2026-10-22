@@ -54,13 +54,15 @@ const deps = {
     const t = Number(process.env.SPECKL_HOOK_TIMEOUT_MS);
     const timeout = Number.isFinite(t) && t > 0 ? t : 20000;
     const r = spawnSync(process.execPath, args, { input: JSON.stringify(msg), encoding: 'utf-8', timeout, killSignal: 'SIGKILL' });
-    const why = r.error ? (r.error.code === 'ETIMEDOUT' ? 'hook.mjs timed out after ' + timeout + 'ms' : String(r.error))
+    const why = r.error
+      ? (r.error.code === 'ETIMEDOUT' ? 'hook.mjs timed out after ' + timeout + 'ms' : 'hook.mjs could not be started')
       : (r.signal ? 'hook.mjs killed by ' + r.signal : '');
     return { status: r.error || r.signal ? null : r.status, stdout: r.stdout || '', stderr: why || r.stderr || '' };
   },
   resolvePath: (base, p) => path.resolve(base, p),
   relativePath: (from, to) => path.relative(from, to),
   dirname: p => path.dirname(p),
+  realpath(p) { return fs.realpathSync(p); },
   cwd: process.cwd(),
   agentDir,
   readFile(p) { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
