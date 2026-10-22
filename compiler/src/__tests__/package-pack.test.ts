@@ -22,6 +22,7 @@ function run(cmd: string, args: string[], cwd: string, env: Record<string, strin
 describe('local package tarball', () => {
   let files: string[] = [];
   let project = '';
+  let tarball = '';
 
   beforeAll(() => {
     const dest = mkdtempSync(join(tmpdir(), 'speckl-pack-'));
@@ -30,6 +31,7 @@ describe('local package tarball', () => {
     if (p.status !== 0) throw new Error(p.stderr || p.stdout);
     const info = JSON.parse(p.stdout.slice(p.stdout.indexOf('[')))[0];
     files = info.files.map((f: { path: string }) => f.path);
+    tarball = join(dest, info.filename);
     project = mkdtempSync(join(tmpdir(), 'speckl-install-'));
     writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'try-speckl', private: true }));
     const i = run(npm, ['install', '--no-audit', '--no-fund', '--prefer-offline', join(dest, info.filename)], project);
@@ -52,6 +54,27 @@ describe('local package tarball', () => {
     expect(files.some(f => f.startsWith('src/') || f.includes('__tests__') || f.startsWith('coverage/') || f.startsWith('test-output/'))).toBe(false);
     expect(files.some(f => f.endsWith('.test.js'))).toBe(false);
   });
+
+  it('prefix install runs speckl and speckl-compile; verify with no paths cannot find examples', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'speckl-prefix-'));
+    const installed = run(npm, ['install', '-g', '--prefix', prefix, '--no-audit', '--no-fund', '--prefer-offline', tarball], prefix);
+    expect(installed.status, installed.stderr || installed.stdout).toBe(0);
+
+    const speckl = join(prefix, 'bin', 'speckl');
+    const alias = join(prefix, 'bin', 'speckl-compile');
+    const help = run(speckl, ['--help'], prefix);
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stdout).toContain('speckl verify [paths..]');
+    const aliasHelp = run(alias, ['--help'], prefix);
+    expect(aliasHelp.status, aliasHelp.stderr).toBe(0);
+
+    // The packed CLI does not ship examples/. With no spec paths, verify looks
+    // next to the installed package and fails. See README Install.
+    const noPath = run(speckl, ['verify'], prefix);
+    expect(noPath.status, noPath.stdout + noPath.stderr).toBe(1);
+    expect(noPath.stderr).toMatch(/examples does not exist/);
+    expect(noPath.stderr).toContain(join(prefix, 'lib', 'node_modules', 'examples'));
+  }, 120_000);
 
   it('local tarball: speckl --help / --version and the speckl-compile alias', () => {
     const help = run(npx, ['--no-install', 'speckl', '--help'], project);
