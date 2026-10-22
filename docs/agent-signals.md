@@ -19,14 +19,16 @@ Implement:
 
 ```ts
 interface SignalVerifier {
-  // opts: verifier CLI options. expect: { signal, outcomes, claims }.
+  // opts: verifier CLI options. expect: { signal, outcomes, claims, bindCall }.
   // ctx: { runId, dev, now, usedNonces } from the state file.
   verify(opts: Record<string, unknown>, expect: AwaitSpec, ctx: VerifierContext):
     Promise<{ ok: true; signal: VerifiedSignal } | { ok: false; reason: string }>;
 }
 // VerifiedSignal: { signal, outcome, claims, verifier, subject, at, evidence,
-//                   run?, expires?, nonce?, callId? }
+//                   run?, expires?, nonce?, callId?, call? }
 // If a verifier returns run/nonce, signal.mjs re-checks them against the state.
+// call is the sha256 hex of one canonical tool call. Required when the await
+// outcome is in expect.bindCall; refused on every other outcome.
 ```
 
 Documented shapes (not shipped):
@@ -58,6 +60,119 @@ used in this state file (8–200 chars). `signal` is never defaulted. Every
 applied `evidence` id is also single-use. An approval therefore can't be
 replayed or carried over to a new run.
 
+## Call-bound sign-off
+
+A sign-off normally advances the stage. After that, any later call that
+`can()` allows may run, with any arguments. An await can opt in to a narrower
+sign-off that covers **one exact call, once**.
+
+### How the spec declares it
+
+Inside the `await` block:
+
+```
+bind call                    # every accepting (non-!) outcome
+bind call on approve         # only these outcomes
+bind call on approve, ship
+```
+
+The clause names outcomes, not tools. The signed hash names the tool. A
+reject outcome (`name!`) cannot be listed: a reject authorizes no call.
+Timeouts are never call-bound. Leaving the clause out keeps today's
+stage-level sign-off, and those specs do not change.
+
+### Canonical arguments
+
+`call` is the sha256 hex digest of `canonical({ tool, input })`, using the
+same canonical form as the state log:
+
+- object keys are sorted at every depth;
+- array order is kept;
+- `undefined` is omitted; `null` is kept;
+- strings are exact (no Unicode normalization);
+- nothing is truncated.
+
+`tool` is the **spec** tool name (`open_pr`), not the harness tool name
+(`Bash`). `input` is the arguments object the hook sees **after** a harness
+adapter has mapped the call. Two harnesses that map to the same spec tool
+and the same arguments share a digest; harness-only spelling that the map
+drops is not part of the hash. The hook already treats a missing or null
+`input` as `{}`, and the digest is of that value.
+
+`node signal.mjs digest` and the hook both call `callDigest` in
+`state-integrity.mjs`. Key order in the JSON does not change the digest.
+
+### How the human sees the call
+
+While the machine is still waiting on a call-bound outcome, a refused call's
+reason ends with the exact preimage and its digest:
+
+```
+sign call <64 hex> canonical {"input":{...},"tool":"open_pr"}
+```
+
+The same pair is printed without touching state:
+
+```
+echo '{"tool":"open_pr","input":{"branch":"main"}}' | node signal.mjs digest
+# {"ok":true,"digest":"<64 hex>","canonical":"{\"input\":{\"branch\":\"main\"},\"tool\":\"open_pr\"}"}
+```
+
+`canonical` is the exact string that was hashed. Put `digest` in the signed
+JSON as `call`, beside `run`, `expires` and `nonce`, and sign the whole
+file. The human is approving that mapped spec call, not a raw harness
+command and not a truncated preview.
+
+### A mismatch denies
+
+The hook allows a later call only when its digest equals the signed `call`
+**and** `can()` allows it. Anything else is exit 2, the state is not
+written, and the approval is kept:
+
+- a different tool, a different argument, or a different array order;
+- an arguments value that is not a JSON object;
+- a `call` that is missing, not 64 hex characters, or attached to an
+  outcome that is not call-bound (including `clear-pending` and a
+  stage-level sign-off).
+
+Those last cases are refused at `signal.mjs apply`, before the stage moves.
+A verifier that returns a bad `call` is a deny. There is no path that
+ignores a bad hash and continues.
+
+The approval is consumed only when that matching call's `post` reports
+`ok: true`. A failed post or an expired pending call leaves the binding in
+place, so a failed attempt cannot become permission for a different call.
+An observe call that was already in flight when the sign-off was applied
+(near / HNTL) can finish; it does not consume the binding.
+
+The binding is re-derived from the log (`signal` entries carry `call`; a
+successful matching `post` clears it). Editing `boundCall` in `state.json`
+without that log entry is denied.
+
+### Stage-level sign-offs stay
+
+No `bind call` means no `call` field. A drop that carries one is refused, so
+a hash cannot be attached to a stage-level approval and ignored. After a
+stage-level sign-off the hook does not keep a binding. State files written
+before this field existed have no `boundCall`; they verify as unbound.
+
+Run id, expiry, nonce and evidence replay are unchanged, and they are
+checked when `call` is present too.
+
+### Limits
+
+- The hash gate is in the hook, not in Z3. BMC still covers the stage
+  transition. It does not prove which arguments were signed. The gate only
+  narrows what the hook allows, so existing proofs stay sound.
+- Expiry is enforced when the drop is applied, not again when the bound
+  call later runs.
+- After the one successful call, later calls follow `can()` only. If that
+  action's guard stays true, a later call with different arguments is not
+  covered by the spent sign-off. Move the stage in the action when that
+  one call should be the last one.
+- The human approves the mapped spec call. A harness map that drops or
+  renames fields changes what is signed.
+
 ## Who may record a signal
 
 `signal.mjs` is the human channel; the agent must not be able to run it or
@@ -76,8 +191,9 @@ state they can't verify. Two layers:
    `timeout`, `clear`) is appended to `state.log`. Each entry's hash covers
    the previous one; the first links to a genesis hash over the run id, spec
    hash, dev flag and key id. On load the log is replayed from a fresh
-   machine, and the stored machine, pending call, used nonces and applied
-   evidence must equal the replayed ones. Editing any of them, or truncating,
+   machine, and the stored machine, pending call, used nonces, applied
+   evidence and any call-bound sign-off must equal the replayed ones.
+   Editing any of them, or truncating,
    reordering or splicing the log, is detected.
 2. **HMAC-SHA256** over the whole canonical state (`state.mac`), with a 32-byte
    key in a file (`--key <file>` or `SPECKL_STATE_KEY_FILE`). This also covers

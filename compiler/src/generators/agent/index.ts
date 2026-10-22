@@ -149,6 +149,8 @@ export interface AgentRuntimeConfig {
     claims: { name: string; typeName: string }[];
     on: { outcome: string; target: string; targetValue: number; action: string }[];
     timeout?: { durationMs: number; durationText: string; outcome: string };
+    /** Outcomes that require a call digest. Empty = stage-level sign-off. */
+    bindCall: string[];
   }[];
 }
 
@@ -190,6 +192,7 @@ function buildConfig(
         action: signalActionName(a.signal, o.outcome),
       })),
       timeout: a.timeout ? { ...a.timeout } : undefined,
+      bindCall: [...a.bindCall],
     })),
   };
   if (agent.harnesses && agent.harnesses.length > 0) {
@@ -363,6 +366,9 @@ function buildAgentsMd(
       if (a.timeout) {
         lines.push(`- Timeout \`${a.timeout.durationText}\` → \`${a.timeout.outcome}\` (must be a \`!\`-marked reject outcome)`);
       }
+      if (a.bindCall.length > 0) {
+        lines.push(`- Call-bound: ${a.bindCall.map(o => `\`${o}\``).join(', ')} (the signed drop carries \`call\`, the sha256 of one canonical tool call; the hook allows that call once)`);
+      }
       lines.push('');
     }
   }
@@ -435,6 +441,9 @@ function buildAgentsMd(
   lines.push('Signals are recorded with `signal.mjs`, never by the agent. Production must use a');
   lines.push('**signed** verifier (`file-drop` or a plug-in); a signed drop is bound to this');
   lines.push('run (`run`), expires (`expires`) and is single-use (`nonce`).');
+  lines.push('An outcome marked `bind call` is narrower: the drop also carries `call`, the');
+  lines.push('sha256 of one canonical tool call, and the hook allows that call once. A');
+  lines.push('sign-off without `bind call` is unchanged.');
   lines.push('');
   lines.push('> **DEV ONLY — `cli` verifier.** `--verifier cli` (and unsigned file drops) are');
   lines.push('> refused unless the state file was created with `signal.mjs init --dev`. Anyone');
@@ -492,6 +501,10 @@ node signal.mjs apply --state ./state.json --verifier file-drop \\
 # The signed JSON names its signal and is bound to this run:
 #   {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...},
 #    "run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}
+# When the await says \`bind call\` for that outcome, the same object also
+# carries "call":"<sha256>". Compute it (this prints the digest and the exact
+# preimage) and sign the whole file:
+#   echo '{"tool":"open_pr","input":{}}' | node signal.mjs digest
 
 # CLI verifier — DEV ONLY (state must be created with init --dev). Whoever can
 # run this can approve, including an agent with shell access.

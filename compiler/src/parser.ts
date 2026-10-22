@@ -379,6 +379,13 @@ export interface AgentAwaitSpec {
   on: { outcome: string; target: string }[];
   /** Optional timeout; may only resolve to a `!`-marked reject outcome. */
   timeout?: { durationMs: number; durationText: string; outcome: string };
+  /**
+   * Outcomes whose sign-off is call-bound: the signed drop must carry `call`,
+   * the sha256 of one canonical tool call, and the hook allows that call once.
+   * Empty means a stage-level sign-off (any later call `can()` allows).
+   * Reject outcomes are never listed.
+   */
+  bindCall: string[];
 }
 
 export interface TypeExpr {
@@ -2650,8 +2657,8 @@ export function parseNextRelation(lines: string[], startIndex: number): { node: 
  *   tool <name> -> <Action> effect act|observe
  *   pending timeout <dur>
  *   await <State> { signal ...; mode near|in; require outcome in { approve, reject! };
- *                   require claims { k: T }; on outcome -> Target;
- *                   timeout <dur> -> reject }
+ *                   require claims { k: T }; bind call [on outcome, ...];
+ *                   on outcome -> Target; timeout <dur> -> reject }
  */
 function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): AgentMemberNode {
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
@@ -2752,6 +2759,8 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       const claims: { name: string; typeName: string }[] = [];
       const on: { outcome: string; target: string }[] = [];
       let timeout: AgentAwaitSpec['timeout'];
+      // null = no clause. names === null = `bind call` (every accepting outcome).
+      let bindClause: { names: string[] | null } | null = null;
 
       let j = 0;
       while (j < awaitInner.length) {
@@ -2828,6 +2837,28 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
           continue;
         }
 
+        if (/^bind\s+call\s*$/.test(al)) {
+          if (bindClause) throw new Error(`Parse error in await ${state}: duplicate bind call`);
+          bindClause = { names: null };
+          j++;
+          continue;
+        }
+        const bindOn = al.match(/^bind\s+call\s+on\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*$/);
+        if (bindOn) {
+          if (bindClause) throw new Error(`Parse error in await ${state}: duplicate bind call`);
+          const names: string[] = [];
+          for (const part of bindOn[1].split(',')) {
+            const name = part.trim();
+            if (names.includes(name)) {
+              throw new Error(`Parse error in await ${state}: duplicate bind call outcome ${name}`);
+            }
+            names.push(name);
+          }
+          bindClause = { names };
+          j++;
+          continue;
+        }
+
         throw new Error(`Parse error in await ${state}: unexpected line ${JSON.stringify(al)}`);
       }
 
@@ -2844,7 +2875,27 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
         throw new Error(`Parse error in await ${state}: timeout outcome ${timeout.outcome} is not in require outcome in {...}`);
       }
 
-      awaits.push({ state, signal, mode, outcomes, rejects, claims, on, timeout });
+      let bindCall: string[] = [];
+      if (bindClause) {
+        if (bindClause.names === null) {
+          bindCall = outcomes.filter(o => !rejects.includes(o));
+          if (bindCall.length === 0) {
+            throw new Error(`Parse error in await ${state}: bind call matches no accepting outcome`);
+          }
+        } else {
+          for (const name of bindClause.names) {
+            if (!outcomes.includes(name)) {
+              throw new Error(`Parse error in await ${state}: bind call outcome ${name} is not in require outcome in {${outcomes.join(', ')}}`);
+            }
+            if (rejects.includes(name)) {
+              throw new Error(`Parse error in await ${state}: bind call outcome ${name} is a reject outcome; a reject authorizes no call`);
+            }
+          }
+          bindCall = bindClause.names;
+        }
+      }
+
+      awaits.push({ state, signal, mode, outcomes, rejects, claims, on, timeout, bindCall });
       continue;
     }
 

@@ -535,6 +535,7 @@ function lowerAgent(
       claims: a.claims.map(c => ({ name: c.name, typeName: c.typeName })),
       on: a.on.map(o => ({ outcome: o.outcome, target: o.target })),
       timeout: a.timeout ? { ...a.timeout } : undefined,
+      bindCall: [...a.bindCall],
       syntheticActions,
     });
   }

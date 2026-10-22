@@ -245,6 +245,8 @@ export interface IRAgentAwait {
   claims: { name: string; typeName: string }[];
   on: { outcome: string; target: string }[];
   timeout?: { durationMs: number; durationText: string; outcome: string };
+  /** Outcomes whose sign-off must carry a call digest. Empty = stage-level. */
+  bindCall: string[];
   /** Synthetic action names generated for each on-outcome (and timeout if distinct). */
   syntheticActions: { outcome: string; actionName: string; targetValue: number; awaitValue: number }[];
 }

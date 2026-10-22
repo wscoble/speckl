@@ -37,6 +37,8 @@ agent {
         mode near          // near = HNTL, in = HITL
         require outcome in { approve, reject! }
         require claims { reviewer: String }
+        // optional; omit the next line for a stage-level sign-off
+        bind call on approve
         on approve -> Approved
         on reject  -> Rejected
         timeout 24h -> reject
@@ -66,6 +68,18 @@ Speckl never guesses from names. The marker drives two compile-time checks:
 
 An unmarked outcome whose name looks like a rejection (`reject`, `deny`,
 `decline`) gets a warning suggesting the marker.
+
+### Call-bound sign-off: `bind call`
+
+`bind call` on an await makes each accepting outcome cover one exact tool
+call. `bind call on approve` limits that to the named outcomes. The signed
+drop then carries `call`, the sha256 of the canonical spec tool name and
+mapped arguments. The hook allows that call once and denies any other call
+while the approval is outstanding. Reject outcomes and timeouts are never
+call-bound. An await without the clause is unchanged: after the stage
+advances, any later call `can()` allows may run. See
+[agent-signals.md](agent-signals.md) for the canonical form, how a human
+reads the preimage (`signal.mjs digest`), and what a mismatch does.
 
 ### Stuck tool calls: `pending timeout`
 

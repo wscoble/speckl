@@ -12,6 +12,13 @@ First npm release. The package was renamed from the unpublished
 
 ### Added
 
+- **Call-bound sign-off.** An `await` may say `bind call` (or `bind call on approve`).
+  The signed drop then carries `call`, the sha256 of one canonical spec tool call
+  (tool name plus mapped arguments, full value, keys sorted). The hook allows
+  that call once, on a matching `post` with `ok: true`, and denies any other
+  call while the approval is outstanding. Run, expiry, nonce and replay checks
+  are unchanged. An await without the clause stays a stage-level sign-off, and
+  a `call` hash on one of those is refused. See `docs/agent-signals.md`.
 - **Compile tests** (#20, #21). `src/__tests__/compiles-*.test.ts` checks every
   example's generated code with a real toolchain:
   - `tsc --strict` for TypeScript and the agent machines, plus `node --check` for the hook scripts;

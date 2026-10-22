@@ -3,10 +3,14 @@
 // Verifier interface (plug-ins implement the same):
 //   export async function verify(opts, expect, ctx) -> { ok: true, signal } | { ok: false, reason }
 //   opts   = verifier CLI options (--key value)
-//   expect = { signal, outcomes, claims } the caller is waiting for
+//   expect = { signal, outcomes, claims, bindCall? } the caller is waiting for.
+//            bindCall lists outcomes that must return signal.call.
 //   ctx    = { runId, dev, now, usedNonces } from the state file
 // signal = { signal, outcome, claims, verifier, subject, at, evidence,
-//            run?, expires?, nonce?, callId? }
+//            run?, expires?, nonce?, callId?, call? }
+// call is the sha256 hex of canonical({tool, input}) for a call-bound
+// sign-off. signal.mjs requires it on those outcomes and refuses it on
+// every other outcome (including clear-pending). A bad shape denies.
 
 export function emitCliVerifier(): string {
   return `/**
@@ -20,6 +24,7 @@ export function emitCliVerifier(): string {
  *
  * Options: --outcome <name> --as <subject> [--reviewer <id>] [--claim key=value]
  *          [--claim_<key> <value>] [--call_id <id>]   (clear-pending)
+ *          [--call <64-hex>]  (call-bound sign-off; sha256 of the canonical call)
  */
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -49,21 +54,23 @@ export async function verify(opts, expect, ctx = {}) {
   }
   if (typeof opts.reviewer === 'string') claims.reviewer = opts.reviewer;
 
+  if (opts.call !== undefined && (typeof opts.call !== 'string' || !/^[0-9a-fA-F]{64}$/.test(opts.call))) {
+    return { ok: false, reason: 'cli verifier --call must be a 64-char sha256 hex digest' };
+  }
   const at = new Date(typeof ctx.now === 'number' ? ctx.now : Date.now()).toISOString();
   const evidence = 'cli:' + subject + ':' + outcome + ':' + at + ':' + crypto.randomBytes(8).toString('hex');
-  return {
-    ok: true,
-    signal: {
-      signal: expect.signal,
-      outcome,
-      claims,
-      verifier: 'cli-DEV',
-      subject,
-      at,
-      evidence,
-      callId: typeof opts.call_id === 'string' ? opts.call_id : undefined,
-    },
+  const signal = {
+    signal: expect.signal,
+    outcome,
+    claims,
+    verifier: 'cli-DEV',
+    subject,
+    at,
+    evidence,
+    callId: typeof opts.call_id === 'string' ? opts.call_id : undefined,
   };
+  if (typeof opts.call === 'string') signal.call = opts.call.toLowerCase();
+  return { ok: true, signal };
 }
 `;
 }
@@ -78,7 +85,8 @@ export function emitFileDropVerifier(): string {
  *     "run": "<run id printed by signal.mjs init>",
  *     "expires": "ISO-8601",          // refused at or after this instant
  *     "nonce": "<unique, 8-200 chars>", // single use per state file
- *     "call_id": "..." }              // clear-pending only
+ *     "call_id": "...",               // clear-pending only
+ *     "call": "<64 hex>" }            // call-bound sign-off only: sha256 of the canonical call
  * Detached signature over the raw file bytes at <file>.sig
  * (64-byte raw, hex, or base64).
  *
@@ -197,6 +205,14 @@ export async function verify(opts, expect, ctx = {}) {
   }
   if ((ctx.usedNonces || []).includes(nonce)) return { ok: false, reason: 'nonce already used: ' + nonce };
 
+  let call;
+  if (payload.call !== undefined) {
+    if (typeof payload.call !== 'string' || !/^[0-9a-fA-F]{64}$/.test(payload.call)) {
+      return { ok: false, reason: 'payload call must be a 64-char sha256 hex digest' };
+    }
+    call = payload.call.toLowerCase();
+  }
+
   const outcomes = (expect && expect.outcomes) || [];
   const outcome = payload.outcome !== undefined ? payload.outcome
     : (outcomes.length === 1 ? outcomes[0] : undefined);
@@ -206,22 +222,21 @@ export async function verify(opts, expect, ctx = {}) {
   const at = payload.at || new Date(now).toISOString();
 
   const evidence = 'file:' + crypto.createHash('sha256').update(body).digest('hex');
-  return {
-    ok: true,
-    signal: {
-      signal,
-      outcome,
-      claims,
-      verifier: allowUnsigned ? 'file-drop-unsigned-DEV' : 'file-drop',
-      subject,
-      at,
-      evidence,
-      run: payload.run,
-      expires: payload.expires,
-      nonce,
-      callId: typeof payload.call_id === 'string' ? payload.call_id : undefined,
-    },
+  const verified = {
+    signal,
+    outcome,
+    claims,
+    verifier: allowUnsigned ? 'file-drop-unsigned-DEV' : 'file-drop',
+    subject,
+    at,
+    evidence,
+    run: payload.run,
+    expires: payload.expires,
+    nonce,
+    callId: typeof payload.call_id === 'string' ? payload.call_id : undefined,
   };
+  if (call !== undefined) verified.call = call;
+  return { ok: true, signal: verified };
 }
 `;
 }
