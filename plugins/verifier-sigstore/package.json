@@ -1,0 +1,28 @@
+{
+  "name": "@speckl/verifier-sigstore",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sigstore signal verifier plug-in for Speckl agent rails",
+  "type": "module",
+  "license": "MIT",
+  "main": "index.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@sigstore/bundle": "4.0.0",
+    "@sigstore/protobuf-specs": "0.5.2",
+    "@sigstore/tuf": "4.0.2",
+    "@sigstore/verify": "3.1.1"
+  },
+  "devDependencies": {
+    "@sigstore/mock": "0.12.1",
+    "@sigstore/sign": "4.1.1",
+    "@vitest/coverage-v8": "2.1.9",
+    "vitest": "2.1.9"
+  }
+}
