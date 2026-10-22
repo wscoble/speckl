@@ -7,7 +7,7 @@ signal**; anything verifiable can produce one through a pluggable verifier.
 
 | Kind | Assurance | How |
 | --- | --- | --- |
-| `file-drop` | Medium | ed25519-signed JSON file bound to a run, an expiry and a nonce. Evidence = file sha256. |
+| `file-drop` | Medium | ed25519-signed JSON file bound to a run, an expiry and a nonce. The signing key must be one pinned at `init`. Evidence = file sha256. |
 | `cli` | **DEV ONLY** | `--outcome` / `--as` / claims on the CLI. Evidence = local user + timestamp. Refused unless the state was created with `signal.mjs init --dev`. |
 
 Unsigned file drops (`--allow-unsigned true`) are also DEV ONLY and need an
@@ -20,12 +20,15 @@ Implement:
 ```ts
 interface SignalVerifier {
   // opts: verifier CLI options. expect: { signal, outcomes, claims }.
-  // ctx: { runId, dev, now, usedNonces } from the state file.
+  // ctx: { runId, dev, now, usedNonces, signers? } from the state file.
+  // signers is absent on a legacy state and the pinned file-drop set otherwise.
+  // file-drop enforces it. A plug-in must enforce its own trust anchor;
+  // signal.mjs does not re-check the signature against signers.
   verify(opts: Record<string, unknown>, expect: AwaitSpec, ctx: VerifierContext):
     Promise<{ ok: true; signal: VerifiedSignal } | { ok: false; reason: string }>;
 }
 // VerifiedSignal: { signal, outcome, claims, verifier, subject, at, evidence,
-//                   run?, expires?, nonce?, callId? }
+//                   run?, expires?, nonce?, callId?, signer? }
 // If a verifier returns run/nonce, signal.mjs re-checks them against the state.
 ```
 
@@ -58,6 +61,97 @@ used in this state file (8–200 chars). `signal` is never defaulted. Every
 applied `evidence` id is also single-use. An approval therefore can't be
 replayed or carried over to a new run.
 
+## Pinned sign-off signers
+
+`init` records who may sign a `file-drop` approval. Repeat the flag for each
+approver. The value is a file (raw 32 bytes, 64 hex chars, or base64 of those
+32 bytes — the same shapes `--pubkey` accepts) or the key material inline:
+
+```
+node signal.mjs init --state ./state.json --key /etc/speckl/state.key \
+  --signer carol=./keys/carol.pub \
+  --signer dave=./keys/dave.pub
+```
+
+The command prints each name with the sha256 of the raw public key. Names
+match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`. Two signers may not share a name or
+a key. At most 32 are stored. The set is sorted by name.
+
+What is stored:
+
+- `initialSigners` — the set from `init`. It is part of the **genesis** hash,
+  so editing it breaks the log chain even if the state is re-signed.
+- `signers` — the set in force now. With no rotation it equals
+  `initialSigners`. The HMAC covers it, and load replays the log to re-derive
+  it, the same way it re-derives the machine.
+
+`apply` and `clear-pending` with `--verifier file-drop` then accept a
+signature only from `signers`:
+
+- Omit `--pubkey` and the signature may verify under any pinned key.
+- `--pubkey <file>` must be exactly one of those keys. Any other file is
+  refused (`pubkey is not a pinned sign-off signer`), whether or not its
+  signature is valid.
+- `--signer <name>` checks that one pin. A name that was not pinned is refused.
+- Passing both requires that they are the same pin.
+- An empty set refuses every signature (`no sign-off signers pinned for this
+  run`), including on a `--dev` state. `--dev` still allows the `cli`
+  verifier and `--allow-unsigned`; it does not let a per-call key stand in
+  for a pin.
+
+Any one pinned key is enough. That is several approvers, not an M-of-N
+threshold and not a per-await role: one compromised signer can approve and
+can rotate the others out.
+
+### Rotating the set
+
+`rotate-signers` appends a `signers` log entry. The drop is an ordinary
+file-drop body signed by a key that is pinned **now** (not by a key that
+only appears in the new set):
+
+```json
+{
+  "signal": "rotate-signers",
+  "outcome": "rotate",
+  "signers": [{ "name": "carol", "key": "<64 hex chars>" }],
+  "run": "<run id>",
+  "expires": "2026-10-16T17:00:00Z",
+  "nonce": "4f1c9a7e-…"
+}
+```
+
+`key` is inline bytes (hex or base64), not a path: the path would not be
+covered by the signature.
+
+```
+node signal.mjs rotate-signers --state ./state.json --verifier file-drop \
+  --file ./inbox/rotate.json
+```
+
+The command refuses a legacy state, an empty set (nothing can authorize the
+change), the `cli` verifier, and `--allow-unsigned`. The new set must name
+at least one signer. After it lands, only the new keys verify, and the hook
+still accepts the state: replay applies the entry and checks `state.signers`
+against it. `initialSigners` does not change.
+
+If every pinned private key is lost, rotation is impossible. `init` a new
+run. Re-signing the state file with the HMAC key is not a supported way to
+swap signers; a hand edit of `signers` fails the replay check, and a hand
+edit of `initialSigners` fails the chain. Someone who already holds the state
+HMAC key and rebuilds a consistent log can still append a forged `signers`
+entry, the same way they can forge any other entry. The pin stops whoever
+runs `apply` from choosing a key. It does not add a second seal on top of
+the state key.
+
+### States created before pinning
+
+A state file with no `initialSigners` / `signers` fields keeps the previous
+genesis (the field is omitted from the hash) and still trusts the `--pubkey`
+passed to that call. `signal.mjs` warns when it does. Re-init to pin keys.
+There is no in-place upgrade: a rotation has no current signer to authorize
+it, and letting the state-key holder insert a pin would hand the same choice
+back to whoever runs the command.
+
 ## Who may record a signal
 
 `signal.mjs` is the human channel; the agent must not be able to run it or
@@ -75,10 +169,13 @@ state they can't verify. Two layers:
 1. **Hash-chained log.** Every change (`pre`, `post`, `expire`, `signal`,
    `timeout`, `clear`) is appended to `state.log`. Each entry's hash covers
    the previous one; the first links to a genesis hash over the run id, spec
-   hash, dev flag and key id. On load the log is replayed from a fresh
-   machine, and the stored machine, pending call, used nonces and applied
-   evidence must equal the replayed ones. Editing any of them, or truncating,
-   reordering or splicing the log, is detected.
+   hash, dev flag, key id and, when the run recorded one, the initial
+   sign-off signer set. On load the log is replayed from a fresh machine, and
+   the stored machine, pending call, used nonces, applied evidence and
+   current signer set must equal the replayed ones. Editing any of them, or
+   truncating, reordering or splicing the log, is detected. A `signers` entry
+   (from `rotate-signers`) replaces the current set and does not move the
+   machine.
 2. **HMAC-SHA256** over the whole canonical state (`state.mac`), with a 32-byte
    key in a file (`--key <file>` or `SPECKL_STATE_KEY_FILE`). This also covers
    fields the log can't derive (timestamps, audit logs) and stops anyone
@@ -102,7 +199,8 @@ warns on every call and checks only the log chain (which a determined editor
 can rebuild). Never use it where the agent can edit the state.
 
 **Old state files** (no `log`/run id) are refused with a message to
-re-create them with `signal.mjs init`.
+re-create them with `signal.mjs init`. Files that already have a log but no
+signer fields stay verifiable; see "States created before pinning" above.
 
 ## Stuck tool calls
 
@@ -112,7 +210,7 @@ not advanced), or sooner with a verified signal naming the pending call:
 
 ```
 node signal.mjs clear-pending --state ./state.json --verifier file-drop \
-  --file ./inbox/clear.json --pubkey ./keys/reviewer.pub
+  --file ./inbox/clear.json
 # {"signal":"clear-pending","call_id":"<pending id>","run":"…","expires":"…","nonce":"…"}
 ```
 
