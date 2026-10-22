@@ -144,7 +144,7 @@ exports[`generated output is pinned for every example > ClaudeCodePolicy.speckdl
   "agent/ClaudeCodePolicy.mjs": "7a56e8135abcc022",
   "agent/ClaudeCodePolicy.ts": "7a49668dffec7ad5",
   "agent/README.md": "f9dfa18219cbdacc",
-  "agent/adapter.mjs": "55308494726779db",
+  "agent/adapter.mjs": "92a54b57447cbdac",
   "agent/agent-config.json": "26aaf62a8c22d35a",
   "agent/harness/claude-code/settings.json": "d5f3be7da0993250",
   "agent/harness/cline/PostToolUse": "c439295983b5b324",

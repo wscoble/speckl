@@ -2,6 +2,7 @@
 // adapter runtime (emitted verbatim into adapter.mjs) and the generated plugin.
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
+import { createHmac } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +29,11 @@ function fakeDeps(files: Record<string, string> = {}, hook?: (cmd: string, msg: 
     agentDir: '/p/.speckl/agent',
     readFile: (p: string) => (p in files ? files[p] : null),
     writeFile: (p: string, t: string) => { files[p] = t; },
+    mac(keyText, text) {
+      const hex = String(keyText || '').trim();
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+      return createHmac('sha256', Buffer.from(hex, 'hex')).update(text).digest('hex');
+    },
   };
   return d;
 }
@@ -231,8 +237,9 @@ describe('buildHarnessHooks / pluginSource / pluginFiles', () => {
 
 describe('installHarness (plugins)', () => {
   const flags = { project: '.', state: '.speckl/state.json', key: '/keys/k' };
+  const keyFile = { '/keys/k': 'cd'.repeat(32) + '\n' };
   it('writes the project plugin with pinned absolute paths', () => {
-    const d = fakeDeps();
+    const d = fakeDeps({ ...keyFile });
     const r = installHarness('opencode', flags, d);
     expect(r.code).toBe(0);
     expect(r.stdout).toBe('Speckl opencode plugin written to /p/.opencode/plugins/speckl.js\nOpenCode loads .opencode/plugins/ at startup; restart running sessions.\n');
@@ -240,28 +247,28 @@ describe('installHarness (plugins)', () => {
   });
   it('--plugins-dir installs a user-level plugin (pi, opencode) that allows calls outside the project', () => {
     for (const h of ['pi', 'opencode']) {
-      const d = fakeDeps();
+      const d = fakeDeps({ ...keyFile });
       const r = installHarness(h, { ...flags, 'plugins-dir': '/home/u/plugins' }, d);
       expect(r.code).toBe(0);
-      const [file] = Object.keys(d.files);
+      const file = Object.keys(d.files).find(f => f.startsWith('/home/u/plugins/'))!;
       expect(file).toMatch(/^\/home\/u\/plugins\/speckl-[0-9a-f]{8}\.js$/);
       expect(d.files[file]).toContain('"--outside", "allow"');
       expect(r.stdout).toContain(h === 'pi' ? 'user-level extension in every session' : 'loads /home/u/plugins at startup');
     }
     // OpenClaw has no user-scope variant: --plugins-dir is ignored.
-    const d = fakeDeps();
+    const d = fakeDeps({ ...keyFile });
     installHarness('openclaw', { ...flags, 'plugins-dir': '/home/u/plugins' }, d);
-    const written = Object.keys(d.files).filter(k => !k.includes('/.speckl/harness-install/')).sort();
+    const written = Object.keys(d.files).filter(k => !k.includes('/.speckl/harness-install/') && k !== '/keys/k').sort();
     expect(written).toEqual(['/p/.openclaw/plugins/speckl/index.js', '/p/.openclaw/plugins/speckl/openclaw.plugin.json', '/p/.openclaw/plugins/speckl/package.json']);
     expect(Object.keys(d.files).some(k => k.endsWith('/openclaw.json'))).toBe(true);
   });
   it('never overwrites a plugin it did not write, nor a foreign manifest', () => {
-    let d = fakeDeps({ '/p/.pi/extensions/speckl.js': 'export default () => {}\n' });
+    let d = fakeDeps({ ...keyFile, '/p/.pi/extensions/speckl.js': 'export default () => {}\n' });
     expect(installHarness('pi', flags, d)).toMatchObject({ code: 1, stderr: '/p/.pi/extensions/speckl.js exists and was not written by Speckl; not touching it\n' });
-    d = fakeDeps({ '/p/.openclaw/plugins/speckl/openclaw.plugin.json': '{"id":"mine"}' });
+    d = fakeDeps({ ...keyFile, '/p/.openclaw/plugins/speckl/openclaw.plugin.json': '{"id":"mine"}' });
     expect(installHarness('openclaw', flags, d)).toMatchObject({ code: 1, stderr: '/p/.openclaw/plugins/speckl/openclaw.plugin.json exists and was not written by Speckl; not touching it\n' });
     // Its own files are replaced.
-    d = fakeDeps();
+    d = fakeDeps({ ...keyFile });
     installHarness('openclaw', flags, d);
     d.files['/p/.openclaw/plugins/speckl/package.json'] = '{}';
     expect(installHarness('openclaw', flags, d).code).toBe(0);

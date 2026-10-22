@@ -90,22 +90,22 @@ the record: it recomputes the paths `install` would write. A Hermes profile or a
   a space stays one argument when the shell expands it. Doctor runs that
   installed command under `sh`, so the quote is part of proving the hook is
   wired.
-- `uninstall` restores backups and deletes files only when every one of these
-  holds: the path is inside the project, it is exactly one of the config paths
-  `install` writes for that harness (recomputed, not taken from the record),
-  the real path stays inside the project with no symlinked parent, and the
-  path itself is not a symlink. The current bytes still have to match the
-  saved copy (a file already restored to its backup is finished, not refused).
-  A file it is unsure about is left untouched and kept in the record. If any
-  file is refused, the record stays so a later `uninstall` can finish the
-  rest; files it already restored or removed are not rolled back. It never
-  deletes the runtime under `.speckl/agent/`. Empty directories it created
-  may remain. When `install` could read a 64-hex state key it stores an
-  HMAC of the record; `uninstall` of that record needs the same `--key` and
-  does nothing if the mac does not match. A record with no mac, and no key
-  file, is not authenticated. `.speckl/harness-install/` is a protected
-  path, so a tool call cannot write the record, the backups or the saved
-  copies. That does not stop a process outside the hook.
+- `uninstall` touches a path only when it is inside the project, it is exactly
+  one of the config paths `install` writes for that harness (recomputed, not
+  taken from the record), the real path stays inside the project with no
+  symlinked parent, and the path itself is not a symlink. A file it is unsure
+  about is left untouched and kept in the record. If any file is refused, the
+  record stays so a later `uninstall` can finish the rest; files it already
+  restored or removed are not rolled back. It never deletes the runtime under
+  `.speckl/agent/`. Empty directories it created may remain, and file modes
+  are not restored.
+  When the record has a mac, pass the same `--key`. A mismatch changes
+  nothing: the backup is not read and no file is deleted. A record with no
+  mac is unauthenticated. Every `modify` restore is refused (`re-run with
+  --key`). A `create` is deleted only when the file's current bytes equal
+  what `install` would write now, recomputed from the generated config
+  (`--state`, and `--hermes-home` for Hermes). The saved copy in the record
+  is not that proof. The full rules are under Limits.
 
 Pi, OpenCode and OpenClaw have no command hook to exec. `doctor` runs the
 `node adapter.mjs <harness> pre ...` line stored in the generated plugin and
@@ -691,18 +691,34 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   Cursor (`permission: "deny"`), and only together with the adapter's
   unmapped-tool text. Claude Code, Codex, Gemini, Copilot, Goose, Hermes,
   Kiro and Windsurf are fail-open on every exit 0.
-- The install record is authenticated only when `install` could read a 64-hex
-  state key and wrote `mac` (HMAC-SHA256 over the compact `{v, harness, files}`
-  JSON, not over the pretty-printed file). Without that key the record is
-  not authenticated: `uninstall` still refuses a path it does not own, and it
-  still refuses a symlink, but a process that can write the record can name
-  any owned path whose bytes match a saved copy it also planted.
-  `.speckl/harness-install/` is protected from tool calls. `uninstall` will
-  not delete a Hermes profile or a `--plugins-dir` outside the project, even
-  though `install` wrote them; those entries stay in the record. An install
-  made before this record existed has nothing for `uninstall` to restore; it
-  refuses rather than deleting files it cannot prove it created. `uninstall`
-  does not restore file modes, and it does not remove directories.
+- The install record is unauthenticated when `install` had no `--key`. That
+  install prints `WARN: the install record is unsigned` and omits `mac`.
+  Passing `--key` when the file is missing, or when it is not 64 hex
+  characters (a trailing newline is allowed), makes `install` refuse before
+  it writes anything. A usable key stores `mac`, an HMAC-SHA256 over the
+  compact `{v, harness, files}` JSON, not over the pretty-printed file.
+  With an unauthenticated record, `uninstall` refuses every `modify` restore
+  and does not read the backup. It deletes a `create` only when the file's
+  current bytes equal what `install` would write now. That text is
+  recomputed from the generated config: pass `--state`, and `--hermes-home`
+  for Hermes. The record's saved copy is not the proof. A missing file, a
+  file whose bytes differ, a `modify`, a run with no `--state`, or a plan
+  `install` itself refuses, is answered with `re-run with --key` and left
+  in place. An unsigned install of a file that already existed (action
+  `modify`, such as a pre-existing `.claude/settings.json`) cannot be put
+  back without a key.
+  A matching mac plus the same `--key` restores a `modify` from its backup
+  and deletes a `create` whose current bytes match the saved copy. The path
+  still has to be one `install` writes, inside the project, not a symlink,
+  and with no symlinked parent. A mac mismatch changes nothing.
+  `.speckl/harness-install/` is protected from tool calls, so a tool call
+  cannot write the record, the backups, or the saved copies. Other local
+  processes can write that directory. `uninstall` will not delete a Hermes
+  profile or a `--plugins-dir` outside the project, even though `install`
+  wrote them; those entries stay in the record. An install made before this
+  record existed has nothing for `uninstall` to restore; it refuses rather
+  than deleting files it cannot prove it created. `uninstall` does not
+  restore file modes, and it does not remove directories.
 
 ## Sources
 

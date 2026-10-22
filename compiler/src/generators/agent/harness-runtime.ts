@@ -1273,6 +1273,15 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   const project = deps.resolvePath(deps.cwd, flags.project);
   const stateAbs = deps.resolvePath(deps.cwd, flags.state);
   const keyAbs = flags.key ? deps.resolvePath(deps.cwd, flags.key) : null;
+  // A --key that is missing or not 64 hex would produce an unsigned record.
+  // Refuse before any write. Trailing whitespace (a final newline) is allowed.
+  let keyText: string | null = null;
+  if (keyAbs) {
+    const kt = deps.readFile(keyAbs);
+    if (kt === null) return { code: 1, stdout: '', stderr: 'refusing to install: --key file ' + keyAbs + ' is missing; the install record would be unsigned\n' };
+    if (!/^[0-9a-fA-F]{64}\s*$/.test(kt)) return { code: 1, stdout: '', stderr: 'refusing to install: --key file ' + keyAbs + ' is not 64 hex characters; the install record would be unsigned\n' };
+    keyText = kt.trim();
+  }
   const rel = (p: string) => deps.relativePath(project, p).replace(/\\/g, '/');
   const inside = (p: string) => !rel(p).startsWith('..') && !/^[A-Za-z]:|^\//.test(rel(p));
   // Codex runs hooks from the session cwd and Gemini sets GEMINI_PROJECT_DIR
@@ -1307,20 +1316,16 @@ export function installHarness(harness: string, flags: Record<string, string>, d
   });
   let warn = '';
   if (keyAbs && inside(keyAbs)) warn = 'WARN: the state key is inside the project; keep it where the agent cannot read it\n';
-  if (!keyAbs) warn = 'WARN: no --key; hooks will use SPECKL_STATE_KEY_FILE from the harness environment\n';
-  const dry = flags['dry-run'] === 'true';
-  // A readable 64-hex key authenticates the install record. A missing or
-  // non-hex key file does not fail install; the record is then unsigned.
-  let keyText: string | null = null;
-  if (keyAbs) {
-    const kt = deps.readFile(keyAbs);
-    if (kt !== null && /^[0-9a-fA-F]{64}\s*$/.test(kt)) keyText = kt.trim();
+  if (!keyAbs) {
+    warn = 'WARN: no --key; hooks will use SPECKL_STATE_KEY_FILE from the harness environment\n';
+    warn += 'WARN: the install record is unsigned; uninstall will not restore modified files from it without a matching mac\n';
   }
+  const dry = flags['dry-run'] === 'true';
   const finish = (message: string, writes: { path: string; text: string; mode?: number }[]): AdapterOutput => {
     const c = commitInstallWrites(project, harness, writes, deps, dry, keyText);
     if (c.error) return { code: 1, stdout: '', stderr: c.error };
-    if (dry) return { code: 0, stdout: c.note, stderr: warn };
-    return { code: 0, stdout: message + c.note, stderr: warn };
+    if (dry) return { code: 0, stdout: c.note, stderr: warn, writes };
+    return { code: 0, stdout: message + c.note, stderr: warn, writes };
   };
   if (hermesHome) {
     const r = installHermes(project, ours, hermesHome, deps);
@@ -1602,7 +1607,9 @@ export function commitInstallWrites(
  * path stays inside the project, and neither it nor a parent is a symlink.
  * Anything else is left in place and kept in the record. A record that
  * carries a mac, or an uninstall that was given a key, is trusted only when
- * the mac matches that key.
+ * the mac matches that key. With no valid mac, a modify is not restored, and
+ * a create is deleted only when its current bytes equal a fresh install plan
+ * (pass --state, and --hermes-home for Hermes). Anything else asks for --key.
  */
 export function uninstallHarness(harness: string, flags: Record<string, string>, deps: AdapterDeps): AdapterOutput {
   if (!flags.project) return { code: 1, stdout: '', stderr: 'usage: adapter.mjs uninstall ' + harness + ' --project <dir> [--key <file>]\n' };
@@ -1631,6 +1638,8 @@ export function uninstallHarness(harness: string, flags: Record<string, string>,
     const want = deps.mac(keyText, installRecordPayload(harness, rec.files));
     if (!want || want !== recMac) return { code: 1, stdout: '', stderr: 'install record mac does not match the state key; nothing was changed\n' };
   }
+  // A matching mac authenticated this record. No mac and no --key did not.
+  const authed = recMac !== '' && keyText !== '';
   if (typeof deps.removeFile !== 'function') return { code: 1, stdout: '', stderr: 'uninstall cannot remove files with this runtime; nothing was changed\n' };
   const remove = deps.removeFile;
   const userScope = harness === 'goose' || harness === 'pi' || harness === 'opencode';
@@ -1677,6 +1686,23 @@ export function uninstallHarness(harness: string, flags: Record<string, string>,
     if (lexicalRel !== realRel) return 'a parent directory is a symlink';
     return '';
   };
+  // One dry-run install, shared by every unsigned create. The plan's texts
+  // are what install would write now. The record's saved copy is not used.
+  // A missing --state, or a plan that refuses, authorizes nothing.
+  let planMap: Record<string, string> | null = null;
+  const expectedText = (target: string): string | undefined => {
+    if (!planMap) {
+      const built: Record<string, string> = {};
+      if (flags.state) {
+        const plan = installHarness(harness, { ...flags, 'dry-run': 'true' }, deps);
+        if (plan.code === 0 && plan.writes) {
+          for (let i = 0; i < plan.writes.length; i++) built[plan.writes[i].path] = plan.writes[i].text;
+        }
+      }
+      planMap = built;
+    }
+    return planMap[target];
+  };
   const notes: string[] = [];
   const problems: string[] = [];
   // Entries that are not fully cleaned stay in the record. Finished ones are
@@ -1694,6 +1720,28 @@ export function uninstallHarness(harness: string, flags: Record<string, string>,
     if (why) {
       problems.push('refusing to touch ' + f.path + ': ' + why);
       keep();
+      continue;
+    }
+    if (!authed) {
+      // No backup is read. A modify can only be restored with a matching mac.
+      if (f.action === 'modify') {
+        problems.push('refusing to restore ' + f.path + ': the install record has no mac; re-run with --key');
+        keep();
+        continue;
+      }
+      const expected = expectedText(f.path);
+      const current = deps.readFile(f.path);
+      if (expected === undefined || current !== expected) {
+        problems.push('refusing to remove ' + f.path + ': the install record has no mac; re-run with --key');
+        keep();
+        continue;
+      }
+      if (!remove(f.path)) { problems.push('could not remove ' + f.path); keep(); continue; }
+      notes.push('removed ' + f.path + ' (created by install; matched the generated config)');
+      if (pathInside(root, f.written, deps)) {
+        if (!remove(f.written)) { problems.push('could not remove saved copy ' + f.written); keep(); continue; }
+        notes.push('removed saved copy ' + f.written);
+      }
       continue;
     }
     if (!pathInside(root, f.written, deps) || (typeof f.backup === 'string' && f.backup && !pathInside(root, f.backup, deps))) {

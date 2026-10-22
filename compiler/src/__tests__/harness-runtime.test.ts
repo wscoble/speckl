@@ -1,6 +1,7 @@
 // Unit tests for the harness adapter runtime (emitted verbatim into adapter.mjs).
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
+import { createHmac } from 'node:crypto';
 import {
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, parseAdapterFlags, shellQuote,
@@ -233,6 +234,11 @@ function fakeDeps(over: Partial<AdapterDeps> = {}, files: Record<string, string>
     agentDir: '/p/.speckl/agent',
     readFile: (p: string) => (p in files ? files[p] : null),
     writeFile: (p: string, t: string) => { files[p] = t; },
+    mac(keyText: string, text: string) {
+      const hex = String(keyText || '').trim();
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+      return createHmac('sha256', Buffer.from(hex, 'hex')).update(text).digest('hex');
+    },
     ...over,
   };
   return d;
@@ -355,7 +361,10 @@ describe('runAdapter', () => {
 
 describe('install', () => {
   it('writes project-relative Claude Code wiring and merges existing settings', () => {
-    const files = { '/p/.claude/settings.json': JSON.stringify({ permissions: { allow: ['Bash(npm test)'] } }) };
+    const files = {
+      '/p/.claude/settings.json': JSON.stringify({ permissions: { allow: ['Bash(npm test)'] } }),
+      '/home/u/k.key': 'ab'.repeat(32) + '\n',
+    };
     const d = fakeDeps({}, files);
     const out = runAdapter(['install', 'claude-code', '--project', '.', '--state', '.speckl/state.json', '--key', '/home/u/k.key'], {}, '', config, d);
     expect(out.code).toBe(0);
@@ -376,7 +385,7 @@ describe('install', () => {
     expect(installHarness('claude-code', { project: '/p', state: '/p/.speckl/state.json' }, d).stderr).toContain('not valid JSON');
     const d2 = fakeDeps({}, { '/p/.claude/settings.json': '[]' });
     expect(installHarness('claude-code', { project: '/p', state: '/p/s.json' }, d2).stderr).toContain('not a JSON object');
-    const d3 = fakeDeps({}, { '/p/.claude/settings.json': '  ' });
+    const d3 = fakeDeps({}, { '/p/.claude/settings.json': '  ', '/p/k.key': 'ab'.repeat(32) + '\n' });
     expect(installHarness('claude-code', { project: '/p', state: '/p/s.json', key: '/p/k.key' }, d3).stderr).toContain('inside the project');
     expect(installHarness('claude-code', { project: '/p' }, d3).stderr).toContain('usage');
     expect(runAdapter(['install', 'gemini'], {}, '', config, d3).stderr).toContain('undeclared harness');
@@ -491,7 +500,7 @@ describe('Codex CLI and Gemini CLI', () => {
     expect(g.hooks.BeforeTool[0]).toEqual({ matcher: '.*', hooks: [{ type: 'command', command: 'node "${GEMINI_PROJECT_DIR}/a/adapter.mjs" gemini pre --state "${GEMINI_PROJECT_DIR}/s.json" || exit 2', timeout: 30000, name: 'speckl-pre' }] });
     expect(g.hooks.AfterAgent[0].hooks[0].command).not.toContain('exit 2');
     for (const h of ['codex', 'gemini']) {
-      const d = fakeDeps();
+      const d = fakeDeps({}, { '/k/s.key': 'ab'.repeat(32) + '\n' });
       expect(installHarness(h, { project: '.', state: '.speckl/state.json', key: '/k/s.key' }, d).code).toBe(0);
       const file = h === 'codex' ? '/p/.codex/hooks.json' : '/p/.gemini/settings.json';
       const pre = JSON.parse(d.files[file]).hooks[h === 'codex' ? 'PreToolUse' : 'BeforeTool'][0].hooks[0].command;

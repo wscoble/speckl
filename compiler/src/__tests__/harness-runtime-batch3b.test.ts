@@ -2,6 +2,7 @@
 // runtime (emitted verbatim into adapter.mjs).
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
+import { createHmac } from 'node:crypto';
 import {
   formatPre, formatPost, postSucceeded, harnessEventName, normalizePayload, normalizeToolInput,
   harnessCallId, harnessConfigFile, harnessProtectedDirs, buildHarnessHooks, clineScripts,
@@ -27,6 +28,11 @@ function fakeDeps(files: Record<string, string> = {}, hook?: (cmd: string, msg: 
     agentDir: '/p/.speckl/agent',
     readFile: (p: string) => (p in files ? files[p] : null),
     writeFile: (p: string, t: string, mode?: number) => { files[p] = t; if (mode) modes[p] = mode; },
+    mac(keyText, text) {
+      const hex = String(keyText || '').trim();
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+      return createHmac('sha256', Buffer.from(hex, 'hex')).update(text).digest('hex');
+    },
   };
   return d;
 }
@@ -110,7 +116,7 @@ describe('cline', () => {
   });
 
   it('writes five executable hook scripts and refuses to overwrite hooks it did not write', () => {
-    const d = fakeDeps();
+    const d = fakeDeps({ '/k/key': 'cd'.repeat(32) + '\n' });
     const r = installHarness('cline', { project: '.', state: '.speckl/state.json', key: '/k/key' }, d);
     expect(r.code, r.stderr).toBe(0);
     const names = ['PreToolUse', 'PostToolUse', 'TaskComplete', 'TaskCancel', 'TaskError'];
@@ -119,8 +125,8 @@ describe('cline', () => {
       expect(d.modes['/p/.clinerules/hooks/' + n]).toBe(0o755);
     }
     expect(d.files['/p/.clinerules/hooks/PreToolUse']).toContain('node /p/.speckl/agent/adapter.mjs cline pre --state /p/.speckl/state.json --key /k/key --project /p');
-    // Rerun replaces our own files.
-    expect(installHarness('cline', { project: '.', state: '.speckl/state.json' }, d).code).toBe(0);
+    // Rerun replaces our own files. The record is signed, so the same key is required.
+    expect(installHarness('cline', { project: '.', state: '.speckl/state.json', key: '/k/key' }, d).code).toBe(0);
     for (const other of ['PreToolUse', 'TaskError.sh', 'PostToolUse.py', 'TaskCancel.ps1']) {
       const d2 = fakeDeps({ ['/p/.clinerules/hooks/' + other]: 'echo mine\n' });
       const r2 = installHarness('cline', { project: '.', state: '.speckl/state.json' }, d2);
@@ -210,7 +216,7 @@ describe('kiro', () => {
   });
   it('install writes a v1 hook file with a blocking pre, keeps other hooks and replaces its own', () => {
     const other = { name: 'lint', trigger: 'PostFileSave', action: { type: 'command', command: 'npm run lint' } };
-    const d = fakeDeps({ '/p/.kiro/hooks/speckl.json': JSON.stringify({ version: 'v1', hooks: [other] }) });
+    const d = fakeDeps({ '/k': 'cd'.repeat(32) + '\n', '/p/.kiro/hooks/speckl.json': JSON.stringify({ version: 'v1', hooks: [other] }) });
     expect(installHarness('kiro', { project: '.', state: '.speckl/state.json', key: '/k' }, d).code).toBe(0);
     expect(installHarness('kiro', { project: '.', state: '.speckl/state.json', key: '/k' }, d).code).toBe(0);
     const doc = JSON.parse(d.files['/p/.kiro/hooks/speckl.json']);
@@ -305,7 +311,7 @@ describe('windsurf', () => {
   });
   it('install merges into .devin/hooks.json and .windsurf/hooks.json, keeping other hooks', () => {
     const mine = { command: 'python3 log.py', show_output: true };
-    const d = fakeDeps({ '/p/.devin/hooks.json': JSON.stringify({ hooks: { pre_run_command: [mine] } }) });
+    const d = fakeDeps({ '/k': 'cd'.repeat(32) + '\n', '/p/.devin/hooks.json': JSON.stringify({ hooks: { pre_run_command: [mine] } }) });
     const r = installHarness('windsurf', { project: '.', state: '.speckl/state.json', key: '/k' }, d);
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toContain('/p/.devin/hooks.json and /p/.windsurf/hooks.json');

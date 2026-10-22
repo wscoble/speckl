@@ -32,8 +32,9 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *       removes files this install created and restores backups, and only for a
  *       path install itself writes inside the project. A symlink, a symlinked
  *       parent, or any other path is left in place. When the record has a mac,
- *       --key must be the same state key. It will not delete or overwrite a
- *       file whose contents no longer match what install wrote.
+ *       --key must be the same state key. Without a valid mac, a modified file
+ *       is not restored, and a created file is removed only when its bytes
+ *       still equal a fresh install (pass --state, and --hermes-home for Hermes).
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
