@@ -233,6 +233,9 @@ describe('tampering is denied (exit 2)', () => {
     expect(mk([{ kind: 'pre', call_id: 'a', tool: 'open_pr', action: 'RunTests', input: {} }, { kind: 'post', call_id: 'a', ok: true }])).toContain('unknown tool in log');
     expect(mk([{ kind: 'signal', signal: 'deploy', outcome: 'approve' }])).toContain('unknown signal outcome');
     expect(mk([{ kind: 'bogus' }])).toContain('unknown log entry');
+    expect(mk([{ kind: 'signers' }])).toContain('signers entry missing set');
+    expect(mk([{ kind: 'signers', signers: [{ name: 1, key: 'ab'.repeat(32) }] }])).toContain('signers entry is malformed');
+    expect(mk([{ kind: 'signers', signers: [{ name: 'a', key: 'ab'.repeat(32) }] }])).toContain('pinned signers do not match the log');
   });
 
   it('signal.mjs refuses a tampered state too', () => {

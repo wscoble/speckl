@@ -7,7 +7,7 @@ Compiles an `agent { }` block into:
   AGENTS.md          readable rails
   tools.json         tool names + JSON Schema + x-speckl
   hook.mjs           generic pre/post gate
-  signal.mjs         init / apply / timeout / clear-pending
+  signal.mjs         init / apply / timeout / clear-pending / rotate-signers
   state-integrity.mjs  hash-chained log + HMAC check shared by hook and signal
   verifiers/         cli + file-drop
   <Speck>.ts|.mjs    machine with can()/serialize() + __signal_* actions
