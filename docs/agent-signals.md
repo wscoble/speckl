@@ -259,21 +259,38 @@ Speckl denied (not allowed in this stage): can() refused: Guard failed: stage ==
 (HITL) refuses every tool. `mode near` (HNTL) refuses act tools and still
 allows an observe tool the spec permits. The sentence names the signal, its
 outcomes and claims, and the command a human runs. The agent must not run
-that command. Placeholders `<drop.json>` and `<pubkey>` are the human's
-files; the hook does not know them, and it does not print `--key`.
+that command. It does not print `--key` or the pinned public keys.
+
+A state created with `init --signer` names those signers. One pin uses
+`--signer <name>` and does not pass `--pubkey` (a pubkey that is not that
+pin is refused). Several pins omit both flags, so a signature from any of
+them verifies, and the sentence lists the names. An empty pin set has no
+working file-drop command; the sentence says to re-init with `--signer`.
+`<drop.json>` is the human's file.
 
 ```
-Speckl denied (waiting on a sign-off): HNTL: act tool refused while awaiting signal review. Next: Act tools stay refused until this sign-off is recorded; an observe tool may still run when the spec allows it. Sign-off "review" (outcomes: approve, reject; claims: reviewer: String). A human runs: node '/path/to/agent/signal.mjs' apply --state '/path/to/state.json' --verifier file-drop --file <drop.json> --pubkey <pubkey> . The signed drop is {"signal":"review","outcome":"<approve or reject>","claims":{"reviewer":"<String>"},"run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}. The agent must not run that command or read the state key.
+Speckl denied (waiting on a sign-off): HNTL: act tool refused while awaiting signal review. Next: Act tools stay refused until this sign-off is recorded; an observe tool may still run when the spec allows it. Sign-off "review" (outcomes: approve, reject; claims: reviewer: String). Pinned signer "carol". The drop must be signed by that key. Do not pass --pubkey. A human runs: node '/path/to/agent/signal.mjs' apply --state '/path/to/state.json' --verifier file-drop --file <drop.json> --signer 'carol' . The signed drop is {"signal":"review","outcome":"<approve or reject>","claims":{"reviewer":"<String>"},"run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}. The agent must not run that command or read the state key.
+```
+
+With two pins the command stops at `--file <drop.json>` and the sentence says
+`Pinned signers "carol", "dave"`.
+
+A legacy state (no `signers` field) keeps the old command, with `<pubkey>`
+standing for the human's public-key file:
+
+```
+node '/path/to/agent/signal.mjs' apply --state '/path/to/state.json' --verifier file-drop --file <drop.json> --pubkey <pubkey>
 ```
 
 The same command with `mode in` starts from `HITL: no tools while awaiting signal review` and says that no tool call runs until the sign-off is recorded.
 
 **Precondition failed.** A `precondition:` (or a `require` that is not the
 stage) did not hold, a required argument is missing, or another call is
-still in flight. Fix the input, or have a human clear the stuck call:
+still in flight. Fix the input, or have a human clear the stuck call. The
+clear-pending command follows the same pin rule. One pinned signer:
 
 ```
-node '/path/to/agent/signal.mjs' clear-pending --state '/path/to/state.json' --verifier file-drop --file <drop.json> --pubkey <pubkey>
+node '/path/to/agent/signal.mjs' clear-pending --state '/path/to/state.json' --verifier file-drop --file <drop.json> --signer 'carol'
 ```
 
 ```json

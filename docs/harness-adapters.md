@@ -420,7 +420,10 @@ A denial from `hook.mjs` starts with one of:
   action in the current stage. Do not retry it here.
 - `Speckl denied (waiting on a sign-off)` — a human records the named signal.
   The sentence includes the `signal.mjs apply` command and the signed-drop
-  shape. See [agent-signals.md](agent-signals.md).
+  shape. A pinned state names those signers (`--signer <name>` when there is
+  one, and no `--pubkey` when several may sign). A legacy state, which has
+  no pin field, still prints `--pubkey <pubkey>`. The public keys themselves
+  are not printed. See [agent-signals.md](agent-signals.md).
 - `Speckl denied (precondition failed)` — the call's inputs, or a call already
   in flight, do not satisfy the spec.
 - `Speckl denied (internal error (fail closed))` — the hook could not trust

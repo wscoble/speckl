@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  shellQuote, redactSecrets, applyCommand, classifyCanRefusal, stageNameOf,
+  shellQuote, redactSecrets, pinnedSignerNames, signerNote, applyCommand, classifyCanRefusal, stageNameOf,
   stageNext, preconditionNext, signoffNext, pendingNext, internalNext,
   renderDenyReason, fallbackDenyText, safeDenyText, explainAdapterDeny,
   DENY_REASON_FUNCTIONS,
@@ -20,6 +20,48 @@ describe('deny reason text', () => {
     expect(cmd).toBe("node '/opt/agent/signal.mjs' apply --state '/var/state.json' --verifier file-drop --file <drop.json> --pubkey <pubkey>");
     expect(cmd).not.toContain('--key');
     expect(applyCommand('/s.mjs', '/st.json', 'clear-pending')).toContain('clear-pending');
+    expect(pinnedSignerNames(undefined)).toBeNull();
+    expect(signerNote(undefined)).toBe('');
+  });
+
+  it('names pinned signers and never prints their keys', () => {
+    const hex = 'cd'.repeat(32);
+    const one = [{ name: 'alice', key: hex }];
+    const two = [{ name: 'alice', key: hex }, { name: "o'brien", key: 'ef'.repeat(32) }];
+    expect(pinnedSignerNames(one)).toEqual(['alice']);
+    expect(pinnedSignerNames(two)).toEqual(['alice', "o'brien"]);
+    const single = applyCommand('/s.mjs', '/st.json', 'apply', one);
+    expect(single).toBe("node '/s.mjs' apply --state '/st.json' --verifier file-drop --file <drop.json> --signer 'alice'");
+    expect(single).not.toContain('--pubkey');
+    expect(single).not.toContain(hex);
+    expect(signerNote(one)).toContain('Pinned signer "alice"');
+    expect(signerNote(one)).not.toContain(hex);
+    const many = applyCommand('/s.mjs', '/st.json', 'clear-pending', two);
+    expect(many).toBe("node '/s.mjs' clear-pending --state '/st.json' --verifier file-drop --file <drop.json>");
+    expect(many).not.toContain('--signer');
+    expect(many).not.toContain('--pubkey');
+    expect(signerNote(two)).toContain('"alice", "o\'brien"');
+    expect(signerNote(two)).not.toContain(hex);
+    expect(applyCommand('/s.mjs', '/st.json', 'apply', [])).toBe('');
+    expect(signerNote([])).toContain('No sign-off signers are pinned');
+    expect(signerNote([])).toContain('init --signer');
+    expect(() => pinnedSignerNames(null)).toThrow(/not a list/);
+    expect(() => pinnedSignerNames('alice')).toThrow(/not a list/);
+    expect(() => pinnedSignerNames([null])).toThrow(/not an object/);
+    expect(() => pinnedSignerNames(['alice'])).toThrow(/not an object/);
+    expect(() => pinnedSignerNames([{ key: hex }])).toThrow(/no name/);
+    expect(() => pinnedSignerNames([{ name: '' }])).toThrow(/no name/);
+    const noted = signoffNext('near', 'review', ['approve'], [], single, 'run', signerNote(one));
+    expect(noted).toContain(single);
+    expect(noted).toContain('Do not pass --pubkey');
+    expect(noted).not.toContain(hex);
+    const none = signoffNext('near', 'review', ['approve'], [], '', 'run', signerNote([]));
+    expect(none).not.toContain('A human runs:');
+    expect(none).toContain('must not create a state file');
+    const cleared = pendingNext('c1', '10m', '', 'run', signerNote([]));
+    expect(cleared).toContain('cannot clear it with file-drop');
+    expect(cleared).toContain('Do not pass --pubkey');
+    expect(cleared).not.toContain('--pubkey <pubkey>');
   });
 
   it('redacts key paths, PEM blocks and 64-hex secrets, and caps length', () => {
@@ -89,7 +131,7 @@ describe('deny reason text', () => {
 
   it('gives the clear-pending command and caps a huge call id', () => {
     const command = applyCommand('/a/signal.mjs', '/a/state.json', 'clear-pending');
-    const text = pendingNext('c1', '10m', command, 'run1');
+    const text = pendingNext('c1', '10m', command, 'run1', signerNote(undefined));
     expect(text).toContain('clear-pending');
     expect(text).toContain(command);
     expect(text).toContain('"call_id":"c1"');

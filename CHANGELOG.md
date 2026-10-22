@@ -89,7 +89,10 @@ First npm release. The package was renamed from the unpublished
   was refused — not allowed in this stage, waiting on a sign-off, a failed
   precondition, or an internal error (fail closed) — and the next step. A
   sign-off names the signal and the `signal.mjs apply` command a human runs
-  (file-drop, with the drop shape and the run id). The text never includes
+  (file-drop, with the drop shape and the run id). On a state created with
+  `init --signer`, that command names the pinned signer and does not tell
+  anyone to pass `--pubkey`; a legacy state (no pin field) still prints
+  `--pubkey <pubkey>`. The text never includes
   the state key, the key path, or the state contents, and a throw while
   building it still denies. Each harness keeps its own output shape. Adapter
   denials (unmapped tool, shell metacharacters, a protected path, a bad

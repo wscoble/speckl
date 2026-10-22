@@ -416,7 +416,8 @@ function buildAgentsMd(
   lines.push('');
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
   lines.push('- A deny reason names why, then the next step: not allowed in this stage; waiting on a');
-  lines.push('  sign-off (the signal name and the `signal.mjs apply` command a human runs); a failed');
+  lines.push('  sign-off (the signal name and the `signal.mjs apply` command a human runs — `--signer`');
+  lines.push('  for a pinned state, `--pubkey <pubkey>` only when the state has no pins); a failed');
   lines.push('  precondition; or an internal error (fail closed). It does not include the state key,');
   lines.push('  the key path, or the state contents. If the reason cannot be built, the call is still denied.');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
@@ -473,8 +474,10 @@ echo '{"tool":"run_tests","input":{},"call_id":"1"}' \\
 # exit 0 → allow; exit 2 → deny (JSON reason on stdout + stderr); exit 1 → error/deny
 # The reason says which of these happened, then what to do: not allowed in this
 # stage; waiting on a sign-off (the signal and the exact signal.mjs apply
-# command); a failed precondition; or an internal error (fail closed).
-# It does not include the state key or the state contents.
+# command). A pinned state names the signer and does not offer --pubkey.
+# A state with no pins still says --pubkey <pubkey>. A failed precondition
+# or an internal error (fail closed) has its own next step.
+# It does not include the state key, signer key material, or the state contents.
 # See docs/agent-signals.md.
 
 # After the tool finishes:

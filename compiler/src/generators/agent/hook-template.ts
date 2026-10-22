@@ -257,7 +257,9 @@ async function main() {
           finishDeny(2, () => renderDenyReason('precondition',
             'another tool call is already pending (' + state.pending.call_id + '); it clears as failed after '
               + dur + ' or via signal.mjs clear-pending',
-            pendingNext(state.pending.call_id, dur, applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'clear-pending'), runId),
+            pendingNext(state.pending.call_id, dur,
+              applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'clear-pending', state.signers),
+              runId, signerNote(state.signers)),
             secretPaths()));
         }
       }
@@ -270,7 +272,8 @@ async function main() {
           : 'HNTL: act tool refused while awaiting signal ' + waiting.signal;
         finishDeny(2, () => renderDenyReason('signoff', detail, signoffNext(
           waiting.mode, waiting.signal, waiting.outcomes, waiting.claims,
-          applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'apply'), runId,
+          applyCommand(path.join(__dirname, 'signal.mjs'), args.state, 'apply', state.signers),
+          runId, signerNote(state.signers),
         ), secretPaths()));
       }
 

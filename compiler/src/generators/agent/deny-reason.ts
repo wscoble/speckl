@@ -33,10 +33,53 @@ export function redactSecrets(text: string, secrets: unknown): string {
   return s;
 }
 
-/** `node signal.mjs apply|clear-pending ...` with the paths the hook actually has. */
-export function applyCommand(signalProgram: string, stateFile: string, sub: string): string {
-  return 'node ' + shellQuote(signalProgram) + ' ' + sub + ' --state ' + shellQuote(stateFile)
-    + ' --verifier file-drop --file <drop.json> --pubkey <pubkey>';
+/**
+ * Names of the pinned file-drop signers, or null when the state has no pin
+ * field (a legacy state, which still trusts a per-call --pubkey).
+ * Key bytes on each entry are ignored. A pin that is not a list of named
+ * objects throws; the caller still denies.
+ */
+export function pinnedSignerNames(signers: unknown): string[] | null {
+  if (signers === undefined) return null;
+  if (!Array.isArray(signers)) throw new Error('pinned signer set is not a list');
+  const names: string[] = [];
+  for (const entry of signers) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('pinned signer is not an object');
+    const name = (entry as Record<string, unknown>).name;
+    if (typeof name !== 'string' || name.length === 0) throw new Error('pinned signer has no name');
+    names.push(name);
+  }
+  return names;
+}
+
+/** Sentence naming who may sign. Empty for a legacy state. */
+export function signerNote(signers: unknown): string {
+  const pins = pinnedSignerNames(signers);
+  if (pins === null) return '';
+  if (pins.length === 0) {
+    return 'No sign-off signers are pinned for this run, so file-drop cannot accept a signature. A human creates a new state with signal.mjs init --signer name=pubkey. Do not pass --pubkey. ';
+  }
+  const listed = pins.map(n => JSON.stringify(n)).join(', ');
+  if (pins.length === 1) {
+    return 'Pinned signer ' + listed + '. The drop must be signed by that key. Do not pass --pubkey. ';
+  }
+  return 'Pinned signers ' + listed + '. The drop must be signed by one of them. Omit --pubkey, or pass --signer and exactly one of those names. ';
+}
+
+/**
+ * `node signal.mjs apply|clear-pending ...` with the paths the hook has.
+ * Legacy states (no signer field) keep `--pubkey <pubkey>`. A single pin
+ * names that signer. Several pins omit `--pubkey` so any of them verifies.
+ * An empty pin set has no working file-drop command.
+ */
+export function applyCommand(signalProgram: string, stateFile: string, sub: string, signers?: unknown): string {
+  const pins = pinnedSignerNames(signers);
+  if (pins !== null && pins.length === 0) return '';
+  let cmd = 'node ' + shellQuote(signalProgram) + ' ' + sub + ' --state ' + shellQuote(stateFile)
+    + ' --verifier file-drop --file <drop.json>';
+  if (pins === null) cmd += ' --pubkey <pubkey>';
+  else if (pins.length === 1) cmd += ' --signer ' + shellQuote(pins[0]);
+  return cmd;
 }
 
 /**
@@ -83,7 +126,7 @@ export function preconditionNext(): string {
  * Next step when the machine is waiting on a signal. Throws if the await
  * record is not the shape the compiler emits; the caller still denies.
  */
-export function signoffNext(mode: string, signalName: string, outcomes: unknown, claims: unknown, command: string, runId: string): string {
+export function signoffNext(mode: string, signalName: string, outcomes: unknown, claims: unknown, command: string, runId: string, who?: unknown): string {
   if (!Array.isArray(outcomes)) throw new Error('await outcomes are not a list');
   const names: string[] = [];
   for (const o of outcomes) names.push(String(o));
@@ -109,16 +152,19 @@ export function signoffNext(mode: string, signalName: string, outcomes: unknown,
   drop.run = runId || '<run id printed by signal.mjs init>';
   drop.expires = '<ISO-8601>';
   drop.nonce = '<unique>';
+  const note = typeof who === 'string' ? who : '';
+  const runLine = command ? 'A human runs: ' + command + ' . ' : '';
+  const tail = command
+    ? 'The agent must not run that command or read the state key.'
+    : 'The agent must not create a state file or read the state key.';
   return lead
     + 'Sign-off "' + String(signalName) + '" (outcomes: ' + (names.join(', ') || 'see the spec')
     + (claimBits.length ? '; claims: ' + claimBits.join(', ') : '')
-    + '). A human runs: ' + command
-    + ' . The signed drop is ' + JSON.stringify(drop)
-    + '. The agent must not run that command or read the state key.';
+    + '). ' + note + runLine + 'The signed drop is ' + JSON.stringify(drop) + '. ' + tail;
 }
 
 /** Next step when another call is still in flight. The call id is capped. */
-export function pendingNext(callId: unknown, durationText: string, command: string, runId: string): string {
+export function pendingNext(callId: unknown, durationText: string, command: string, runId: string, who?: unknown): string {
   const raw = String(callId);
   const id = raw.length > 200 ? raw.slice(0, 200) : raw;
   const drop = JSON.stringify({
@@ -128,11 +174,15 @@ export function pendingNext(callId: unknown, durationText: string, command: stri
     expires: '<ISO-8601>',
     nonce: '<unique>',
   });
+  const note = typeof who === 'string' ? who : '';
+  const how = command
+    ? 'A human can clear it sooner by recording signal "clear-pending" for call ' + JSON.stringify(id) + ' with: ' + command + ' . '
+    : 'A human cannot clear it with file-drop until a new state is created with pinned signers. ';
+  const tail = command
+    ? 'The agent must not run that command or read the state key.'
+    : 'The agent must not create a state file or read the state key.';
   return 'wait for that call to finish (it clears as failed after ' + durationText
-    + '). A human can clear it sooner by recording signal "clear-pending" for call ' + JSON.stringify(id)
-    + ' with: ' + command
-    + ' . The signed drop is ' + drop
-    + '. The agent must not run that command or read the state key.';
+    + '). ' + note + how + 'The signed drop is ' + drop + '. ' + tail;
 }
 
 export function internalNext(code: string): string {
@@ -215,7 +265,7 @@ export function explainAdapterDeny(reason: unknown, secrets: unknown): string {
 
 /** Emitted into hook.mjs, in order. explainAdapterDeny stays in the adapter. */
 export const DENY_REASON_FUNCTIONS = [
-  shellQuote, redactSecrets, applyCommand, classifyCanRefusal, stageNameOf,
+  shellQuote, redactSecrets, pinnedSignerNames, signerNote, applyCommand, classifyCanRefusal, stageNameOf,
   stageNext, preconditionNext, signoffNext, pendingNext, internalNext,
   renderDenyReason, fallbackDenyText, safeDenyText,
 ];
