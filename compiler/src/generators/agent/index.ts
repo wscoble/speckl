@@ -417,6 +417,9 @@ function buildAgentsMd(
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
   lines.push('- Spec-hash mismatch denies.');
+  lines.push('- Every allow and deny is appended to `<state>.decisions/` (hash-chained, HMAC\'d');
+  lines.push('  with the state key). A denial does not modify the state file. If the decision');
+  lines.push('  record cannot be written, the call is denied. `signal.mjs verify` checks it.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
   lines.push('');
@@ -429,6 +432,10 @@ function buildAgentsMd(
   lines.push('`SPECKL_STATE_KEY_FILE`) must be readable by the hook and signal tooling and');
   lines.push('**not by the agent**. Any mismatch, a missing signature or a missing key denies');
   lines.push('(exit 2). Editing `state.json` by hand (e.g. setting the stage) is refused.');
+  lines.push('');
+  lines.push('Allows and denies are recorded again, separately, in `<state>.decisions/`.');
+  lines.push('That log is not replayed into the machine, so a denial cannot advance the spec');
+  lines.push('or rewrite `state.json`. `node signal.mjs verify --state <file>` checks both chains.');
   lines.push('');
   lines.push('## Who may record a signal');
   lines.push('');
@@ -479,6 +486,9 @@ node signal.mjs init --state ./state.json --dev
 
 # Pass the same key to every hook/signal call (or set SPECKL_STATE_KEY_FILE):
 export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
+
+# State chain plus the decision record (every allow and deny):
+node signal.mjs verify --state ./state.json
 \`\`\`
 
 ## Signals (HITL / HNTL)

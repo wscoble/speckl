@@ -7,7 +7,7 @@ Compiles an `agent { }` block into:
   AGENTS.md          readable rails
   tools.json         tool names + JSON Schema + x-speckl
   hook.mjs           generic pre/post gate
-  signal.mjs         init / apply / timeout / clear-pending
+  signal.mjs         init / apply / timeout / clear-pending / verify
   state-integrity.mjs  hash-chained log + HMAC check shared by hook and signal
   verifiers/         cli + file-drop
   <Speck>.ts|.mjs    machine with can()/serialize() + __signal_* actions
@@ -89,6 +89,9 @@ export SPECKL_STATE_KEY_FILE="$PWD/state.key"
 # run signal.mjs (an agent with a shell, too) can approve. Production omits
 # --dev and records signals with a signed verifier (see agent-signals.md).
 node signal.mjs init --state ./state.json --dev
+
+# Check the state chain and the decision record (empty until the first call):
+node signal.mjs verify --state ./state.json
 
 # Each tool call: pre before it runs (exit 0 allow, 2 deny), post after.
 echo '{"tool":"run_tests","input":{},"call_id":"1"}' | node hook.mjs pre --state ./state.json

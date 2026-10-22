@@ -10,6 +10,7 @@ export function emitSignalMjs(speckName: string): string {
  *   node signal.mjs apply --state <file> --verifier file-drop|cli [verifier args...]
  *   node signal.mjs timeout --state <file>   # fire timeout → !-marked reject only
  *   node signal.mjs clear-pending --state <file> --verifier file-drop|cli [args...]
+ *   node signal.mjs verify --state <file>    # state chain and the full decision record
  *
  * This is the human channel; the agent must not be able to run it. The cli
  * verifier (and unsigned drops) trust whoever runs them, so they are refused
@@ -19,7 +20,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyState, append, sign, keyPathFrom, ensureKey, keyIdOf, genesis } from './state-integrity.mjs';
+import { verifyState, append, sign, keyPathFrom, ensureKey, keyIdOf, genesis, verifyDecisions } from './state-integrity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.json'), 'utf-8'));
@@ -111,7 +112,11 @@ async function loadVerified(args) {
   if (!v.ok) fail('state integrity: ' + v.reason, 2);
   for (const w of v.warnings) process.stderr.write('WARN: ' + w + '\\n');
   stateKey = v.key;
-  return { state, machine };
+  // Full walk, including a long decision log. A broken record blocks the
+  // human channel too, so a signal cannot land while denies are unverifiable.
+  const d = verifyDecisions(args.state, stateKey, state, { full: true });
+  if (!d.ok) fail('decision record: ' + d.reason, 2);
+  return { state, machine, decisions: d };
 }
 
 async function cmdInit(stateFile, dev, keyArg) {
@@ -324,6 +329,22 @@ async function cmdClearPending(args) {
   }
 }
 
+async function cmdVerify(args) {
+  if (!args.state) fail('missing --state');
+  await acquireLock(args.state);
+  try {
+    const { decisions } = await loadVerified(args);
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      decisions: decisions.count,
+      uncommitted: decisions.uncommitted,
+      head: decisions.head,
+    }) + '\\n');
+  } finally {
+    releaseLock();
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   try {
@@ -333,7 +354,8 @@ async function main() {
     } else if (args.cmd === 'apply') await cmdApply(args);
     else if (args.cmd === 'timeout') await cmdTimeout(args);
     else if (args.cmd === 'clear-pending') await cmdClearPending(args);
-    else fail('usage: signal.mjs init|apply|timeout|clear-pending --state <file> ...');
+    else if (args.cmd === 'verify') await cmdVerify(args);
+    else fail('usage: signal.mjs init|apply|timeout|clear-pending|verify --state <file> ...');
   } catch (e) {
     releaseLock();
     const msg = e instanceof Error ? e.message : String(e);

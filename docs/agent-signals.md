@@ -104,6 +104,65 @@ can rebuild). Never use it where the agent can edit the state.
 **Old state files** (no `log`/run id) are refused with a message to
 re-create them with `signal.mjs init`.
 
+## Decision record
+
+`state.log` records what the spec machine committed: allowed `pre`/`post`
+pairs, expirations, signals, timeouts and clears. A denied tool call used to
+exit before any of that was written, so a refusal left no trace.
+
+Every hook verdict after the state verifies is now appended to
+`<state>.decisions/log.jsonl`, next to a keyed `head.json`:
+
+- The line carries `seq`, `prev`, `ts`, `phase` (`pre` or `post`), `tool`,
+  `call_id`, the mapped `action` (or null), `verdict` (`allow` or `deny`),
+  the deny `reason` (allows store null; reasons longer than 500 characters
+  are clipped), and `input_sha256`. The raw tool input is not stored.
+- `hash` is SHA-256 over the canonical line. `prev` links it to the previous
+  hash, or to a genesis hash over the run id, spec hash and key id.
+- `mac` is HMAC-SHA256 of that hash with the same key as `state.json`
+  (`--key` / `SPECKL_STATE_KEY_FILE`). Unsigned `--dev` states (no key) keep
+  the chain only, same as `state.json`. `head.json` is HMAC'd the same way,
+  so truncating the log or moving the head without the key is detected.
+
+The decision record is **not** replayed into the machine and a denial never
+calls the state `append` / `save` path. A flood of denials therefore cannot
+advance the spec, rewrite `state.json`, or make the next allow replay every
+refusal. The hook holds the existing `state.json.lock` across the decision
+append and any state update, so the two files cannot interleave.
+
+If the record is missing its head, the chain or MAC does not check, or the
+append fails, the hook **denies** and does not apply an allow. Calls that
+fail before the state verifies (usage, stdin, lock timeout, a missing or
+bad key, a broken state signature) are still denied, and are not appended:
+there is no verified chain to extend. A spec-hash mismatch is reported as
+such. It is appended only when the state chain still verifies (genesis
+covers the spec hash, so a hand-edited hash usually fails the chain first
+and is not appended).
+
+While `log.jsonl` is at most 256 KiB, every hook call rechecks the whole
+decision chain. Past that, each call rechecks the keyed head and the tail
+(the last 64 KiB), so a flood cannot make every tool call re-read the entire
+history. `signal.mjs verify --state <file>` always walks every line, and so
+do `apply`, `timeout` and `clear-pending` before they change state. A
+same-length edit to an older line in a log that has grown past 256 KiB is
+caught by `verify` (and by those commands), not by the next hook call's tail
+check. Deleting or editing the tail is caught on the next call either way.
+
+```
+node signal.mjs verify --state ./state.json
+# {"ok":true,"decisions":4,"uncommitted":0,"head":"<sha256>"}
+```
+
+`uncommitted` is greater than zero only when a line was appended and the
+process died before replacing `head.json`. The lines still chain; the next
+hook call moves the head forward. Anything else (a bad hash, a bad MAC, a
+truncated log, a head for a different run) exits 2.
+
+The HMAC is not a signature a third party can check, and it is not an
+external timestamp. Anyone who can read the key can rebuild the record.
+The decision line is the gate's verdict, not proof the tool ran: `state.log`
+is still what committed.
+
 ## Stuck tool calls
 
 A `pre` without a `post` (the tool crashed) blocks every later call. It

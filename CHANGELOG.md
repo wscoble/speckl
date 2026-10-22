@@ -12,6 +12,12 @@ First npm release. The package was renamed from the unpublished
 
 ### Added
 
+- **Decision record.** Generated hooks append every allow and every deny
+  (with the deny reason) to `<state>.decisions/log.jsonl`, hash-chained and
+  HMAC-SHA256'd with the state key. Denials are not written into `state.json`,
+  so they cannot advance the spec machine. If the record cannot be written,
+  the call is denied. `signal.mjs verify` checks the state chain and the
+  whole decision chain. See `docs/agent-signals.md`.
 - **Compile tests** (#20, #21). `src/__tests__/compiles-*.test.ts` checks every
   example's generated code with a real toolchain:
   - `tsc --strict` for TypeScript and the agent machines, plus `node --check` for the hook scripts;
