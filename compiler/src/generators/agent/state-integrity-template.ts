@@ -3,7 +3,7 @@
 // Two layers, both checked by hook.mjs and signal.mjs before they act:
 //  1. Hash-chained event log. Every state change appends an entry whose
 //     hash covers the previous hash; the genesis hash covers run id, spec
-//     hash and dev flag. The machine, the pending call, used nonces and
+//     hash, dev flag, key id and any pinned verifier plug-ins. The machine, the pending call, used nonces and
 //     applied evidence are re-derived by replaying the log from init and
 //     must match the stored copies.
 //  2. HMAC-SHA256 over the whole canonical state with a key the agent
@@ -59,7 +59,13 @@ export function ensureKey(keyPath) {
 export const keyIdOf = key => sha(key).slice(0, 16);
 
 export function genesis(state) {
-  return sha('speckl-state-v1:' + canonical({ run: state.runId, spec: state.specHash, dev: state.dev === true, keyId: state.keyId || null }));
+  // Pinned plug-ins (module sha256 + config) are part of the genesis, so the
+  // chain breaks if they change. Omitted when there are none (canonical drops
+  // undefined), which keeps states without plug-ins unchanged.
+  return sha('speckl-state-v1:' + canonical({
+    run: state.runId, spec: state.specHash, dev: state.dev === true, keyId: state.keyId || null,
+    plugins: state.plugins === undefined ? undefined : sha(canonical(state.plugins)),
+  }));
 }
 
 /** Append a hash-chained entry and move the head. */

@@ -5,11 +5,12 @@ export function emitSignalMjs(speckName: string): string {
 /**
  * Speckl signal tooling for ${speckName}.
  *
- *   node signal.mjs init  --state <file> --key <keyfile> [--dev]   (key created if missing)
+ *   node signal.mjs init  --state <file> --key <keyfile> [--dev] [--plugins <plugins.json>]
+ *       (key created if missing; plug-in verifiers are pinned by sha256 here)
  *   All commands accept --key <keyfile> (or env SPECKL_STATE_KEY_FILE).
- *   node signal.mjs apply --state <file> --verifier file-drop|cli [verifier args...]
+ *   node signal.mjs apply --state <file> --verifier file-drop|cli|plugin:<name> [verifier args...]
  *   node signal.mjs timeout --state <file>   # fire timeout → !-marked reject only
- *   node signal.mjs clear-pending --state <file> --verifier file-drop|cli [args...]
+ *   node signal.mjs clear-pending --state <file> --verifier file-drop|cli|plugin:<name> [args...]
  *
  * This is the human channel; the agent must not be able to run it. The cli
  * verifier (and unsigned drops) trust whoever runs them, so they are refused
@@ -114,8 +115,62 @@ async function loadVerified(args) {
   return { state, machine };
 }
 
-async function cmdInit(stateFile, dev, keyArg) {
+const sha256Hex = b => crypto.createHash('sha256').update(b).digest('hex');
+const PLUGIN_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const PLUGIN_TIMEOUT_DEFAULT = 30000;
+
+/**
+ * Import a plug-in module only if its bytes still hash to the pinned sha256,
+ * and again after import (narrows, but can't close, a swap during import).
+ */
+async function importPinned(modulePath, pinnedSha) {
+  let real;
+  try { real = fs.realpathSync(modulePath); } catch { fail('plug-in module not found: ' + modulePath, 2); }
+  if (real !== modulePath) fail('plug-in module path changed (symlink?): ' + modulePath + ' -> ' + real, 2);
+  const before = sha256Hex(fs.readFileSync(real));
+  if (before !== pinnedSha) fail('plug-in module sha256 mismatch: ' + modulePath + ' (pinned ' + pinnedSha + ', found ' + before + ')', 2);
+  let mod;
+  try { mod = await import(pathToFileURL(real).href); } catch (e) { fail('plug-in module failed to load: ' + (e && e.message ? e.message : String(e)), 2); }
+  const after = sha256Hex(fs.readFileSync(real));
+  if (after !== pinnedSha) fail('plug-in module changed while loading: ' + modulePath, 2);
+  if (!mod || typeof mod.verify !== 'function') fail('plug-in module does not export verify(opts, expect, ctx): ' + modulePath, 2);
+  return mod;
+}
+
+/** Read --plugins <file> at init: resolve, hash, load and check each entry. */
+async function pinPlugins(file, dev) {
+  if (typeof file !== 'string' || !file) fail('--plugins needs a JSON file');
+  let spec;
+  try { spec = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch (e) { fail('--plugins: cannot read ' + file + ': ' + e.message); }
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec) || Object.keys(spec).length === 0) {
+    fail('--plugins: expected { "<name>": { "module": "<path>", "sha256"?: "<hex>", "timeoutMs"?: n, "config"?: {...} } }');
+  }
+  const pins = {};
+  for (const [name, p] of Object.entries(spec)) {
+    if (!PLUGIN_NAME.test(name) || name === 'cli' || name === 'file-drop') fail('--plugins: invalid plug-in name: ' + name);
+    if (!p || typeof p !== 'object' || typeof p.module !== 'string' || !p.module) fail('--plugins: ' + name + ': module path required');
+    let real;
+    try { real = fs.realpathSync(path.resolve(p.module)); } catch { fail('--plugins: ' + name + ': module not found: ' + p.module); }
+    const digest = sha256Hex(fs.readFileSync(real));
+    if (p.sha256 !== undefined && p.sha256 !== digest) fail('--plugins: ' + name + ': sha256 mismatch (expected ' + p.sha256 + ', found ' + digest + ')');
+    const timeoutMs = p.timeoutMs === undefined ? PLUGIN_TIMEOUT_DEFAULT : p.timeoutMs;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300000) fail('--plugins: ' + name + ': timeoutMs must be an integer 100..300000');
+    const config = p.config === undefined ? {} : p.config;
+    const mod = await importPinned(real, digest);
+    if (mod.devOnly === true && !dev) fail('--plugins: ' + name + ' is DEV ONLY; create the state with --dev');
+    if (typeof mod.checkConfig === 'function') {
+      let r;
+      try { r = await mod.checkConfig(config); } catch (e) { r = { ok: false, reason: e && e.message ? e.message : String(e) }; }
+      if (!r || r.ok !== true) fail('--plugins: ' + name + ': config rejected: ' + (r && r.reason ? r.reason : 'checkConfig did not return { ok: true }'));
+    }
+    pins[name] = { module: real, sha256: digest, timeoutMs, config };
+  }
+  return pins;
+}
+
+async function cmdInit(stateFile, dev, keyArg, pluginsFile) {
   if (fs.existsSync(stateFile)) fail('state already exists: ' + stateFile);
+  const plugins = pluginsFile === undefined ? null : await pinPlugins(pluginsFile, dev);
   const keyPath = keyPathFrom(keyArg);
   if (!keyPath && !dev) {
     fail('init needs a state key: --key <file> or SPECKL_STATE_KEY_FILE (created if missing; keep it unreadable by the agent). Only --dev states may be unsigned.');
@@ -140,6 +195,7 @@ async function cmdInit(stateFile, dev, keyArg) {
     pendingLog: [],
     awaitingSince: null,
   };
+  if (plugins) state.plugins = plugins;
   state.head = genesis(state);
   if (currentAwait(machine)) state.awaitingSince = new Date().toISOString();
   save(stateFile, state);
@@ -147,17 +203,58 @@ async function cmdInit(stateFile, dev, keyArg) {
     process.stderr.write('WARN: DEV state: the cli verifier and unsigned drops are accepted; anyone who can run signal.mjs can approve\\n');
     if (!stateKey) process.stderr.write('WARN: DEV state is unsigned (no state key); hand edits are only caught by the log chain\\n');
   }
-  process.stdout.write(JSON.stringify({ ok: true, state: stateFile, run: state.runId, dev: state.dev, signed: !!stateKey }) + '\\n');
+  const out = { ok: true, state: stateFile, run: state.runId, dev: state.dev, signed: !!stateKey };
+  if (plugins) out.plugins = Object.fromEntries(Object.entries(plugins).map(([n, p]) => [n, p.sha256]));
+  process.stdout.write(JSON.stringify(out) + '\\n');
 }
 
-async function loadVerifier(kind) {
+async function loadVerifier(kind, state) {
+  if (typeof kind === 'string' && kind.startsWith('plugin:')) {
+    const name = kind.slice('plugin:'.length);
+    const pin = state.plugins && Object.prototype.hasOwnProperty.call(state.plugins, name) ? state.plugins[name] : null;
+    if (!pin) fail('plug-in not pinned in this state: ' + name + ' (pin it with signal.mjs init --plugins <file>)', 2);
+    const mod = await importPinned(pin.module, pin.sha256);
+    if (mod.devOnly === true && state.dev !== true) fail('plug-in ' + name + ' is DEV ONLY (state was not created with init --dev)', 2);
+    return { mod, pin, name };
+  }
   if (kind === 'cli') {
     return (await import(pathToFileURL(path.join(__dirname, 'verifiers', 'cli.mjs')).href));
   }
   if (kind === 'file-drop') {
     return (await import(pathToFileURL(path.join(__dirname, 'verifiers', 'file-drop.mjs')).href));
   }
-  fail('unknown verifier: ' + kind + ' (shipped: cli, file-drop; others are plug-ins)');
+  fail('unknown verifier: ' + kind + ' (shipped: cli, file-drop; plug-ins: plugin:<name>, pinned at init with --plugins)');
+}
+
+/** Run a pinned plug-in with a timeout; anything but a well-formed ok result denies. */
+async function runPlugin({ mod, pin, name }, opts, expect, ctx) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('plug-in ' + name + ' timed out after ' + pin.timeoutMs + 'ms')), pin.timeoutMs);
+  });
+  let result;
+  try {
+    result = await Promise.race([
+      Promise.resolve().then(() => mod.verify(opts, expect, { ...ctx, config: pin.config, plugin: name })),
+      timeout,
+    ]);
+  } catch (e) {
+    fail('verifier rejected: plug-in ' + name + ' threw: ' + (e && e.message ? e.message : String(e)), 2);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!result || typeof result !== 'object') fail('verifier rejected: plug-in ' + name + ' returned no result', 2);
+  if (result.ok !== true) {
+    fail('verifier rejected: ' + (result.ok === false && typeof result.reason === 'string' ? result.reason : 'plug-in ' + name + ' returned a malformed result'), 2);
+  }
+  const vs = result.signal;
+  const str = v => typeof v === 'string' && v.length > 0;
+  if (!vs || typeof vs !== 'object' || !str(vs.signal) || !str(vs.outcome) || !str(vs.evidence) || vs.evidence.length > 1000
+    || !vs.claims || typeof vs.claims !== 'object' || Array.isArray(vs.claims)) {
+    fail('verifier rejected: plug-in ' + name + ' returned a malformed signal (needs signal, outcome, claims, evidence)', 2);
+  }
+  // The label comes from the pin, not from the plug-in's own output.
+  return { ...vs, verifier: 'plugin:' + name };
 }
 
 function verifierCtx(state) {
@@ -174,10 +271,15 @@ async function verifySignal(args, state, expect) {
   if (args.verifier === 'cli' && state.dev !== true) {
     fail('cli verifier is DEV ONLY: create the state with signal.mjs init --dev, or use a signed verifier (self-approval risk)', 2);
   }
-  const ver = await loadVerifier(args.verifier);
-  const result = await ver.verify(args.rest, expect, verifierCtx(state));
-  if (result.ok === false) fail('verifier rejected: ' + result.reason, 2);
-  const vs = result.signal;
+  const ver = await loadVerifier(args.verifier, state);
+  let vs;
+  if (ver.pin) {
+    vs = await runPlugin(ver, args.rest, expect, verifierCtx(state));
+  } else {
+    const result = await ver.verify(args.rest, expect, verifierCtx(state));
+    if (result.ok === false) fail('verifier rejected: ' + result.reason, 2);
+    vs = result.signal;
+  }
   // Defense in depth for any verifier that binds to a run / nonce.
   if (vs.run !== undefined && vs.run !== state.runId) fail('run mismatch', 2);
   if (vs.nonce !== undefined && (state.usedNonces || []).includes(vs.nonce)) fail('nonce already used: ' + vs.nonce, 2);
@@ -329,7 +431,7 @@ async function main() {
   try {
     if (args.cmd === 'init') {
       if (!args.state) fail('missing --state');
-      await cmdInit(args.state, args.rest.dev === true || args.rest.dev === 'true', args.rest.key);
+      await cmdInit(args.state, args.rest.dev === true || args.rest.dev === 'true', args.rest.key, args.rest.plugins);
     } else if (args.cmd === 'apply') await cmdApply(args);
     else if (args.cmd === 'timeout') await cmdTimeout(args);
     else if (args.cmd === 'clear-pending') await cmdClearPending(args);

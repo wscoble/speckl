@@ -511,8 +511,20 @@ node signal.mjs clear-pending --state ./state.json --verifier file-drop \\
 #   {"signal":"clear-pending","call_id":"<pending id>","run":"...","expires":"...","nonce":"..."}
 \`\`\`
 
-Plug-in verifiers (JWT, OAuth, signed API, webhook) implement the same
-\`SignalVerifier\` interface — see \`verifiers/\` and \`docs/agent-signals.md\`.
+## Plug-in verifiers
+
+Other verifiers (Sigstore, JWT, webhooks, ...) are plug-in modules that
+implement the same \`SignalVerifier\` interface. Pin them at init; the realpath,
+sha256 and config are stored in the signed state, and a changed, missing or
+misbehaving module denies:
+
+\`\`\`
+# plugins.json: {"sigstore":{"module":"/opt/speckl/verifier-sigstore/index.mjs","config":{...}}}
+node signal.mjs init --state ./state.json --key /etc/speckl/state.key --plugins ./plugins.json
+node signal.mjs apply --state ./state.json --verifier plugin:sigstore --file ./inbox/review.json
+\`\`\`
+
+See \`docs/verifier-plugins.md\` in the Speckl repo.
 
 ## Adapters
 
