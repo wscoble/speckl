@@ -69,13 +69,19 @@ const deps = {
     const t = Number(process.env.SPECKL_HOOK_TIMEOUT_MS);
     const timeout = Number.isFinite(t) && t > 0 ? t : 20000;
     const r = spawnSync(process.execPath, args, { input: JSON.stringify(msg), encoding: 'utf-8', timeout, killSignal: 'SIGKILL' });
-    const why = r.error ? (r.error.code === 'ETIMEDOUT' ? 'hook.mjs timed out after ' + timeout + 'ms' : String(r.error))
+    const why = r.error
+      ? (r.error.code === 'ETIMEDOUT' ? 'hook.mjs timed out after ' + timeout + 'ms' : 'hook.mjs could not be started')
       : (r.signal ? 'hook.mjs killed by ' + r.signal : '');
-    return { status: r.error || r.signal ? null : r.status, stdout: r.stdout || '', stderr: why || r.stderr || '' };
+    const child = String(r.stderr || '');
+    const first = child.trim().split('\\n')[0] || '';
+    const nodeErr = first.indexOf('Error:') === 0 || first.indexOf('/') === 0 || (first.indexOf('at ') === 0 && first.indexOf('/') !== -1);
+    const safeChild = nodeErr ? 'hook.mjs failed' : child;
+    return { status: r.error || r.signal ? null : r.status, stdout: r.stdout || '', stderr: why || safeChild };
   },
   resolvePath: (base, p) => path.resolve(base, p),
   relativePath: (from, to) => path.relative(from, to),
   dirname: p => path.dirname(p),
+  realpath(p) { return fs.realpathSync(p); },
   cwd: process.cwd(),
   agentDir,
   readFile(p) { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
@@ -159,9 +165,10 @@ async function main() {
     const setupCmd = argv[0] === 'install' || argv[0] === 'uninstall' || argv[0] === 'status' || argv[0] === 'doctor';
     const stdinText = setupCmd ? '' : await readStdin();
     out = runAdapter(argv, process.env, stdinText, config, deps);
-  } catch (e) {
-    const msg = 'Speckl adapter error: ' + (e instanceof Error ? e.message : String(e));
-    // Fail closed. A batch or turn-end hook must not stop the agent loop.
+  } catch {
+    // The exception text can carry a key path or key bytes, so it is not printed.
+    // A batch or turn-end hook must not stop the agent loop.
+    const msg = 'Speckl adapter error: the adapter failed closed. The call stays denied.';
     const quiet = argv[1] === 'batch' || argv[1] === 'turn-end';
     out = quiet ? { code: 0, stdout: argv[0] === 'gemini' ? '{}\\n' : '', stderr: msg + '\\n' } : { code: 2, stdout: '', stderr: msg + '\\n' };
   }

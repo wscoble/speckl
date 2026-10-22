@@ -168,18 +168,18 @@ describe('hookCommandResult', () => {
     expect(hookCommandResult(null, 'ETIMEDOUT', 'Error: spawnSync sh ETIMEDOUT', '', '', '', 20000).stderr)
       .toBe('command timed out after 20000ms');
     expect(hookCommandResult(null, 'ETIMEDOUT', 'Error: spawnSync sh ETIMEDOUT', '', '', '', 20000).status).toBe(null);
-    expect(hookCommandResult(null, 'ENOENT', 'Error: spawnSync sh ENOENT', '', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh ENOENT' });
+    expect(hookCommandResult(null, 'ENOENT', 'Error: spawnSync /secret/state.key ENOENT', '', '', '', 20000))
+      .toEqual({ status: null, stdout: '', stderr: 'command failed (ENOENT)' });
     expect(hookCommandResult(null, '', 'Error: empty command', '', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: empty command' });
+      .toEqual({ status: null, stdout: '', stderr: 'command failed' });
     expect(hookCommandResult(1, 'EACCES', '', '', 'out', 'err', 20000))
-      .toEqual({ status: null, stdout: 'out', stderr: 'EACCES' });
+      .toEqual({ status: null, stdout: 'out', stderr: 'command failed (EACCES)' });
     expect(hookCommandResult(null, 'EPIPE', 'Error: spawnSync sh EPIPE', '', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh EPIPE' });
+      .toEqual({ status: null, stdout: '', stderr: 'command failed (EPIPE)' });
     expect(hookCommandResult(null, '', '', 'SIGKILL', 'out', '', 20000))
       .toEqual({ status: null, stdout: 'out', stderr: 'command killed by SIGKILL' });
     expect(hookCommandResult(2, 'EPIPE', 'Error: spawnSync sh EPIPE', 'SIGKILL', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh EPIPE' });
+      .toEqual({ status: null, stdout: '', stderr: 'command killed by SIGKILL' });
     expect(hookCommandResult(0, '', '', '', '', 'hook said no', 20000))
       .toEqual({ status: 0, stdout: '', stderr: 'hook said no' });
   });
@@ -286,7 +286,8 @@ describe('install, status and doctor', () => {
       expect(doc.stdout).toContain('stage=Approved (1)');
       expect(doc.stdout).toContain('awaiting review (in)');
       expect(doc.stdout).toContain('mac=present (not replayed; hook.mjs checks it on a real call)');
-      expect(doc.stdout).toContain('key: present /k/state.key');
+      expect(doc.stdout).toContain('key: present <keyfile>');
+      expect(doc.stdout).not.toContain('/k/state.key');
       expect(doc.stdout).not.toContain('inside the project');
       expect(doc.stderr).toBe('');
       expect(d.commands.length).toBe(before + 1);
@@ -537,9 +538,11 @@ describe('status and doctor failures', () => {
     expect(r.stdout).toContain('NOT PROVED');
     expect(r.code).toBe(1);
     const missing = installed();
-    missing.runCommand = () => ({ status: null, stdout: '', stderr: 'Error: spawn node ENOENT\n' });
+    missing.runCommand = () => ({ status: null, stdout: '', stderr: 'Error: spawnSync /k/state.key ENOENT\n' });
     r = inspectHarness('claude-code', flags, config.harness['claude-code'].rules, config, missing, {}, true);
     expect(r.stdout).toContain('HOOK MISSING');
+    expect(r.stdout).toContain('<keyfile>');
+    expect(r.stdout + r.stderr).not.toContain('/k/state.key');
     const noRun = installed();
     delete (noRun as { runCommand?: unknown }).runCommand;
     r = inspectHarness('claude-code', flags, config.harness['claude-code'].rules, config, noRun, {}, true);
@@ -641,7 +644,8 @@ describe('status and doctor failures', () => {
     expect(r.stderr).not.toContain('SECRET');
     delete d.files['/k/state.key'];
     r = inspectHarness('claude-code', flags, config.harness['claude-code'].rules, config, d, {}, false);
-    expect(r.stdout).toContain('key: MISSING /k/state.key');
+    expect(r.stdout).toContain('key: MISSING <keyfile>');
+    expect(r.stdout).not.toContain('/k/state.key');
     const inside = installed({ '/p/.speckl/secret.key': KEY });
     r = inspectHarness('claude-code', { ...flags, key: '.speckl/secret.key' }, config.harness['claude-code'].rules, config, inside, {}, false);
     expect(r.code, r.stdout + r.stderr).toBe(0);
@@ -657,11 +661,36 @@ describe('status and doctor failures', () => {
     const envKey = installed();
     r = inspectHarness('claude-code', { project: '.', state: '.speckl/state.json' }, config.harness['claude-code'].rules, config, envKey, { SPECKL_STATE_KEY_FILE: '/k/state.key' }, false);
     expect(r.code, r.stdout).toBe(0);
-    expect(r.stdout).toContain('key: present /k/state.key');
+    expect(r.stdout).toContain('key: present <keyfile>');
+    expect(r.stdout).not.toContain('/k/state.key');
     const noKey = installed();
     r = inspectHarness('claude-code', { project: '.', state: '.speckl/state.json' }, config.harness['claude-code'].rules, config, noKey, {}, false);
     expect(r.code).toBe(1);
     expect(r.stdout).toContain('key: MISSING (pass --key');
+  });
+
+  it('redacts a symlinked key path, its real directory, and the key bytes', () => {
+    const real = '/real/secret-dir/state.key';
+    const d = fakeDeps(seed());
+    d.files[real] = KEY;
+    d.links['/k/state.key'] = real;
+    const r = inspectHarness('claude-code', flags, config.harness['claude-code'].rules, config, d, {}, false);
+    const shown = r.stdout + r.stderr;
+    expect(shown).toContain('key: present <keyfile>');
+    expect(shown).toContain('/p/.speckl/state.json');
+    expect(shown).not.toContain('/k/state.key');
+    expect(shown).not.toContain(real);
+    expect(shown).not.toContain('/real/secret-dir');
+    expect(shown).not.toContain(KEY.trim());
+    const b64 = Buffer.from(KEY.trim(), 'hex').toString('base64');
+    expect(shown).not.toContain(b64);
+    const short = fakeDeps(seed());
+    const missing = inspectHarness('claude-code', { project: '.', state: '.speckl/state.json', key: 'ab' }, config.harness['claude-code'].rules, config, short, {}, false);
+    const text = missing.stdout + missing.stderr;
+    expect(text).not.toContain('/p/ab');
+    expect(text).not.toMatch(/(^|[\s"'=:])ab($|[\s"'=:])/m);
+    expect(text).toContain('<keyfile>');
+    expect(text).toContain('/p/.speckl/state.json');
   });
 
   it('rejects a state file that is not a signed run', () => {

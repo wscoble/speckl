@@ -1,3 +1,16 @@
+import { explainAdapterDeny as explainAdapterDenyImpl, redactSecrets, scrubDenyText as scrubDenyTextImpl } from './deny-reason.js';
+
+// runAdapter is pasted into adapter.mjs via Function#toString. A call to an
+// imported binding is rewritten by the test bundler (and would throw in the
+// generated file). This local wrapper is what the in-process tests run; the
+// emitted file gets explainAdapterDenyImpl, whose source calls nothing imported.
+function explainAdapterDeny(reason: string, secrets: string[]): string {
+  return explainAdapterDenyImpl(reason, secrets);
+}
+function scrubDenyText(text: string, secrets: string[]): string {
+  return scrubDenyTextImpl(text, secrets);
+}
+
 // Harness adapter runtime: pure functions that turn a real agent harness's
 // hook payload (Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot CLI,
 // Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro, Windsurf) into a call to the generic
@@ -52,6 +65,11 @@ export interface AdapterDeps {
   readFile(p: string): string | null;
   /** Write a file (creating directories); `mode` (e.g. 0o755) also chmods it. */
   writeFile(p: string, text: string, mode?: number): void;
+  /**
+   * fs.realpathSync. Optional so a test double can omit it. Throws when the
+   * path cannot be resolved; the caller then adds nothing.
+   */
+  realpath?(p: string): string;
   /**
    * Remove one regular file this tooling created. Never recursive, never a
    * symlink. Returns false when the path is missing or cannot be removed.
@@ -223,7 +241,14 @@ export function interpretHook(r: HookResult): { allow: boolean; reason: string }
     return { allow: false, reason: 'speckl hook error: exit 0 without a well-formed allow decision' };
   }
   if (r.status === 2) return { allow: false, reason: reason || 'denied' };
-  const detail = reason || (r.stderr || '').trim().split('\n')[0] || 'no output';
+  let detail = reason;
+  if (!detail) {
+    const line = (r.stderr || '').trim().split('\n')[0] || '';
+    // Node stacks and OS errors name a path. A hook sentence does not.
+    const nodeErr = line.indexOf('Error:') === 0 || line.indexOf('/') === 0
+      || /^[A-Za-z]:[\\/]/.test(line) || (line.indexOf('at ') === 0 && line.indexOf('/') !== -1);
+    detail = !line ? 'no output' : nodeErr ? 'hook.mjs failed' : line;
+  }
   return { allow: false, reason: 'speckl hook error (exit ' + String(r.status) + '): ' + detail };
 }
 
@@ -833,11 +858,12 @@ export function hookCommandResult(
 ): HookResult {
   const epipe = errorCode === 'EPIPE' && typeof status === 'number';
   const failed = ((!!errorCode || !!errorText) && !epipe) || !!signal;
+  // The Node message names the program it tried to spawn. Keep the code.
   const why = !failed ? ''
     : errorCode === 'ETIMEDOUT' ? 'command timed out after ' + timeout + 'ms'
-    : errorText ? errorText
     : signal ? 'command killed by ' + signal
-    : errorCode;
+    : errorCode ? 'command failed (' + errorCode + ')'
+    : 'command failed';
   return { status: failed ? null : status, stdout: stdout || '', stderr: why || stderr || '' };
 }
 
@@ -1072,19 +1098,20 @@ export function pluginSource(harness: string, ours: Record<string, unknown>): st
     'const ARGV = [' + lit.join(', ') + '];',
     'function speckl(event, payload) {',
     '  let input;',
-    '  try { input = JSON.stringify(payload); } catch (e) { return { ok: false, reason: "Speckl: the hook payload could not be serialised (" + e + ")" }; }',
+    '  try { input = JSON.stringify(payload); } catch { return { ok: false, reason: "Speckl: the hook payload could not be serialised" }; }',
     '  if (typeof input !== "string") return { ok: false, reason: "Speckl: the hook payload could not be serialised" };',
     '  let r;',
     '  try {',
     '    r = spawnSync("node", [ARGV[0], ' + JSON.stringify(harness) + ', event, ...ARGV.slice(1)], { input, encoding: "utf-8", timeout: 25000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });',
-    '  } catch (e) { return { ok: false, reason: "Speckl: could not run the adapter (" + e + ")" }; }',
+    '  } catch { return { ok: false, reason: "Speckl: could not run the adapter" }; }',
     '  const lines = String(r.stdout || "").trim().split("\\n").filter(Boolean);',
     '  let body = null;',
     '  try { body = lines.length ? JSON.parse(lines[lines.length - 1]) : null; } catch { body = null; }',
     '  const err = String(r.stderr || "").trim();',
     '  if (r.error || r.status !== 0) {',
-    '    const why = (body && typeof body.reason === "string" && body.reason) || err.split("\\n")[0]',
-    '      || (r.error ? String(r.error.message || r.error) : r.signal ? "killed by " + r.signal : "exit " + r.status);',
+    '    const errLine = err.split("\\n")[0] || "";',
+    '    const spawned = r.error ? "spawn " + String(r.error.code || "error") : r.signal ? "killed by " + r.signal : "exit " + r.status;',
+    '    const why = (body && typeof body.reason === "string" && body.reason) || (/^Speckl/.test(errLine) ? errLine : spawned);',
     '    return { ok: false, reason: (/^Speckl/.test(why) ? "" : "Speckl adapter failed: ") + why };',
     '  }',
     '  return { ok: true, body };',
@@ -2130,7 +2157,97 @@ export function inspectHarness(
     if (verdict.kind !== 'denied') problems.push('probe');
   }
   if (pluginNote) lines.push(pluginNote);
-  return { code: problems.length ? 1 : 0, stdout: lines.join('\n') + '\n', stderr: warn };
+  // The same key material a denial redacts. status and doctor print paths on
+  // purpose; the key path is not one of them.
+  const secrets: string[] = [];
+  const remember = (p: unknown) => { if (typeof p === 'string' && p) secrets.push(p); };
+  const canonical = (p: string): string | null => {
+    if (typeof deps.realpath === 'function') {
+      try {
+        const real = deps.realpath(p);
+        if (typeof real === 'string' && real) return real;
+      } catch { /* try realPath */ }
+    }
+    if (typeof deps.realPath === 'function') {
+      try {
+        const real = deps.realPath(p);
+        if (typeof real === 'string' && real) return real;
+      } catch { /* add nothing */ }
+    }
+    return null;
+  };
+  const addPath = (p: unknown) => {
+    if (typeof p !== 'string' || !p) return;
+    remember(p);
+    let abs = '';
+    try {
+      const resolved = deps.resolvePath(deps.cwd, p);
+      if (typeof resolved === 'string' && resolved) { remember(resolved); abs = resolved; }
+    } catch { /* resolution must not turn a status line into a throw */ }
+    const real = canonical(p);
+    if (real) {
+      remember(real);
+      const parent = deps.dirname(real);
+      if (typeof parent === 'string' && parent && parent !== real) remember(parent);
+    }
+    if (abs && abs !== p) {
+      const realAbs = canonical(abs);
+      if (realAbs && realAbs !== real) {
+        remember(realAbs);
+        const parent = deps.dirname(realAbs);
+        if (typeof parent === 'string' && parent && parent !== realAbs) remember(parent);
+      }
+    }
+  };
+  addPath(merged.key);
+  addPath(env.SPECKL_STATE_KEY_FILE);
+  const keyFiles: string[] = [];
+  if (typeof merged.key === 'string' && merged.key) keyFiles.push(merged.key);
+  if (typeof env.SPECKL_STATE_KEY_FILE === 'string' && env.SPECKL_STATE_KEY_FILE) keyFiles.push(env.SPECKL_STATE_KEY_FILE);
+  for (const f of keyFiles) {
+    let text: string | null = null;
+    try { text = deps.readFile(f); } catch { text = null; }
+    if (!text) {
+      try {
+        const abs = deps.resolvePath(deps.cwd, f);
+        if (typeof abs === 'string' && abs) text = deps.readFile(abs);
+      } catch { text = null; }
+    }
+    if (typeof text === 'string' && text) {
+      remember(text);
+      const trimmed = text.trim();
+      if (trimmed) remember(trimmed);
+    }
+  }
+  if (stText) {
+    try {
+      const parsed = JSON.parse(stText) as { signers?: unknown };
+      const signers = parsed && parsed.signers;
+      if (Array.isArray(signers)) {
+        for (const s of signers) {
+          if (s && typeof s === 'object' && typeof (s as { key?: unknown }).key === 'string') remember((s as { key: string }).key);
+        }
+      }
+    } catch { /* unreadable state is not a reason to leak */ }
+  }
+  let stdout = scrubDenyText(lines.join('\n') + '\n', secrets);
+  let stderrOut = warn ? scrubDenyText(warn, secrets) : warn;
+  const shorts: string[] = [];
+  for (const secret of secrets) {
+    if (secret.length >= 2 && secret.length < 8 && (secret.indexOf('/') !== -1 || secret === merged.key || secret === env.SPECKL_STATE_KEY_FILE)) shorts.push(secret);
+  }
+  shorts.sort((a, b) => b.length - a.length);
+  const hideShort = (text: string) => {
+    let s = text;
+    for (const p of shorts) {
+      const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      s = s.replace(new RegExp('(^|[\\s"\'=:])' + esc + '($|[\\s"\'=:])', 'g'), '$1<keyfile>$2');
+    }
+    return s;
+  };
+  stdout = hideShort(stdout);
+  stderrOut = hideShort(stderrOut);
+  return { code: problems.length ? 1 : 0, stdout, stderr: stderrOut };
 }
 
 /**
@@ -2159,14 +2276,121 @@ export function runAdapter(
   const event = argv[1] || '';
   const flags = parseAdapterFlags(argv.slice(2));
   const isPre = event === 'pre';
-  const fail = (reason: string): AdapterOutput => {
-    const msg = 'Speckl: ' + reason;
+  const envDir = harness === 'cursor' ? env.CURSOR_PROJECT_DIR
+    : harness === 'gemini' ? env.GEMINI_PROJECT_DIR
+      : harness === 'claude-code' ? env.CLAUDE_PROJECT_DIR : undefined;
+  let projectDir = flags.project || envDir || deps.cwd;
+  const secretsFor = (): string[] => {
+    const secrets: string[] = [];
+    const addReal = (p: string) => {
+      if (typeof deps.realpath !== 'function') return;
+      try {
+        const real = deps.realpath(p);
+        if (typeof real !== 'string' || !real) return;
+        secrets.push(real);
+        const parent = deps.dirname(real);
+        if (typeof parent === 'string' && parent && parent !== real) secrets.push(parent);
+      } catch { /* realpath failed: add nothing */ }
+    };
+    const addPath = (p: unknown) => {
+      if (typeof p !== 'string' || !p) return;
+      secrets.push(p);
+      let abs = '';
+      try {
+        const resolved = deps.resolvePath(projectDir, p);
+        if (typeof resolved === 'string' && resolved) { secrets.push(resolved); abs = resolved; }
+      } catch { /* resolution must not turn a deny into a throw */ }
+      try {
+        const fromCwd = deps.resolvePath(deps.cwd, p);
+        if (typeof fromCwd === 'string' && fromCwd) secrets.push(fromCwd);
+      } catch { /* ignore */ }
+      addReal(p);
+      if (abs && abs !== p) addReal(abs);
+    };
+    addPath(flags.key);
+    addPath(env.SPECKL_STATE_KEY_FILE);
+    const files: string[] = [];
+    if (typeof flags.key === 'string' && flags.key) files.push(flags.key);
+    if (typeof env.SPECKL_STATE_KEY_FILE === 'string' && env.SPECKL_STATE_KEY_FILE) files.push(env.SPECKL_STATE_KEY_FILE);
+    for (const f of files) {
+      let text: string | null = null;
+      try { text = deps.readFile(f); } catch { text = null; }
+      if (!text) {
+        try {
+          const abs = deps.resolvePath(projectDir, f);
+          if (typeof abs === 'string' && abs) text = deps.readFile(abs);
+        } catch { text = null; }
+      }
+      if (typeof text === 'string' && text) {
+        secrets.push(text);
+        const trimmed = text.trim();
+        if (trimmed) secrets.push(trimmed);
+      }
+    }
+    if (flags.state) {
+      try {
+        const raw = deps.readFile(deps.resolvePath(projectDir, flags.state));
+        const st = raw ? JSON.parse(raw) : null;
+        const signers = st && st.signers;
+        if (Array.isArray(signers)) {
+          for (const s of signers) {
+            if (s && typeof s.key === 'string' && s.key) secrets.push(s.key);
+          }
+        }
+      } catch { /* unreadable state is not a reason to leak */ }
+    }
+    return secrets;
+  };
+  const shortKeyPath = 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.';
+  const keyPathTooShort = (p: unknown): boolean => {
+    if (typeof p !== 'string' || p.length === 0) return false;
+    if (p.length < 8) return true;
+    const candidates: string[] = [p];
+    const bases = [projectDir, deps.cwd];
+    for (let i = 0; i < bases.length; i++) {
+      try {
+        const abs = deps.resolvePath(bases[i], p);
+        if (typeof abs === 'string' && abs) {
+          if (abs.length < 8) return true;
+          if (candidates.indexOf(abs) === -1) candidates.push(abs);
+        }
+      } catch { /* a path that will not resolve is not treated as short */ }
+    }
+    const follow = (c: string): string => {
+      if (typeof deps.realpath === 'function') {
+        try {
+          const got = deps.realpath(c);
+          if (typeof got === 'string' && got) return got;
+        } catch { /* try realPath */ }
+      }
+      if (typeof deps.realPath === 'function') {
+        try {
+          const got = deps.realPath(c);
+          if (typeof got === 'string' && got) return got;
+        } catch { /* not treated as short */ }
+      }
+      return '';
+    };
+    for (let i = 0; i < candidates.length; i++) {
+      const real = follow(candidates[i]);
+      if (!real) continue;
+      if (real.length < 8) return true;
+      try {
+        const parent = deps.dirname(real);
+        if (typeof parent === 'string' && parent.length < 8) return true;
+      } catch { /* dirname must not turn the check into a throw */ }
+    }
+    return false;
+  };
+  const emitDeny = (msg: string): AdapterOutput => {
     if (event === 'batch') return { code: 0, stdout: '', stderr: msg + '\n' };
     // A turn-end hook never blocks: on Gemini exit 2 would force a retry turn.
     if (event === 'turn-end') return { code: 0, stdout: harness === 'gemini' ? '{}\n' : '', stderr: msg + '\n' };
     if (isPre || harnessEventName(harness, event) === null) return formatPre(harness, false, msg);
     return formatPost(harness, msg);
   };
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
+  const fail = (reason: string): AdapterOutput => emitDeny(explainAdapterDeny(reason, secretsFor()));
   if (!harnesses[harness]) {
     return fail('harness ' + JSON.stringify(harness) + ' is not declared in the spec (declared: ' + (Object.keys(harnesses).join(', ') || 'none') + ')');
   }
@@ -2182,17 +2406,13 @@ export function runAdapter(
   } catch {
     return fail('hook payload is not JSON');
   }
+  if (!flags.project && !envDir && typeof payload.cwd === 'string' && payload.cwd) projectDir = payload.cwd;
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
   if (payload.hook_event_name !== undefined && payload.hook_event_name !== expected) {
     return fail('payload is ' + JSON.stringify(payload.hook_event_name) + ' but this hook is wired as ' + expected);
   }
   if (!flags.state) return fail('missing --state');
 
-  const projectDir = flags.project
-    || (harness === 'cursor' ? env.CURSOR_PROJECT_DIR
-      : harness === 'gemini' ? env.GEMINI_PROJECT_DIR
-        : harness === 'claude-code' ? env.CLAUDE_PROJECT_DIR : undefined)
-    || (typeof payload.cwd === 'string' ? payload.cwd : '')
-    || deps.cwd;
   const stateAbs = deps.resolvePath(projectDir, flags.state);
   const keyAbs = flags.key ? deps.resolvePath(projectDir, flags.key) : null;
   const callCwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : projectDir;
@@ -2236,7 +2456,7 @@ export function runAdapter(
     } catch { /* hook.mjs reports a broken state on the next call */ }
     if (!pending || typeof pending.tool !== 'string' || pending.call_id === undefined) return { code: 0, stdout: quiet, stderr: '' };
     const r = deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: pending.call_id, ok: false }, stateAbs, keyAbs);
-    if (r.status !== 0) return { code: 0, stdout: quiet, stderr: 'Speckl: could not clear the pending call: ' + interpretHook(r).reason + '\n' };
+    if (r.status !== 0) return { code: 0, stdout: quiet, stderr: scrubDenyText('Speckl: could not clear the pending call: ' + interpretHook(r).reason, secretsFor()) + '\n' };
     return { code: 0, stdout: quiet, stderr: 'Speckl cleared pending call ' + String(pending.call_id) + ' (no result reported); recorded as failed\n' };
   }
 
@@ -2273,7 +2493,7 @@ export function runAdapter(
       } catch { /* hook.mjs reports a broken state on the next call */ }
       if (!pending || callId === null || pending.call_id !== callId || typeof pending.tool !== 'string') return formatPost(harness, null);
       const r = interpretHook(deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: callId, ok: false }, stateAbs, keyAbs));
-      return formatPost(harness, r.allow ? null : 'Speckl could not record blocked call ' + callId + ': ' + r.reason);
+      return formatPost(harness, r.allow ? null : scrubDenyText('Speckl could not record blocked call ' + callId + ': ' + r.reason, secretsFor()));
     }
   }
   const clawDetails = harness === 'openclaw' && event === 'post' && payload.event && typeof payload.event === 'object'
@@ -2307,7 +2527,7 @@ export function runAdapter(
     if (pending && callId !== null && pending.call_id === callId && typeof pending.tool === 'string') {
       const ok = postSucceeded(harness, event, payload);
       const r = interpretHook(deps.runHook('post', { tool: pending.tool, input: pending.input || {}, call_id: callId, ok }, stateAbs, keyAbs));
-      return formatPost(harness, r.allow ? null : 'Speckl could not record ' + String(toolName) + ' (spec tool ' + pending.tool + '): ' + r.reason);
+      return formatPost(harness, r.allow ? null : scrubDenyText('Speckl could not record ' + String(toolName) + ' (spec tool ' + pending.tool + '): ' + r.reason, secretsFor()));
     }
   }
   const pin = { ok: true, input: normalizeToolInput(harness, toolName, pin0.input) };
@@ -2337,7 +2557,7 @@ export function runAdapter(
   if (isPre) {
     const r = interpretHook(deps.runHook('pre', { tool: m.tool, input: m.input, call_id: callId }, stateAbs, keyAbs));
     if (r.allow) return formatPre(harness, true, '');
-    return formatPre(harness, false, 'Speckl denied ' + label + ' (spec tool ' + m.tool + '): ' + r.reason);
+    return formatPre(harness, false, scrubDenyText('Speckl denied ' + label + ' (spec tool ' + m.tool + '): ' + r.reason, secretsFor()));
   }
   const ok = postSucceeded(harness, event, payload);
   const r = interpretHook(deps.runHook('post', { tool: m.tool, input: m.input, call_id: callId, ok }, stateAbs, keyAbs));
@@ -2348,11 +2568,12 @@ export function runAdapter(
     return formatPost(harness, 'Speckl recorded ' + label + ' (spec tool ' + m.tool + ') as not successful: Codex does not report a Bash exit status, so a shell call never advances the policy. Use the tool mapped for this step instead.');
   }
   if (r.allow) return formatPost(harness, null);
-  return formatPost(harness, 'Speckl could not record ' + label + ' (spec tool ' + m.tool + '): ' + r.reason);
+  return formatPost(harness, scrubDenyText('Speckl could not record ' + label + ' (spec tool ' + m.tool + '): ' + r.reason, secretsFor()));
 }
 
 /** Functions emitted into adapter.mjs, in order. */
 export const ADAPTER_FUNCTIONS = [
+  redactSecrets, scrubDenyTextImpl, explainAdapterDenyImpl,
   hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
   harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, hookCommandResult, shellQuote,

@@ -17,7 +17,10 @@ alias.
 - **Decision record.** After the state verifies, generated hooks append each
   allow and each deny (deny reason clipped at 500 characters) to
   `<state>.decisions/log.jsonl`. Each line is SHA-256 chained and HMAC-SHA256'd
-  with the state key. That HMAC is not a signature a third party can check;
+  with the state key. The stored deny reason is the same redacted sentence the
+  hook prints: a key path (given or resolved), the key file's contents, and a
+  signer key are not written, including when they appear in the tool name or
+  the call id. That HMAC is not a signature a third party can check;
   anyone who can read the key can rebuild the record. The line is the gate's
   verdict, not proof the tool ran. Denials are not written into `state.json`.
   Calls that fail before the state verifies (usage, stdin, lock timeout, a
@@ -118,6 +121,37 @@ alias.
     Copilot and Goose. Copilot CLI hook timeouts stay fail-open (documented,
     not configurable).
   - Includes `docs/harness-adapters.md`, with an executed 10-minute quickstart.
+- **Actionable deny reasons.** A generated hook's denial names why the call
+  was refused — not allowed in this stage, waiting on a sign-off, a failed
+  precondition, or an internal error (fail closed) — and the next step. A
+  sign-off names the signal and the `signal.mjs apply` command a human runs
+  (file-drop, with the drop shape and the run id). On a state created with
+  `init --signer`, that command names the pinned signer and does not tell
+  anyone to pass `--pubkey`; a legacy state (no pin field) still prints
+  `--pubkey <pubkey>`. A call-bound await uses that same command and appends
+  `sign call <digest> canonical <preimage>`, and the digest is left in the
+  sentence. The text never includes the state key, the key file path as given,
+  resolved, or followed through a symlink (and not the real directory that
+  contains the key), the key file's contents, or a pinned signer key, and that
+  same sentence is what `<state>.decisions/log.jsonl` stores. A state-load, key-read,
+  lock, or decision-record failure prints a fixed sentence and not the Node error.
+  A key path shorter than 8 characters is refused with a fixed sentence,
+  including a long path whose symlink target or that target's parent
+  directory is under 8 characters. The hook exits 2, the same as a missing
+  or bad key. That is stricter than commit 09eb03c, which allowed the call
+  when the path named a real key. The state key and
+  each pinned signer key are also removed as base64, base64url, uppercase
+  hex, and SPKI DER-base64 or PEM. `status` and `doctor` print the key path
+  as `<keyfile>` after that same redaction. Plugin spawn failures, a
+  hook.mjs that does not start, and a doctor probe report a fixed code or
+  signal name (`spawn ENOENT`, `killed by SIGKILL`, `exit 1`,
+  `hook.mjs could not be started`, `hook.mjs failed`, `command failed (ENOENT)`)
+  rather than a Node stack.
+  An adapter failure before it can decide prints a fixed line and not the exception. A throw while
+  building the sentence still denies. Each harness keeps its own output shape. Adapter
+  denials (unmapped tool, shell metacharacters, a protected path, a bad
+  payload) gain the same fail-closed next step. Examples in
+  `docs/agent-signals.md` and `docs/harness-adapters.md`.
 - `next:` is a first-class IR member (#3). The generated TypeScript machine
   gains `ACTIONS`, a side-effect-free `can(action, args)`, and
   `serialize()` / `restore()`.
@@ -133,6 +167,13 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
+  shorter than 8 characters — as given, as `path.resolve` returns it, as
+  `realpath` of the key file, or as that real path's parent directory — is
+  refused before the hook runs. The hook exits 2, the same as a missing or
+  bad key. Commit 09eb03c on `main` allowed the call when that path named a
+  real key.
 
 - **CI runs on GitHub-hosted runners** (#23). The self-hosted runner had stopped picking up jobs, so `ci.yml` now uses `ubuntu-latest`. It cancels a superseded run on the same ref and has two jobs:
   - **build-and-test:** `npm ci`, build, `tsc --noEmit`, `npm test`, `npm run verify` against z3 5.1.0 (pinned by SHA-256 and cached), and coverage with its floors.

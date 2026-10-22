@@ -138,7 +138,7 @@ describe('GitHub Copilot CLI wiring (real payloads through .github/hooks/speckl.
     allow(send('preToolUse', 'pre-bash-npm-test-async'));
     posted(send('postToolUse', 'post-bash-npm-test-async'));
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
-    deny(send('preToolUse', 'pre-bash-git-commit'), /Speckl denied bash \(spec tool request_review\): can\(\) refused/);
+    deny(send('preToolUse', 'pre-bash-git-commit'), /Speckl denied bash \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
 
     allow(send('preToolUse', 'pre-bash-npm-test-2'));
     posted(send('postToolUse', 'post-bash-npm-test-2'));

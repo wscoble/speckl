@@ -116,6 +116,14 @@ describe('interpretHook', () => {
   it('turns errors and crashes into denies', () => {
     expect(interpretHook({ status: 1, stdout: '{"decision":"deny","reason":"boom"}', stderr: '' }).reason).toBe('speckl hook error (exit 1): boom');
     expect(interpretHook({ status: null, stdout: '', stderr: 'killed\nmore' }).reason).toBe('speckl hook error (exit null): killed');
+    expect(interpretHook({ status: null, stdout: '', stderr: 'hook.mjs killed by SIGKILL\n' }).reason).toBe('speckl hook error (exit null): hook.mjs killed by SIGKILL');
+    expect(interpretHook({ status: 1, stdout: '', stderr: 'Error: spawn /secret/state.key\n    at hook.mjs:1' }).reason).toBe('speckl hook error (exit 1): hook.mjs failed');
+    expect(interpretHook({ status: 1, stdout: '', stderr: '/tmp/hook.mjs:1\nError: boom' }).reason).toBe('speckl hook error (exit 1): hook.mjs failed');
+    expect(interpretHook({ status: 1, stdout: '', stderr: 'C:\\secret\\state.key\n' }).reason).toBe('speckl hook error (exit 1): hook.mjs failed');
+    expect(interpretHook({ status: 1, stdout: '', stderr: '    at /secret/hook.mjs:1:1\n' }).reason).toBe('speckl hook error (exit 1): hook.mjs failed');
+    expect(interpretHook({ status: 1, stdout: '', stderr: 'at noon\n' }).reason).toBe('speckl hook error (exit 1): at noon');
+    expect(interpretHook({ status: 1, stdout: '', stderr: 'Speckl denied (internal error (fail closed)): hook failed closed\n' }).reason)
+      .toBe('speckl hook error (exit 1): Speckl denied (internal error (fail closed)): hook failed closed');
     expect(interpretHook({ status: 7, stdout: 'not json', stderr: '' }).reason).toBe('speckl hook error (exit 7): no output');
   });
   it('exit 0 without a well-formed allow decision denies (malformed output)', () => {
@@ -262,10 +270,12 @@ describe('runAdapter', () => {
     expect(out.stderr).toBe('Speckl denied Bash (spec tool run_tests): HNTL: act tool refused\n');
   });
   it('pre: hook crash denies', () => {
-    const d = fakeDeps({ runHook: () => ({ status: 1, stdout: '', stderr: 'Error: x' }) });
-    const out = runAdapter(['claude-code', 'pre', '--state', 's.json'], {}, ccPre('Bash', { command: 'npm test' }), config, d);
+    const d = fakeDeps({ runHook: () => ({ status: 1, stdout: '', stderr: 'Error: spawn /k/state.key\n    at hook.mjs:1' }) });
+    const out = runAdapter(['claude-code', 'pre', '--state', 's.json', '--key', '/k/state.key'], {}, ccPre('Bash', { command: 'npm test' }), config, d);
     expect(out.code).toBe(2);
-    expect(out.stderr).toContain('speckl hook error (exit 1): Error: x');
+    expect(out.stderr).toContain('speckl hook error (exit 1): hook.mjs failed');
+    expect(out.stdout + out.stderr).not.toContain('/k/state.key');
+    expect(out.stderr).not.toContain('spawn /k');
   });
   it('pre: a timed-out or killed hook (status null) blocks in both harnesses', () => {
     const d = fakeDeps({ runHook: () => ({ status: null, stdout: '', stderr: 'hook.mjs timed out after 20000ms' }) });

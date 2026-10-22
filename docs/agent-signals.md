@@ -494,3 +494,86 @@ node signal.mjs timeout --state ./state.json
 
 See `out/agent/README.md` after `speckl-compile examples/AgentPolicy.speckdl -t agent`.
 Adapters for Claude Code / Cursor / etc. are thin JSON translators outside Speckl.
+
+## What a denial says
+
+`hook.mjs` decides allow or deny first. The reason is only the explanation.
+Each harness keeps its own output shape (see
+[harness-adapters.md](harness-adapters.md)); the sentence below is what that
+shape carries. Exit codes stay 0 allow, 2 deny, 1 error (also a deny).
+
+The sentence names one of four situations, then the next step. It does not
+include the state key, the key file path (given, resolved with `path.resolve`,
+or the path `realpath` follows through a symlink, including that key's real
+parent directory), the key file's contents, a pinned signer key, or the
+contents of `state.json`. A key path shorter than 8 characters — as given,
+as `path.resolve` returns it, as `realpath` of the key file, or as that
+real path's parent directory — is refused with a fixed sentence before the
+hook runs. The hook exits 2, the same as a missing or bad key. Commit
+09eb03c allowed that call when the path named a real key; this denial is
+an intended stricter change. The 32 key bytes are also
+removed as base64, base64url, uppercase hex, and, for a pinned signer, as
+SPKI DER-base64 and PEM.
+The run id is included when a signed drop needs it. A call-bound denial
+keeps the `sign call <digest>` suffix and the same pin-aware command.
+`<state>.decisions/log.jsonl` stores that redacted sentence, not a second
+copy of the raw reason. A throw while building the sentence still denies,
+with a fixed fail-closed line and none of the exception text.
+
+**Not allowed in this stage.** The spec's guard refused the action where the
+machine is now. Do not retry it in this stage, and do not edit the state file
+to skip ahead.
+
+```
+Speckl denied (not allowed in this stage): can() refused: Guard failed: stage == Approved (stage is Idle). Next: do not retry this call in stage Idle. The spec does not allow it here. Use a tool this stage permits, or wait until an allowed step or a human sign-off moves the stage. Do not edit the state file to skip ahead.
+```
+
+**Waiting on a sign-off.** The machine is in an `await` state. `mode in`
+(HITL) refuses every tool. `mode near` (HNTL) refuses act tools and still
+allows an observe tool the spec permits. The sentence names the signal, its
+outcomes and claims, and the command a human runs. The agent must not run
+that command. It does not print `--key` or the pinned public keys.
+
+A state created with `init --signer` names those signers. One pin uses
+`--signer <name>` and does not pass `--pubkey` (a pubkey that is not that
+pin is refused). Several pins omit both flags, so a signature from any of
+them verifies, and the sentence lists the names. An empty pin set has no
+working file-drop command; the sentence says to re-init with `--signer`.
+`<drop.json>` is the human's file.
+
+```
+Speckl denied (waiting on a sign-off): HNTL: act tool refused while awaiting signal review. Next: Act tools stay refused until this sign-off is recorded; an observe tool may still run when the spec allows it. Sign-off "review" (outcomes: approve, reject; claims: reviewer: String). Pinned signer "carol". The drop must be signed by that key. Do not pass --pubkey. A human runs: node '/path/to/agent/signal.mjs' apply --state '/path/to/state.json' --verifier file-drop --file <drop.json> --signer 'carol' . The signed drop is {"signal":"review","outcome":"<approve or reject>","claims":{"reviewer":"<String>"},"run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}. The agent must not run that command or read the state key.
+```
+
+With two pins the command stops at `--file <drop.json>` and the sentence says
+`Pinned signers "carol", "dave"`.
+
+A legacy state (no `signers` field) keeps the old command, with `<pubkey>`
+standing for the human's public-key file:
+
+```
+node '/path/to/agent/signal.mjs' apply --state '/path/to/state.json' --verifier file-drop --file <drop.json> --pubkey <pubkey>
+```
+
+The same command with `mode in` starts from `HITL: no tools while awaiting signal review` and says that no tool call runs until the sign-off is recorded.
+
+**Precondition failed.** A `precondition:` (or a `require` that is not the
+stage) did not hold, a required argument is missing, or another call is
+still in flight. Fix the input, or have a human clear the stuck call. The
+clear-pending command follows the same pin rule. One pinned signer:
+
+```
+node '/path/to/agent/signal.mjs' clear-pending --state '/path/to/state.json' --verifier file-drop --file <drop.json> --signer 'carol'
+```
+
+```json
+{"signal":"clear-pending","call_id":"<pending id>","run":"<run id>","expires":"<ISO-8601>","nonce":"<unique>"}
+```
+
+**Internal error (fail closed).** The payload was not usable, the tool is not
+in the spec, the spec hash does not match, or the state seal failed. Do not
+retry the same call. A human re-inits or restores the state with
+`signal.mjs init`. A missing key, an unreadable key, a missing or unreadable
+state file, a lock failure, and a decision record that cannot be written each
+use a fixed sentence. The Node error, which names the path it opened, is not
+appended.

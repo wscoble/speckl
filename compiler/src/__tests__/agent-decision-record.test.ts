@@ -155,6 +155,36 @@ describe('allows and denies are both sealed', () => {
     expect(JSON.parse(v.stdout)).toMatchObject({ ok: true, decisions: 5, uncommitted: 0 });
   });
 
+  it('a recorded deny stores no key path, key file contents, or signer key', () => {
+    const keyFile = process.env.SPECKL_STATE_KEY_FILE!;
+    const keyHex = readFileSync(keyFile, 'utf-8').trim();
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-dec-key-'));
+    const rel = './state-sekret.key';
+    writeFileSync(join(dir, 'state-sekret.key'), readFileSync(keyFile));
+    const abs = path.resolve(dir, rel);
+    const { publicKey } = crypto.generateKeyPairSync('ed25519');
+    const signerHex = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+    const s = join(dir, 'state.json');
+    const init = signal(['init', '--state', s, '--key', abs, '--signer', 'alice=' + signerHex]);
+    expect(init.status, init.stderr).toBe(0);
+    const tool = [rel, abs, keyFile, keyHex, signerHex].join(' ');
+    const denied = spawnSync(process.execPath, [join(agentDir, 'hook.mjs'), 'pre', '--state', s, '--key', rel], {
+      cwd: dir,
+      input: JSON.stringify({ tool, input: { leak: tool }, call_id: rel }),
+      encoding: 'utf-8',
+    });
+    expect(denied.status, denied.stderr).toBe(2);
+    const log = readFileSync(integ.decisionPaths(s).log, 'utf-8');
+    const shown = (denied.stdout || '') + (denied.stderr || '') + log;
+    for (const secret of [rel, abs, keyFile, keyHex, signerHex, path.basename(dir)]) {
+      expect(shown, secret).not.toContain(secret);
+    }
+    expect(shown).toContain('<keyfile>');
+    expect(log).toContain('unknown tool');
+    expect(String(linesOf(s)[0].tool)).not.toContain('sekret');
+    expect(String(linesOf(s)[0].call_id)).toBe('<keyfile>');
+  });
+
   it('a fresh state verifies as an empty decision record', () => {
     const s = newState();
     const v = signal(['verify', '--state', s]);
