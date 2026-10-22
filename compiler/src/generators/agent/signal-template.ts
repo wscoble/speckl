@@ -5,11 +5,13 @@ export function emitSignalMjs(speckName: string): string {
 /**
  * Speckl signal tooling for ${speckName}.
  *
- *   node signal.mjs init  --state <file> --key <keyfile> [--dev]   (key created if missing)
+ *   node signal.mjs init  --state <file> --key <keyfile> [--dev]
+ *       [--signer <name>=<pubkey>]...     (pubkey: file path, or raw/hex/base64)
  *   All commands accept --key <keyfile> (or env SPECKL_STATE_KEY_FILE).
  *   node signal.mjs apply --state <file> --verifier file-drop|cli [verifier args...]
  *   node signal.mjs timeout --state <file>   # fire timeout → !-marked reject only
  *   node signal.mjs clear-pending --state <file> --verifier file-drop|cli [args...]
+ *   node signal.mjs rotate-signers --state <file> --verifier file-drop --file <drop>
  *
  * This is the human channel; the agent must not be able to run it. The cli
  * verifier (and unsigned drops) trust whoever runs them, so they are refused
@@ -45,6 +47,13 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--state') out.state = argv[++i] || '';
     else if (a === '--verifier') out.verifier = argv[++i] || '';
+    else if (a === '--signer') {
+      const v = argv[i + 1];
+      if (!v || v.startsWith('--')) fail('missing value for --signer');
+      i++;
+      if (!Array.isArray(out.rest.signer)) out.rest.signer = [];
+      out.rest.signer.push(v);
+    }
     else if (a.startsWith('--')) {
       const key = a.slice(2);
       out.rest[key] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
@@ -114,8 +123,78 @@ async function loadVerified(args) {
   return { state, machine };
 }
 
-async function cmdInit(stateFile, dev, keyArg) {
+const SIGNER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const MAX_SIGNERS = 32;
+
+function decodePubHex(input) {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
+  if (buf.length === 32) return buf.toString('hex');
+  const text = buf.toString('utf-8').trim().replace(/-----[^-]+-----/g, '').replace(/\\s+/g, '');
+  if (/^[0-9a-fA-F]+$/.test(text) && text.length === 64) return text.toLowerCase();
+  const b64 = Buffer.from(text, 'base64');
+  if (b64.length === 32 && text.length > 0) return b64.toString('hex');
+  throw new Error('pubkey must be 32-byte ed25519 key (raw, hex, or base64)');
+}
+
+function loadSignerMaterial(value) {
+  if (typeof value !== 'string' || !value) throw new Error('missing pubkey');
+  if (fs.existsSync(value)) return decodePubHex(fs.readFileSync(value));
+  return decodePubHex(value);
+}
+
+function fingerprintOf(hex) {
+  return crypto.createHash('sha256').update(Buffer.from(hex, 'hex')).digest('hex');
+}
+
+function takeSigner(out, name, key, code) {
+  if (typeof name !== 'string' || !SIGNER_NAME.test(name)) fail('bad signer name: ' + name, code);
+  if (out.some(s => s.name === name)) fail('duplicate signer name: ' + name, code);
+  if (out.some(s => s.key === key)) fail('duplicate signer key: ' + name, code);
+  out.push({ name, key });
+}
+
+function byName(a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }
+
+/** \`--signer name=pubkey\` from init. The value is a file path or key bytes. */
+function normalizeSignerSpecs(list) {
+  if (!Array.isArray(list)) fail('signers must be a list');
+  if (list.length > MAX_SIGNERS) fail('too many signers (max ' + MAX_SIGNERS + ')');
+  const out = [];
+  for (const spec of list) {
+    if (typeof spec !== 'string' || spec.indexOf('=') <= 0) fail('--signer must be name=pubkey (a file path or key bytes)');
+    const eq = spec.indexOf('=');
+    const name = spec.slice(0, eq);
+    let key;
+    try { key = loadSignerMaterial(spec.slice(eq + 1)); }
+    catch (e) { fail('signer ' + name + ': ' + (e && e.message ? e.message : String(e))); }
+    takeSigner(out, name, key, 1);
+  }
+  out.sort(byName);
+  return out;
+}
+
+/** Signer objects carried inside a signed rotation drop. Key bytes only, never a path. */
+function normalizeSignerEntries(list) {
+  if (!Array.isArray(list) || list.length === 0) fail('rotation must name at least one signer', 2);
+  if (list.length > MAX_SIGNERS) fail('too many signers (max ' + MAX_SIGNERS + ')', 2);
+  const out = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) fail('signer entry must be an object', 2);
+    const name = entry.name;
+    const raw = entry.key !== undefined ? entry.key : entry.pubkey;
+    if (typeof raw !== 'string' || !raw) fail('signer ' + name + ' missing key', 2);
+    let key;
+    try { key = decodePubHex(raw); }
+    catch (e) { fail('signer ' + name + ': ' + (e && e.message ? e.message : String(e)), 2); }
+    takeSigner(out, name, key, 2);
+  }
+  out.sort(byName);
+  return out;
+}
+
+async function cmdInit(stateFile, dev, keyArg, signerArgs) {
   if (fs.existsSync(stateFile)) fail('state already exists: ' + stateFile);
+  const initialSigners = normalizeSignerSpecs(signerArgs || []);
   const keyPath = keyPathFrom(keyArg);
   if (!keyPath && !dev) {
     fail('init needs a state key: --key <file> or SPECKL_STATE_KEY_FILE (created if missing; keep it unreadable by the agent). Only --dev states may be unsigned.');
@@ -130,6 +209,10 @@ async function cmdInit(stateFile, dev, keyArg) {
     runId: crypto.randomBytes(16).toString('hex'),
     dev: dev === true,
     keyId: stateKey ? keyIdOf(stateKey) : null,
+    // Frozen at init (covered by the genesis hash). \`signers\` is the current
+    // set, re-derived from this plus any rotate-signers log entries.
+    initialSigners,
+    signers: initialSigners.map(s => ({ name: s.name, key: s.key })),
     log: [],
     head: null,
     machine: machine.serialize(),
@@ -147,7 +230,10 @@ async function cmdInit(stateFile, dev, keyArg) {
     process.stderr.write('WARN: DEV state: the cli verifier and unsigned drops are accepted; anyone who can run signal.mjs can approve\\n');
     if (!stateKey) process.stderr.write('WARN: DEV state is unsigned (no state key); hand edits are only caught by the log chain\\n');
   }
-  process.stdout.write(JSON.stringify({ ok: true, state: stateFile, run: state.runId, dev: state.dev, signed: !!stateKey }) + '\\n');
+  process.stdout.write(JSON.stringify({
+    ok: true, state: stateFile, run: state.runId, dev: state.dev, signed: !!stateKey,
+    signers: initialSigners.map(s => ({ name: s.name, fingerprint: fingerprintOf(s.key) })),
+  }) + '\\n');
 }
 
 async function loadVerifier(kind) {
@@ -166,11 +252,22 @@ function verifierCtx(state) {
     dev: state.dev === true,
     now: Date.now(),
     usedNonces: state.usedNonces || [],
+    // Absent on a legacy state. An array (possibly empty) is the pinned set.
+    signers: state.signers,
   };
 }
 
 /** Run a verifier with the dev gate and run/nonce/replay checks. */
 async function verifySignal(args, state, expect) {
+  const listed = args.rest.signer;
+  if (Array.isArray(listed)) {
+    if (listed.length !== 1) fail('pass one --signer', 2);
+    args.rest.signer = listed[0];
+  }
+  if (args.verifier === 'file-drop' && state.signers === undefined && state.dev !== true
+      && args.rest['allow-unsigned'] !== true && args.rest['allow-unsigned'] !== 'true') {
+    process.stderr.write('WARN: this state has no pinned sign-off signers (created before signer pinning); --pubkey is trusted for this call. Re-init with --signer to pin them.\\n');
+  }
   if (args.verifier === 'cli' && state.dev !== true) {
     fail('cli verifier is DEV ONLY: create the state with signal.mjs init --dev, or use a signed verifier (self-approval risk)', 2);
   }
@@ -324,16 +421,57 @@ async function cmdClearPending(args) {
   }
 }
 
+async function cmdRotate(args) {
+  if (!args.state) fail('missing --state');
+  if (!args.verifier) fail('missing --verifier');
+  if (args.verifier !== 'file-drop') fail('rotate-signers requires --verifier file-drop signed by a current pinned signer', 2);
+  if (args.rest['allow-unsigned'] === true || args.rest['allow-unsigned'] === 'true') {
+    fail('rotate-signers refuses unsigned drops', 2);
+  }
+  await acquireLock(args.state);
+  try {
+    const { state } = await loadVerified(args);
+    if (!Array.isArray(state.signers)) {
+      fail('this state has no pinned signers (it predates signer pinning); re-init with --signer', 2);
+    }
+    if (state.signers.length === 0) {
+      fail('no sign-off signers are pinned, so a rotation cannot be authorized; re-init with --signer', 2);
+    }
+    const vs = await verifySignal(args, state, { signal: 'rotate-signers', outcomes: ['rotate'], claims: [] });
+    if (vs.signal !== 'rotate-signers') fail('wrong signal: expected rotate-signers got ' + vs.signal, 2);
+    if (vs.outcome !== 'rotate') fail('disallowed outcome: ' + vs.outcome, 2);
+    if (!Array.isArray(vs.signers)) fail('rotation drop missing signers', 2);
+    const next = normalizeSignerEntries(vs.signers);
+    append(state, { kind: 'signers', signers: next, by: typeof vs.signer === 'string' ? vs.signer : undefined, evidence: vs.evidence, nonce: vs.nonce });
+    recordSignal(state, vs);
+    state.signers = next.map(s => ({ name: s.name, key: s.key }));
+    state.signalLog.push({ ...vs, at: vs.at || new Date().toISOString() });
+    save(args.state, state);
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      signers: state.signers.map(s => ({ name: s.name, fingerprint: fingerprintOf(s.key) })),
+    }) + '\\n');
+  } finally {
+    releaseLock();
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   try {
     if (args.cmd === 'init') {
       if (!args.state) fail('missing --state');
-      await cmdInit(args.state, args.rest.dev === true || args.rest.dev === 'true', args.rest.key);
+      await cmdInit(
+        args.state,
+        args.rest.dev === true || args.rest.dev === 'true',
+        args.rest.key,
+        Array.isArray(args.rest.signer) ? args.rest.signer : [],
+      );
     } else if (args.cmd === 'apply') await cmdApply(args);
     else if (args.cmd === 'timeout') await cmdTimeout(args);
     else if (args.cmd === 'clear-pending') await cmdClearPending(args);
-    else fail('usage: signal.mjs init|apply|timeout|clear-pending --state <file> ...');
+    else if (args.cmd === 'rotate-signers') await cmdRotate(args);
+    else fail('usage: signal.mjs init|apply|timeout|clear-pending|rotate-signers --state <file> ...');
   } catch (e) {
     releaseLock();
     const msg = e instanceof Error ? e.message : String(e);
