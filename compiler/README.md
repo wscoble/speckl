@@ -9,7 +9,7 @@ One spec compiles to:
 - agent rails: `AGENTS.md`, `tools.json`, a pre/post tool hook, and adapters for Claude Code, Cursor, Codex CLI and Gemini CLI
 - CycloneDX / SPDX SBOMs with PROV-O provenance
 
-Speckl is not published to npm. From the repository root of a checkout (Node.js 20+):
+Speckl is not published to npm. From the repository root of a checkout (`compiler/package.json` `engines` declares Node.js `>=20`; these steps were run on Node 20.20.2 and Node 22.23.4):
 
 ```bash
 cd compiler
@@ -31,6 +31,8 @@ export PATH="$HOME/.local/bin:$PATH"
 speckl --help
 speckl-compile --help
 ```
+
+The packed `speckl` does not include `examples/`. `speckl verify` with no spec paths fails. Pass a spec, or `--examples <dir>`.
 
 Docs, examples and the changelog: <https://github.com/wscoble/speckl>.
 Agent harness wiring: <https://github.com/wscoble/speckl/blob/main/docs/harness-adapters.md>.

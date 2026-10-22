@@ -1,5 +1,6 @@
-// Release readiness: `npm pack` the compiler, install the tarball into an
-// empty project, and run the CLI the way users will (`npx speckl ...`).
+// Release readiness: `npm pack` the compiler, install that local tarball into an
+// empty project, and run the bins with `npx --no-install` (the tarball is local;
+// this does not fetch speckl from the npm registry).
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, existsSync, cpSync, writeFileSync } from 'node:fs';
@@ -18,7 +19,7 @@ function run(cmd: string, args: string[], cwd: string, env: Record<string, strin
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
-describe('npm package', () => {
+describe('local package tarball', () => {
   let files: string[] = [];
   let project = '';
 
@@ -52,7 +53,7 @@ describe('npm package', () => {
     expect(files.some(f => f.endsWith('.test.js'))).toBe(false);
   });
 
-  it('npx speckl --help / --version and the speckl-compile alias work from the tarball', () => {
+  it('local tarball: speckl --help / --version and the speckl-compile alias', () => {
     const help = run(npx, ['--no-install', 'speckl', '--help'], project);
     expect(help.status, help.stderr).toBe(0);
     expect(help.stdout).toContain('speckl verify [paths..]');

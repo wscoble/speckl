@@ -20,7 +20,7 @@ No LLMs in the compilation path. Same spec, same output, every time.
 
 ## Install
 
-Speckl is not published to npm. Build it from this repository. You need Node.js 20 or newer (`engines` in `compiler/package.json`) and npm.
+Speckl is not published to npm. Build it from this repository. `compiler/package.json` `engines` declares Node.js `>=20`. These steps were run on Node 20.20.2 and Node 22.23.4.
 
 ```bash
 git clone https://github.com/wscoble/speckl.git
@@ -51,7 +51,11 @@ speckl ../examples/ToggleSwitch.speckdl -t all -o out
 speckl verify ../examples/ToggleSwitch.speckdl
 ```
 
-Add `$HOME/.local/bin` to your shell profile if you want the commands in new terminals. `npm pack` writes `speckl-<version>.tgz` in `compiler/`; delete it when you are done. `speckl verify` needs the `z3` binary (`pacman -S z3`, `apt-get install z3`, or set `Z3_BIN`). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Add `$HOME/.local/bin` to your shell profile if you want the commands in new terminals. `npm pack` writes `speckl-<version>.tgz` in `compiler/`; delete it when you are done. `speckl verify` needs the `z3` binary (`pacman -S z3`, `apt-get install z3`, or set `Z3_BIN`).
+
+The packed `speckl` does not include `examples/`. `speckl verify` with no spec paths looks for that directory next to the installed package and fails. Pass a spec file or directory, or `--examples <dir>` to use that directory's `.speckl-unchecked.json`. In a checkout, `node dist/index.js verify` with no paths uses this repository's `examples/`.
+
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 For agent rails in Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot
 CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro or Windsurf, see
