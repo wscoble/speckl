@@ -48,6 +48,26 @@ export interface AdapterDeps {
   readFile(p: string): string | null;
   /** Write a file (creating directories); `mode` (e.g. 0o755) also chmods it. */
   writeFile(p: string, text: string, mode?: number): void;
+  /**
+   * Real location of an absolute path, following symlinks (resolveRealPath
+   * over the filesystem); throws when it cannot be determined. The generated
+   * adapter always provides it; without it path checks see text only.
+   */
+  realPath?(abs: string): string;
+}
+
+/** Filesystem calls resolveRealPath needs (node:fs / node:path in adapter.mjs). */
+export interface RealPathOps {
+  /** fs.realpathSync.native: throws with `code` (ENOENT, ELOOP, EACCES, ...). */
+  realpath(p: string): string;
+  /** fs.readlinkSync: throws EINVAL for a non-link, ENOENT when absent. */
+  readlink(p: string): string;
+  dirname(p: string): string;
+  basename(p: string): string;
+  /** path.resolve(base, p). */
+  resolve(base: string, p: string): string;
+  /** path.join. */
+  join(...parts: string[]): string;
 }
 
 export interface AdapterOutput { code: number; stdout: string; stderr: string }
@@ -116,6 +136,48 @@ export function mapHarnessCall(rules: HarnessRule[], toolName: unknown, input: R
 }
 
 /**
+ * Where an absolute path really points, following every symlink: the
+ * realpath of its deepest existing ancestor with the not-yet-existing
+ * remainder appended, so a new file written through a symlinked directory
+ * resolves to its real destination. A dangling symlink is followed through
+ * its readlink target. Throws (the caller denies) when the location cannot
+ * be determined: ELOOP, EACCES, an unreadable dangling link, too many hops.
+ */
+export function resolveRealPath(abs: string, ops: RealPathOps): string {
+  const why = (e: unknown) => (e && typeof e === 'object' && typeof (e as { code?: unknown }).code === 'string')
+    ? (e as { code: string }).code : String(e);
+  const absent = (code: string) => code === 'ENOENT' || code === 'ENOTDIR';
+  let cur = abs;
+  const rest: string[] = [];
+  let hops = 0;
+  for (;;) {
+    try {
+      const real = ops.realpath(cur);
+      return rest.length ? ops.join(real, ...rest.slice().reverse()) : real;
+    } catch (e) {
+      if (!absent(why(e))) throw new Error('cannot resolve ' + cur + ' (' + why(e) + ')');
+    }
+    // cur does not resolve: absent, or a dangling symlink to follow.
+    let target: string | null = null;
+    try {
+      target = ops.readlink(cur);
+    } catch (e) {
+      const code = why(e);
+      if (!absent(code) && code !== 'EINVAL') throw new Error('cannot read symlink ' + cur + ' (' + code + ')');
+    }
+    if (target !== null) {
+      if (++hops > 40) throw new Error('cannot resolve ' + abs + ' (ELOOP: more than 40 symlink hops)');
+      cur = ops.resolve(ops.dirname(cur), target);
+      continue;
+    }
+    const parent = ops.dirname(cur);
+    if (parent === cur) throw new Error('cannot resolve ' + abs + ' (no existing ancestor)');
+    rest.push(ops.basename(cur));
+    cur = parent;
+  }
+}
+
+/**
  * First protected path that a tool input mentions, or null. Checks every
  * string except free-text content fields: substrings of absolute and
  * project-relative protected paths, and each token resolved against cwd.
@@ -125,25 +187,47 @@ export function findProtectedMention(
   protectedPaths: { abs: string; rel: string }[],
   cwd: string,
   resolvePath: (base: string, p: string) => string,
+  realPath?: (abs: string) => string,
 ): string | null {
   const contentKeys = ['content', 'new_string', 'old_string', 'new_source', 'description', 'prompt', 'edits', 'file_text', 'new_str', 'old_str', 'before', 'after', 'oldString', 'newString', 'old_text', 'new_text'];
   const norm = (p: string) => p.replace(/\\/g, '/');
-  const prots = protectedPaths.map(p => ({ abs: norm(p.abs), rel: norm(p.rel) }));
+  // Match case-insensitively. Agent harnesses commonly run on macOS (APFS,
+  // case-insensitive by default) and Windows, where `.Claude/settings.json`
+  // IS `.claude/settings.json`; a case-sensitive check let the agent reach
+  // its own rails by changing the case. Comparing lower-cased is fail-closed:
+  // on a case-sensitive filesystem a path that only case-folds to a protected
+  // one is denied rather than risk letting a real rails edit through.
+  const low = (p: string) => p.toLowerCase();
+  const prots = protectedPaths.map(p => ({ abs: norm(p.abs), rel: norm(p.rel), absL: low(norm(p.abs)), relL: low(norm(p.rel)) }));
   const checkString = (s: string): string | null => {
     const ns = norm(s);
+    const nsL = low(ns);
     for (const p of prots) {
-      if (p.abs && ns.includes(p.abs)) return p.abs;
+      if (p.abs && nsL.includes(p.absL)) return p.abs;
       if (p.rel && p.rel !== '.' && !p.rel.startsWith('..')) {
         // Whole path segments only: `.claude/x` hits, `my.claude` does not.
-        const esc = p.rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        if (new RegExp('(^|[^A-Za-z0-9_.-])' + esc + '($|[^A-Za-z0-9_.-])').test(ns)) return p.rel;
+        const esc = p.relL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp('(^|[^a-z0-9_.-])' + esc + '($|[^a-z0-9_.-])').test(nsL)) return p.rel;
       }
     }
     for (const tok of ns.split(/[\s'"=,:()]+/)) {
       if (!tok) continue;
-      const r = norm(resolvePath(cwd, tok));
+      const abs = resolvePath(cwd, tok);
+      const r = low(norm(abs));
       for (const p of prots) {
-        if (p.abs && (r === p.abs || r.startsWith(p.abs))) return p.abs;
+        if (p.abs && (r === p.absL || r.startsWith(p.absL))) return p.abs;
+      }
+      if (!realPath) continue;
+      // Follow symlinks: `notes/hook.mjs` with `notes -> .speckl` is the
+      // rails. Both the written and the real path are checked; a path whose
+      // real location cannot be determined is denied (fail closed).
+      let real: string;
+      try { real = realPath(abs); } catch (e) {
+        return 'unresolvable path ' + JSON.stringify(tok) + ': ' + (e instanceof Error ? e.message : String(e)) + '; denied (fail closed)';
+      }
+      const rl = low(norm(real));
+      for (const p of prots) {
+        if (p.abs && (rl === p.absL || rl.startsWith(p.absL))) return p.abs + ' (via symlink ' + tok + ')';
       }
     }
     return null;
@@ -594,6 +678,17 @@ export function harnessProtectedDirs(harnesses: string[]): string[] {
   };
   for (const h of harnesses) for (const d of extra[h] || []) if (!dirs.includes(d)) dirs.push(d);
   return dirs;
+}
+
+/**
+ * Version-control paths no tool may write, for every spec. `.git/hooks/*`
+ * runs as real shell on the next commit/checkout, so an agent allowed to
+ * edit files and run `git commit` could plant a hook that executes outside
+ * the policy; `.git/config` can redirect `core.hooksPath` to the same end.
+ * Both are off limits (normal `git add/commit/push` name neither).
+ */
+export function vcsProtectedDirs(): string[] {
+  return ['.git/hooks', '.git/config'];
 }
 
 /**
@@ -1388,7 +1483,21 @@ export function runAdapter(
   const stateDir = deps.dirname(stateAbs);
   if (stateDir !== projectDir && deps.resolvePath(stateDir, '.') !== deps.resolvePath(projectDir, '.')) protectedAbs.push(stateDir);
   for (const d of harnessProtectedDirs(Object.keys(harnesses))) protectedAbs.push(deps.resolvePath(projectDir, d));
+  for (const d of vcsProtectedDirs()) protectedAbs.push(deps.resolvePath(projectDir, d));
   if (flags['hermes-home']) protectedAbs.push(deps.resolvePath(projectDir, flags['hermes-home']));
+  const realPath = deps.realPath ? (p: string) => (deps.realPath as (abs: string) => string)(p) : undefined;
+  if (realPath) {
+    // A rails path that is itself reached through a symlink (macOS /tmp ->
+    // /private/tmp, a key dir linked elsewhere) is also protected at its
+    // real location, which is what resolved tool paths are compared with.
+    for (const abs of protectedAbs.slice()) {
+      let real: string;
+      try { real = realPath(abs); } catch (e) {
+        return fail('cannot resolve the Speckl-protected path ' + abs + ' (' + (e instanceof Error ? e.message : String(e)) + '); denied (fail closed)');
+      }
+      if (real !== abs) protectedAbs.push(real);
+    }
+  }
   const protectedPaths = protectedAbs.map(abs => {
     const r = deps.relativePath(projectDir, abs).replace(/\\/g, '/');
     return { abs, rel: r.startsWith('..') ? '' : r };
@@ -1402,7 +1511,7 @@ export function runAdapter(
       if (!isPre) return formatPost(harness, null);
       const pin = parseToolInput(payload.tool_input);
       if (!pin.ok) return fail(pin.reason);
-      const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
+      const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath, realPath);
       if (hit) return fail(String(payload.tool_name) + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
       return formatPre(harness, true, '');
     }
@@ -1499,7 +1608,7 @@ export function runAdapter(
   const label = typeof toolName === 'string' ? toolName : '(no tool_name)';
 
   if (isPre) {
-    const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
+    const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath, realPath);
     if (hit) return fail(label + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
     // OpenCode bash and OpenClaw exec take a workdir, Kiro shell tools a cwd: a mapped command run
     // elsewhere (`npm test` in another checkout) would advance the policy
@@ -1538,8 +1647,8 @@ export function runAdapter(
 
 /** Functions emitted into adapter.mjs, in order. */
 export const ADAPTER_FUNCTIONS = [
-  hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
+  hasShellControl, parseToolInput, mapHarnessCall, resolveRealPath, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
-  harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
+  harnessConfigFile, harnessProtectedDirs, vcsProtectedDirs, normalizePayload, parseAdapterFlags, shellQuote,
   buildHarnessHooks, mergeHarnessSettings, clineScripts, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness, runAdapter,
 ];

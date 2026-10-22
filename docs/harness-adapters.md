@@ -504,9 +504,42 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   `npm test` runs whatever the test script runs, and the agent can edit that
   script. Pair the policy with Claude Code's sandbox or a separate OS user if
   the agent must not reach the key or `signal.mjs` that way.
+- **Required setup for client or untrusted repos:** run the agent as a
+  separate OS user that has no write access to `.speckl/`, the key directory
+  and `.git/hooks` (or inside a sandbox that enforces the same). The hook
+  can't stop a shell command that builds its path at run time, and a repo you
+  didn't write can carry symlinks or scripts you haven't read. Filesystem
+  permissions are what make the rails untouchable; the path checks are a
+  second layer.
 - `Grep`/`Glob` over the whole project can return lines from `.speckl/` (the
   state is integrity-protected, not secret). Keep the key outside the project.
-- Path checks see paths as written; they don't follow symlinks.
+- File-tool paths are resolved through symlinks. Every path in a tool's
+  input (`file_path`, `path`, `notebook_path`, the files an `apply_patch`
+  touches, and so on, in all harnesses) is checked both as written and at its
+  real location: the realpath of its deepest existing ancestor plus the part
+  that doesn't exist yet, so `notes/agent/hook.mjs` with a pre-existing
+  `notes -> .speckl` link, or a new file written through a link to
+  `.git/hooks`, is denied. A dangling link is followed through its target. A
+  path whose real location can't be determined (a symlink loop, a directory
+  the agent's user can't search, an unreadable link) is denied. Rails paths
+  that are themselves reached through a symlink (macOS `/tmp` ->
+  `/private/tmp`, a key directory linked elsewhere) are protected at their
+  real location too.
+- Shell commands are still matched as text. Literal path tokens in a command
+  are resolved the same way, but a shell can build a path the check never
+  sees (from a variable, `$(...)`, globbing, `cd` then a relative name), so
+  the check can't fully resolve what a command will touch (see the required
+  setup above).
+- Path checks match the rails paths **case-insensitively**, because the agent commonly runs on
+  a case-insensitive filesystem (macOS APFS, Windows) where `.Claude/` is
+  `.claude/`; on a case-sensitive filesystem a path that only case-folds to a
+  protected one is still denied (fail closed).
+- `.git/hooks` and `.git/config` are protected in every project: a
+  `.git/hooks/*` script runs as real shell on the next commit or checkout, so
+  an agent allowed to edit files and run `git commit` could otherwise plant
+  one that executes outside the policy (`.git/config` can redirect
+  `core.hooksPath` to the same end). Normal `git add`/`commit`/`push` name
+  neither path, so they are unaffected.
 - Cursor can also load Claude Code hooks ("third-party hooks"). Wire one
   harness per project, or Cursor may call the Claude Code adapter with Cursor
   tool names, which it will deny.

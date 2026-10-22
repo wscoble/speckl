@@ -65,6 +65,14 @@ const deps = {
   agentDir,
   readFile(p) { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
   writeFile(p, text, mode) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); if (mode) fs.chmodSync(p, mode); },
+  realPath: p => resolveRealPath(p, {
+    realpath: q => fs.realpathSync.native(q),
+    readlink: q => fs.readlinkSync(q),
+    dirname: q => path.dirname(q),
+    basename: q => path.basename(q),
+    resolve: (b, q) => path.resolve(b, q),
+    join: (...q) => path.join(...q),
+  }),
 };
 
 async function main() {
