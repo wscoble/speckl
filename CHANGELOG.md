@@ -54,12 +54,21 @@ alias.
   | TypeScript | 4/16 |
   | Agent rails | 0/2 |
   | Go | 4/16 |
-  | Rust | 1/16 |
+  | Rust | 16/16 |
   | Elm | 0/16 |
-  | Protobuf | 7/16 |
+  | Protobuf | 10/16 |
   | OpenAPI | 15/16 |
   | Camel | 16/16 |
   | k8s | 16/16 |
+- **Type aliases** (#24). `type ServerId = String`, `type Ids = List(ServerId)`
+  and `type Maybe = ServerId | null` are now parsed (they were silently dropped)
+  and expanded to their targets before any backend runs, so protoc, OpenAPI,
+  TypeScript, Go, Rust, Elm, Camel and Z3 see ordinary types. The IR also keeps
+  each alias as a named type, and OpenAPI emits it as a component.
+  - `type State = A | B | C` on one line declares an enum.
+  - `type X = { a: Nat, b: Value }` on one line is a record with only those
+    fields (it used to absorb the members after it).
+  - `Option(T)` is read as the nullable `T | null`.
 - **Agent targets** (#4). `-t agent` (also part of `-t all`) compiles an
   `agent { }` block into `AGENTS.md`, `tools.json`, a runtime-agnostic
   `hook.mjs` (pre/post, exit 0 allow, 2 deny, 1 error), `signal.mjs` with
@@ -226,7 +235,7 @@ alias.
   - `examples/.speckl-unchecked.json` acknowledges the 31 example obligations
     that are not yet proven. They print as UNCHECKED and never count as
     passed. An entry that becomes proven or no longer exists fails as
-    `STALE-BASELINE`. Today 3 of 34 example verify blocks are proven.
+    `STALE-BASELINE`. Today 5 of 36 example verify blocks are proven.
   - `-t agent` refuses to emit rails if a guard still contains an
     untranslated placeholder (the bogus `const x = {}` lines are gone).
   - The AST Z3 output no longer ends with `(get-model)` after `unsat`, so a

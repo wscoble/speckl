@@ -36,6 +36,10 @@ export class OpenAPITarget {
           type: 'string',
           enum: (type as IREnumType).variants,
         };
+      } else if (type.kind === 'alias') {
+        // `type ServerId = String`: field references are already expanded
+        // to the target; the component documents the named type.
+        components[name] = this.typeRefToSchema(speck, type.target, { name, type: type.target, optional: false });
       }
     }
 

@@ -151,7 +151,7 @@ frames + stuttering), and the solver is asked whether `p` can be violated.
 | `Set(T)` | Set | `(Array T Bool)` membership |
 | `Map(K, V)` | Associative map | `(Array K V)` |
 | `T \| null` | Optional | Lifted to underlying sort |
-| `type X = ...` | Named alias | Uninterpreted sort or datatype |
+| `type X = ...` | Named alias (one line: `type Id = String`, `type Ids = List(Id)`) | Replaced by its target type before code generation and Z3; `A \| B \| C` declares an enum, `{ ... }` a record |
 
 ### 2.6 Events
 

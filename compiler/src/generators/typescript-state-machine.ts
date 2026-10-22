@@ -248,6 +248,11 @@ function emitSpeck(speck: SpeckNode): string {
   }
   for (const v of (stateNode?.variables ?? [])) collectIdents(v.typeExpr);
   for (const a of actions) for (const p of a.params) collectIdents(p.type);
+  // A type declared above (record interface or event) needs no placeholder;
+  // emitting both is a duplicate declaration.
+  for (const iface of recordInterfaces) opaqueRecordTypes.delete(iface.name);
+  for (const e of events) opaqueRecordTypes.delete(e.name);
+  for (const e of implicitEvents.values()) opaqueRecordTypes.delete(e.name);
 
   // Collect which state variables are Map types (for bracket -> .get() translation)
   const mapVarNames = new Set(stateVars
