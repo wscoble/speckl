@@ -683,7 +683,7 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
 - Those 32 bytes are removed from deny text as lowercase and uppercase hex,
   base64 and base64url with and without padding, and SPKI DER-base64 and
   PEM (`redactSecrets` in `compiler/src/generators/agent/deny-reason.ts`
-  lines 37–66). `redacts base64, base64url, uppercase hex, and SPKI forms of
+  lines 39–68). `redacts base64, base64url, uppercase hex, and SPKI forms of
   a 64-hex key` in `deny-reason.test.ts` checks each form. Any other PEM
   block and any other 64-hex token are removed the same way, except a call
   digest named on the keep-list. `redacts key paths, PEM blocks and 64-hex
@@ -730,7 +730,7 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   in `state-integrity-template.ts` line 268; `clipReason` lines 320–323).
   `clips a deny reason at 500 characters and refuses to store the raw input`
   in `agent-decision-record.test.ts` expects 500 `R` characters. A deny
-  sentence is capped at 1800 characters (`deny-reason.ts` line 67). The
+  sentence is capped at 1800 characters (`deny-reason.ts` line 69). The
   length test above expects `redactSecrets` of 1801 `x` characters to end
   with `…` and to have length 1801.
 - `status` and `doctor` print the state file path and the harness config
