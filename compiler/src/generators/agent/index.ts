@@ -440,6 +440,11 @@ function buildAgentsMd(
   lines.push('**signed** verifier (`file-drop` or a plug-in); a signed drop is bound to this');
   lines.push('run (`run`), expires (`expires`) and is single-use (`nonce`).');
   lines.push('');
+  lines.push('`signal.mjs init --signer name=pubkey` (repeatable) pins the ed25519 keys that');
+  lines.push('`file-drop` will accept. The set is sealed into the state at init. A signature');
+  lines.push('from any other key is refused, including a `--pubkey` passed on the command');
+  lines.push('line. `rotate-signers` replaces the set; only a current pinned key can authorize it.');
+  lines.push('');
   lines.push('> **DEV ONLY — `cli` verifier.** `--verifier cli` (and unsigned file drops) are');
   lines.push('> refused unless the state file was created with `signal.mjs init --dev`. Anyone');
   lines.push('> who can run a shell command can use them, so an agent with shell access could');
@@ -482,7 +487,10 @@ Initialize state once (prints the run id signed drops must carry):
 \`\`\`
 # production: signed state + signed verifiers only. The key file is created if
 # missing; keep it (and SPECKL_STATE_KEY_FILE) out of the agent's reach.
-node signal.mjs init --state ./state.json --key /etc/speckl/state.key
+# --signer (repeatable) pins the ed25519 public keys that may sign file-drop
+# approvals. The set is sealed into this state; apply cannot choose another.
+node signal.mjs init --state ./state.json --key /etc/speckl/state.key \\
+  --signer carol=./keys/carol.pub
 # DEV ONLY: also allows the cli verifier; without --key the state is unsigned
 node signal.mjs init --state ./state.json --dev
 
@@ -495,9 +503,11 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 The spec never names a human action. It waits for a **verified signal**.
 
 \`\`\`
-# File-drop verifier (ed25519-signed JSON; evidence = file sha256)
+# File-drop verifier (ed25519-signed JSON; evidence = file sha256).
+# The signature must be from a key pinned at init. --pubkey is optional and,
+# if passed, must be one of those keys — it does not add a trust anchor.
 node signal.mjs apply --state ./state.json --verifier file-drop \\
-  --file ./inbox/review.json --pubkey ./keys/reviewer.pub
+  --file ./inbox/review.json
 # The signed JSON names its signal and is bound to this run:
 #   {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...},
 #    "run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}
@@ -508,6 +518,11 @@ node signal.mjs apply --state ./state.json --verifier cli \\
   --outcome ${outcome} --as alice${claimFlags}
 \`\`\`
 
+To replace the pinned set, a current signer signs a \`rotate-signers\` drop
+(\`{"signal":"rotate-signers","outcome":"rotate","signers":[{"name":"…","key":"<hex>"}], …}\`)
+and someone runs \`signal.mjs rotate-signers --verifier file-drop --file <drop>\`.
+Any one pinned key can sign; this is not a threshold. See \`docs/agent-signals.md\`.
+
 ## Stuck tool calls
 
 A \`pre\` with no matching \`post\` (e.g. the tool crashed) blocks later calls
@@ -516,7 +531,7 @@ until it is cleared. It clears itself as failed after the pending timeout
 
 \`\`\`
 node signal.mjs clear-pending --state ./state.json --verifier file-drop \\
-  --file ./inbox/clear.json --pubkey ./keys/reviewer.pub
+  --file ./inbox/clear.json
 #   {"signal":"clear-pending","call_id":"<pending id>","run":"...","expires":"...","nonce":"..."}
 \`\`\`
 
