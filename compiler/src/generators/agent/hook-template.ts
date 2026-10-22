@@ -20,7 +20,7 @@ export function emitHookMjs(speckName: string): string {
  * the state key, the key path (given, resolved, or the symlink target), the
  * key file contents, a signer key, or the state contents. A key path shorter
  * than 8 characters (as given, as resolved, or as realpath of the file or
- * its parent directory) is refused before the hook runs.
+ * its parent directory) is refused before the hook runs, and exits 2.
  * 64-hex key material is also removed in base64, base64url, and SPKI form.
  * The same redacted sentence is what the decision record stores. Building
  * it cannot change the decision: a throw
@@ -339,7 +339,7 @@ async function main() {
   const args = parseArgs(process.argv);
   hookKeyArg = args.key || '';
   if (keyPathTooShort(hookKeyArg) || keyPathTooShort(process.env.SPECKL_STATE_KEY_FILE)) {
-    respond('deny', 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.', 1);
+    respond('deny', 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.', 2);
   }
   if (args.cmd !== 'pre' && args.cmd !== 'post') {
     finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post --state <file>', internalNext('usage'), secretPaths()));

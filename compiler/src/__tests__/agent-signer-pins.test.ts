@@ -169,6 +169,7 @@ describe('init records the signer set', () => {
     ['the same key under two names', [`carol=${alice.hex}`, `dave=${alice.raw.toString('base64')}`], /duplicate signer key/],
     ['a missing key file', ['carol=/no/such/reviewer.pub'], /signer carol:/],
     ['an empty pubkey', ['carol='], /signer carol:/],
+    ['a pubkey shorter than 32 bytes', ['carol=abcd'], /32-byte/],
   ])('refuses %s and writes no state', (_label, signers, re) => {
     const { state, out } = init(signers);
     expect(out.status).toBe(1);

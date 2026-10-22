@@ -137,8 +137,9 @@ alias.
   lock, or decision-record failure prints a fixed sentence and not the Node error.
   A key path shorter than 8 characters is refused with a fixed sentence,
   including a long path whose symlink target or that target's parent
-  directory is under 8 characters. That is stricter than commit 09eb03c,
-  which allowed the call when the path named a real key. The state key and
+  directory is under 8 characters. The hook exits 2, the same as a missing
+  or bad key. That is stricter than commit 09eb03c, which allowed the call
+  when the path named a real key. The state key and
   each pinned signer key are also removed as base64, base64url, uppercase
   hex, and SPKI DER-base64 or PEM. `status` and `doctor` print the key path
   as `<keyfile>` after that same redaction. Plugin spawn failures, a
@@ -166,6 +167,13 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
+  shorter than 8 characters — as given, as `path.resolve` returns it, as
+  `realpath` of the key file, or as that real path's parent directory — is
+  refused before the hook runs. The hook exits 2, the same as a missing or
+  bad key. Commit 09eb03c on `main` allowed the call when that path named a
+  real key.
 
 - **CI runs on GitHub-hosted runners** (#23). The self-hosted runner had stopped picking up jobs, so `ci.yml` now uses `ubuntu-latest`. It cancels a superseded run on the same ref and has two jobs:
   - **build-and-test:** `npm ci`, build, `tsc --noEmit`, `npm test`, `npm run verify` against z3 5.1.0 (pinned by SHA-256 and cached), and coverage with its floors.

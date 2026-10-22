@@ -16,10 +16,12 @@ export function shellQuote(value: unknown): string {
 
 /**
  * Strip key material and known key paths from a deny sentence.
- * A secret shorter than 8 characters is left alone so a short token cannot
- * erase the sentence. The hook and adapter refuse to run when a key path
- * itself is that short. A 64-hex secret (the state key, or a pinned signer
- * key) is also removed as uppercase and lowercase hex, as base64 and
+ * A token shorter than 8 characters is left alone so it cannot erase the
+ * sentence. No Speckl secret is that short: the state key is 64 hex
+ * characters and a signer key is 32 bytes. The hook and adapter refuse to
+ * run when a key path itself is under 8 characters. A 64-hex secret (the
+ * state key, or a pinned signer key) is also removed as uppercase and
+ * lowercase hex, as base64 and
  * base64url of its 32 bytes (with and without padding), and as the SPKI
  * DER-base64 and PEM of those bytes. Any other PEM block and any other
  * 64-hex token are removed too. The result is capped so a huge call id

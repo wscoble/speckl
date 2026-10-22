@@ -518,13 +518,14 @@ contents of `state.json`. Those 32 key bytes are also removed when they
 appear as uppercase hex, as base64 or base64url (with or without padding),
 or, for a pinned signer key, as SPKI DER-base64 or PEM. A `--key` or
 `SPECKL_STATE_KEY_FILE` path shorter than 8 characters is not printed: the
-hook and the adapter deny with a fixed sentence and do not run. That check
-covers the path as given, `path.resolve` of it, `realpath` of the key file,
-and the parent directory of that real path. Commit 09eb03c allowed the call
-when such a path named a real key. This denial is an intended stricter
-change; the comparison against the hook and adapter generated from that
-commit marks the row as an expected difference, and every other compared
-call still matches. The decision record stores that same sentence.
+hook and the adapter deny with a fixed sentence and do not run. The hook
+exits 2, the same as a missing or bad key. That check covers the path as
+given, `path.resolve` of it, `realpath` of the key file, and the parent
+directory of that real path. Commit 09eb03c allowed the call when such a
+path named a real key. This denial is an intended stricter change; the
+comparison against the hook and adapter generated from that commit marks
+the row as an expected difference, and every other compared call still
+matches. The decision record stores that same sentence.
 If building it throws, the call is still denied. A failure to load the
 state, read the key, take the lock, or append the decision record prints a
 fixed sentence and not the Node error.
@@ -648,55 +649,108 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   stderr. A key path they would have printed becomes `<keyfile>`. The state
   file path and the harness config path stay, because they are not the key.
 - A `--key` or `SPECKL_STATE_KEY_FILE` path makes the hook and the adapter
-  deny with one fixed sentence, and not run, when any of these is shorter
-  than 8 characters: the path as given, `path.resolve` of it, `realpath` of
-  the key file, or the parent directory of that real path. A `realpath` that
-  throws is not treated as short. The path is not printed. Commit 09eb03c
-  allowed that call when the path named a real key. This denial is stricter
-  on purpose. The state key and each pinned signer key are 64 hex
-  characters. That token is removed in either case, and those 32 bytes are
-  also removed as base64 and base64url with and without padding, and as
-  SPKI DER-base64 and PEM. Any other PEM block is removed. The exact
-  key-file text is removed, including a trailing newline when that whole
-  text appears together.
-- What can still be printed is a closed list, and none of it is key material.
-  The state key and each pinned signer key are 32 bytes. Every encoding
-  removed above is at least 8 characters, so a shorter token cannot be one
-  of those keys. A key path under 8 characters, including the symlink target
-  and its parent directory, is refused and is not printed.
-  - A secret shorter than 8 characters that is not the key path.
-  - These non-secret sentences: a decision-chain sentence (`decision chain
-    broken at seq N`, `decision head is not JSON`, and the other record
-    checks) names a sequence number or a field; `log replay failed:` plus a
-    fixed replay sentence names the log check; `can()` guard text is the
-    expression written in the spec; the call-bound canonical preimage is the
-    call's arguments after every known secret and the encodings above have
-    been removed (the printed canonical may then not hash to the digest);
-    the decision record stores at most 500 characters of that already-redacted
-    sentence; a deny sentence on stdout is capped at 1800 characters. The
-    state file path and the harness config path, printed by `status` and
-    `doctor`, are the project rails.
-  - Plugin and spawn sentences, which carry a code or a signal name: Pi,
-    OpenCode, and OpenClaw say `Speckl adapter failed: spawn ENOENT`,
-    `spawn ETIMEDOUT`, `spawn error`, `killed by <signal>`, or
-    `exit <status>` when the adapter did not print a Speckl sentence, plus
-    `Speckl: the hook payload could not be serialised` and
-    `Speckl: could not run the adapter`. A Speckl sentence from the adapter
-    is passed through after the adapter has redacted it. The adapter starting
-    hook.mjs says `hook.mjs timed out after N ms`, `hook.mjs could not be
-    started`, `hook.mjs killed by <signal>`, or `hook.mjs failed` in place of
-    a Node stack. `status` and `doctor` say `command timed out after N ms`,
-    `command killed by <signal>`, `command failed (<code>)`, or
-    `command failed`. A probe line that quotes hook output is then redacted,
-    so a key path in it becomes `<keyfile>`.
-  - The other fixed sentences, which replaced Node and OS errors: `state file
-    missing`, `state file is not JSON`, `state file could not be read`,
-    `state key not found`, `state key could not be read`, `state key must be
-    32 bytes as 64 hex chars`, `state lock timeout`, `state lock could not be
-    taken`, `stdin read failed`, `decision record could not be read`,
-    `decision record unavailable`, `log replay failed`, `state save failed`,
-    `hook failed closed`, the short key-path sentence, and
-    `Speckl adapter error: the adapter failed closed. The call stays denied.`
+  deny, and not run, when any of these is shorter than 8 characters: the
+  path as given, `path.resolve` of it, `realpath` of the key file, or the
+  parent directory of that real path. `keyPathTooShort` in
+  `compiler/src/generators/agent/hook-template.ts` (line 110) and in
+  `runAdapter` (`compiler/src/generators/agent/harness-runtime.ts` line 2345)
+  implements that check. A `realpath` that throws is not treated as short.
+  The path is not printed. The hook exits 2 (`respond` in `hook-template.ts`
+  line 342), the same code a missing or bad key uses (`finishDeny(2)` at
+  line 378 after `readKey` throws). The adapter's pre-tool deny uses
+  `formatPre`, which exits 2 (`harness-runtime.ts` line 260).
+  `deny-secret-paths.test.ts` runs `hook.mjs` directly and expects exit 2
+  (`hook.mjs exits 2 when the key path is shorter than 8 characters`),
+  including a 1–3 character path, a resolved path under 8 characters, and a
+  long symlink whose real path or parent is under 8 characters. Commit
+  09eb03c allowed that call when the path named a real key. This denial is
+  stricter on purpose. The comparison
+  `a long symlink to a key path under 8 characters is an expected difference
+  from 09eb03c` records hook exit 2 and adapter exit 2 against that
+  commit's allow.
+- No Speckl secret is under 8 characters. The state key must be 64 hex
+  characters: `readKey` in
+  `compiler/src/generators/agent/state-integrity-template.ts` line 73
+  (`/^[0-9a-fA-F]{64}$/`). A shorter file is denied with exit 2 by
+  `a missing or malformed key file is denied` in
+  `agent-state-integrity.test.ts` (it writes `short`) and by
+  `a missing, malformed, or unreadable key does not print the path` in
+  `deny-secret-paths.test.ts`. A pinned signer key must be 32 bytes:
+  `decodePubHex` in `compiler/src/generators/agent/signal-template.ts`
+  lines 145–152 throws `pubkey must be 32-byte ed25519 key` otherwise.
+  `refuses a pubkey shorter than 32 bytes and writes no state` in
+  `agent-signer-pins.test.ts` rejects `carol=abcd`.
+- Those 32 bytes are removed from deny text as lowercase and uppercase hex,
+  base64 and base64url with and without padding, and SPKI DER-base64 and
+  PEM (`redactSecrets` in `compiler/src/generators/agent/deny-reason.ts`
+  lines 37–66). `redacts base64, base64url, uppercase hex, and SPKI forms of
+  a 64-hex key` in `deny-reason.test.ts` checks each form. Any other PEM
+  block and any other 64-hex token are removed the same way, except a call
+  digest named on the keep-list. `redacts key paths, PEM blocks and 64-hex
+  secrets, and caps length` in that file still contains the digest and
+  `<keyfile>` and does not contain the key path.
+- Decision-chain sentences are fixed strings in `state-integrity-template.ts`:
+  `decision head is not version 1` (line 332), `decision genesis mismatch`
+  (line 336), `decision head is not JSON` (line 371), and
+  `decision chain broken at seq N` (lines 415 and 478). An OS error with a
+  code becomes `decision record could not be read` (line 507).
+  `agent-decision-record.test.ts` expects `decision chain broken at seq 0`.
+- Log replay reports `log chain broken at entry N` (line 233),
+  `log chain head mismatch (log truncated or extended)` (line 237), and
+  `machine state does not match the log` (line 246). An OS error with a
+  code becomes `log replay failed`; any other derive throw is prefixed
+  `log replay failed:` (lines 242–244). `log truncation is denied` in
+  `agent-state-integrity.test.ts` expects `head mismatch` and
+  `machine state does not match the log`.
+- `can()` text is the spec guard. `hook-deny-reason.test.ts` expects
+  `can() refused: Guard failed: stage == Approved (stage is Idle)`.
+- The call-bound canonical preimage passes through `redactSecrets` before
+  it is stored or printed. The keep-list case above still contains the
+  digest and `<keyfile>` and does not contain the key path.
+- Plugin, hook, and doctor messages are fixed codes. `pluginSource` in
+  `harness-runtime.ts` (lines 1101–1115) emits
+  `Speckl: the hook payload could not be serialised`,
+  `Speckl: could not run the adapter`, and `Speckl adapter failed:` plus
+  `spawn <code>`, `killed by <signal>`, or `exit <status>` when the adapter
+  did not print a Speckl sentence. `example-pi-opencode-openclaw-policy.test.ts`
+  expects `killed by SIGKILL`, `exit 1`, and `ETIMEDOUT`. The adapter's
+  `runHook` in `adapter-template.ts` (lines 72–78) uses
+  `hook.mjs timed out after N ms`, `hook.mjs could not be started`,
+  `hook.mjs killed by <signal>`, or `hook.mjs failed` in place of a Node
+  stack. `interpretHook` (`harness-runtime.ts` lines 248–250) applies that
+  same Node-text filter, and `harness-runtime.test.ts` expects
+  `hook.mjs failed` for an `Error:` line, a leading `/`, a Windows drive,
+  and an `at ` frame. `hookCommandResult` (lines 862–866) uses
+  `command timed out after N ms`, `command killed by <signal>`,
+  `command failed (<code>)`, or `command failed`. `harness-setup.test.ts`
+  expects `command failed (ENOENT)`. A probe line that quotes hook output
+  is then redacted, so a key path in it becomes `<keyfile>` (that file's
+  doctor output contains `<keyfile>` and `HOOK MISSING`).
+- The decision record stores at most 500 characters (`DECISION_REASON_MAX`
+  in `state-integrity-template.ts` line 268; `clipReason` lines 320–323).
+  `clips a deny reason at 500 characters and refuses to store the raw input`
+  in `agent-decision-record.test.ts` expects 500 `R` characters. A deny
+  sentence is capped at 1800 characters (`deny-reason.ts` line 67). The
+  length test above expects `redactSecrets` of 1801 `x` characters to end
+  with `…` and to have length 1801.
+- `status` and `doctor` print the state file path and the harness config
+  path. The key path is `<keyfile>`. `harness-setup.test.ts`
+  `redacts a symlinked key path, its real directory, and the key bytes`
+  expects `key: present <keyfile>` and `/p/.speckl/state.json`, and expects
+  `/k/state.key` to be absent.
+- State-load, key-read, lock, and save failures print fixed sentences:
+  `state file missing`, `state file is not JSON`, `state file could not be
+  read`, `state key not found`, `state key could not be read`,
+  `state key must be 32 bytes as 64 hex chars` (`readKey`, line 73),
+  `state lock timeout`, `state lock could not be taken`, `stdin read failed`,
+  `decision record could not be read`, `decision record unavailable`,
+  `log replay failed`, `state save failed`, `hook failed closed`, the short
+  key-path sentence, and
+  `Speckl adapter error: the adapter failed closed. The call stays denied.`
+  `a missing, malformed, or unreadable key does not print the path` and
+  `a lock error does not print the state path or the key directory` in
+  `deny-secret-paths.test.ts` expect those sentences and the absence of
+  `ENOENT` and `EACCES`.
   If the key's real parent directory is also the state file's directory,
   that directory is removed from the printed sign-off command, so the
   command loses a path segment and does not gain key bytes.

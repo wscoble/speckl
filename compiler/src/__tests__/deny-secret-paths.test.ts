@@ -468,7 +468,7 @@ describe('short key paths and other key encodings stay out of deny text', () => 
     const state = initState();
     for (const key of ['k', 'ab', 'xyz', './k']) {
       const denied = hookRun(state, 'pre', { tool: 'run_tests', input: { leak: realKey }, call_id: '1' }, { key, cwd });
-      expect(denied.status, key + ' ' + denied.stderr).toBe(1);
+      expect(denied.status, key + ' ' + denied.stderr).toBe(2);
       expect(JSON.parse(denied.stdout).reason, key).toBe(SHORT_KEY);
       expect(denied.stderr, key).toContain(SHORT_KEY);
       expect(denied.stdout + denied.stderr + logText(state), key).not.toContain(realKey);
@@ -483,9 +483,22 @@ describe('short key paths and other key encodings stay out of deny text', () => 
     expect(given.length).toBeGreaterThanOrEqual(8);
     expect(path.resolve(cwd, given).length).toBeLessThan(8);
     const resolved = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: given, cwd });
-    expect(resolved.status).toBe(1);
+    expect(resolved.status).toBe(2);
     expect(JSON.parse(resolved.stdout).reason).toBe(SHORT_KEY);
     expect(resolved.stdout + resolved.stderr).not.toContain(given);
+  });
+
+  it('hook.mjs exits 2 when the key path is shorter than 8 characters', () => {
+    const state = initState();
+    const r = spawnSync(
+      process.execPath,
+      [join(agent, 'hook.mjs'), 'pre', '--state', state, '--key', 'ab'],
+      { input: JSON.stringify({ tool: 'run_tests', input: {}, call_id: '1' }), encoding: 'utf-8' },
+    );
+    expect(r.status, r.stderr).toBe(2);
+    const body = JSON.parse((r.stdout || '').trim());
+    expect(body).toEqual({ decision: 'deny', reason: SHORT_KEY });
+    expect(r.stderr || '').toContain(SHORT_KEY);
   });
 
   it('the adapter refuses the same short paths', () => {
@@ -551,20 +564,20 @@ describe('short key paths and other key encodings stay out of deny text', () => 
       expect(path.dirname(parentFile).length).toBeLessThan(8);
       const state = initState();
       const byKey = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: link });
-      expect(byKey.status, byKey.stderr).toBe(1);
+      expect(byKey.status, byKey.stderr).toBe(2);
       expect(JSON.parse(byKey.stdout).reason).toBe(SHORT_KEY);
       expect(byKey.stdout + byKey.stderr + logText(state)).not.toContain(held.path);
       expect(byKey.stdout + byKey.stderr).not.toContain(link);
 
       const byEnv = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: keyFile, envKey: link });
-      expect(byEnv.status, byEnv.stderr).toBe(1);
+      expect(byEnv.status, byEnv.stderr).toBe(2);
       expect(JSON.parse(byEnv.stdout).reason).toBe(SHORT_KEY);
       expect(byEnv.stdout + byEnv.stderr).not.toContain(held.path);
       expect(byEnv.stdout + byEnv.stderr).not.toContain(link);
       expect(byEnv.stdout + byEnv.stderr).not.toContain(keyFile);
 
       const byParent = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: parentLink });
-      expect(byParent.status, byParent.stderr).toBe(1);
+      expect(byParent.status, byParent.stderr).toBe(2);
       expect(JSON.parse(byParent.stdout).reason).toBe(SHORT_KEY);
       expect(byParent.stdout + byParent.stderr).not.toContain(parentFile);
 
@@ -792,7 +805,7 @@ describe('allow and deny decisions match a hook and adapter generated from 09eb0
       };
       const oursHook = hookSide(agent);
       const mainHook = hookSide(mainAgent);
-      expect(oursHook.status, oursHook.stderr).toBe(1);
+      expect(oursHook.status, oursHook.stderr).toBe(2);
       expect(oursHook.decision).toBe('deny');
       expect({ status: mainHook.status, decision: mainHook.decision }, mainHook.stderr).toEqual({ status: 0, decision: 'allow' });
       expect({ status: oursHook.status, decision: oursHook.decision }).not.toEqual({ status: mainHook.status, decision: mainHook.decision });
