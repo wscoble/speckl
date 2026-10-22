@@ -26,6 +26,14 @@ after every tool call. A `harness` block in the spec's `agent { }` makes
 
 `node adapter.mjs install <harness> ...` merges the wiring into the project's
 settings file with the right paths, keeping any hooks you already have.
+`--dry-run` prints every file it would create or change, and writes nothing.
+A file `install` modifies is copied into `.speckl/harness-install/backups/`
+first; the copy of what it wrote, and the record of which paths it created,
+live next to that. `uninstall` deletes only paths that record says it created,
+and only while their bytes still match, then puts modified files back from
+the backup. `status` reads the config, the key file and the state file.
+`doctor` does that and then runs the installed pre hook on a tool the spec
+does not map; it passes only when that hook denies the call.
 
 Pi, OpenCode and OpenClaw have no command hooks; they load JavaScript plugins
 in-process. For them `install` writes a small generated plugin that runs
@@ -37,6 +45,48 @@ Cline runs executable files named after the event from `.clinerules/hooks/`;
 `install cline` writes five small `sh` scripts there that pipe the payload to
 the adapter and turn anything but an explicit allow into a cancel. Kiro and
 Windsurf (Devin Desktop) run hook commands from JSON files, as the others do.
+
+## Checking, previewing and removing the wiring
+
+```bash
+node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>] [--dry-run]
+node adapter.mjs status <harness> --project <dir> --state <file> [--key <file>]
+node adapter.mjs doctor <harness> --project <dir> --state <file> [--key <file>]
+node adapter.mjs uninstall <harness> --project <dir>
+```
+
+Hermes still takes `--hermes-home`. Goose, Pi and OpenCode still take `--plugins-dir`
+on `install`, `status` and `doctor` (the install record remembers the paths for
+`uninstall`).
+
+- `--dry-run` prints `create` or `modify` for each harness file, a unified diff,
+  the backup path, and `dry-run: no files written`.
+- `install` copies the previous bytes of any file it changes to
+  `.speckl/harness-install/backups/<harness>/` and keeps that first backup on a
+  later install. It also saves exactly the bytes it wrote. It does not weaken
+  the hook: a refusal (bad JSON, a file Speckl did not write, a record it does
+  not understand) still writes nothing.
+- `status` reports whether the Speckl pre hook is in the config, whether the
+  key file is 64 hex characters (it does not print the key), and the state's
+  run id, stage and pending tool. `mac=present` means the signature field is
+  there. It does not replay the log.
+- `doctor` does the same checks, then runs **the installed pre command** with
+  a tool name the spec does not map. It exits 0 only when that command's output
+  contains the adapter's unmapped-tool deny and the harness would block the
+  call. `HOOK MISSING`, `FAIL OPEN` and `NOT PROVED` (exit 2 with no deny text,
+  which a `|| exit 2` wrapper prints when `node` never started) are failures.
+- `uninstall` restores backups and deletes files the record says `install`
+  created, and only when the current bytes still match the saved copy (a file
+  already restored to its backup is finished, not refused). A file it is
+  unsure about is left untouched. If any file is refused, the record stays so
+  a later `uninstall` can finish the rest; files it already restored or
+  removed are not rolled back. It never deletes the runtime under
+  `.speckl/agent/`, a symlink, or a path that is not in the record. Empty
+  directories it created may remain.
+
+Pi, OpenCode and OpenClaw have no command hook to exec. `doctor` runs the
+`node adapter.mjs <harness> pre ...` line stored in the generated plugin and
+says so. That does not prove the host loaded the plugin.
 
 > **Not live-tested: Kiro, Windsurf and the Cline VS Code extension.** Their
 > wiring is built and tested against payloads taken from their documentation
@@ -127,6 +177,7 @@ node .speckl/agent/signal.mjs init --state .speckl/state.json --key "$KEY" --dev
 
 # 5. Wire it into Claude Code and give Claude the rules.
 node .speckl/agent/adapter.mjs install claude-code --project . --state .speckl/state.json --key "$KEY"
+node .speckl/agent/adapter.mjs doctor claude-code --project . --state .speckl/state.json --key "$KEY"
 echo '@.speckl/agent/AGENTS.md' >> CLAUDE.md
 
 # 6. Dry run: feed the hook what Claude Code sends before a push.
@@ -603,6 +654,17 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   Terminal commands never advance the policy (above). User, system and cloud
   hooks (`~/.codeium/windsurf/hooks.json`, `/etc/devin/hooks.json`) also run
   and are not protected. Windows blocks every tool call (above).
+- `doctor` proves the installed command denies an unmapped tool. It does not
+  replay the state HMAC (`hook.mjs` does that on a real call) and it does not
+  prove Pi, OpenCode or OpenClaw loaded the plugin: those hosts skip a plugin
+  that fails to load, and doctor only runs the adapter command stored in the
+  plugin file. Kiro and Windsurf doctor runs the shell command `install`
+  wrote; it was not run inside those IDEs. Shell-wrapper harnesses need `sh`
+  on `PATH` (the same requirement as the hooks themselves). An install made
+  before this record existed has nothing for `uninstall` to restore; it
+  refuses rather than deleting files it cannot prove it created. `uninstall`
+  does not restore file modes, and it does not remove directories. A symlink
+  at a recorded path is left in place.
 
 ## Sources
 

@@ -251,7 +251,9 @@ describe('installHarness (plugins)', () => {
     // OpenClaw has no user-scope variant: --plugins-dir is ignored.
     const d = fakeDeps();
     installHarness('openclaw', { ...flags, 'plugins-dir': '/home/u/plugins' }, d);
-    expect(Object.keys(d.files).sort()).toEqual(['/p/.openclaw/plugins/speckl/index.js', '/p/.openclaw/plugins/speckl/openclaw.plugin.json', '/p/.openclaw/plugins/speckl/package.json']);
+    const written = Object.keys(d.files).filter(k => !k.includes('/.speckl/harness-install/')).sort();
+    expect(written).toEqual(['/p/.openclaw/plugins/speckl/index.js', '/p/.openclaw/plugins/speckl/openclaw.plugin.json', '/p/.openclaw/plugins/speckl/package.json']);
+    expect(Object.keys(d.files).some(k => k.endsWith('/openclaw.json'))).toBe(true);
   });
   it('never overwrites a plugin it did not write, nor a foreign manifest', () => {
     let d = fakeDeps({ '/p/.pi/extensions/speckl.js': 'export default () => {}\n' });
