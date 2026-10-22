@@ -9,18 +9,23 @@ signal**; anything verifiable can produce one through a pluggable verifier.
 | --- | --- | --- |
 | `file-drop` | Medium | ed25519-signed JSON file bound to a run, an expiry and a nonce. Evidence = file sha256. |
 | `cli` | **DEV ONLY** | `--outcome` / `--as` / claims on the CLI. Evidence = local user + timestamp. Refused unless the state was created with `signal.mjs init --dev`. |
+| `plugin:<name>` | Depends on the plug-in | A module pinned at init. See [verifier-plugins.md](verifier-plugins.md). |
 
 Unsigned file drops (`--allow-unsigned true`) are also DEV ONLY and need an
 `init --dev` state.
 
-## Plug-in verifiers (interface only)
+## Plug-in verifiers
 
-Implement:
+Any other verifier is a plug-in module, pinned by sha256 in the signed state
+at `signal.mjs init --plugins <file>` and used with `--verifier plugin:<name>`.
+A changed, missing or misbehaving module denies. The interface, the security
+contract, a worked example and a testing checklist are in
+[verifier-plugins.md](verifier-plugins.md).
 
 ```ts
 interface SignalVerifier {
   // opts: verifier CLI options. expect: { signal, outcomes, claims }.
-  // ctx: { runId, dev, now, usedNonces } from the state file.
+  // ctx: { runId, dev, now, usedNonces, config, plugin } (config pinned at init).
   verify(opts: Record<string, unknown>, expect: AwaitSpec, ctx: VerifierContext):
     Promise<{ ok: true; signal: VerifiedSignal } | { ok: false; reason: string }>;
 }
@@ -29,12 +34,18 @@ interface SignalVerifier {
 // If a verifier returns run/nonce, signal.mjs re-checks them against the state.
 ```
 
+In this repository:
+
+- **Sigstore keyless** ([plugins/verifier-sigstore](../plugins/verifier-sigstore/)):
+  approvals signed with an OIDC identity through Fulcio and logged in Rekor,
+  checked with `@sigstore/verify` against an identity pinned per signal.
+- **HMAC webhook** ([examples/verifier-plugins/hmac-webhook.mjs](../examples/verifier-plugins/hmac-webhook.mjs)):
+  the worked example from the guide.
+
 Documented shapes (not shipped):
 
-- **JWT-bearing API call** — JWKS, `iss`/`aud`/`exp`, claim mapping; evidence = `jti`.
-- **OAuth flow** — authorization code → `id_token` claims.
-- **Signed API calls** — HMAC-SHA256 shared secret or ed25519 over the body.
-- **Webhooks / chat** — wrap any of the above.
+- **JWT-bearing API call**: JWKS, `iss`/`aud`/`exp`, claim mapping; evidence = `jti`.
+- **OAuth flow**: authorization code → `id_token` claims.
 
 ## Signed drops are bound to a run
 
