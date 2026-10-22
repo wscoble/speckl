@@ -379,9 +379,10 @@ function buildAgentsMd(
     lines.push('Calls that match no line are **denied**. A matched command must be one plain');
     lines.push('command: `;`, `&`, `|`, backticks, `$`, `<`, `>` and newlines are refused.');
     const dirs = harnessProtectedDirs(Object.keys(config.harness));
-    if (dirs.length === 4) {
+    const extras = dirs.filter(d => d !== '.claude' && d !== '.cursor' && d !== '.codex' && d !== '.gemini' && d !== '.speckl/harness-install');
+    if (extras.length === 0) {
       lines.push('The rails themselves (this directory, the state file, its key, `.claude/`,');
-      lines.push('`.cursor/`, `.codex/`, `.gemini/`) are off limits to every tool. Make one tool');
+      lines.push('`.cursor/`, `.codex/`, `.gemini/` and `.speckl/harness-install/`) are off limits to every tool. Make one tool');
       lines.push('call at a time.');
     } else {
       lines.push('The rails themselves (this directory, the state file, its key and the harness');

@@ -283,6 +283,7 @@ describe('runAdapter', () => {
       [['claude-code', 'pre'], ccPre('Bash', { command: 'npm test' }), 'missing --state'],
       [['claude-code', 'pre', '--state', 's'], ccPre('Read', { path: '/p/.speckl/agent/hook.mjs' }), 'Speckl-protected path'],
       [['claude-code', 'pre', '--state', 's'], ccPre('Edit', { file_path: '/p/.claude/settings.json' }), 'Speckl-protected path'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Edit', { file_path: '/p/.speckl/harness-install/claude-code.json' }), 'Speckl-protected path'],
       [['claude-code', 'nope', '--state', 's'], ccPre('Bash', {}), 'unknown event'],
       [['gemini', 'pre', '--state', 's'], ccPre('Bash', {}), 'not declared in the spec'],
     ];

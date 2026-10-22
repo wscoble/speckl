@@ -3,14 +3,15 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import {
-  mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync,
+  mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { emitAdapterMjs } from '../generators/agent/adapter-template.js';
 import {
   ADAPTER_FUNCTIONS, parseAdapterFlags, doctorProbe, classifyProbe, hookCommandResult, pathInside, unifiedDiff,
-  installFilePaths, installHarness, uninstallHarness, inspectHarness, runAdapter,
+  installFilePaths, installRecordPayload, installHarness, uninstallHarness, inspectHarness, runAdapter,
   AdapterDeps, HookResult,
 } from '../generators/agent/harness-runtime.js';
 
@@ -40,10 +41,12 @@ function fakeDeps(files: Record<string, string> = {}, over: Partial<AdapterDeps>
   const calls: { cmd: string; msg: unknown }[] = [];
   const commands: { command: string; stdin: string; cwd: string; env: Record<string, string> }[] = [];
   const modes: Record<string, number> = {};
+  const links: Record<string, string> = {};
   const base: AdapterDeps & {
     calls: typeof calls; files: Record<string, string>; commands: typeof commands; modes: Record<string, number>;
+    links: Record<string, string>;
   } = {
-    calls, files, commands, modes,
+    calls, files, commands, modes, links,
     runHook(cmd, msg) {
       calls.push({ cmd, msg });
       return { status: 0, stdout: '{"decision":"allow"}\n', stderr: '' };
@@ -56,9 +59,29 @@ function fakeDeps(files: Record<string, string> = {}, over: Partial<AdapterDeps>
     readFile: p => (p in files ? files[p] : null),
     writeFile(p, text, mode) { files[p] = text; if (mode) modes[p] = mode; },
     removeFile(p) {
+      if (p in links) return false;
       if (!(p in files)) return false;
       delete files[p];
       return true;
+    },
+    lstatKind(p) {
+      if (p in links) return 'symlink';
+      if (p in files) return 'file';
+      const prefix = p.endsWith('/') ? p : p + '/';
+      if (Object.keys(files).some(k => k.startsWith(prefix)) || Object.keys(links).some(k => k.startsWith(prefix))) return 'dir';
+      return 'missing';
+    },
+    realPath(p) {
+      if (p in links) return links[p];
+      if (p in files) return p;
+      const prefix = p.endsWith('/') ? p : p + '/';
+      if (Object.keys(files).some(k => k.startsWith(prefix)) || Object.keys(links).some(k => k === p || k.startsWith(prefix))) return p;
+      return null;
+    },
+    mac(keyText, text) {
+      const hex = String(keyText || '').trim();
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+      return createHmac('sha256', Buffer.from(hex, 'hex')).update(text).digest('hex');
     },
     runCommand(command, stdin, cwd, env) {
       commands.push({ command, stdin, cwd, env });
@@ -102,6 +125,7 @@ const flagsFor = (h: string) => ({
   project: '.', state: '.speckl/state.json', key: '/k/state.key',
   ...(h === 'hermes' ? { 'hermes-home': '/h' } : {}),
 });
+const un = { project: '.', key: '/k/state.key' };
 
 describe('parseAdapterFlags', () => {
   it('treats --dry-run as a boolean and does not swallow the next argument', () => {
@@ -180,14 +204,22 @@ describe('classifyProbe', () => {
       stdout: JSON.stringify({ cancel: true, errorMessage: 'Speckl: ' + marker }) + '\n',
       stderr: 'Speckl: ' + marker + '\n',
     }, marker).kind).toBe('denied');
-    expect(classifyProbe('cline', { status: 0, stdout: 'not-json', stderr: '' }, marker).kind).toBe('unproved');
+    expect(classifyProbe('cline', { status: 0, stdout: 'not-json', stderr: marker }, marker).kind).toBe('open');
+    expect(classifyProbe('cline', { status: 0, stdout: '{"cancel":true}\n', stderr: '' }, marker).kind).toBe('unproved');
+    expect(classifyProbe('cline', { status: 0, stdout: '{"cancel":"true"}\n', stderr: marker }, marker).kind).toBe('open');
     expect(classifyProbe('pi', { status: 0, stdout: '{"decision":"allow"}\n', stderr: marker }, marker).kind).toBe('open');
-    expect(classifyProbe('opencode', { status: 0, stdout: '{"decision":"block","reason":"' + marker + '"}\n', stderr: '' }, marker).kind).toBe('denied');
-    expect(classifyProbe('openclaw', { status: 0, stdout: '', stderr: '' }, marker).kind).toBe('unproved');
+    expect(classifyProbe('pi', { status: 0, stdout: '{"decision":"deny"}\n', stderr: marker }, marker).kind).toBe('open');
+    expect(classifyProbe('pi', { status: 0, stdout: '{"decision":"block"}\n', stderr: '' }, marker).kind).toBe('unproved');
+    expect(classifyProbe('opencode', { status: 0, stdout: '{"decision":"block"}\n', stderr: marker }, marker).kind).toBe('denied');
+    expect(classifyProbe('openclaw', { status: 0, stdout: '', stderr: marker }, marker).kind).toBe('open');
+    expect(classifyProbe('openclaw', { status: 0, stdout: '{"decision":"block"}\n', stderr: marker }, marker).kind).toBe('denied');
     expect(classifyProbe('cursor', { status: 0, stdout: '', stderr: marker }, marker).kind).toBe('open');
     expect(classifyProbe('cursor', { status: 0, stdout: '{"permission":"deny"}\n', stderr: marker }, marker).kind).toBe('denied');
-    expect(classifyProbe('cursor', { status: 0, stdout: '{"permission":"allow"}\n', stderr: '' }, marker).kind).toBe('open');
-    expect(classifyProbe('kiro', { status: 0, stdout: '', stderr: marker }, marker).kind).toBe('open');
+    expect(classifyProbe('cursor', { status: 0, stdout: '{"permission":"deny"}\n', stderr: '' }, marker).kind).toBe('unproved');
+    expect(classifyProbe('cursor', { status: 0, stdout: '{"permission":"allow"}\n', stderr: marker }, marker).kind).toBe('open');
+    for (const h of ['codex', 'gemini', 'copilot', 'goose', 'hermes', 'kiro', 'windsurf']) {
+      expect(classifyProbe(h, { status: 0, stdout: '', stderr: marker }, marker).kind, h).toBe('open');
+    }
     expect(classifyProbe('gemini', { status: 2, stdout: '', stderr: marker }, marker).kind).toBe('denied');
   });
 });
@@ -230,7 +262,7 @@ describe('an unmapped doctor probe never reaches hook.mjs', () => {
 describe('install, status and doctor', () => {
   it('new setup functions are emitted with the adapter', () => {
     const names = ADAPTER_FUNCTIONS.map(f => f.name);
-    for (const n of ['commitInstallWrites', 'uninstallHarness', 'doctorProbe', 'classifyProbe', 'inspectHarness']) {
+    for (const n of ['installRecordPayload', 'commitInstallWrites', 'uninstallHarness', 'doctorProbe', 'classifyProbe', 'inspectHarness']) {
       expect(names).toContain(n);
     }
   });
@@ -315,6 +347,7 @@ describe('install, status and doctor', () => {
     const rec = JSON.parse(d.files['/p/.speckl/harness-install/claude-code.json']);
     expect(rec.v).toBe(1);
     expect(rec.files).toHaveLength(1);
+    expect(rec.mac).toMatch(/^[0-9a-f]{64}$/);
     expect(rec.files[0].action).toBe('modify');
     expect(d.files[rec.files[0].backup]).toBe(original);
     expect(d.files[rec.files[0].written]).toBe(d.files['/p/.claude/settings.json']);
@@ -371,13 +404,11 @@ describe('install, status and doctor', () => {
   });
 
   it('refuses to record a backup or a saved copy outside the install directory', () => {
-    const d = fakeDeps(seed({
-      '/p/.claude/settings.json': '{}\n',
-      '/p/.speckl/harness-install/claude-code.json': JSON.stringify({
-        v: 1, harness: 'claude-code',
-        files: [{ path: '/p/.claude/settings.json', action: 'modify', backup: '/evil/orig', written: '/p/.speckl/harness-install/written/claude-code/old' }],
-      }) + '\n',
-    }));
+    const files = [{ path: '/p/.claude/settings.json', action: 'modify', backup: '/evil/orig', written: '/p/.speckl/harness-install/written/claude-code/old' }];
+    const d = fakeDeps(seed({ '/p/.claude/settings.json': '{}\n' }));
+    d.files['/p/.speckl/harness-install/claude-code.json'] = JSON.stringify({
+      v: 1, harness: 'claude-code', files, mac: d.mac!(KEY, installRecordPayload('claude-code', files)),
+    }) + '\n';
     const r = installHarness('claude-code', flagsFor('claude-code'), d);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('refusing to back up');
@@ -390,16 +421,84 @@ describe('install, status and doctor', () => {
     expect(r2.stderr).toContain('refusing to record a copy');
   });
 
-  it('keeps an install-record entry it is not rewriting', () => {
+  it('refuses an install-record entry it is not rewriting', () => {
     const d = fakeDeps(seed());
     installHarness('claude-code', flagsFor('claude-code'), d);
-    const rec = JSON.parse(d.files['/p/.speckl/harness-install/claude-code.json']);
+    const manifest = '/p/.speckl/harness-install/claude-code.json';
+    const rec = JSON.parse(d.files[manifest]);
     rec.files.push({ path: '/p/extra.txt', action: 'create', backup: null, written: '/p/.speckl/harness-install/written/claude-code/extra' });
-    d.files['/p/.speckl/harness-install/claude-code.json'] = JSON.stringify(rec) + '\n';
+    rec.mac = d.mac!(KEY, installRecordPayload('claude-code', rec.files));
+    d.files[manifest] = JSON.stringify(rec) + '\n';
     d.files['/p/.claude/settings.json'] += '\n';
+    const settings = d.files['/p/.claude/settings.json'];
+    const record = d.files[manifest];
+    const refused = installHarness('claude-code', flagsFor('claude-code'), d);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain('not rewriting');
+    expect(d.files['/p/.claude/settings.json']).toBe(settings);
+    expect(d.files[manifest]).toBe(record);
+    const dry = installHarness('claude-code', { ...flagsFor('claude-code'), 'dry-run': 'true' }, d);
+    expect(dry.code).toBe(1);
+    expect(d.files[manifest]).toBe(record);
+    rec.files = [null];
+    delete rec.mac;
+    d.files[manifest] = JSON.stringify(rec) + '\n';
+    const noKey = installHarness('claude-code', { project: '.', state: '.speckl/state.json' }, d);
+    expect(noKey.stderr).toContain('an entry with no path');
+    expect(d.files['/p/.claude/settings.json']).toBe(settings);
+  });
+
+  it('refuses a record whose mac does not match the state key and writes nothing', () => {
+    const d = fakeDeps(seed());
     expect(installHarness('claude-code', flagsFor('claude-code'), d).code).toBe(0);
-    const next = JSON.parse(d.files['/p/.speckl/harness-install/claude-code.json']);
-    expect(next.files.some((f: { path: string }) => f.path === '/p/extra.txt')).toBe(true);
+    const manifest = '/p/.speckl/harness-install/claude-code.json';
+    const settings = d.files['/p/.claude/settings.json'];
+    const rec = JSON.parse(d.files[manifest]);
+    rec.mac = 'ab'.repeat(32);
+    d.files[manifest] = JSON.stringify(rec) + '\n';
+    const stale = d.files[manifest];
+    let r = installHarness('claude-code', flagsFor('claude-code'), d);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('mac does not match');
+    expect(r.stderr).not.toContain(rec.mac);
+    expect(d.files['/p/.claude/settings.json']).toBe(settings);
+    expect(d.files[manifest]).toBe(stale);
+    delete rec.mac;
+    d.files[manifest] = JSON.stringify(rec) + '\n';
+    r = installHarness('claude-code', flagsFor('claude-code'), d);
+    expect(r.stderr).toContain('mac does not match');
+    expect(d.files['/p/.claude/settings.json']).toBe(settings);
+    const bare = fakeDeps(seed());
+    delete bare.mac;
+    expect(installHarness('claude-code', flagsFor('claude-code'), bare).stderr).toContain('cannot be authenticated');
+    expect(bare.files['/p/.claude/settings.json']).toBeUndefined();
+    const unsigned = fakeDeps(seed());
+    unsigned.mac = () => null;
+    expect(installHarness('claude-code', flagsFor('claude-code'), unsigned).stderr).toContain('could not authenticate');
+    expect(unsigned.files['/p/.speckl/harness-install/claude-code.json']).toBeUndefined();
+    const weak = fakeDeps(seed({ '/k/state.key': 'not-a-key\n' }));
+    expect(installHarness('claude-code', flagsFor('claude-code'), weak).code).toBe(0);
+    expect(JSON.parse(weak.files['/p/.speckl/harness-install/claude-code.json']).mac).toBeUndefined();
+    const signed = fakeDeps(seed());
+    expect(installHarness('claude-code', flagsFor('claude-code'), signed).code).toBe(0);
+    const signedSettings = signed.files['/p/.claude/settings.json'];
+    delete signed.mac;
+    expect(installHarness('claude-code', flagsFor('claude-code'), signed).stderr).toContain('cannot be authenticated');
+    expect(signed.files['/p/.claude/settings.json']).toBe(signedSettings);
+    signed.mac = () => null;
+    expect(uninstallHarness('claude-code', un, signed).stderr).toContain('mac does not match');
+    expect(signed.files['/p/.claude/settings.json']).toBe(signedSettings);
+    const dropped = fakeDeps(seed());
+    expect(installHarness('claude-code', flagsFor('claude-code'), dropped).code).toBe(0);
+    const droppedRecord = dropped.files['/p/.speckl/harness-install/claude-code.json'];
+    dropped.files['/p/.claude/settings.json'] += ' ';
+    const tweaked = dropped.files['/p/.claude/settings.json'];
+    const sign = dropped.mac!.bind(dropped);
+    dropped.mac = (key, text) => { delete dropped.mac; return sign(key, text); };
+    const left = uninstallHarness('claude-code', un, dropped);
+    expect(left.stderr).toContain('left the previous record in place');
+    expect(dropped.files['/p/.speckl/harness-install/claude-code.json']).toBe(droppedRecord);
+    expect(dropped.files['/p/.claude/settings.json']).toBe(tweaked);
   });
 });
 
@@ -454,6 +553,30 @@ describe('status and doctor failures', () => {
     expect(installHarness('pi', flagsFor('pi'), pi).code).toBe(0);
     pi.runCommand = () => ({ status: 0, stdout: '{"decision":"allow"}\n', stderr: marker });
     expect(inspectHarness('pi', flagsFor('pi'), config.harness.pi.rules, config, pi, {}, true).stdout).toContain('FAIL OPEN');
+  });
+
+  it('exit 0 with the deny text but without the harness block field is fail-open', () => {
+    const marker = 'unmapped harness tool "__speckl_doctor__"';
+    const cases: { h: string; stdout: string }[] = [
+      { h: 'cline', stdout: JSON.stringify({ errorMessage: marker }) + '\n' },
+      { h: 'cline', stdout: JSON.stringify({ cancel: 'true', errorMessage: marker }) + '\n' },
+      { h: 'pi', stdout: JSON.stringify({ reason: marker }) + '\n' },
+      { h: 'pi', stdout: JSON.stringify({ decision: 'deny', reason: marker }) + '\n' },
+      { h: 'opencode', stdout: JSON.stringify({ decision: 'allow', reason: marker }) + '\n' },
+      { h: 'opencode', stdout: '{"decision":"block","reason":"' + marker + '"}\n' },
+      { h: 'openclaw', stdout: '{}\n' },
+      { h: 'openclaw', stdout: JSON.stringify({ decision: 'deny' }) + '\n' },
+      { h: 'cursor', stdout: JSON.stringify({ user_message: marker, agent_message: marker }) + '\n' },
+      { h: 'cursor', stdout: JSON.stringify({ permission: 'allow' }) + '\n' },
+    ];
+    for (const c of cases) {
+      const d = fakeDeps(seed());
+      expect(installHarness(c.h, flagsFor(c.h), d).code, c.h).toBe(0);
+      d.runCommand = () => ({ status: 0, stdout: c.stdout, stderr: marker + '\n' });
+      const r = inspectHarness(c.h, flagsFor(c.h), config.harness[c.h].rules, config, d, {}, true);
+      expect(r.code, c.h + ' ' + c.stdout + r.stdout).toBe(1);
+      expect(r.stdout, c.h + ' ' + c.stdout).toContain('FAIL OPEN');
+    }
   });
 
   it('Hermes without an allowlist entry is fail-open and is not probed', () => {
@@ -577,12 +700,16 @@ describe('uninstall', () => {
     d.files['/p/.claude/settings.json'] = installed + ' ';
     let r = uninstallHarness('claude-code', { project: '.' }, d);
     expect(r.code).toBe(1);
+    expect(r.stderr).toContain('mac does not match');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed + ' ');
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.code).toBe(1);
     expect(r.stderr).toContain('no longer match');
     expect(r.stderr).toContain('install record kept');
     expect(d.files['/p/.claude/settings.json']).toBe(installed + ' ');
     expect(d.files['/p/.speckl/harness-install/claude-code.json']).toBeTruthy();
     d.files['/p/.claude/settings.json'] = installed;
-    r = uninstallHarness('claude-code', { project: '.' }, d);
+    r = uninstallHarness('claude-code', un, d);
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toContain('restored /p/.claude/settings.json');
     expect(r.stdout).toContain('removed install record');
@@ -591,7 +718,7 @@ describe('uninstall', () => {
     expect(d.files['/p/.speckl/harness-install/claude-code.json']).toBeUndefined();
     const pre = '/p/.clinerules/hooks/PreToolUse';
     delete d.files[pre];
-    r = uninstallHarness('cline', { project: '.' }, d);
+    r = uninstallHarness('cline', un, d);
     expect(r.code, r.stderr + r.stdout).toBe(0);
     expect(r.stdout).toContain('already absent ' + pre);
     expect(d.files['/p/.clinerules/hooks/PostToolUse']).toBeUndefined();
@@ -612,14 +739,14 @@ describe('uninstall', () => {
       delete d.files[p];
       return true;
     };
-    const first = uninstallHarness('claude-code', { project: '.' }, d);
+    const first = uninstallHarness('claude-code', un, d);
     expect(first.code).toBe(1);
     expect(first.stdout).toContain('restored /p/.claude/settings.json');
     expect(first.stderr).toContain('could not remove backup');
     expect(d.files['/p/.claude/settings.json']).toBe(original);
     expect(d.files['/p/.speckl/harness-install/claude-code.json']).toBeTruthy();
     blocked = false;
-    const second = uninstallHarness('claude-code', { project: '.' }, d);
+    const second = uninstallHarness('claude-code', un, d);
     expect(second.code, second.stderr + second.stdout).toBe(0);
     expect(second.stdout).toContain('already restored');
     expect(d.files['/p/.claude/settings.json']).toBe(original);
@@ -643,12 +770,12 @@ describe('uninstall', () => {
     };
     let d = base();
     put(d, [{ path: '/p/.speckl/agent/hook.mjs', action: 'create', backup: null, written }]);
-    expect(uninstallHarness('claude-code', { project: '.' }, d).stderr).toContain('Speckl runtime');
+    expect(uninstallHarness('claude-code', { project: '.' }, d).stderr).toContain('not a file install writes');
     expect(d.files['/p/.speckl/agent/hook.mjs']).toBe('runtime\n');
     expect(d.files[neighbor]).toBe('keep\n');
     d = base();
     put(d, [{ path: root + '/planted', action: 'create', backup: null, written }]);
-    expect(uninstallHarness('claude-code', { project: '.' }, d).stderr).toContain('install record');
+    expect(uninstallHarness('claude-code', { project: '.' }, d).stderr).toContain('not a file install writes');
     d = base();
     put(d, [{ path: '/p/.claude/settings.json', action: 'create', backup: null, written: '/evil/copy' }]);
     expect(uninstallHarness('claude-code', { project: '.' }, d).stderr).toContain('outside');
@@ -693,13 +820,13 @@ describe('uninstall', () => {
       delete d.files[p];
       return true;
     };
-    const r = uninstallHarness('cline', { project: '.' }, d);
+    const r = uninstallHarness('cline', un, d);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('could not remove ' + pre);
     expect(d.files[pre]).toBeTruthy();
     expect(d.files['/p/.speckl/harness-install/cline.json']).toBeTruthy();
     d.removeFile = p => { if (p in d.files) { delete d.files[p]; return true; } return false; };
-    const again = uninstallHarness('cline', { project: '.' }, d);
+    const again = uninstallHarness('cline', un, d);
     expect(again.code, again.stderr).toBe(0);
     expect(d.files[pre]).toBeUndefined();
   });
@@ -711,7 +838,7 @@ describe('uninstall', () => {
     const installed = d.files['/p/.claude/settings.json'];
     const write = d.writeFile.bind(d);
     d.writeFile = (p, text, mode) => { if (p === '/p/.claude/settings.json') return; write(p, text, mode); };
-    const failed = uninstallHarness('claude-code', { project: '.' }, d);
+    const failed = uninstallHarness('claude-code', un, d);
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain('restore failed');
     expect(d.files['/p/.claude/settings.json']).toBe(installed);
@@ -724,7 +851,7 @@ describe('uninstall', () => {
       delete d.files[p];
       return true;
     };
-    const kept = uninstallHarness('claude-code', { project: '.' }, d);
+    const kept = uninstallHarness('claude-code', un, d);
     expect(kept.code).toBe(1);
     expect(kept.stderr).toContain('could not remove install record');
     expect(d.files['/p/.claude/settings.json']).toBe(original);
@@ -733,7 +860,7 @@ describe('uninstall', () => {
     // overwrite the restored file, and it must not drop the record: without
     // the backup it can no longer prove what belonged there.
     d.removeFile = p => { if (p in d.files) { delete d.files[p]; return true; } return false; };
-    const retry = uninstallHarness('claude-code', { project: '.' }, d);
+    const retry = uninstallHarness('claude-code', un, d);
     expect(retry.code).toBe(1);
     expect(retry.stderr).toContain('backup missing');
     expect(d.files['/p/.claude/settings.json']).toBe(original);
@@ -745,6 +872,7 @@ describe('uninstall', () => {
     const d = fakeDeps(seed({ '/p/.claude/settings.json': original }));
     expect(installHarness('claude-code', flagsFor('claude-code'), d).code).toBe(0);
     const rec = JSON.parse(d.files['/p/.speckl/harness-install/claude-code.json']);
+    d.files['/p/.claude/.keep'] = '';
     delete d.files['/p/.claude/settings.json'];
     let blocked = true;
     d.removeFile = p => {
@@ -753,14 +881,139 @@ describe('uninstall', () => {
       delete d.files[p];
       return true;
     };
-    const first = uninstallHarness('claude-code', { project: '.' }, d);
+    const first = uninstallHarness('claude-code', un, d);
     expect(first.code).toBe(1);
     expect(first.stdout).toContain('restored /p/.claude/settings.json');
     expect(first.stderr).toContain('could not remove saved copy');
     expect(d.files['/p/.claude/settings.json']).toBe(original);
     blocked = false;
-    expect(uninstallHarness('claude-code', { project: '.' }, d).code).toBe(0);
+    expect(uninstallHarness('claude-code', un, d).code).toBe(0);
     expect(d.files['/p/.claude/settings.json']).toBe(original);
+  });
+
+  it('does not delete or restore a path the record invented', () => {
+    const root = '/p/.speckl/harness-install';
+    const outside = '/outside/victim';
+    const secret = '/outside/secret';
+    const notes = '/p/notes.txt';
+    const d = fakeDeps(seed({
+      [outside]: 'secret\n',
+      [secret]: 'safe\n',
+      [notes]: 'keep\n',
+      '/p/.claude/settings.json': '{}\n',
+    }));
+    const written = root + '/written/claude-code/planted';
+    const backup = root + '/backups/claude-code/planted';
+    d.files[written] = 'secret\n';
+    d.files[backup] = 'pwned\n';
+    const manifest = root + '/claude-code.json';
+    const put = (files: unknown, mac?: string) => {
+      const body: { v: number; harness: string; files: unknown; mac?: string } = { v: 1, harness: 'claude-code', files };
+      if (mac) body.mac = mac;
+      d.files[manifest] = JSON.stringify(body) + '\n';
+    };
+    put([{ path: outside, action: 'create', backup: null, written }]);
+    let r = uninstallHarness('claude-code', { project: '.' }, d);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('outside the project');
+    expect(d.files[outside]).toBe('secret\n');
+    expect(d.files[written]).toBe('secret\n');
+    put([{ path: secret, action: 'modify', backup, written }]);
+    d.files[written] = 'safe\n';
+    r = uninstallHarness('claude-code', { project: '.' }, d);
+    expect(r.stderr).toContain('outside the project');
+    expect(d.files[secret]).toBe('safe\n');
+    expect(d.files[backup]).toBe('pwned\n');
+    const owned = [{ path: notes, action: 'create', backup: null, written }];
+    d.files[written] = 'keep\n';
+    const noteMac = d.mac!(KEY, installRecordPayload('claude-code', owned));
+    put(owned, noteMac ?? undefined);
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('not a file install writes');
+    expect(d.files[notes]).toBe('keep\n');
+    delete d.files[manifest];
+    expect(installHarness('claude-code', flagsFor('claude-code'), d).code).toBe(0);
+    const installed = d.files['/p/.claude/settings.json'];
+    d.links['/p/.claude'] = '/somewhere';
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('a parent directory is a symlink');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed);
+    delete d.links['/p/.claude'];
+    d.links['/p/.claude/settings.json'] = '/tmp/elsewhere';
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('the path is a symlink');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed);
+    delete d.links['/p/.claude/settings.json'];
+    const real = d.realPath!.bind(d);
+    d.realPath = p => (p === '/p/.claude/settings.json' ? '/outside/settings.json' : real(p));
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('resolves outside the project');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed);
+    d.realPath = p => (p === '/p/.claude/settings.json' ? '/p/.claude-real/settings.json' : real(p));
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('a parent directory is a symlink');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed);
+    d.realPath = real;
+    const dir = d.dirname.bind(d);
+    d.dirname = p => (p === '/p/.claude' ? '/p/.claude' : dir(p));
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('outside the project');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed);
+    d.dirname = dir;
+    const kind = d.lstatKind!.bind(d);
+    d.lstatKind = p => (p === '/p/.claude/settings.json' ? 'dir' : kind(p));
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('not a regular file');
+    d.lstatKind = p => (p === '/p/.claude' ? 'file' : kind(p));
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('a parent is not a directory');
+    d.lstatKind = p => (p === '/p' ? 'missing' : kind(p));
+    d.realPath = p => (p === '/p' ? null : real(p));
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('the project cannot be resolved');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed);
+    delete d.lstatKind;
+    delete d.realPath;
+    r = uninstallHarness('claude-code', un, d);
+    expect(r.stderr).toContain('cannot resolve the path');
+    expect(d.files['/p/.claude/settings.json']).toBe(installed);
+  });
+
+  it('refuses a Hermes profile outside the project even when the path is one install writes', () => {
+    const d = fakeDeps(seed());
+    expect(installHarness('hermes', flagsFor('hermes'), d).code).toBe(0);
+    const yaml = d.files['/h/config.yaml'];
+    const r = uninstallHarness('hermes', { ...un, 'hermes-home': '/h' }, d);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('outside the project');
+    expect(d.files['/h/config.yaml']).toBe(yaml);
+    expect(d.files['/p/.speckl/harness-install/hermes.json']).toBeTruthy();
+  });
+
+  it('leaves the previous record in place when the remaining entries cannot be re-signed', () => {
+    const d = fakeDeps(seed());
+    expect(installHarness('cline', flagsFor('cline'), d).code).toBe(0);
+    const manifest = '/p/.speckl/harness-install/cline.json';
+    const before = d.files[manifest];
+    const pre = '/p/.clinerules/hooks/PreToolUse';
+    const sign = d.mac!.bind(d);
+    d.mac = (key, text) => {
+      const body = JSON.parse(text) as { files: { path: string }[] };
+      if (body.files.length === 1) return null;
+      return sign(key, text);
+    };
+    d.removeFile = p => {
+      if (p === pre) return false;
+      if (!(p in d.files)) return false;
+      delete d.files[p];
+      return true;
+    };
+    const r = uninstallHarness('cline', un, d);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('left the previous record in place');
+    expect(d.files[manifest]).toBe(before);
+    expect(d.files[pre]).toBeTruthy();
   });
 });
 
@@ -838,7 +1091,7 @@ describe('emitted adapter.mjs', () => {
 
     writeFileSync(settings, readFileSync(settings, 'utf-8') + '\n');
     const tweaked = readFileSync(settings, 'utf-8');
-    const refused = run(['uninstall', 'claude-code', '--project', project]);
+    const refused = run(['uninstall', 'claude-code', '--project', project, '--key', key]);
     expect(refused.status).toBe(1);
     expect(refused.stderr).toContain('no longer match');
     expect(readFileSync(settings, 'utf-8')).toBe(tweaked);
@@ -847,7 +1100,7 @@ describe('emitted adapter.mjs', () => {
     const after = JSON.parse(readFileSync(manifestPath, 'utf-8'));
     const entry = after.files.find((f: { path: string }) => f.path === settings);
     writeFileSync(settings, readFileSync(entry.written));
-    const removed = run(['uninstall', 'claude-code', '--project', project]);
+    const removed = run(['uninstall', 'claude-code', '--project', project, '--key', key]);
     expect(removed.status, removed.stderr + removed.stdout).toBe(0);
     expect(readFileSync(settings, 'utf-8')).toBe(original);
     expect(readFileSync(path.join(project, 'notes.txt'), 'utf-8')).toBe('keep\n');
@@ -866,9 +1119,9 @@ describe('emitted adapter.mjs', () => {
     writeFileSync(real, readFileSync(pi, 'utf-8'));
     rmSync(pi);
     symlinkSync(real, pi);
-    const sym = run(['uninstall', 'pi', '--project', project]);
+    const sym = run(['uninstall', 'pi', '--project', project, '--key', key]);
     expect(sym.status).toBe(1);
-    expect(sym.stderr).toContain('could not remove');
+    expect(sym.stderr).toContain('the path is a symlink');
     expect(readlinkSync(pi)).toBe(real);
     expect(readFileSync(path.join(project, '.speckl', 'harness-install', 'pi.json'), 'utf-8')).toContain('speckl.js');
 
@@ -889,6 +1142,17 @@ describe('emitted adapter.mjs', () => {
     expect(unproved.status, unproved.stdout + unproved.stderr).toBe(1);
     expect(unproved.stdout).toContain('NOT PROVED');
     expect(readFileSync(statePath, 'utf-8')).toBe(state);
+
+    const claudeDir = path.join(project, '.claude');
+    const realDir = claudeDir + '-real';
+    const hookedBytes = readFileSync(settings, 'utf-8');
+    renameSync(claudeDir, realDir);
+    symlinkSync(realDir, claudeDir);
+    const symParent = run(['uninstall', 'claude-code', '--project', project, '--key', key]);
+    expect(symParent.status, symParent.stderr + symParent.stdout).toBe(1);
+    expect(symParent.stderr).toContain('a parent directory is a symlink');
+    expect(readFileSync(path.join(realDir, 'settings.json'), 'utf-8')).toBe(hookedBytes);
+    expect(readlinkSync(claudeDir)).toBe(realDir);
   }, 60_000);
 
   it('quotes absolute paths that contain a space when it runs the installed command', () => {

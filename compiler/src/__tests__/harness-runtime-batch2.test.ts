@@ -47,8 +47,8 @@ describe('event names and config files', () => {
     expect(harnessConfigFile('hermes')).toBe('config.yaml');
   });
   it('protects the config directories of the declared harnesses only', () => {
-    expect(harnessProtectedDirs(['claude-code'])).toEqual(['.claude', '.cursor', '.codex', '.gemini']);
-    expect(harnessProtectedDirs(['goose', 'copilot', 'goose'])).toEqual(['.claude', '.cursor', '.codex', '.gemini', '.agents/plugins', '.config/goose', '.github/hooks']);
+    expect(harnessProtectedDirs(['claude-code'])).toEqual(['.claude', '.cursor', '.codex', '.gemini', '.speckl/harness-install']);
+    expect(harnessProtectedDirs(['goose', 'copilot', 'goose'])).toEqual(['.claude', '.cursor', '.codex', '.gemini', '.agents/plugins', '.config/goose', '.github/hooks', '.speckl/harness-install']);
     expect(harnessProtectedDirs(['hermes'])).toContain('.hermes');
   });
 });

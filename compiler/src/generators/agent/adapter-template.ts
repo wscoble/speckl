@@ -28,14 +28,18 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *   node adapter.mjs doctor <harness> --project <dir> --state <file> [--key <file>]
  *       does what status does, then runs the installed pre hook on a tool the spec
  *       does not map and requires that hook to deny it. A missing hook or an allow is a failure.
- *   node adapter.mjs uninstall <harness> --project <dir>
- *       removes files this install created and restores backups. It will not delete
- *       or overwrite a file whose contents no longer match what install wrote.
+ *   node adapter.mjs uninstall <harness> --project <dir> [--key <file>]
+ *       removes files this install created and restores backups, and only for a
+ *       path install itself writes inside the project. A symlink, a symlinked
+ *       parent, or any other path is left in place. When the record has a mac,
+ *       --key must be the same state key. It will not delete or overwrite a
+ *       file whose contents no longer match what install wrote.
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -81,6 +85,21 @@ const deps = {
       fs.unlinkSync(p);
       return true;
     } catch { return false; }
+  },
+  lstatKind(p) {
+    try {
+      const st = fs.lstatSync(p);
+      if (st.isSymbolicLink()) return 'symlink';
+      if (st.isFile()) return 'file';
+      if (st.isDirectory()) return 'dir';
+      return 'other';
+    } catch { return 'missing'; }
+  },
+  realPath(p) { try { return fs.realpathSync(p); } catch { return null; } },
+  mac(keyText, text) {
+    const hex = String(keyText || '').trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+    return crypto.createHmac('sha256', Buffer.from(hex, 'hex')).update(text).digest('hex');
   },
   runCommand(command, stdin, cwd, extraEnv) {
     const t = Number(process.env.SPECKL_HOOK_TIMEOUT_MS);

@@ -42,7 +42,7 @@ describe('cline', () => {
   it('events, hook directory, protected paths', () => {
     expect(['pre', 'post', 'post-failure', 'turn-end'].map(e => harnessEventName('cline', e))).toEqual(['PreToolUse', 'PostToolUse', null, 'TaskComplete']);
     expect(harnessConfigFile('cline')).toBe('.clinerules/hooks/PreToolUse');
-    expect(harnessProtectedDirs(['cline']).slice(4)).toEqual(['.clinerules/hooks', '.cline']);
+    expect(harnessProtectedDirs(['cline']).slice(4)).toEqual(['.clinerules/hooks', '.cline', '.speckl/harness-install']);
   });
 
   it('normalizes the CLI shape (tool_call / tool_result) and the VS Code shape (string parameters)', () => {
@@ -173,7 +173,7 @@ describe('kiro', () => {
   it('events, config file, protected paths, legacy camelCase names', () => {
     expect(['pre', 'post', 'post-failure', 'turn-end'].map(e => harnessEventName('kiro', e))).toEqual(['PreToolUse', 'PostToolUse', null, 'Stop']);
     expect(harnessConfigFile('kiro')).toBe('.kiro/hooks/speckl.json');
-    expect(harnessProtectedDirs(['kiro']).slice(4)).toEqual(['.kiro/hooks', '.kiro/agents', '.kiro/settings']);
+    expect(harnessProtectedDirs(['kiro']).slice(4)).toEqual(['.kiro/hooks', '.kiro/agents', '.kiro/settings', '.speckl/harness-install']);
     for (const [a, b] of [['preToolUse', 'PreToolUse'], ['postToolUse', 'PostToolUse'], ['stop', 'Stop'], ['PreToolUse', 'PreToolUse'], ['agentSpawn', 'agentSpawn']]) {
       expect(normalizePayload('kiro', { hook_event_name: a }).hook_event_name).toBe(b);
     }
@@ -270,7 +270,7 @@ describe('windsurf', () => {
   it('events, config files, protected paths', () => {
     expect(['pre', 'post', 'post-failure', 'turn-end'].map(e => harnessEventName('windsurf', e))).toEqual(['pre_tool', 'post_tool', null, 'pre_user_prompt']);
     expect(harnessConfigFile('windsurf')).toBe('.devin/hooks.json');
-    expect(harnessProtectedDirs(['windsurf']).slice(4)).toEqual(['.devin', '.windsurf']);
+    expect(harnessProtectedDirs(['windsurf']).slice(4)).toEqual(['.devin', '.windsurf', '.speckl/harness-install']);
   });
   it('normalizes every tool event to a synthetic tool name and input', () => {
     const n = (ev: string, info: unknown) => normalizePayload('windsurf', { agent_action_name: ev, trajectory_id: 't', tool_info: info });

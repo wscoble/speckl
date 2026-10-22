@@ -52,7 +52,7 @@ describe('event names, config files, protected paths', () => {
     expect(harnessConfigFile('openclaw')).toBe('.openclaw/plugins/speckl/index.js');
   });
   it('protects .pi, .opencode + opencode.json(c), .openclaw', () => {
-    expect(harnessProtectedDirs(['pi', 'opencode', 'openclaw']).slice(4)).toEqual(['.pi', '.opencode', 'opencode.json', 'opencode.jsonc', '.openclaw']);
+    expect(harnessProtectedDirs(['pi', 'opencode', 'openclaw']).slice(4)).toEqual(['.pi', '.opencode', 'opencode.json', 'opencode.jsonc', '.openclaw', '.speckl/harness-install']);
   });
 });
 

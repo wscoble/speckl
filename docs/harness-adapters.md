@@ -29,11 +29,13 @@ settings file with the right paths, keeping any hooks you already have.
 `--dry-run` prints every file it would create or change, and writes nothing.
 A file `install` modifies is copied into `.speckl/harness-install/backups/`
 first; the copy of what it wrote, and the record of which paths it created,
-live next to that. `uninstall` deletes only paths that record says it created,
-and only while their bytes still match, then puts modified files back from
-the backup. `status` reads the config, the key file and the state file.
-`doctor` does that and then runs the installed pre hook on a tool the spec
-does not map; it passes only when that hook denies the call.
+live next to that. `uninstall` deletes a path only when that path is one
+`install` writes for this harness, it is inside the project, its real path
+stays inside the project, and neither it nor a parent directory is a symlink.
+The bytes still have to match the saved copy; a modified file is then put
+back from the backup. `status` reads the config, the key file and the state
+file. `doctor` does that and then runs the installed pre hook on a tool the
+spec does not map; it passes only when that hook denies the call.
 
 Pi, OpenCode and OpenClaw have no command hooks; they load JavaScript plugins
 in-process. For them `install` writes a small generated plugin that runs
@@ -52,12 +54,13 @@ Windsurf (Devin Desktop) run hook commands from JSON files, as the others do.
 node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>] [--dry-run]
 node adapter.mjs status <harness> --project <dir> --state <file> [--key <file>]
 node adapter.mjs doctor <harness> --project <dir> --state <file> [--key <file>]
-node adapter.mjs uninstall <harness> --project <dir>
+node adapter.mjs uninstall <harness> --project <dir> [--key <file>]
 ```
 
 Hermes still takes `--hermes-home`. Goose, Pi and OpenCode still take `--plugins-dir`
-on `install`, `status` and `doctor` (the install record remembers the paths for
-`uninstall`).
+on `install`, `status` and `doctor`. `uninstall` does not read those paths out of
+the record: it recomputes the paths `install` would write. A Hermes profile or a
+`--plugins-dir` that is outside the project is not deleted.
 
 - `--dry-run` prints `create` or `modify` for each harness file, a unified diff,
   the backup path, and `dry-run: no files written`.
@@ -72,20 +75,37 @@ on `install`, `status` and `doctor` (the install record remembers the paths for
   there. It does not replay the log.
 - `doctor` does the same checks, then runs **the installed pre command** with
   a tool name the spec does not map. It exits 0 only when that command's output
-  contains the adapter's unmapped-tool deny and the harness would block the
-  call. `HOOK MISSING`, `FAIL OPEN` and `NOT PROVED` (exit 2 with no deny text,
-  which a `|| exit 2` wrapper prints when `node` never started) are failures.
+  contains the adapter's unmapped-tool deny **and** the reply is the block that
+  harness actually enforces. For an exit of 0 that means: Cline `cancel: true`
+  (boolean), Pi, OpenCode and OpenClaw `decision: "block"`, Cursor
+  `permission: "deny"`. Any other exit 0 is `FAIL OPEN`, even when the deny
+  text appears somewhere in the output. Claude Code, Codex, Gemini, Copilot,
+  Goose, Hermes, Kiro and Windsurf block with exit 2, so doctor treats every
+  exit 0 from them as `FAIL OPEN`. Exit 0 with the right block field but
+  without the unmapped-tool text is `NOT PROVED`, not a pass. `HOOK MISSING`
+  and `NOT PROVED` (exit 2 with no deny text, which a `|| exit 2` wrapper
+  prints when `node` never started) are failures too.
   Claude Code commands quote `${CLAUDE_PROJECT_DIR}` (Gemini relative commands
   quote `${GEMINI_PROJECT_DIR}` the same way) so a project path that contains
-  a space stays one argument when the shell expands it.
-- `uninstall` restores backups and deletes files the record says `install`
-  created, and only when the current bytes still match the saved copy (a file
-  already restored to its backup is finished, not refused). A file it is
-  unsure about is left untouched. If any file is refused, the record stays so
-  a later `uninstall` can finish the rest; files it already restored or
-  removed are not rolled back. It never deletes the runtime under
-  `.speckl/agent/`, a symlink, or a path that is not in the record. Empty
-  directories it created may remain.
+  a space stays one argument when the shell expands it. Doctor runs that
+  installed command under `sh`, so the quote is part of proving the hook is
+  wired.
+- `uninstall` restores backups and deletes files only when every one of these
+  holds: the path is inside the project, it is exactly one of the config paths
+  `install` writes for that harness (recomputed, not taken from the record),
+  the real path stays inside the project with no symlinked parent, and the
+  path itself is not a symlink. The current bytes still have to match the
+  saved copy (a file already restored to its backup is finished, not refused).
+  A file it is unsure about is left untouched and kept in the record. If any
+  file is refused, the record stays so a later `uninstall` can finish the
+  rest; files it already restored or removed are not rolled back. It never
+  deletes the runtime under `.speckl/agent/`. Empty directories it created
+  may remain. When `install` could read a 64-hex state key it stores an
+  HMAC of the record; `uninstall` of that record needs the same `--key` and
+  does nothing if the mac does not match. A record with no mac, and no key
+  file, is not authenticated. `.speckl/harness-install/` is a protected
+  path, so a tool call cannot write the record, the backups or the saved
+  copies. That does not stop a process outside the hook.
 
 Pi, OpenCode and OpenClaw have no command hook to exec. `doctor` runs the
 `node adapter.mjs <harness> pre ...` line stored in the generated plugin and
@@ -133,7 +153,8 @@ agent {
 - Every tool input (except free-text fields such as `content`, `new_string`,
   `description`) is checked against the rails: the agent directory, the state
   file (and its directory when that is not the project root), the key file,
-  `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, and for each declared harness
+  `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, `.speckl/harness-install/`,
+  and for each declared harness
   its own config (`.github/hooks/`; `.agents/plugins/` and `.config/goose/`;
   `.hermes/` and the `--hermes-home` directory; `.pi/`; `.opencode/`,
   `opencode.json` and `opencode.jsonc`; `.openclaw/`). A call that names one
@@ -658,17 +679,30 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   Terminal commands never advance the policy (above). User, system and cloud
   hooks (`~/.codeium/windsurf/hooks.json`, `/etc/devin/hooks.json`) also run
   and are not protected. Windows blocks every tool call (above).
-- `doctor` proves the installed command denies an unmapped tool. It does not
-  replay the state HMAC (`hook.mjs` does that on a real call) and it does not
-  prove Pi, OpenCode or OpenClaw loaded the plugin: those hosts skip a plugin
-  that fails to load, and doctor only runs the adapter command stored in the
-  plugin file. Kiro and Windsurf doctor runs the shell command `install`
-  wrote; it was not run inside those IDEs. Shell-wrapper harnesses need `sh`
-  on `PATH` (the same requirement as the hooks themselves). An install made
-  before this record existed has nothing for `uninstall` to restore; it
+- `doctor` proves the installed command is wired and that the adapter denies
+  the probe. It does not prove that `hook.mjs` ran, that the state HMAC or
+  the replay checks held, or that a plugin host loaded the plugin. Pi,
+  OpenCode and OpenClaw skip a plugin that fails to load, and doctor only
+  runs the adapter command stored in the plugin file. Kiro and Windsurf
+  doctor runs the shell command `install` wrote; it was not run inside those
+  IDEs. Shell-wrapper harnesses need `sh` on `PATH` (the same requirement as
+  the hooks themselves). Exit 0 is treated as a block only for Cline
+  (`cancel: true`), Pi, OpenCode and OpenClaw (`decision: "block"`) and
+  Cursor (`permission: "deny"`), and only together with the adapter's
+  unmapped-tool text. Claude Code, Codex, Gemini, Copilot, Goose, Hermes,
+  Kiro and Windsurf are fail-open on every exit 0.
+- The install record is authenticated only when `install` could read a 64-hex
+  state key and wrote `mac` (HMAC-SHA256 over the compact `{v, harness, files}`
+  JSON, not over the pretty-printed file). Without that key the record is
+  not authenticated: `uninstall` still refuses a path it does not own, and it
+  still refuses a symlink, but a process that can write the record can name
+  any owned path whose bytes match a saved copy it also planted.
+  `.speckl/harness-install/` is protected from tool calls. `uninstall` will
+  not delete a Hermes profile or a `--plugins-dir` outside the project, even
+  though `install` wrote them; those entries stay in the record. An install
+  made before this record existed has nothing for `uninstall` to restore; it
   refuses rather than deleting files it cannot prove it created. `uninstall`
-  does not restore file modes, and it does not remove directories. A symlink
-  at a recorded path is left in place.
+  does not restore file modes, and it does not remove directories.
 
 ## Sources
 
