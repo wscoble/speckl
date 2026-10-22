@@ -17,7 +17,20 @@ First npm release. The package was renamed from the unpublished
   HMAC-SHA256'd with the state key. Denials are not written into `state.json`,
   so they cannot advance the spec machine. If the record cannot be written,
   the call is denied. `signal.mjs verify` checks the state chain and the
-  whole decision chain. See `docs/agent-signals.md`.
+  whole decision chain. A `signers` rotation stays in `state.log` (it is
+  replayed there, and it does not rewrite the decision record);
+  `rotate-signers` refuses to rotate when the decision chain does not verify.
+  See `docs/agent-signals.md`.
+- **Pinned sign-off signers.** `signal.mjs init --signer name=pubkey` (repeatable)
+  records the ed25519 public keys that may sign a `file-drop` approval. The
+  initial set is covered by the state HMAC and by the log genesis hash.
+  Verification accepts a signature only from that set: a `--pubkey` that is
+  not pinned is refused, on dev states as well as production. A state created
+  before this field existed still trusts a per-call `--pubkey` (its genesis
+  is unchanged). `signal.mjs rotate-signers` appends a sealed log entry that
+  replaces the current set; the drop must be signed by a key that is pinned
+  now. Any one pinned key can sign or rotate (not a threshold). An empty set
+  refuses every file-drop signature.
 - **Compile tests** (#20, #21). `src/__tests__/compiles-*.test.ts` checks every
   example's generated code with a real toolchain:
   - `tsc --strict` for TypeScript and the agent machines, plus `node --check` for the hook scripts;
