@@ -80,9 +80,13 @@ function run(script: string, args: string[], input?: unknown): R {
 const read = (s: string) => JSON.parse(readFileSync(s, 'utf-8'));
 const write = (s: string, v: Record<string, unknown>) => writeSigned(s, v);
 
-function init(dev = false): string {
+function init(dev = false, pin = !dev): string {
   const state = join(mkdtempSync(join(tmpdir(), 'speckl-call-')), 'state.json');
-  const r = run('signal.mjs', ['init', '--state', state, ...(dev ? ['--dev'] : [])]);
+  const args = ['init', '--state', state, ...(dev ? ['--dev'] : [])];
+  // Production file-drop accepts only keys pinned at init. Dev cli tests
+  // pass pin=false; an empty set is not a trust anchor.
+  if (pin) args.push('--signer', 'reviewer=' + pubRaw.toString('hex'));
+  const r = run('signal.mjs', args);
   expect(r.status, r.stderr).toBe(0);
   return state;
 }
@@ -124,6 +128,32 @@ function drop(state: string, body: Record<string, unknown>, opts: { sign?: boole
 }
 function approve(state: string, call: string, extra: Record<string, unknown> = {}): R {
   return run('signal.mjs', drop(state, { signal: 'review', outcome: 'approve', claims: {}, call, ...extra }));
+}
+function otherKey(): { privateKey: crypto.KeyObject; raw: Buffer; hex: string } {
+  const keys = crypto.generateKeyPairSync('ed25519');
+  const raw = keys.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
+  return { privateKey: keys.privateKey, raw, hex: raw.toString('hex') };
+}
+function signedBy(
+  state: string,
+  body: Record<string, unknown>,
+  key: { privateKey: crypto.KeyObject; raw: Buffer },
+  cmd = 'apply',
+): string[] {
+  const dir = path.dirname(state);
+  const full = {
+    run: read(state).runId,
+    expires: new Date(Date.now() + 3600_000).toISOString(),
+    nonce: crypto.randomUUID(),
+    ...body,
+  };
+  const file = join(dir, `drop-${n++}.json`);
+  const buf = Buffer.from(JSON.stringify(full));
+  writeFileSync(file, buf);
+  writeFileSync(file + '.sig', crypto.sign(null, buf, key.privateKey));
+  const pub = join(dir, `key-${n}.pub`);
+  writeFileSync(pub, key.raw.toString('base64'));
+  return [cmd, '--state', state, '--verifier', 'file-drop', '--file', file, '--pubkey', pub];
 }
 
 beforeAll(() => {
@@ -266,6 +296,7 @@ describe('file-drop call binding', () => {
     const st = read(state);
     expect(st.machine.state.stage).toBe(2);
     expect(st.boundCall).toEqual({ hash: shown.digest });
+    expect(st.signalLog[0].signer).toBe('reviewer');
     expect(st.log.some((e: { kind: string; call?: string }) => e.kind === 'signal' && e.call === shown.digest)).toBe(true);
     expect(st.usedNonces).toHaveLength(1);
 
@@ -487,5 +518,79 @@ describe('file-drop call binding', () => {
     const replay = pre(second, 'ship', { branch: 'main' }, 's');
     expect(replay.status).toBe(2);
     expect(replay.stdout).toContain('signal call hash is not 64 hex chars');
+  });
+
+  it('a call-bound file-drop is accepted only from a current pinned signer', () => {
+    const state = init();
+    go(state);
+    const call = digestOf('ship', { branch: 'main' }).digest;
+    const outsider = otherKey();
+    const foreign = run('signal.mjs', signedBy(state, {
+      signal: 'review', outcome: 'approve', claims: {}, call,
+    }, outsider));
+    expect(foreign.status).toBe(2);
+    expect(foreign.stderr).toContain('pubkey is not a pinned sign-off signer');
+    expect(read(state).machine.state.stage).toBe(1);
+    expect(read(state).usedNonces).toEqual([]);
+    expect(read(state).boundCall).toBeNull();
+
+    const empty = init(false, false);
+    go(empty);
+    const none = approve(empty, call);
+    expect(none.status).toBe(2);
+    expect(none.stderr).toContain('no sign-off signers pinned');
+    expect(read(empty).boundCall).toBeNull();
+    expect(read(empty).machine.state.stage).toBe(1);
+
+    const next = otherKey();
+    const rotated = run('signal.mjs', signedBy(state, {
+      signal: 'rotate-signers',
+      outcome: 'rotate',
+      signers: [{ name: 'next', key: next.hex }],
+    }, { privateKey, raw: pubRaw }, 'rotate-signers'));
+    expect(rotated.status, rotated.stderr).toBe(0);
+    expect(read(state).initialSigners).toEqual([{ name: 'reviewer', key: pubRaw.toString('hex') }]);
+    expect(read(state).signers).toEqual([{ name: 'next', key: next.hex }]);
+
+    const stale = approve(state, call);
+    expect(stale.status).toBe(2);
+    expect(stale.stderr).toContain('pubkey is not a pinned sign-off signer');
+    expect(read(state).machine.state.stage).toBe(1);
+    expect(read(state).boundCall).toBeNull();
+
+    const applied = run('signal.mjs', signedBy(state, {
+      signal: 'review', outcome: 'approve', claims: {}, call,
+    }, next));
+    expect(applied.status, applied.stderr).toBe(0);
+    const logged = read(state).signalLog;
+    expect(logged[logged.length - 1].signer).toBe('next');
+    expect(read(state).boundCall).toEqual({ hash: call });
+
+    // Rotation after apply does not revoke the stored binding.
+    const later = otherKey();
+    const again = run('signal.mjs', signedBy(state, {
+      signal: 'rotate-signers',
+      outcome: 'rotate',
+      signers: [{ name: 'later', key: later.hex }],
+    }, next, 'rotate-signers'));
+    expect(again.status, again.stderr).toBe(0);
+    expect(read(state).signers).toEqual([{ name: 'later', key: later.hex }]);
+    expect(read(state).boundCall).toEqual({ hash: call });
+    expect(pre(state, 'ship', { branch: 'main' }, 'still').status).toBe(0);
+  });
+
+  it('does not recheck expiry when the bound call runs', async () => {
+    const state = init();
+    go(state);
+    const call = digestOf('note', { msg: 'a' }).digest;
+    const expires = new Date(Date.now() + 1500).toISOString();
+    const applied = run('signal.mjs', drop(state, {
+      signal: 'review', outcome: 'approve', claims: {}, call, expires,
+    }));
+    expect(applied.status, applied.stderr).toBe(0);
+    await new Promise(resolve => setTimeout(resolve, 1700));
+    expect(Date.now()).toBeGreaterThanOrEqual(Date.parse(expires));
+    expect(pre(state, 'note', { msg: 'a' }, 'late').status).toBe(0);
+    expect(read(state).boundCall).toEqual({ hash: call });
   });
 });

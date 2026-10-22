@@ -7,7 +7,7 @@ Compiles an `agent { }` block into:
   AGENTS.md          readable rails
   tools.json         tool names + JSON Schema + x-speckl
   hook.mjs           generic pre/post gate
-  signal.mjs         init / apply / timeout / clear-pending
+  signal.mjs         init / apply / timeout / clear-pending / rotate-signers
   state-integrity.mjs  hash-chained log + HMAC check shared by hook and signal
   verifiers/         cli + file-drop
   <Speck>.ts|.mjs    machine with can()/serialize() + __signal_* actions
@@ -72,14 +72,21 @@ An unmarked outcome whose name looks like a rejection (`reject`, `deny`,
 ### Call-bound sign-off: `bind call`
 
 `bind call` on an await makes each accepting outcome cover one exact tool
-call. `bind call on approve` limits that to the named outcomes. The signed
-drop then carries `call`, the sha256 of the canonical spec tool name and
-mapped arguments. The hook allows that call once and denies any other call
-while the approval is outstanding. Reject outcomes and timeouts are never
-call-bound. An await without the clause is unchanged: after the stage
-advances, any later call `can()` allows may run. See
+call. `bind call on approve` limits that to the named outcomes, in the order
+written. The signed drop then carries `call`, the sha256 of
+`canonical({ tool, input })` for the spec tool name and mapped arguments.
+The hook allows that call once and denies any other call while the approval
+is outstanding. A mismatch is exit 2 and does not consume the approval.
+Reject outcomes and timeouts are never call-bound. An await without the
+clause is unchanged: after the stage advances, any later call `can()` allows
+may run, and a drop that carries `call` is refused.
+
+A call-bound `file-drop` is still accepted only from the current pinned
+signer set. Expiry (`now >= expires`) and that signer check run when the
+drop is applied. Neither is checked again when the bound call runs, and
+rotating signers does not revoke a binding already stored. See
 [agent-signals.md](agent-signals.md) for the canonical form, how a human
-reads the preimage (`signal.mjs digest`), and what a mismatch does.
+reads the preimage (`signal.mjs digest`), and the other limits.
 
 ### Stuck tool calls: `pending timeout`
 

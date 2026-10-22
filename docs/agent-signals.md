@@ -7,7 +7,7 @@ signal**; anything verifiable can produce one through a pluggable verifier.
 
 | Kind | Assurance | How |
 | --- | --- | --- |
-| `file-drop` | Medium | ed25519-signed JSON file bound to a run, an expiry and a nonce. Evidence = file sha256. |
+| `file-drop` | Medium | ed25519-signed JSON file bound to a run, an expiry and a nonce. The signing key must be one pinned at `init`. Evidence = file sha256. |
 | `cli` | **DEV ONLY** | `--outcome` / `--as` / claims on the CLI. Evidence = local user + timestamp. Refused unless the state was created with `signal.mjs init --dev`. |
 
 Unsigned file drops (`--allow-unsigned true`) are also DEV ONLY and need an
@@ -20,15 +20,20 @@ Implement:
 ```ts
 interface SignalVerifier {
   // opts: verifier CLI options. expect: { signal, outcomes, claims, bindCall }.
-  // ctx: { runId, dev, now, usedNonces } from the state file.
+  // ctx: { runId, dev, now, usedNonces, signers? } from the state file.
+  // signers is absent on a legacy state and the pinned file-drop set otherwise.
+  // file-drop enforces it. A plug-in must enforce its own trust anchor;
+  // signal.mjs does not re-check the signature against signers.
   verify(opts: Record<string, unknown>, expect: AwaitSpec, ctx: VerifierContext):
     Promise<{ ok: true; signal: VerifiedSignal } | { ok: false; reason: string }>;
 }
 // VerifiedSignal: { signal, outcome, claims, verifier, subject, at, evidence,
-//                   run?, expires?, nonce?, callId?, call? }
+//                   run?, expires?, nonce?, callId?, call?, signer?, signers? }
 // If a verifier returns run/nonce, signal.mjs re-checks them against the state.
 // call is the sha256 hex of one canonical tool call. Required when the await
 // outcome is in expect.bindCall; refused on every other outcome.
+// A call hash is not a trust anchor. file-drop still accepts the signature
+// only from ctx.signers.
 ```
 
 Documented shapes (not shipped):
@@ -55,10 +60,12 @@ A signed drop must carry:
 ```
 
 The verifier refuses a drop whose `run` is for another state file, whose
-`expires` has passed (or is not a valid time), or whose `nonce` was already
-used in this state file (8–200 chars). `signal` is never defaulted. Every
-applied `evidence` id is also single-use. An approval therefore can't be
-replayed or carried over to a new run.
+`expires` is not a valid time, or whose `expires` instant is at or before
+now (`now >= expires`), or whose `nonce` was already used in this state
+file (8–200 chars). `signal` is never defaulted. Every applied `evidence`
+id is also single-use. An approval therefore can't be replayed or carried
+over to a new run. Those checks run when the drop is applied. They are not
+run again when a call authorized by that drop later executes.
 
 ## Call-bound sign-off
 
@@ -68,110 +75,253 @@ sign-off that covers **one exact call, once**.
 
 ### How the spec declares it
 
-Inside the `await` block:
+Inside the `await` block. The parser accepts the clause on any line of the
+body. The printer writes it after the `require` lines and before `on`:
 
 ```
-bind call                    # every accepting (non-!) outcome
-bind call on approve         # only these outcomes
+bind call                    # every accepting (non-!) outcome, in declaration order
+bind call on approve         # only these outcomes, in the order written
 bind call on approve, ship
 ```
 
-The clause names outcomes, not tools. The signed hash names the tool. A
-reject outcome (`name!`) cannot be listed: a reject authorizes no call.
-Timeouts are never call-bound. Leaving the clause out keeps today's
-stage-level sign-off, and those specs do not change.
+The clause names outcomes, not tools. The signed hash names the tool and its
+arguments. A reject outcome (`name!`) cannot be listed: a reject authorizes
+no call. A bare `bind call` with no accepting outcome is a parse error.
+Timeout outcomes are not in `bindCall`. Leaving the clause out stores
+`bindCall: []`. That is a stage-level sign-off, and those specs do not
+require a `call` field.
 
 ### Canonical arguments
 
-`call` is the sha256 hex digest of `canonical({ tool, input })`, using the
-same canonical form as the state log:
+`call` is the lowercase sha256 hex digest of `canonical({ tool, input })`
+from `state-integrity.mjs`. `canonical` is the same function as the state log:
 
 - object keys are sorted at every depth;
-- array order is kept;
-- `undefined` is omitted; `null` is kept;
-- strings are exact (no Unicode normalization);
-- nothing is truncated.
+- an object key whose value is `undefined` is omitted; `null` is kept;
+- array order is kept; an `undefined` array element is encoded as `null`;
+- strings, numbers, and booleans go through `JSON.stringify` (no Unicode
+  normalization, nothing truncated).
 
 `tool` is the **spec** tool name (`open_pr`), not the harness tool name
 (`Bash`). `input` is the arguments object the hook sees **after** a harness
 adapter has mapped the call. Two harnesses that map to the same spec tool
-and the same arguments share a digest; harness-only spelling that the map
-drops is not part of the hash. The hook already treats a missing or null
-`input` as `{}`, and the digest is of that value.
+and the same arguments share a digest. Fields the map drops are not hashed.
 
-`node signal.mjs digest` and the hook both call `callDigest` in
-`state-integrity.mjs`. Key order in the JSON does not change the digest.
+On `pre`, the hook sets `input` to `msg.input || {}` before hashing. A
+missing, `null`, `false`, `0`, or `""` input is therefore hashed as `{}`.
+An array is left as-is and `callDigest` refuses it (`call digest needs an
+arguments object`). `callDigest` also refuses an empty tool name and a
+non-object input.
+
+`node signal.mjs digest` calls the same `callDigest` and `canonical`. It
+does not apply the hook's `|| {}` coercion and it does not read or write
+state. Stdin must be a JSON object with a non-empty string `tool` and an
+own `input` property. Anything else exits 1 and prints no digest.
 
 ### How the human sees the call
 
-While the machine is still waiting on a call-bound outcome, a refused call's
-reason ends with the exact preimage and its digest:
+While the machine is in an await whose `bindCall` is non-empty, a denied
+`pre` keeps its HITL or HNTL reason and appends one suffix:
 
-```
-sign call <64 hex> canonical {"input":{...},"tool":"open_pr"}
-```
+- plain object arguments: `; call-bound sign-off: sign call <64 lowercase hex> canonical <preimage>`
+- anything `callDigest` refuses: `; call-bound sign-off refused: <error>`
 
-The same pair is printed without touching state:
+`<preimage>` is the exact `canonical({ tool, input })` string, with the
+hook's coercion already applied. The same pair, without coercion, is:
 
 ```
 echo '{"tool":"open_pr","input":{"branch":"main"}}' | node signal.mjs digest
 # {"ok":true,"digest":"<64 hex>","canonical":"{\"input\":{\"branch\":\"main\"},\"tool\":\"open_pr\"}"}
 ```
 
-`canonical` is the exact string that was hashed. Put `digest` in the signed
-JSON as `call`, beside `run`, `expires` and `nonce`, and sign the whole
-file. The human is approving that mapped spec call, not a raw harness
+Put `digest` in the signed JSON as `call`, beside `run`, `expires`, and
+`nonce`, and sign the whole file. Uppercase hex is accepted and stored
+lowercase. The human is approving that mapped spec call, not a raw harness
 command and not a truncated preview.
 
 ### A mismatch denies
 
-The hook allows a later call only when its digest equals the signed `call`
-**and** `can()` allows it. Anything else is exit 2, the state is not
-written, and the approval is kept:
+`file-drop` checks the signature against the current pinned set **before**
+`signal.mjs` looks at `call`. An unpinned key is refused (`pubkey is not a
+pinned sign-off signer`, or `no sign-off signers pinned for this run` when
+the set is empty). The stage does not move and the nonce is not stored.
+The `call` value is not a trust anchor.
 
-- a different tool, a different argument, or a different array order;
-- an arguments value that is not a JSON object;
-- a `call` that is missing, not 64 hex characters, or attached to an
-  outcome that is not call-bound (including `clear-pending` and a
-  stage-level sign-off).
+Then, still inside `apply`, before the stage moves:
 
-Those last cases are refused at `signal.mjs apply`, before the stage moves.
-A verifier that returns a bad `call` is a deny. There is no path that
-ignores a bad hash and continues.
+- an outcome listed in `bindCall` with no `call` is refused
+  (`call-bound sign-off requires call`);
+- any other outcome, including a reject, a stage-level sign-off, and
+  `clear-pending`, is refused if `call` is present
+  (`stage-level sign-off must not carry a call hash`, or
+  `clear-pending does not accept a call hash`);
+- a `call` that is not 64 hex characters is refused by `file-drop`
+  (`payload call must be a 64-char sha256 hex digest`) and, if a verifier
+  returns that shape anyway, by `signal.mjs`
+  (`call hash must be 64 hex chars`).
 
-The approval is consumed only when that matching call's `post` reports
-`ok: true`. A failed post or an expired pending call leaves the binding in
-place, so a failed attempt cannot become permission for a different call.
-An observe call that was already in flight when the sign-off was applied
-(near / HNTL) can finish; it does not consume the binding.
+A matching hash does not skip `can()`. If `can()` refuses, the stage does
+not move and no binding is stored.
 
-The binding is re-derived from the log (`signal` entries carry `call`; a
-successful matching `post` clears it). Editing `boundCall` in `state.json`
-without that log entry is denied.
+After a call-bound apply, `state.boundCall` is `{ hash }` and the `signal`
+log entry carries `call`. The hook's `pre` then:
+
+1. denies when `boundCall.hash` is not a string (`call-bound sign-off is malformed`);
+2. denies when this call's digest cannot be computed;
+3. denies when the digest differs (`call-bound sign-off does not cover this call (denied): want <hash> got <hash> canonical <preimage>`).
+
+Those three write nothing and leave the binding in place. A matching digest
+continues to `can()`. If `can()` refuses, that write does not happen either,
+and the binding stays.
+
+The binding is cleared only when `post` has `ok: true` and the pending
+call's digest equals `boundCall.hash`. A failed `post` does not clear it.
+An observe `pre` that was already in flight when the sign-off was applied
+(near / HNTL) may `post` successfully; that post does not match, so it does
+not clear the binding and it is not denied. `clear-pending` clears the
+pending call and does not clear the binding. An expired pending call is
+cleared as failed (that clear is written) and the binding stays, so the
+failure cannot become permission for a different call.
+
+There is one binding. A later `signal` log entry replaces it: an entry with
+a `call` sets the new hash, and an entry without `call` (a stage-level
+sign-off, or a timeout that fires) sets `boundCall` to null. Starting a
+timeout clock, when no start was recorded, does not clear it.
+
+Replay re-derives `boundCall` from the log. A stored `boundCall` that
+differs, including a hand edit that is re-signed with the state key, is
+denied (`bound call does not match the log`). A `call` in the log that is
+not 64 lowercase hex throws on replay (`signal call hash is not 64 hex
+chars`). A state with no `boundCall` field verifies as unbound.
 
 ### Stage-level sign-offs stay
 
-No `bind call` means no `call` field. A drop that carries one is refused, so
-a hash cannot be attached to a stage-level approval and ignored. After a
-stage-level sign-off the hook does not keep a binding. State files written
-before this field existed have no `boundCall`; they verify as unbound.
+No `bind call` means `bindCall` is empty. `apply` then refuses a drop that
+carries `call`, so a hash cannot be attached and ignored. The resulting
+`boundCall` is null. State files written before this field existed have no
+`boundCall`; they verify as unbound.
 
-Run id, expiry, nonce and evidence replay are unchanged, and they are
-checked when `call` is present too.
+Run id, expiry, nonce, and evidence replay are the same checks as any other
+drop, including when `call` is present. `cli` and `--allow-unsigned` remain
+the DEV ONLY exceptions already documented. On a `--dev` state they can
+carry `call`. They are not a production path, and `--dev` does not let an
+unpinned key stand in for a pin.
 
 ### Limits
 
 - The hash gate is in the hook, not in Z3. BMC still covers the stage
   transition. It does not prove which arguments were signed. The gate only
   narrows what the hook allows, so existing proofs stay sound.
-- Expiry is enforced when the drop is applied, not again when the bound
-  call later runs.
-- After the one successful call, later calls follow `can()` only. If that
-  action's guard stays true, a later call with different arguments is not
-  covered by the spent sign-off. Move the stage in the action when that
-  one call should be the last one.
+- Expiry is checked when the drop is applied (`now >= expires` refuses).
+  It is not checked again when the bound call's `pre` or `post` runs. A
+  call can run after the drop's `expires` instant.
+- The pinned-signer check also happens only at apply. Rotating the set
+  afterwards does not revoke a binding already stored. Later drops use the
+  new set; the outstanding call still runs if its digest matches.
+- After the one successful matching `post`, later calls follow `can()` only.
+  If that action's guard stays true, a later call with different arguments
+  is not covered by the spent sign-off. Move the stage in the action when
+  that one call should be the last one.
 - The human approves the mapped spec call. A harness map that drops or
-  renames fields changes what is signed.
+  renames fields changes what is signed. The hook hashes falsy `input` as
+  `{}`; `signal.mjs digest` does not.
+- A plug-in verifier is not re-checked against `signers`. It must enforce
+  its own trust anchor. Returning `call` does not make `signal.mjs` pin a key.
+
+## Pinned sign-off signers
+
+`init` records who may sign a `file-drop` approval. Repeat the flag for each
+approver. The value is a file (raw 32 bytes, 64 hex chars, or base64 of those
+32 bytes — the same shapes `--pubkey` accepts) or the key material inline:
+
+```
+node signal.mjs init --state ./state.json --key /etc/speckl/state.key \
+  --signer carol=./keys/carol.pub \
+  --signer dave=./keys/dave.pub
+```
+
+The command prints each name with the sha256 of the raw public key. Names
+match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`. Two signers may not share a name or
+a key. At most 32 are stored. The set is sorted by name.
+
+What is stored:
+
+- `initialSigners` — the set from `init`. The sha256 of its canonical form
+  is part of the **genesis** hash, so editing it breaks the log chain even
+  if the state is re-signed. Omitted from the hash when the field is absent.
+- `signers` — the set in force now. With no rotation it equals
+  `initialSigners`. The HMAC covers it, and load replays the log to re-derive
+  it, the same way it re-derives the machine.
+
+`apply` (including a call-bound drop), `clear-pending`, and `rotate-signers`
+with `--verifier file-drop` accept a signature only from `signers`. The
+`call` field does not add a key and does not skip this check:
+
+- Omit `--pubkey` and the signature may verify under any pinned key.
+- `--pubkey <file>` must be exactly one of those keys. Any other file is
+  refused (`pubkey is not a pinned sign-off signer`), whether or not its
+  signature is valid.
+- `--signer <name>` checks that one pin. A name that was not pinned is refused.
+- Passing both requires that they are the same pin.
+- An empty set refuses every signature (`no sign-off signers pinned for this
+  run`), including on a `--dev` state. `--dev` still allows the `cli`
+  verifier and `--allow-unsigned`; it does not let a per-call key stand in
+  for a pin.
+
+Any one pinned key is enough. That is several approvers, not an M-of-N
+threshold and not a per-await role: one compromised signer can approve and
+can rotate the others out.
+
+### Rotating the set
+
+`rotate-signers` appends a `signers` log entry. The drop is an ordinary
+file-drop body signed by a key that is pinned **now** (not by a key that
+only appears in the new set):
+
+```json
+{
+  "signal": "rotate-signers",
+  "outcome": "rotate",
+  "signers": [{ "name": "carol", "key": "<64 hex chars>" }],
+  "run": "<run id>",
+  "expires": "2026-10-16T17:00:00Z",
+  "nonce": "4f1c9a7e-…"
+}
+```
+
+`key` is inline bytes (hex or base64), not a path: the path would not be
+covered by the signature.
+
+```
+node signal.mjs rotate-signers --state ./state.json --verifier file-drop \
+  --file ./inbox/rotate.json
+```
+
+The command refuses a legacy state, an empty set (nothing can authorize the
+change), the `cli` verifier, and `--allow-unsigned`. The new set must name
+at least one signer. After it lands, only the new keys verify, and the hook
+still accepts the state: replay applies the entry and checks `state.signers`
+against it. `initialSigners` does not change. An outstanding `boundCall`
+is not cleared: the binding was checked against the set in force at apply,
+and the hook does not re-check the signer when that call runs.
+
+If every pinned private key is lost, rotation is impossible. `init` a new
+run. Re-signing the state file with the HMAC key is not a supported way to
+swap signers; a hand edit of `signers` fails the replay check, and a hand
+edit of `initialSigners` fails the chain. Someone who already holds the state
+HMAC key and rebuilds a consistent log can still append a forged `signers`
+entry, the same way they can forge any other entry. The pin stops whoever
+runs `apply` from choosing a key. It does not add a second seal on top of
+the state key.
+
+### States created before pinning
+
+A state file with no `initialSigners` / `signers` fields keeps the previous
+genesis (the field is omitted from the hash) and still trusts the `--pubkey`
+passed to that call. `signal.mjs` warns when it does. Re-init to pin keys.
+There is no in-place upgrade: a rotation has no current signer to authorize
+it, and letting the state-key holder insert a pin would hand the same choice
+back to whoever runs the command.
 
 ## Who may record a signal
 
@@ -188,13 +338,17 @@ are created without `--dev` and accept only signed verifiers.
 state they can't verify. Two layers:
 
 1. **Hash-chained log.** Every change (`pre`, `post`, `expire`, `signal`,
-   `timeout`, `clear`) is appended to `state.log`. Each entry's hash covers
-   the previous one; the first links to a genesis hash over the run id, spec
-   hash, dev flag and key id. On load the log is replayed from a fresh
-   machine, and the stored machine, pending call, used nonces, applied
-   evidence and any call-bound sign-off must equal the replayed ones.
-   Editing any of them, or truncating,
-   reordering or splicing the log, is detected.
+   `timeout`, `clear`, `signers`) is appended to `state.log`. Each entry's
+   hash covers the previous one; the first links to a genesis hash over the
+   run id, spec hash, dev flag, key id and, when the field exists, the sha256
+   of the canonical `initialSigners`. On load the log is replayed from a
+   fresh machine, and the stored machine, pending call, used nonces, applied
+   evidence, current signer set, and call-bound sign-off must equal the
+   replayed ones. Editing any of them, or truncating, reordering or splicing
+   the log, is detected. A `signers` entry replaces the current set and does
+   not move the machine. A `signal` entry with `call` sets the binding; a
+   `signal` without `call`, or a `timeout`, clears it. A successful `post`
+   of the matching call clears it. A missing `boundCall` compares as unbound.
 2. **HMAC-SHA256** over the whole canonical state (`state.mac`), with a 32-byte
    key in a file (`--key <file>` or `SPECKL_STATE_KEY_FILE`). This also covers
    fields the log can't derive (timestamps, audit logs) and stops anyone
@@ -218,7 +372,9 @@ warns on every call and checks only the log chain (which a determined editor
 can rebuild). Never use it where the agent can edit the state.
 
 **Old state files** (no `log`/run id) are refused with a message to
-re-create them with `signal.mjs init`.
+re-create them with `signal.mjs init`. Files that already have a log but no
+signer fields stay verifiable; see "States created before pinning" above.
+Files with no `boundCall` field verify as unbound.
 
 ## Stuck tool calls
 
@@ -228,12 +384,14 @@ not advanced), or sooner with a verified signal naming the pending call:
 
 ```
 node signal.mjs clear-pending --state ./state.json --verifier file-drop \
-  --file ./inbox/clear.json --pubkey ./keys/reviewer.pub
+  --file ./inbox/clear.json
 # {"signal":"clear-pending","call_id":"<pending id>","run":"…","expires":"…","nonce":"…"}
 ```
 
-`clear-pending` goes through the same checks as `apply` (dev gate, run,
-expiry, nonce, replay). Clears are logged in `state.pendingLog`.
+`clear-pending` goes through the same checks as `apply` (dev gate, pinned
+signer, run, expiry, nonce, replay) and refuses a `call` hash. It clears
+the pending call and does not clear a call binding. Clears are logged in
+`state.pendingLog`.
 
 ## Timeout
 

@@ -44,11 +44,15 @@ let agentDir = '';
 let vetoDir = '';
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
 const pubRaw = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
+const pubHex = pubRaw.toString('hex');
 
 function init(dir = agentDir, dev = false): { state: string; out: R } {
   const state = join(mkdtempSync(join(tmpdir(), 'speckl-bind-')), 'state.json');
-  const out = signal(dir, ['init', '--state', state, ...(dev ? ['--dev'] : [])]);
-  expect(out.status).toBe(0);
+  // Production runs pin the key these drops are signed with. A per-call
+  // --pubkey is no longer a trust anchor once a set is recorded.
+  const pin = dev ? [] : ['--signer', 'reviewer=' + pubHex];
+  const out = signal(dir, ['init', '--state', state, ...(dev ? ['--dev'] : []), ...pin]);
+  expect(out.status, out.stderr).toBe(0);
   return { state, out };
 }
 function awaiting(dir = agentDir, dev = false): string {

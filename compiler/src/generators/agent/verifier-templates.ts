@@ -5,12 +5,16 @@
 //   opts   = verifier CLI options (--key value)
 //   expect = { signal, outcomes, claims, bindCall? } the caller is waiting for.
 //            bindCall lists outcomes that must return signal.call.
-//   ctx    = { runId, dev, now, usedNonces } from the state file
+//   ctx    = { runId, dev, now, usedNonces, signers? } from the state file.
+//            signers is absent on a legacy state and an array (possibly
+//            empty) when the run recorded a pinned sign-off set.
 // signal = { signal, outcome, claims, verifier, subject, at, evidence,
-//            run?, expires?, nonce?, callId?, call? }
+//            run?, expires?, nonce?, callId?, call?, signer?, signers? }
 // call is the sha256 hex of canonical({tool, input}) for a call-bound
 // sign-off. signal.mjs requires it on those outcomes and refuses it on
 // every other outcome (including clear-pending). A bad shape denies.
+// file-drop sets signer from the pinned key that verified. A call hash is
+// not a trust anchor: the signature is still checked against ctx.signers.
 
 export function emitCliVerifier(): string {
   return `/**
@@ -92,9 +96,17 @@ export function emitFileDropVerifier(): string {
  *
  * Options:
  *   --file <path>             required
- *   --pubkey <path>           required unless --allow-unsigned true
+ *   --pubkey <path>           which key to check. On a run with pinned signers
+ *                             it must be one of those keys (it is not a new
+ *                             trust anchor). On a legacy state (no signers
+ *                             field) it is still the per-call trust anchor.
+ *   --signer <name>           check this pinned signer only
  *   --sig <path>              optional (default <file>.sig)
  *   --allow-unsigned true     DEV ONLY; also needs a state created with init --dev
+ *
+ * With pinned signers and neither --pubkey nor --signer, every pinned key is
+ * tried. An empty pinned set refuses every signature. A signature that only
+ * verifies under a key that is not pinned is refused.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -150,33 +162,74 @@ export async function verify(opts, expect, ctx = {}) {
     return { ok: false, reason: 'payload must be a JSON object' };
   }
 
+  let signerName;
   if (!allowUnsigned) {
-    const pubkeyPath = opts.pubkey;
-    if (!pubkeyPath || typeof pubkeyPath !== 'string') {
-      return { ok: false, reason: 'file-drop requires --pubkey (unsigned drops are DEV ONLY: --allow-unsigned true with a state created by init --dev)' };
+    const pinned = ctx.signers;
+    const legacy = pinned === undefined;
+    if (!legacy && !Array.isArray(pinned)) {
+      return { ok: false, reason: 'pinned signer set is malformed' };
     }
-    if (!fs.existsSync(pubkeyPath)) {
-      return { ok: false, reason: 'pubkey not found: ' + pubkeyPath };
+    if (!legacy) {
+      for (const s of pinned) {
+        if (!s || typeof s.name !== 'string' || typeof s.key !== 'string' || !/^[0-9a-f]{64}$/.test(s.key)) {
+          return { ok: false, reason: 'pinned signer set is malformed' };
+        }
+      }
+      if (pinned.length === 0) {
+        return { ok: false, reason: 'no sign-off signers pinned for this run' };
+      }
     }
+    const signerOpt = opts.signer;
+    if (Array.isArray(signerOpt)) return { ok: false, reason: 'pass one --signer' };
+    if (signerOpt !== undefined && typeof signerOpt !== 'string') return { ok: false, reason: 'bad --signer' };
+
+    // Keys the signature may verify under. A presented --pubkey never adds one.
+    let keys;
+    if (!legacy) {
+      if (typeof opts.pubkey === 'string' && opts.pubkey) {
+        if (!fs.existsSync(opts.pubkey)) return { ok: false, reason: 'pubkey not found: ' + opts.pubkey };
+        let presented;
+        try { presented = decodeKey(fs.readFileSync(opts.pubkey)); }
+        catch (e) { return { ok: false, reason: e.message }; }
+        const match = pinned.find(s => s.key === presented.toString('hex'));
+        if (!match) return { ok: false, reason: 'pubkey is not a pinned sign-off signer' };
+        if (typeof signerOpt === 'string' && signerOpt !== match.name) {
+          return { ok: false, reason: 'signer name does not match --pubkey' };
+        }
+        keys = [{ name: match.name, raw: presented }];
+      } else if (opts.pubkey !== undefined && typeof opts.pubkey !== 'string') {
+        return { ok: false, reason: 'file-drop --pubkey must be a path' };
+      } else if (typeof signerOpt === 'string') {
+        const match = pinned.find(s => s.name === signerOpt);
+        if (!match) return { ok: false, reason: 'unknown pinned signer: ' + signerOpt };
+        keys = [{ name: match.name, raw: Buffer.from(match.key, 'hex') }];
+      } else {
+        keys = pinned.map(s => ({ name: s.name, raw: Buffer.from(s.key, 'hex') }));
+      }
+    } else {
+      const pubkeyPath = opts.pubkey;
+      if (!pubkeyPath || typeof pubkeyPath !== 'string') {
+        return { ok: false, reason: 'file-drop requires --pubkey (unsigned drops are DEV ONLY: --allow-unsigned true with a state created by init --dev)' };
+      }
+      if (!fs.existsSync(pubkeyPath)) return { ok: false, reason: 'pubkey not found: ' + pubkeyPath };
+      try { keys = [{ name: undefined, raw: decodeKey(fs.readFileSync(pubkeyPath)) }]; }
+      catch (e) { return { ok: false, reason: e.message }; }
+    }
+
     const sigPath = typeof opts.sig === 'string' ? opts.sig : (file + '.sig');
-    if (!fs.existsSync(sigPath)) {
-      return { ok: false, reason: 'signature file not found: ' + sigPath };
-    }
-    let pub;
+    if (!fs.existsSync(sigPath)) return { ok: false, reason: 'signature file not found: ' + sigPath };
     let sig;
-    try {
-      pub = decodeKey(fs.readFileSync(pubkeyPath));
-      sig = decodeSig(fs.readFileSync(sigPath));
-    } catch (e) {
-      return { ok: false, reason: e.message };
+    try { sig = decodeSig(fs.readFileSync(sigPath)); }
+    catch (e) { return { ok: false, reason: e.message }; }
+    let matched = null;
+    for (const k of keys) {
+      let ok = false;
+      try { ok = crypto.verify(null, body, ed25519PublicKey(k.raw), sig); }
+      catch (e) { return { ok: false, reason: 'signature verify error: ' + e.message }; }
+      if (ok) { matched = k; break; }
     }
-    let ok = false;
-    try {
-      ok = crypto.verify(null, body, ed25519PublicKey(pub), sig);
-    } catch (e) {
-      return { ok: false, reason: 'signature verify error: ' + e.message };
-    }
-    if (!ok) return { ok: false, reason: 'bad signature' };
+    if (!matched) return { ok: false, reason: 'bad signature' };
+    signerName = matched.name;
   } else {
     if (ctx.dev !== true) {
       return { ok: false, reason: 'unsigned drops are DEV ONLY (state was not created with init --dev)' };
@@ -234,6 +287,8 @@ export async function verify(opts, expect, ctx = {}) {
     expires: payload.expires,
     nonce,
     callId: typeof payload.call_id === 'string' ? payload.call_id : undefined,
+    signer: signerName,
+    signers: payload.signal === 'rotate-signers' ? payload.signers : undefined,
   };
   if (call !== undefined) verified.call = call;
   return { ok: true, signal: verified };

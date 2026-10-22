@@ -82,7 +82,7 @@ describe('generateAgent (in process)', () => {
   });
 
   it('generated scripts are syntactically valid', () => {
-    for (const f of ['hook.mjs', 'signal.mjs', 'verifiers/cli.mjs', 'verifiers/file-drop.mjs']) {
+    for (const f of ['hook.mjs', 'signal.mjs', 'state-integrity.mjs', 'verifiers/cli.mjs', 'verifiers/file-drop.mjs']) {
       const r = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf-8' });
       expect(r.status, f + r.stderr).toBe(0);
     }

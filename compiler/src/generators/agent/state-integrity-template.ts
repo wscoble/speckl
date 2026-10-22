@@ -3,9 +3,11 @@
 // Two layers, both checked by hook.mjs and signal.mjs before they act:
 //  1. Hash-chained event log. Every state change appends an entry whose
 //     hash covers the previous hash; the genesis hash covers run id, spec
-//     hash and dev flag. The machine, the pending call, used nonces,
-//     applied evidence and any call-bound sign-off are re-derived by
-//     replaying the log from init and must match the stored copies.
+//     hash, dev flag and (when the run recorded one) the initial sign-off
+//     signer set. The machine, the pending call, used nonces, applied
+//     evidence, the current signer set and any call-bound sign-off are
+//     re-derived by replaying the log from init and must match the stored
+//     copies.
 //  2. HMAC-SHA256 over the whole canonical state with a key the agent
 //     cannot read (--key <file> or SPECKL_STATE_KEY_FILE). Required for
 //     non-dev states, and whenever a key is configured.
@@ -73,7 +75,15 @@ export function ensureKey(keyPath) {
 export const keyIdOf = key => sha(key).slice(0, 16);
 
 export function genesis(state) {
-  return sha('speckl-state-v1:' + canonical({ run: state.runId, spec: state.specHash, dev: state.dev === true, keyId: state.keyId || null }));
+  // initialSigners is hashed in when the field exists, so editing the set
+  // the run started with breaks the chain. Omitted when absent (canonical
+  // drops undefined): states created before signer pinning keep this genesis.
+  // The current set is not hashed here. A rotation is a log entry, replayed
+  // below, the same way the machine is.
+  return sha('speckl-state-v1:' + canonical({
+    run: state.runId, spec: state.specHash, dev: state.dev === true, keyId: state.keyId || null,
+    initialSigners: state.initialSigners === undefined ? undefined : sha(canonical(state.initialSigners)),
+  }));
 }
 
 /** Append a hash-chained entry and move the head. */
@@ -104,6 +114,9 @@ function derive(state, Machine, config) {
   let boundCall = null;
   const usedNonces = [];
   const appliedEvidence = [];
+  // Undefined means a legacy state (no pin). An array, possibly empty, is
+  // the set recorded at init, then replaced by each \`signers\` entry.
+  let signers = state.initialSigners === undefined ? undefined : state.initialSigners.map(s => ({ name: s.name, key: s.key }));
   const toolByName = new Map(config.tools.map(t => [t.name, t]));
   const signalAction = (signal, outcome) => {
     for (const a of config.awaits) if (a.signal === signal) {
@@ -156,13 +169,23 @@ function derive(state, Machine, config) {
         }
         break;
       }
+      case 'signers': {
+        if (!Array.isArray(e.signers)) throw new Error('signers entry missing set');
+        const next = [];
+        for (const s of e.signers) {
+          if (!s || typeof s.name !== 'string' || typeof s.key !== 'string') throw new Error('signers entry is malformed');
+          next.push({ name: s.name, key: s.key });
+        }
+        signers = next;
+        break;
+      }
       default:
         throw new Error('unknown log entry ' + e.kind);
     }
     if (e.evidence !== undefined) appliedEvidence.push(e.evidence);
     if (e.nonce !== undefined) usedNonces.push(e.nonce);
   }
-  return { machine: machine.serialize(), pending, usedNonces, appliedEvidence, boundCall };
+  return { machine: machine.serialize(), pending, usedNonces, appliedEvidence, signers, boundCall };
 }
 
 /**
@@ -209,6 +232,7 @@ export function verifyState(state, { keyPath, Machine, config }) {
   if (canonical(d.pending) !== canonical(p)) return { ok: false, reason: 'pending call does not match the log' };
   if (canonical(d.usedNonces) !== canonical(state.usedNonces || [])) return { ok: false, reason: 'used nonces do not match the log' };
   if (canonical(d.appliedEvidence) !== canonical(state.appliedEvidence || [])) return { ok: false, reason: 'applied evidence does not match the log' };
+  if (canonical(d.signers) !== canonical(state.signers)) return { ok: false, reason: 'pinned signers do not match the log' };
   // Absent on state files written before call-bound sign-offs: that is unbound.
   const storedBound = state.boundCall == null ? null : state.boundCall;
   if (canonical(d.boundCall) !== canonical(storedBound)) return { ok: false, reason: 'bound call does not match the log' };
