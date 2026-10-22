@@ -70,6 +70,7 @@ describe('agent { } parser', () => {
     expect(agent.awaits[0].mode).toBe('near');
     expect(agent.awaits[0].timeout?.durationText).toBe('24h');
     expect(agent.awaits[0].claims[0].name).toBe('reviewer');
+    expect(agent.awaits[0].bindCall).toEqual([]);
   });
 
   it('round-trips through the printer', () => {

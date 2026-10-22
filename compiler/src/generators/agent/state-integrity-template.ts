@@ -5,8 +5,9 @@
 //     hash covers the previous hash; the genesis hash covers run id, spec
 //     hash, dev flag and (when the run recorded one) the initial sign-off
 //     signer set. The machine, the pending call, used nonces, applied
-//     evidence and the current signer set are re-derived by replaying the
-//     log from init and must match the stored copies.
+//     evidence, the current signer set and any call-bound sign-off are
+//     re-derived by replaying the log from init and must match the stored
+//     copies.
 //  2. HMAC-SHA256 over the whole canonical state with a key the agent
 //     cannot read (--key <file> or SPECKL_STATE_KEY_FILE). Required for
 //     non-dev states, and whenever a key is configured.
@@ -37,6 +38,20 @@ export function canonical(v) {
 }
 
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
+
+/**
+ * sha256 of the canonical spec call the hook will see: spec tool name plus
+ * the mapped arguments object. Object keys are sorted at every depth, array
+ * order is kept, and nothing is truncated. Harnesses differ only in how they
+ * map onto this object; the digest is of the mapped call.
+ */
+export function callDigest(tool, input) {
+  if (typeof tool !== 'string' || tool.length === 0) throw new Error('call digest needs a tool name');
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('call digest needs an arguments object');
+  }
+  return sha(canonical({ tool, input }));
+}
 
 export function keyPathFrom(argKey) {
   if (typeof argKey === 'string' && argKey) return argKey;
@@ -100,6 +115,7 @@ export function sign(state, key) {
 function derive(state, Machine, config) {
   const machine = new Machine();
   let pending = null;
+  let boundCall = null;
   const usedNonces = [];
   const appliedEvidence = [];
   // Undefined means a legacy state (no pin). An array, possibly empty, is
@@ -122,6 +138,14 @@ function derive(state, Machine, config) {
       case 'post': {
         if (!pending || pending.call_id !== e.call_id) throw new Error('post without pending');
         if (e.ok) {
+          // Consumed only by the successful post of the matching call. A
+          // different post is an in-flight call from before the sign-off
+          // (an observe tool, in near mode); it does not consume the binding.
+          if (boundCall) {
+            let digest = null;
+            try { digest = callDigest(pending.tool, pending.input); } catch { digest = null; }
+            if (digest === boundCall.hash) boundCall = null;
+          }
           const b = toolByName.get(pending.tool);
           if (!b || b.action !== pending.action) throw new Error('unknown tool in log');
           const params = (Machine.ACTIONS || {})[b.action] || [];
@@ -140,6 +164,13 @@ function derive(state, Machine, config) {
         const act = signalAction(e.signal, e.outcome);
         if (!act) throw new Error('unknown signal outcome in log');
         machine[act]();
+        if (e.kind === 'timeout' || e.call === undefined) {
+          boundCall = null;
+        } else if (typeof e.call === 'string' && /^[0-9a-f]{64}$/.test(e.call)) {
+          boundCall = { hash: e.call };
+        } else {
+          throw new Error('signal call hash is not 64 hex chars');
+        }
         break;
       }
       case 'signers': {
@@ -158,7 +189,7 @@ function derive(state, Machine, config) {
     if (e.evidence !== undefined) appliedEvidence.push(e.evidence);
     if (e.nonce !== undefined) usedNonces.push(e.nonce);
   }
-  return { machine: machine.serialize(), pending, usedNonces, appliedEvidence, signers };
+  return { machine: machine.serialize(), pending, usedNonces, appliedEvidence, signers, boundCall };
 }
 
 /**
@@ -206,6 +237,9 @@ export function verifyState(state, { keyPath, Machine, config }) {
   if (canonical(d.usedNonces) !== canonical(state.usedNonces || [])) return { ok: false, reason: 'used nonces do not match the log' };
   if (canonical(d.appliedEvidence) !== canonical(state.appliedEvidence || [])) return { ok: false, reason: 'applied evidence does not match the log' };
   if (canonical(d.signers) !== canonical(state.signers)) return { ok: false, reason: 'pinned signers do not match the log' };
+  // Absent on state files written before call-bound sign-offs: that is unbound.
+  const storedBound = state.boundCall == null ? null : state.boundCall;
+  if (canonical(d.boundCall) !== canonical(storedBound)) return { ok: false, reason: 'bound call does not match the log' };
   return { ok: true, warnings, key };
 }
 
