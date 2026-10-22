@@ -14,6 +14,25 @@ alias.
 
 ### Added
 
+- **Decision record.** After the state verifies, generated hooks append each
+  allow and each deny (deny reason clipped at 500 characters) to
+  `<state>.decisions/log.jsonl`. Each line is SHA-256 chained and HMAC-SHA256'd
+  with the state key. That HMAC is not a signature a third party can check;
+  anyone who can read the key can rebuild the record. The line is the gate's
+  verdict, not proof the tool ran. Denials are not written into `state.json`.
+  Calls that fail before the state verifies (usage, stdin, lock timeout, a
+  missing or bad key, a broken state signature) are denied and not appended.
+  If the record cannot be written, the call is denied. While `log.jsonl` is
+  within 256 KiB the hook rechecks the whole decision chain; past that it
+  checks the keyed head and the last 64 KiB. `signal.mjs verify` always walks
+  every line, so a same-length edit above that tail is caught there and not
+  by the next hook call. A crash after the allow line is written and before
+  `state.json` is replaced can leave an allow with no matching `state.log`
+  entry; the process does not exit 0. A `signers` rotation and a call binding
+  stay in `state.log`. A bound-call mismatch deny, and the later allow of the
+  matching call, are decision lines and do not consume the binding on the
+  deny. `rotate-signers` refuses to rotate when the decision chain does not
+  verify. See `docs/agent-signals.md`.
 - **Pinned sign-off signers.** `signal.mjs init --signer name=pubkey` (repeatable)
   records the ed25519 public keys that may sign a `file-drop` approval. The
   sha256 of the canonical initial set is part of the log genesis hash, and

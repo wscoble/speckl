@@ -326,6 +326,43 @@ describe('file-drop call binding', () => {
     expect(read(state).signalLog).toHaveLength(1);
   });
 
+  it('records the bound-call mismatch deny and the matching allow, and the deny leaves the binding', () => {
+    const state = init();
+    go(state);
+    const ship = { branch: 'main' };
+    const shown = digestOf('ship', ship);
+    expect(approve(state, shown.digest).status, 'approve').toBe(0);
+    const stateBefore = readFileSync(state, 'utf-8');
+    const logPath = state + '.decisions/log.jsonl';
+    const before = readFileSync(logPath, 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+
+    const miss = pre(state, 'look', {}, 'obs');
+    expect(miss.status).toBe(2);
+    expect(miss.stderr).toContain('does not cover this call');
+    expect(readFileSync(state, 'utf-8')).toBe(stateBefore);
+    const afterMiss = readFileSync(logPath, 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+    expect(afterMiss).toHaveLength(before.length + 1);
+    expect(afterMiss.at(-1)).toMatchObject({ phase: 'pre', tool: 'look', action: 'Look', verdict: 'deny' });
+    expect(String(afterMiss.at(-1).reason)).toContain('does not cover this call');
+    expect(String(afterMiss.at(-1).reason)).toContain(shown.digest);
+    expect(afterMiss.at(-1).input_sha256).toBe(sha(canonical({})));
+
+    expect(pre(state, 'ship', ship, 's1').status).toBe(0);
+    const allowed = readFileSync(logPath, 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+    expect(allowed.at(-1)).toMatchObject({ phase: 'pre', tool: 'ship', action: 'Ship', verdict: 'allow', reason: null });
+    expect(read(state).boundCall).toEqual({ hash: shown.digest });
+
+    expect(post(state, 'ship', ship, 's1', true).status).toBe(0);
+    const posted = readFileSync(logPath, 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+    expect(posted.at(-1)).toMatchObject({ phase: 'post', tool: 'ship', verdict: 'allow', reason: null });
+    expect(read(state).boundCall).toBeNull();
+    expect(read(state).machine.state.stage).toBe(4);
+
+    const v = run('signal.mjs', ['verify', '--state', state]);
+    expect(v.status, v.stderr).toBe(0);
+    expect(JSON.parse(v.stdout)).toMatchObject({ ok: true, decisions: posted.length, uncommitted: 0 });
+  });
+
   it('a failed or expired attempt does not unlock a different call', () => {
     const state = init();
     go(state);

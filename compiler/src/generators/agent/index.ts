@@ -423,6 +423,15 @@ function buildAgentsMd(
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
   lines.push('- Spec-hash mismatch denies.');
+  lines.push('- After the state verifies, each allow and deny is appended to `<state>.decisions/`');
+  lines.push('  (SHA-256 chain, HMAC-SHA256 with the state key). That is a keyed record, not a');
+  lines.push('  signature a third party can check. A denial does not modify the state file.');
+  lines.push('  Calls that fail before the state verifies are denied and not recorded. If the');
+  lines.push('  record cannot be written, the call is denied. Within 256 KiB the hook rechecks');
+  lines.push('  the whole decision chain; past that it checks the keyed head and the last 64 KiB.');
+  lines.push('  `signal.mjs verify` always walks every line. A crash after the allow line is');
+  lines.push('  written and before `state.json` is replaced can leave an allow with no matching');
+  lines.push('  `state.log` entry; the process does not exit 0.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
   lines.push('');
@@ -436,6 +445,18 @@ function buildAgentsMd(
   lines.push('`SPECKL_STATE_KEY_FILE`) must be readable by the hook and signal tooling and');
   lines.push('**not by the agent**. Any mismatch, a missing signature or a missing key denies');
   lines.push('(exit 2). Editing `state.json` by hand (e.g. setting the stage) is refused.');
+  lines.push('');
+  lines.push('Allows and denies after the state verifies are recorded again, separately, in');
+  lines.push('`<state>.decisions/`, HMAC-SHA256 with the same key. Anyone who can read the key');
+  lines.push('can rebuild that record; it is not third-party proof and it is not replayed into');
+  lines.push('the machine, so a denial cannot advance the spec or rewrite `state.json`. Denials');
+  lines.push('before the state verifies are not recorded. Past 256 KiB the hook checks the keyed');
+  lines.push('head and the last 64 KiB; `verify` still walks every line. A crash between the');
+  lines.push('allow line and the `state.json` rename can leave an allow with no matching');
+  lines.push('`state.log` entry. A signer rotation is a `state.log` entry (`signers`), not a');
+  lines.push('decision line. A bound-call mismatch deny and the later allow of the matching');
+  lines.push('call are decision lines; the binding itself stays in `state.log`.');
+  lines.push('`node signal.mjs verify --state <file>` replays both and checks both chains.');
   lines.push('');
   lines.push('## Who may record a signal');
   lines.push('');
@@ -499,6 +520,12 @@ node signal.mjs init --state ./state.json --dev
 
 # Pass the same key to every hook/signal call (or set SPECKL_STATE_KEY_FILE):
 export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
+
+# State chain plus the decision record. The record is an HMAC with the state
+# key, not a third-party signature. It is empty until the first verdict after
+# the state verifies; denials before that are not recorded. verify walks every
+# decision line (the hook's check stops at the tail once the log passes 256 KiB).
+node signal.mjs verify --state ./state.json
 \`\`\`
 
 ## Signals (HITL / HNTL)
