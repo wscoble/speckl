@@ -149,6 +149,8 @@ export interface AgentRuntimeConfig {
     claims: { name: string; typeName: string }[];
     on: { outcome: string; target: string; targetValue: number; action: string }[];
     timeout?: { durationMs: number; durationText: string; outcome: string };
+    /** Outcomes that require a call digest. Empty = stage-level sign-off. */
+    bindCall: string[];
   }[];
 }
 
@@ -190,6 +192,7 @@ function buildConfig(
         action: signalActionName(a.signal, o.outcome),
       })),
       timeout: a.timeout ? { ...a.timeout } : undefined,
+      bindCall: [...a.bindCall],
     })),
   };
   if (agent.harnesses && agent.harnesses.length > 0) {
@@ -363,6 +366,9 @@ function buildAgentsMd(
       if (a.timeout) {
         lines.push(`- Timeout \`${a.timeout.durationText}\` → \`${a.timeout.outcome}\` (must be a \`!\`-marked reject outcome)`);
       }
+      if (a.bindCall.length > 0) {
+        lines.push(`- Call-bound: ${a.bindCall.map(o => `\`${o}\``).join(', ')} (the signed drop carries \`call\`, the sha256 of one canonical tool call; the hook allows that call once)`);
+      }
       lines.push('');
     }
   }
@@ -424,8 +430,9 @@ function buildAgentsMd(
   lines.push('');
   lines.push('The state file is not trusted as written. Every change is appended to a');
   lines.push('hash-chained log; on load the hook and `signal.mjs` replay the log and check');
-  lines.push('that the machine, pending call, used nonces and applied evidence match it, and');
-  lines.push('verify an HMAC-SHA256 over the whole state. The key file (`--key` or');
+  lines.push('that the machine, pending call, used nonces, applied evidence, pinned signers');
+  lines.push('and any call-bound sign-off match it, and verify an HMAC-SHA256 over the');
+  lines.push('whole state. The key file (`--key` or');
   lines.push('`SPECKL_STATE_KEY_FILE`) must be readable by the hook and signal tooling and');
   lines.push('**not by the agent**. Any mismatch, a missing signature or a missing key denies');
   lines.push('(exit 2). Editing `state.json` by hand (e.g. setting the stage) is refused.');
@@ -435,6 +442,11 @@ function buildAgentsMd(
   lines.push('Signals are recorded with `signal.mjs`, never by the agent. Production must use a');
   lines.push('**signed** verifier (`file-drop` or a plug-in); a signed drop is bound to this');
   lines.push('run (`run`), expires (`expires`) and is single-use (`nonce`).');
+  lines.push('An outcome marked `bind call` is narrower: the drop also carries `call`, the');
+  lines.push('sha256 of one canonical tool call, and the hook allows that call once. The');
+  lines.push('signature is still checked against the pinned signers. Expiry is checked');
+  lines.push('when the drop is applied, not when that call later runs. A sign-off');
+  lines.push('without `bind call` is unchanged, and a `call` hash on one is refused.');
   lines.push('');
   lines.push('`signal.mjs init --signer name=pubkey` (repeatable) pins the ed25519 keys that');
   lines.push('`file-drop` will accept. The set is sealed into the state at init. A signature');
@@ -502,6 +514,11 @@ node signal.mjs apply --state ./state.json --verifier file-drop \\
 # The signed JSON names its signal and is bound to this run:
 #   {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...},
 #    "run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}
+# When the await says \`bind call\` for that outcome, the same object also
+# carries "call":"<sha256>". Compute it (this prints the digest and the exact
+# preimage) and sign the whole file. The signature must still be from a
+# pinned key. Expiry is checked here, not when the bound call later runs.
+#   echo '{"tool":"open_pr","input":{}}' | node signal.mjs digest
 
 # CLI verifier — DEV ONLY (state must be created with init --dev). Whoever can
 # run this can approve, including an agent with shell access.

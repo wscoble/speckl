@@ -23,11 +23,16 @@ export function emitHookMjs(speckName: string): string {
  * hash-chained log that is replayed and checked on load, and the whole
  * state is HMAC-signed with a key the agent must not be able to read.
  * Any mismatch, a missing signature or a missing key (non-dev) denies.
+ *
+ * A call-bound sign-off (await \`bind call\`) allows one later call whose
+ * digest matches the signed \`call\` hash, and only once that call's post
+ * succeeds. Any other call is denied. The hash is sha256 of the canonical
+ * spec tool name and mapped arguments (see state-integrity.mjs callDigest).
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyState, append, sign, keyPathFrom } from './state-integrity.mjs';
+import { verifyState, append, sign, keyPathFrom, callDigest, canonical } from './state-integrity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.json'), 'utf-8'));
@@ -165,6 +170,21 @@ function currentAwait(machine, cfg) {
   return cfg.awaits.find(a => a.stateValue === stage) || null;
 }
 
+/** Digest of the call the hook will judge. input is already coerced (null/missing → {}). */
+function describeCall(tool, input) {
+  try {
+    return { ok: true, digest: callDigest(tool, input), canonical: canonical({ tool, input }) };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function callBoundHint(tool, input) {
+  const d = describeCall(tool, input);
+  if (!d.ok) return '; call-bound sign-off refused: ' + d.reason;
+  return '; call-bound sign-off: sign call ' + d.digest + ' canonical ' + d.canonical;
+}
+
 async function loadMachine(state) {
   const mod = await import(pathToFileURL(path.join(__dirname, config.machineModule)).href);
   const Machine = mod[config.machineExport];
@@ -234,11 +254,24 @@ async function main() {
 
       const waiting = currentAwait(machine, config);
       if (waiting) {
+        const suffix = (waiting.bindCall || []).length > 0 ? callBoundHint(tool, input) : '';
         if (waiting.mode === 'in') {
-          deny('HITL: no tools while awaiting signal ' + waiting.signal);
+          deny('HITL: no tools while awaiting signal ' + waiting.signal + suffix);
         }
         if (binding.effect === 'act') {
-          deny('HNTL: act tool refused while awaiting signal ' + waiting.signal);
+          deny('HNTL: act tool refused while awaiting signal ' + waiting.signal + suffix);
+        }
+      }
+
+      // Outstanding call-bound sign-off: only the matching call may proceed.
+      // A mismatch is denied and the approval is kept. It is consumed on post ok.
+      if (state.boundCall != null) {
+        if (typeof state.boundCall.hash !== 'string') deny('call-bound sign-off is malformed');
+        const d = describeCall(tool, input);
+        if (!d.ok) deny('call-bound sign-off refused: ' + d.reason);
+        if (d.digest !== state.boundCall.hash) {
+          deny('call-bound sign-off does not cover this call (denied): want ' + state.boundCall.hash
+            + ' got ' + d.digest + ' canonical ' + d.canonical);
         }
       }
 
@@ -282,6 +315,15 @@ async function main() {
 
     const binding = toolByName.get(tool);
     if (!binding) deny('unknown tool: ' + tool);
+    if (state.boundCall != null) {
+      if (typeof state.boundCall.hash !== 'string') deny('call-bound sign-off is malformed');
+      // Only the matching call consumes the approval. A different pending
+      // call was allowed before the sign-off (observe, while waiting) and
+      // must be able to finish; the binding stays for the approved call.
+      let digest = null;
+      try { digest = callDigest(state.pending.tool, state.pending.input); } catch { digest = null; }
+      if (digest === state.boundCall.hash) state.boundCall = null;
+    }
     const params = (machine.constructor.ACTIONS || {})[binding.action] || [];
     const argsList = params.map(p => (state.pending.input || {})[p]);
     machine[binding.action](...argsList);

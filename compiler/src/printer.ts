@@ -314,6 +314,9 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
       const body = a.claims.map(c => `${c.name}: ${c.typeName}`).join(', ');
       lines.push(`        require claims { ${body} }`);
     }
+    if (a.bindCall.length > 0) {
+      lines.push(`        bind call on ${a.bindCall.join(', ')}`);
+    }
     for (const o of a.on) {
       lines.push(`        on ${o.outcome} -> ${o.target}`);
     }

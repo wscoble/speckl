@@ -16,14 +16,26 @@ alias.
 
 - **Pinned sign-off signers.** `signal.mjs init --signer name=pubkey` (repeatable)
   records the ed25519 public keys that may sign a `file-drop` approval. The
-  initial set is covered by the state HMAC and by the log genesis hash.
+  sha256 of the canonical initial set is part of the log genesis hash, and
+  the current set is covered by the state HMAC and re-derived from the log.
   Verification accepts a signature only from that set: a `--pubkey` that is
   not pinned is refused, on dev states as well as production. A state created
   before this field existed still trusts a per-call `--pubkey` (its genesis
-  is unchanged). `signal.mjs rotate-signers` appends a sealed log entry that
+  omits the field). `signal.mjs rotate-signers` appends a sealed log entry that
   replaces the current set; the drop must be signed by a key that is pinned
   now. Any one pinned key can sign or rotate (not a threshold). An empty set
   refuses every file-drop signature.
+- **Call-bound sign-off.** An `await` may say `bind call` (or `bind call on approve`).
+  The signed drop then carries `call`, the sha256 of one canonical spec tool call
+  (tool name plus mapped arguments, full value, keys sorted). The hook allows
+  that call once, on a matching `post` with `ok: true`, and denies any other
+  call while the approval is outstanding. A `file-drop` signature is still
+  accepted only from the current pinned signers; the hash is not a trust
+  anchor. Run, expiry, nonce and replay checks are unchanged and run at
+  apply. Expiry is not checked again when the bound call runs, and rotating
+  signers does not revoke a binding already stored. An await without the
+  clause stays a stage-level sign-off, and a `call` hash on one of those is
+  refused. See `docs/agent-signals.md`.
 - **Compile tests** (#20, #21). `src/__tests__/compiles-*.test.ts` checks every
   example's generated code with a real toolchain:
   - `tsc --strict` for TypeScript and the agent machines, plus `node --check` for the hook scripts;
