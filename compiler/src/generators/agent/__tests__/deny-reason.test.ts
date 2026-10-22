@@ -89,6 +89,31 @@ describe('deny reason text', () => {
     expect(redactSecrets('want ' + digest.toUpperCase(), [], [digest])).toContain(digest.toUpperCase());
   });
 
+  it('redacts base64, base64url, uppercase hex, and SPKI forms of a 64-hex key', () => {
+    const hex = '80fe5ea71d0ded8c77e6746ea2e50713fbef300810a72031fe99c437e0367fca';
+    const raw = Buffer.from(hex, 'hex');
+    const b64 = raw.toString('base64');
+    const b64url = b64.replace(/\+/g, '-').replace(/\//g, '_');
+    const der = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]).toString('base64');
+    const pem = '-----BEGIN PUBLIC KEY-----\n' + der + '\n-----END PUBLIC KEY-----';
+    const forms = [
+      hex, hex.toUpperCase(),
+      b64, b64.replace(/=+$/, ''),
+      b64url, b64url.replace(/=+$/, ''),
+      der, der.replace(/=+$/, ''),
+      pem, pem.replace(/\n/g, '\r\n'),
+    ];
+    expect(b64).toContain('+');
+    expect(b64).toContain('/');
+    const digest = 'cd'.repeat(32);
+    const out = redactSecrets(forms.join(' | ') + ' | ' + digest, [hex], [digest]);
+    for (const form of forms) expect(out, form).not.toContain(form);
+    expect(out).toContain(digest);
+    expect(out).toContain('<keyfile>');
+    // A path that is not 64 hex is not expanded into key encodings.
+    expect(redactSecrets('keep ab', ['/not/hex'])).toBe('keep ab');
+  });
+
   it('classifies a can() refusal without treating a lookalike name as the stage', () => {
     expect(classifyCanRefusal('Guard failed: stage == Approved (stage is Idle)', 'stage')).toBe('stage');
     expect(classifyCanRefusal('Guard failed: stage == 0', 'stage')).toBe('stage');

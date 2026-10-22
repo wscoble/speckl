@@ -135,6 +135,9 @@ alias.
   contains the key), the key file's contents, or a pinned signer key, and that
   same sentence is what `<state>.decisions/log.jsonl` stores. A state-load, key-read,
   lock, or decision-record failure prints a fixed sentence and not the Node error.
+  A key path shorter than 8 characters is refused with a fixed sentence. The
+  state key and each pinned signer key are also removed as base64, base64url,
+  uppercase hex, and SPKI DER-base64 or PEM.
   An adapter failure before it can decide prints a fixed line and not the exception. A throw while
   building the sentence still denies. Each harness keeps its own output shape. Adapter
   denials (unmapped tool, shell metacharacters, a protected path, a bad

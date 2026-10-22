@@ -12,6 +12,7 @@ import { compileSpec } from '../compile.js';
 import { canonical, useStateKey, writeSigned } from './helpers/agent-state.js';
 import { runAdapter, type AdapterDeps } from '../generators/agent/harness-runtime.js';
 
+const SHORT_KEY = 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.';
 const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const example = join(compilerDir, '..', 'examples', 'ClaudeCodePolicy.speckdl');
 const keyFile = useStateKey();
@@ -30,21 +31,21 @@ beforeAll(() => {
   agent = join(dir, 'out', 'agent');
 }, 120_000);
 
-function initState(dir?: string): string {
+function initState(dir?: string, bin = agent): string {
   const state = join(dir ?? mkdtempSync(join(tmpdir(), 'speckl-st-')), 'state.json');
-  const r = spawnSync(process.execPath, [join(agent, 'signal.mjs'), 'init', '--state', state, '--key', keyFile], { encoding: 'utf-8' });
+  const r = spawnSync(process.execPath, [join(bin, 'signal.mjs'), 'init', '--state', state, '--key', keyFile], { encoding: 'utf-8' });
   expect(r.status, r.stderr).toBe(0);
   return state;
 }
 
-function hookRun(state: string, cmd: string, msg: object | string, opts?: { key?: string | null; envKey?: string }) {
-  const args = [join(agent, 'hook.mjs'), cmd, '--state', state];
+function hookRun(state: string, cmd: string, msg: object | string, opts?: { key?: string | null; envKey?: string; cwd?: string; bin?: string }) {
+  const args = [join(opts?.bin ?? agent, 'hook.mjs'), cmd, '--state', state];
   if (opts?.key) args.push('--key', opts.key);
   const env = { ...process.env };
   if (opts?.key === null) delete env.SPECKL_STATE_KEY_FILE;
   if (opts?.envKey !== undefined) env.SPECKL_STATE_KEY_FILE = opts.envKey;
   const input = typeof msg === 'string' ? msg : JSON.stringify(msg);
-  const r = spawnSync(process.execPath, args, { input, encoding: 'utf-8', env });
+  const r = spawnSync(process.execPath, args, { input, encoding: 'utf-8', env, cwd: opts?.cwd });
   const stdout = r.stdout || '';
   let decision = '';
   const line = stdout.trim().split('\n').pop();
@@ -277,13 +278,213 @@ describe('realpath on the adapter secret list', () => {
     expect(thrown.stderr).not.toContain('env-broken-sekret.key');
     expect(thrown.stderr).not.toContain('ENOENT');
   });
+
+  it('refuses a key path under 8 characters before any other deny', () => {
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'UNIQUE-SHORT-PATH-MARKER', tool_use_id: 't', cwd: '/proj',
+    });
+    const out = runAdapter(
+      ['claude-code', 'pre', '--state', 's.json', '--key', 'k'],
+      { CLAUDE_PROJECT_DIR: '/proj' }, payload, config, deps(() => '/secret/real'),
+    );
+    expect(out.code).toBe(2);
+    expect(out.stderr.trim()).toBe(SHORT_KEY);
+    expect(out.stdout + out.stderr).not.toContain('UNIQUE-SHORT-PATH-MARKER');
+    expect(out.stderr).not.toContain('/secret/real');
+  });
+
+  it('refuses a path that resolves under 8 characters only after the payload cwd is known', () => {
+    const deep = '/l1/l2/l3/l4/l5/l6/l7/l8';
+    const given = '../../../../k';
+    expect(given.length).toBeGreaterThanOrEqual(8);
+    expect(path.resolve(deep, given).length).toBeGreaterThanOrEqual(8);
+    expect(path.resolve('/a', given).length).toBeLessThan(8);
+    const out = runAdapter(
+      ['claude-code', 'pre', '--state', 's.json', '--key', given],
+      {},
+      JSON.stringify({
+        hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: '/a',
+      }),
+      config,
+      { ...deps(() => '/unused'), cwd: deep },
+    );
+    expect(out.code).toBe(2);
+    expect(out.stderr.trim()).toBe(SHORT_KEY);
+    expect(out.stderr).not.toContain(given);
+  });
+
+  it('treats an empty key and a path resolve that throws as not short', () => {
+    const empty = runAdapter(
+      ['claude-code', 'pre', '--state', 's.json', '--key', ''],
+      { CLAUDE_PROJECT_DIR: '/proj' },
+      JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: '/proj' }),
+      config,
+      deps(() => '/unused'),
+    );
+    expect(empty.stderr).not.toContain('shorter than 8');
+
+    let blows = 0;
+    const thrown = runAdapter(
+      ['claude-code', 'pre', '--state', 's.json', '--key', 'long-enough.key'],
+      { CLAUDE_PROJECT_DIR: '/proj' },
+      JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'long-enough.key', tool_use_id: 't', cwd: '/proj' }),
+      config,
+      {
+        ...deps(() => '/unused'),
+        resolvePath: (base, p) => {
+          // The short-path check resolves the key against the project and the
+          // cwd. Those two throws are ignored. Later resolves must succeed.
+          if (p === 'long-enough.key' && blows++ < 2) throw new Error('nope');
+          return path.resolve(base, p);
+        },
+      },
+    );
+    expect(thrown.code).toBe(2);
+    expect(thrown.stderr).not.toContain('shorter than 8');
+    expect(thrown.stderr).not.toContain('long-enough.key');
+
+    let odd = 0;
+    const notString = runAdapter(
+      ['claude-code', 'pre', '--state', 's.json', '--key', 'long-enough.key'],
+      { SPECKL_STATE_KEY_FILE: 'also-long.key', CLAUDE_PROJECT_DIR: '/from-env' },
+      JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: '/proj' }),
+      config,
+      {
+        ...deps(() => '/from-cwd/also-long.key'),
+        cwd: '/from-cwd',
+        runHook: () => ({ status: 0, stdout: '{"decision":"allow"}\n', stderr: '' }),
+        resolvePath: (base, p) => {
+          // The short-path checks see a non-string and ignore it. Later
+          // resolves of the same path return a real path.
+          if ((p === 'long-enough.key' || p === 'also-long.key') && odd++ < 8) return 0 as unknown as string;
+          return path.resolve(base, p);
+        },
+      },
+    );
+    expect(notString.stderr).not.toContain('shorter than 8');
+    expect(notString.code, notString.stderr).toBe(0);
+  });
 });
 
-describe('allow and deny decisions match main', () => {
-  // Exit code and decision only. Reason text is this branch's. These are the
-  // verdicts of origin/main at 09eb03c for the same calls: 0 allow, 2 deny,
-  // 1 error (still a deny). Checked against a hook and adapter generated from
-  // that commit.
+const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+function encodingsOf(hex: string): Record<string, string> {
+  const raw = Buffer.from(hex, 'hex');
+  const b64 = raw.toString('base64');
+  const b64url = b64.replace(/\+/g, '-').replace(/\//g, '_');
+  const der = Buffer.concat([SPKI_PREFIX, raw]).toString('base64');
+  const pem = '-----BEGIN PUBLIC KEY-----\n' + der + '\n-----END PUBLIC KEY-----';
+  return {
+    'lowercase hex': hex.toLowerCase(),
+    'uppercase hex': hex.toUpperCase(),
+    base64: b64,
+    'base64 without padding': b64.replace(/=+$/, ''),
+    base64url: b64url,
+    'base64url without padding': b64url.replace(/=+$/, ''),
+    'SPKI DER base64': der,
+    'SPKI DER base64 without padding': der.replace(/=+$/, ''),
+    'SPKI PEM': pem,
+    'SPKI PEM crlf': pem.replace(/\n/g, '\r\n'),
+  };
+}
+
+describe('short key paths and other key encodings stay out of deny text', () => {
+  it('refuses 1–3 character key paths, relative and through a symlink', () => {
+    const realDir = mkdtempSync(join(tmpdir(), 'real-short-key-'));
+    const realKey = join(realDir, 'state.key');
+    writeFileSync(realKey, readFileSync(keyFile));
+    const cwd = mkdtempSync(join(tmpdir(), 'link-short-key-'));
+    for (const name of ['k', 'ab', 'xyz']) symlinkSync(realKey, join(cwd, name));
+    const state = initState();
+    for (const key of ['k', 'ab', 'xyz', './k']) {
+      const denied = hookRun(state, 'pre', { tool: 'run_tests', input: { leak: realKey }, call_id: '1' }, { key, cwd });
+      expect(denied.status, key + ' ' + denied.stderr).toBe(1);
+      expect(JSON.parse(denied.stdout).reason, key).toBe(SHORT_KEY);
+      expect(denied.stderr, key).toContain(SHORT_KEY);
+      expect(denied.stdout + denied.stderr + logText(state), key).not.toContain(realKey);
+      expect(denied.stdout + denied.stderr, key).not.toContain(realDir);
+    }
+    const envDenied = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: keyFile, envKey: 'ab', cwd });
+    expect(JSON.parse(envDenied.stdout).reason).toBe(SHORT_KEY);
+    expect(envDenied.stdout + envDenied.stderr).not.toContain(realKey);
+    expect(envDenied.stdout + envDenied.stderr).not.toContain(keyFile);
+
+    const given = '../../../../k';
+    expect(given.length).toBeGreaterThanOrEqual(8);
+    expect(path.resolve(cwd, given).length).toBeLessThan(8);
+    const resolved = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: given, cwd });
+    expect(resolved.status).toBe(1);
+    expect(JSON.parse(resolved.stdout).reason).toBe(SHORT_KEY);
+    expect(resolved.stdout + resolved.stderr).not.toContain(given);
+  });
+
+  it('the adapter refuses the same short paths', () => {
+    const realDir = mkdtempSync(join(tmpdir(), 'real-short-adapter-'));
+    const realKey = join(realDir, 'state.key');
+    writeFileSync(realKey, readFileSync(keyFile));
+    const cwd = mkdtempSync(join(tmpdir(), 'link-short-adapter-'));
+    for (const name of ['k', 'ab', 'xyz']) symlinkSync(realKey, join(cwd, name));
+    const state = initState(cwd);
+    const run = (key: string, envKey?: string) => spawnSync(
+      process.execPath,
+      [join(agent, 'adapter.mjs'), 'claude-code', 'pre', '--state', state, '--key', key, '--project', cwd],
+      {
+        cwd,
+        input: JSON.stringify({
+          hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd,
+        }),
+        encoding: 'utf-8',
+        env: { ...process.env, SPECKL_STATE_KEY_FILE: envKey ?? key, CLAUDE_PROJECT_DIR: cwd },
+      },
+    );
+    for (const key of ['k', 'ab', 'xyz', './k']) {
+      const out = run(key);
+      expect(out.status, key + ' ' + out.stderr).toBe(2);
+      expect((out.stderr || '').trim(), key).toBe(SHORT_KEY);
+      expect((out.stdout || '') + (out.stderr || '') + logText(state), key).not.toContain(realKey);
+    }
+    const envOnly = run(keyFile, 'ab');
+    expect((envOnly.stderr || '').trim()).toBe(SHORT_KEY);
+    expect((envOnly.stdout || '') + (envOnly.stderr || '')).not.toContain(keyFile);
+    expect((envOnly.stdout || '') + (envOnly.stderr || '')).not.toContain(realKey);
+
+    const given = '../../../../k';
+    const resolved = run(given);
+    expect((resolved.stderr || '').trim()).toBe(SHORT_KEY);
+    expect((resolved.stdout || '') + (resolved.stderr || '')).not.toContain(given);
+  });
+
+  it('redacts every encoding of the state key and of a pinned signer key', () => {
+    const { publicKey } = crypto.generateKeyPairSync('ed25519');
+    const signerDer = publicKey.export({ type: 'spki', format: 'der' });
+    const signerHex = signerDer.subarray(-32).toString('hex');
+    expect(signerDer.toString('base64')).toBe(Buffer.concat([SPKI_PREFIX, Buffer.from(signerHex, 'hex')]).toString('base64'));
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-enc-'));
+    const state = join(dir, 'state.json');
+    const init = spawnSync(process.execPath, [
+      join(agent, 'signal.mjs'), 'init', '--state', state, '--key', keyFile, '--signer', 'alice=' + signerHex,
+    ], { encoding: 'utf-8' });
+    expect(init.status, init.stderr).toBe(0);
+    const planted = { 'state key': encodingsOf(keyHex), 'signer key': encodingsOf(signerHex) };
+    for (const [owner, forms] of Object.entries(planted)) {
+      for (const [name, form] of Object.entries(forms)) {
+        const denied = hookRun(state, 'pre', { tool: form, input: { leak: form }, call_id: form }, { key: keyFile });
+        expect(denied.status, owner + ' ' + name + ' ' + denied.stderr).toBe(2);
+        const lines = logText(state).trim().split('\n').filter(Boolean);
+        const shown = denied.stdout + denied.stderr + (lines[lines.length - 1] || '');
+        expect(shown, owner + ' ' + name).not.toContain(form);
+        expect(denied.stdout, owner + ' ' + name).toContain('unknown tool');
+        expect(lines[lines.length - 1], owner + ' ' + name).toContain('unknown tool');
+      }
+    }
+  });
+});
+
+describe('allow and deny decisions match a hook and adapter generated from 09eb03c', () => {
+  // The other side is the agent compiled from that commit (checked in under
+  // fixtures/main-09eb03c). Same calls, compared on exit code and allow/deny.
+  // Each side reads a state its own signal.mjs created, so each checks its own spec hash.
+  const mainAgent = join(compilerDir, 'src', '__tests__', 'fixtures', 'main-09eb03c');
   const pre = (tool: string, command: string, id: string) => ({
     hook_event_name: 'PreToolUse',
     tool_name: tool,
@@ -292,10 +493,10 @@ describe('allow and deny decisions match main', () => {
     cwd: '/tmp',
   });
 
-  function adapterRun(state: string, event: string, payload: object | string) {
+  function adapterRun(bin: string, state: string, event: string, payload: object | string) {
     const r = spawnSync(
       process.execPath,
-      [join(agent, 'adapter.mjs'), 'claude-code', event, '--state', state, '--key', keyFile, '--project', path.dirname(state)],
+      [join(bin, 'adapter.mjs'), 'claude-code', event, '--state', state, '--key', keyFile, '--project', path.dirname(state)],
       {
         input: typeof payload === 'string' ? payload : JSON.stringify(payload),
         encoding: 'utf-8',
@@ -306,74 +507,108 @@ describe('allow and deny decisions match main', () => {
     return { status: r.status, decision };
   }
 
-  const hookCases: { name: string; cmd: string; msg: object | string; exit: number; decision: string; key?: string | null; missing?: boolean }[] = [
-    { name: 'pre run_tests', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' }, exit: 0, decision: 'allow' },
-    { name: 'pre open_pr in Idle', cmd: 'pre', msg: { tool: 'open_pr', input: {}, call_id: '1' }, exit: 2, decision: 'deny' },
-    { name: 'pre unknown tool', cmd: 'pre', msg: { tool: 'nope', input: {}, call_id: '1' }, exit: 2, decision: 'deny' },
-    { name: 'pre missing call id', cmd: 'pre', msg: { tool: 'run_tests', input: {} }, exit: 2, decision: 'deny' },
-    { name: 'pre not json', cmd: 'pre', msg: 'not json', exit: 1, decision: 'deny' },
-    { name: 'pre missing state', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' }, exit: 1, decision: 'deny', missing: true },
-    { name: 'usage', cmd: 'nope', msg: {}, exit: 1, decision: 'deny' },
-    { name: 'post without pending', cmd: 'post', msg: { tool: 'run_tests', call_id: '1', ok: true }, exit: 2, decision: 'deny' },
-    { name: 'missing key', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' }, exit: 2, decision: 'deny', key: null },
-    { name: 'bad key', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' }, exit: 2, decision: 'deny', key: '' },
-  ];
-
-  it.each(hookCases)('hook $name is exit $exit $decision', (row) => {
+  function hookVerdict(bin: string, row: { cmd: string; msg: object | string; key?: string | null; missing?: boolean }) {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-verdict-'));
-    const state = row.missing ? join(dir, 'missing.json') : initState(dir);
+    const state = row.missing ? join(dir, 'missing.json') : initState(dir, bin);
     let key = row.key;
     if (row.key === '') {
       key = join(dir, 'bad.key');
       writeFileSync(key, 'short');
     }
-    const got = hookRun(state, row.cmd, row.msg, key === undefined ? undefined : { key });
-    expect(got.status, got.stderr).toBe(row.exit);
-    expect(got.decision).toBe(row.decision);
+    const got = hookRun(state, row.cmd, row.msg, { bin, ...(key === undefined ? {} : { key }) });
+    return { status: got.status, decision: got.decision, stderr: got.stderr };
+  }
+
+  const hookCases: { name: string; cmd: string; msg: object | string; key?: string | null; missing?: boolean }[] = [
+    { name: 'pre run_tests', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' } },
+    { name: 'pre open_pr in Idle', cmd: 'pre', msg: { tool: 'open_pr', input: {}, call_id: '1' } },
+    { name: 'pre unknown tool', cmd: 'pre', msg: { tool: 'nope', input: {}, call_id: '1' } },
+    { name: 'pre missing call id', cmd: 'pre', msg: { tool: 'run_tests', input: {} } },
+    { name: 'pre not json', cmd: 'pre', msg: 'not json' },
+    { name: 'pre missing state', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' }, missing: true },
+    { name: 'usage', cmd: 'nope', msg: {} },
+    { name: 'post without pending', cmd: 'post', msg: { tool: 'run_tests', call_id: '1', ok: true } },
+    { name: 'missing key', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' }, key: null },
+    { name: 'bad key', cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: '1' }, key: '' },
+  ];
+
+  it('hook exit codes and allow/deny match the 09eb03c hook', () => {
+    const got = hookCases.map(row => {
+      const ours = hookVerdict(agent, row);
+      const main = hookVerdict(mainAgent, row);
+      expect({ status: ours.status, decision: ours.decision }, row.name + '\nours ' + ours.stderr + '\nmain ' + main.stderr)
+        .toEqual({ status: main.status, decision: main.decision });
+      return ours;
+    });
+    expect(got.some(r => r.status === 0 && r.decision === 'allow')).toBe(true);
+    expect(got.some(r => r.decision === 'deny')).toBe(true);
   });
 
-  it('hook post of an allowed call is exit 0 allow', () => {
-    const state = initState();
-    expect(hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' })).toMatchObject({ status: 0, decision: 'allow' });
-    expect(hookRun(state, 'post', { tool: 'run_tests', call_id: '1', ok: true })).toMatchObject({ status: 0, decision: 'allow' });
+  it('hook post of an allowed call matches the 09eb03c hook', () => {
+    const run = (bin: string) => {
+      const state = initState(undefined, bin);
+      const pre = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { bin });
+      const post = hookRun(state, 'post', { tool: 'run_tests', call_id: '1', ok: true }, { bin });
+      return { pre: pre.status, post: post.status, preDecision: pre.decision, postDecision: post.decision };
+    };
+    const ours = run(agent);
+    expect(ours).toEqual(run(mainAgent));
+    expect(ours.preDecision).toBe('allow');
+    expect(ours.postDecision).toBe('allow');
   });
 
-  const adapterCases: { name: string; event: string; payload: object | string; exit: number; decision: string }[] = [
-    { name: 'pre npm test', event: 'pre', payload: pre('Bash', 'npm test', 'a'), exit: 0, decision: 'allow' },
-    { name: 'pre open_pr command', event: 'pre', payload: pre('Bash', 'git push origin main', 'b'), exit: 2, decision: 'deny' },
-    { name: 'pre unmapped', event: 'pre', payload: pre('WebFetch', '', 'c'), exit: 2, decision: 'deny' },
-    { name: 'pre not json', event: 'pre', payload: '{', exit: 2, decision: 'deny' },
+  const adapterCases: { name: string; event: string; payload: object | string }[] = [
+    { name: 'pre npm test', event: 'pre', payload: pre('Bash', 'npm test', 'a') },
+    { name: 'pre open_pr command', event: 'pre', payload: pre('Bash', 'git push origin main', 'b') },
+    { name: 'pre unmapped', event: 'pre', payload: pre('WebFetch', '', 'c') },
+    { name: 'pre not json', event: 'pre', payload: '{' },
     { name: 'pre protected state', event: 'pre', payload: {
       hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '' }, tool_use_id: 'd', cwd: '/tmp',
-    }, exit: 2, decision: 'deny' },
+    } },
     { name: 'post without pending', event: 'post', payload: {
       hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'e',
       tool_response: { stdout: 'ok', interrupted: false },
-    }, exit: 2, decision: 'deny' },
+    } },
   ];
 
-  it.each(adapterCases)('adapter $name is exit $exit $decision', (row) => {
-    const dir = mkdtempSync(join(tmpdir(), 'speckl-adapter-verdict-'));
-    const state = initState(dir);
-    const payload = row.name === 'pre protected state'
-      ? { ...(row.payload as object), tool_input: { file_path: state }, cwd: dir }
-      : row.payload;
-    const got = adapterRun(state, row.event, payload);
-    expect(got).toEqual({ status: row.exit, decision: row.decision });
+  it('adapter exit codes and allow/deny match the 09eb03c adapter', () => {
+    const got = adapterCases.map(row => {
+      const dirOurs = mkdtempSync(join(tmpdir(), 'speckl-adapter-verdict-'));
+      const dirMain = mkdtempSync(join(tmpdir(), 'speckl-adapter-verdict-'));
+      const oursState = initState(dirOurs, agent);
+      const mainState = initState(dirMain, mainAgent);
+      const payloadFor = (state: string, dir: string) => row.name === 'pre protected state'
+        ? { ...(row.payload as object), tool_input: { file_path: state }, cwd: dir }
+        : row.payload;
+      const ours = adapterRun(agent, oursState, row.event, payloadFor(oursState, dirOurs));
+      const main = adapterRun(mainAgent, mainState, row.event, payloadFor(mainState, dirMain));
+      expect(ours, row.name).toEqual(main);
+      return ours;
+    });
+    expect(got.some(r => r.status === 0 && r.decision === 'allow')).toBe(true);
+    expect(got.some(r => r.decision === 'deny')).toBe(true);
   });
 
-  it('adapter pre then post of npm test is exit 0 allow', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'speckl-adapter-allow-'));
-    const state = initState(dir);
-    const payload = (event: string, name: string) => ({
-      hook_event_name: name,
-      tool_name: 'Bash',
-      tool_input: { command: 'npm test' },
-      tool_use_id: 'same',
-      cwd: dir,
-      tool_response: { stdout: 'ok', interrupted: false },
-    });
-    expect(adapterRun(state, 'pre', payload('pre', 'PreToolUse'))).toEqual({ status: 0, decision: 'allow' });
-    expect(adapterRun(state, 'post', payload('post', 'PostToolUse'))).toEqual({ status: 0, decision: 'allow' });
+  it('adapter pre then post of npm test matches the 09eb03c adapter', () => {
+    const run = (bin: string) => {
+      const dir = mkdtempSync(join(tmpdir(), 'speckl-adapter-allow-'));
+      const state = initState(dir, bin);
+      const payload = (name: string) => ({
+        hook_event_name: name,
+        tool_name: 'Bash',
+        tool_input: { command: 'npm test' },
+        tool_use_id: 'same',
+        cwd: dir,
+        tool_response: { stdout: 'ok', interrupted: false },
+      });
+      return {
+        pre: adapterRun(bin, state, 'pre', payload('PreToolUse')),
+        post: adapterRun(bin, state, 'post', payload('PostToolUse')),
+      };
+    };
+    const ours = run(agent);
+    expect(ours).toEqual(run(mainAgent));
+    expect(ours.pre).toEqual({ status: 0, decision: 'allow' });
+    expect(ours.post).toEqual({ status: 0, decision: 'allow' });
   });
 });

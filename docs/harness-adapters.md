@@ -436,7 +436,12 @@ The sentence does not include the state key, the key file path (the path
 that was passed, the absolute path it resolves to, or the path `realpath`
 follows when that file or its directory is a symlink, including the real
 parent directory), the bytes in that file, a pinned signer key, or the
-contents of `state.json`. The decision record stores that same sentence.
+contents of `state.json`. Those 32 key bytes are also removed when they
+appear as uppercase hex, as base64 or base64url (with or without padding),
+or, for a pinned signer key, as SPKI DER-base64 or PEM. A `--key` or
+`SPECKL_STATE_KEY_FILE` path shorter than 8 characters, as given or as
+resolved, is not printed: the hook and the adapter deny with a fixed
+sentence and do not run. The decision record stores that same sentence.
 If building it throws, the call is still denied. A failure to load the
 state, read the key, take the lock, or append the decision record prints a
 fixed sentence and not the Node error.
@@ -556,26 +561,35 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   follow them: the redaction list includes `realpath` of `--key` and of
   `SPECKL_STATE_KEY_FILE`, and the real directory that contains the key. If
   `realpath` throws, those entries are not added and the given path stays.
-- A secret or path shorter than 8 characters is left in the sentence, so a
-  short token cannot erase it. Key bytes in another encoding are not matched:
-  base64, a hex string that is not one whole 64-character token, or the file
-  contents split by a newline. PEM blocks and the exact key-file text are
-  removed.
+- A `--key` or `SPECKL_STATE_KEY_FILE` path shorter than 8 characters, as
+  given or as `path.resolve` returns it, makes the hook and the adapter deny
+  with one fixed sentence and not run. The path is not printed. The state
+  key and each pinned signer key are 64 hex characters. That token is
+  removed in either case, and those 32 bytes are also removed as base64 and
+  base64url with and without padding, and as SPKI DER-base64 and PEM. Any
+  other PEM block is removed. The exact key-file text is removed, including
+  a trailing newline when that whole text appears together.
 - These sentences stay fixed and do not include the Node error: `state file
   missing`, `state file is not JSON`, `state file could not be read`,
   `state key not found`, `state key could not be read`, `state key must be
   32 bytes as 64 hex chars`, `state lock timeout`, `state lock could not be
-  taken`, `stdin read failed`, `decision record unavailable`, and `state save
-  failed`. What can still carry text that is not a known secret: a decision-chain
-  sentence the hook writes (`decision chain broken at seq N`, `decision head
-  is not JSON`, and the other record checks — those names are not paths);
-  `log replay failed:` plus a fixed replay sentence; `can()` guard text; and
-  the call-bound canonical preimage, which is redacted where it matches a
-  known secret (the printed canonical may then not hash to the digest). The
-  Pi, OpenCode, and OpenClaw plugin reports a spawn code (`ENOENT`,
-  `ETIMEDOUT`) and not the exception's path. If the key's real parent
-  directory is also the state file's directory, that directory is removed
-  from the printed sign-off command.
+  taken`, `stdin read failed`, `decision record unavailable`, `state save
+  failed`, and the short key-path sentence. What can still be printed is not
+  key material: a decision-chain sentence (`decision chain broken at seq N`,
+  `decision head is not JSON`, and the other record checks) names a sequence
+  number or a field; `log replay failed:` plus a fixed replay sentence names
+  the log check; `can()` guard text is the expression written in the spec;
+  the call-bound canonical preimage is the call's arguments after every
+  known secret and the encodings above have been removed (the printed
+  canonical may then not hash to the digest); the Pi, OpenCode, and OpenClaw
+  plugin reports a spawn code (`ENOENT`, `ETIMEDOUT`) and not a path; the
+  decision record stores at most 500 characters of that already-redacted
+  sentence. If the key's real parent directory is also the state file's
+  directory, that directory is removed from the printed sign-off command,
+  so the command loses a path segment and does not gain key bytes. A run of
+  the key shorter than the whole 64-character token is not a separate
+  secret: replacing every shorter run would delete ordinary words. The
+  whole token and the encodings above are what the redactor removes.
 - Cursor can also load Claude Code hooks ("third-party hooks"). Wire one
   harness per project, or Cursor may call the Claude Code adapter with Cursor
   tool names, which it will deny.

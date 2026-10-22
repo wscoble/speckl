@@ -1427,14 +1427,28 @@ export function runAdapter(
     }
     return secrets;
   };
-  const fail = (reason: string): AdapterOutput => {
-    const msg = explainAdapterDeny(reason, secretsFor());
+  const shortKeyPath = 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.';
+  const keyPathTooShort = (p: unknown): boolean => {
+    if (typeof p !== 'string' || p.length === 0) return false;
+    if (p.length < 8) return true;
+    const bases = [projectDir, deps.cwd];
+    for (let i = 0; i < bases.length; i++) {
+      try {
+        const abs = deps.resolvePath(bases[i], p);
+        if (typeof abs === 'string' && abs.length < 8) return true;
+      } catch { /* a path that will not resolve is not treated as short */ }
+    }
+    return false;
+  };
+  const emitDeny = (msg: string): AdapterOutput => {
     if (event === 'batch') return { code: 0, stdout: '', stderr: msg + '\n' };
     // A turn-end hook never blocks: on Gemini exit 2 would force a retry turn.
     if (event === 'turn-end') return { code: 0, stdout: harness === 'gemini' ? '{}\n' : '', stderr: msg + '\n' };
     if (isPre || harnessEventName(harness, event) === null) return formatPre(harness, false, msg);
     return formatPost(harness, msg);
   };
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
+  const fail = (reason: string): AdapterOutput => emitDeny(explainAdapterDeny(reason, secretsFor()));
   if (!harnesses[harness]) {
     return fail('harness ' + JSON.stringify(harness) + ' is not declared in the spec (declared: ' + (Object.keys(harnesses).join(', ') || 'none') + ')');
   }
@@ -1451,6 +1465,7 @@ export function runAdapter(
     return fail('hook payload is not JSON');
   }
   if (!flags.project && !envDir && typeof payload.cwd === 'string' && payload.cwd) projectDir = payload.cwd;
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
   if (payload.hook_event_name !== undefined && payload.hook_event_name !== expected) {
     return fail('payload is ' + JSON.stringify(payload.hook_event_name) + ' but this hook is wired as ' + expected);
   }

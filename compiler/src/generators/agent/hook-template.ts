@@ -18,9 +18,11 @@ export function emitHookMjs(speckName: string): string {
  * on a sign-off (the signal and the signal.mjs command), a failed
  * precondition, or an internal error (fail closed). The text never includes
  * the state key, the key path (given, resolved, or the symlink target), the
- * key file contents, a signer key, or the state contents. The same redacted
- * sentence is what the
- * decision record stores. Building it cannot change the decision: a throw
+ * key file contents, a signer key, or the state contents. A key path shorter
+ * than 8 characters (as given or resolved) is refused before the hook runs.
+ * 64-hex key material is also removed in base64, base64url, and SPKI form.
+ * The same redacted sentence is what the decision record stores. Building
+ * it cannot change the decision: a throw
  * while building it still denies.
  *
  * The hook never records human answers; signal.mjs does, through a verifier.
@@ -103,6 +105,15 @@ function secretPaths(state) {
     }
   }
   return out;
+}
+function keyPathTooShort(p) {
+  if (typeof p !== 'string' || !p) return false;
+  if (p.length < 8) return true;
+  try {
+    const abs = path.resolve(p);
+    if (typeof abs === 'string' && abs.length < 8) return true;
+  } catch { /* a path that will not resolve is not treated as short */ }
+  return false;
 }
 function finishDeny(exitCode, build) {
   const text = safeDenyText(build);
@@ -313,6 +324,9 @@ async function loadMachine(state) {
 async function main() {
   const args = parseArgs(process.argv);
   hookKeyArg = args.key || '';
+  if (keyPathTooShort(hookKeyArg) || keyPathTooShort(process.env.SPECKL_STATE_KEY_FILE)) {
+    respond('deny', 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.', 1);
+  }
   if (args.cmd !== 'pre' && args.cmd !== 'post') {
     finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post --state <file>', internalNext('usage'), secretPaths()));
   }

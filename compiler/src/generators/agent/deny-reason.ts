@@ -17,9 +17,13 @@ export function shellQuote(value: unknown): string {
 /**
  * Strip key material and known key paths from a deny sentence.
  * A secret shorter than 8 characters is left alone so a short token cannot
- * erase the sentence. 64 hex chars (a state key or an HMAC) and PEM blocks
- * are always removed. The result is capped so a huge call id cannot dump
- * a state file into the harness.
+ * erase the sentence. The hook and adapter refuse to run when a key path
+ * itself is that short. A 64-hex secret (the state key, or a pinned signer
+ * key) is also removed as uppercase and lowercase hex, as base64 and
+ * base64url of its 32 bytes (with and without padding), and as the SPKI
+ * DER-base64 and PEM of those bytes. Any other PEM block and any other
+ * 64-hex token are removed too. The result is capped so a huge call id
+ * cannot dump a state file into the harness.
  */
 export function redactSecrets(text: string, secrets: unknown, keep?: unknown): string {
   let s = String(text);
@@ -29,8 +33,25 @@ export function redactSecrets(text: string, secrets: unknown, keep?: unknown): s
       if (typeof secret === 'string' && secret.length >= 8) list.push(secret);
     }
   }
-  // Longer first, so a resolved absolute path is removed whole and a shorter
-  // relative path cannot leave its directory prefix behind.
+  const forms: string[] = [];
+  for (const secret of list) {
+    if (!/^[0-9a-fA-F]{64}$/.test(secret)) continue;
+    const raw = Buffer.from(secret, 'hex');
+    const b64 = raw.toString('base64');
+    const b64url = b64.replace(/\+/g, '-').replace(/\//g, '_');
+    const der = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]).toString('base64');
+    const pem = (nl: string) => '-----BEGIN PUBLIC KEY-----' + nl + der + nl + '-----END PUBLIC KEY-----';
+    forms.push(
+      secret.toLowerCase(), secret.toUpperCase(),
+      b64, b64.replace(/=+$/, ''),
+      b64url, b64url.replace(/=+$/, ''),
+      der, der.replace(/=+$/, ''),
+      pem('\n'), pem('\r\n'),
+    );
+  }
+  for (const form of forms) list.push(form);
+  // Longer first, so a PEM or a resolved absolute path is removed whole and
+  // a shorter relative path or inner base64 cannot leave a prefix behind.
   list.sort((a, b) => b.length - a.length);
   for (const secret of list) s = s.split(secret).join('<keyfile>');
   const kept = new Set<string>();

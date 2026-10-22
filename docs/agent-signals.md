@@ -506,7 +506,10 @@ The sentence names one of four situations, then the next step. It does not
 include the state key, the key file path (given, resolved with `path.resolve`,
 or the path `realpath` follows through a symlink, including that key's real
 parent directory), the key file's contents, a pinned signer key, or the
-contents of `state.json`.
+contents of `state.json`. A key path shorter than 8 characters is refused
+with a fixed sentence before the hook runs. The 32 key bytes are also
+removed as base64, base64url, uppercase hex, and, for a pinned signer, as
+SPKI DER-base64 and PEM.
 The run id is included when a signed drop needs it. A call-bound denial
 keeps the `sign call <digest>` suffix and the same pin-aware command.
 `<state>.decisions/log.jsonl` stores that redacted sentence, not a second
