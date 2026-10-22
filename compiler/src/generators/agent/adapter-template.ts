@@ -72,7 +72,11 @@ const deps = {
     const why = r.error
       ? (r.error.code === 'ETIMEDOUT' ? 'hook.mjs timed out after ' + timeout + 'ms' : 'hook.mjs could not be started')
       : (r.signal ? 'hook.mjs killed by ' + r.signal : '');
-    return { status: r.error || r.signal ? null : r.status, stdout: r.stdout || '', stderr: why || r.stderr || '' };
+    const child = String(r.stderr || '');
+    const first = child.trim().split('\\n')[0] || '';
+    const nodeErr = first.indexOf('Error:') === 0 || first.indexOf('/') === 0 || (first.indexOf('at ') === 0 && first.indexOf('/') !== -1);
+    const safeChild = nodeErr ? 'hook.mjs failed' : child;
+    return { status: r.error || r.signal ? null : r.status, stdout: r.stdout || '', stderr: why || safeChild };
   },
   resolvePath: (base, p) => path.resolve(base, p),
   relativePath: (from, to) => path.relative(from, to),

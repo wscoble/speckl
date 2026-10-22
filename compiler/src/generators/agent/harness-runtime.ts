@@ -241,7 +241,14 @@ export function interpretHook(r: HookResult): { allow: boolean; reason: string }
     return { allow: false, reason: 'speckl hook error: exit 0 without a well-formed allow decision' };
   }
   if (r.status === 2) return { allow: false, reason: reason || 'denied' };
-  const detail = reason || (r.stderr || '').trim().split('\n')[0] || 'no output';
+  let detail = reason;
+  if (!detail) {
+    const line = (r.stderr || '').trim().split('\n')[0] || '';
+    // Node stacks and OS errors name a path. A hook sentence does not.
+    const nodeErr = line.indexOf('Error:') === 0 || line.indexOf('/') === 0
+      || /^[A-Za-z]:[\\/]/.test(line) || (line.indexOf('at ') === 0 && line.indexOf('/') !== -1);
+    detail = !line ? 'no output' : nodeErr ? 'hook.mjs failed' : line;
+  }
   return { allow: false, reason: 'speckl hook error (exit ' + String(r.status) + '): ' + detail };
 }
 
@@ -851,11 +858,12 @@ export function hookCommandResult(
 ): HookResult {
   const epipe = errorCode === 'EPIPE' && typeof status === 'number';
   const failed = ((!!errorCode || !!errorText) && !epipe) || !!signal;
+  // The Node message names the program it tried to spawn. Keep the code.
   const why = !failed ? ''
     : errorCode === 'ETIMEDOUT' ? 'command timed out after ' + timeout + 'ms'
-    : errorText ? errorText
     : signal ? 'command killed by ' + signal
-    : errorCode;
+    : errorCode ? 'command failed (' + errorCode + ')'
+    : 'command failed';
   return { status: failed ? null : status, stdout: stdout || '', stderr: why || stderr || '' };
 }
 
@@ -1101,8 +1109,9 @@ export function pluginSource(harness: string, ours: Record<string, unknown>): st
     '  try { body = lines.length ? JSON.parse(lines[lines.length - 1]) : null; } catch { body = null; }',
     '  const err = String(r.stderr || "").trim();',
     '  if (r.error || r.status !== 0) {',
-    '    const why = (body && typeof body.reason === "string" && body.reason) || err.split("\\n")[0]',
-    '      || (r.error ? "spawn " + String(r.error.code || "error") : r.signal ? "killed by " + r.signal : "exit " + r.status);',
+    '    const errLine = err.split("\\n")[0] || "";',
+    '    const spawned = r.error ? "spawn " + String(r.error.code || "error") : r.signal ? "killed by " + r.signal : "exit " + r.status;',
+    '    const why = (body && typeof body.reason === "string" && body.reason) || (/^Speckl/.test(errLine) ? errLine : spawned);',
     '    return { ok: false, reason: (/^Speckl/.test(why) ? "" : "Speckl adapter failed: ") + why };',
     '  }',
     '  return { ok: true, body };',
@@ -2336,12 +2345,40 @@ export function runAdapter(
   const keyPathTooShort = (p: unknown): boolean => {
     if (typeof p !== 'string' || p.length === 0) return false;
     if (p.length < 8) return true;
+    const candidates: string[] = [p];
     const bases = [projectDir, deps.cwd];
     for (let i = 0; i < bases.length; i++) {
       try {
         const abs = deps.resolvePath(bases[i], p);
-        if (typeof abs === 'string' && abs.length < 8) return true;
+        if (typeof abs === 'string' && abs) {
+          if (abs.length < 8) return true;
+          if (candidates.indexOf(abs) === -1) candidates.push(abs);
+        }
       } catch { /* a path that will not resolve is not treated as short */ }
+    }
+    const follow = (c: string): string => {
+      if (typeof deps.realpath === 'function') {
+        try {
+          const got = deps.realpath(c);
+          if (typeof got === 'string' && got) return got;
+        } catch { /* try realPath */ }
+      }
+      if (typeof deps.realPath === 'function') {
+        try {
+          const got = deps.realPath(c);
+          if (typeof got === 'string' && got) return got;
+        } catch { /* not treated as short */ }
+      }
+      return '';
+    };
+    for (let i = 0; i < candidates.length; i++) {
+      const real = follow(candidates[i]);
+      if (!real) continue;
+      if (real.length < 8) return true;
+      try {
+        const parent = deps.dirname(real);
+        if (typeof parent === 'string' && parent.length < 8) return true;
+      } catch { /* dirname must not turn the check into a throw */ }
     }
     return false;
   };

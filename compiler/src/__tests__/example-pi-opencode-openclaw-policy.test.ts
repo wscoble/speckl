@@ -186,6 +186,11 @@ describe('Pi wiring (real events through the generated .pi/extensions/speckl.js)
         const r = await pre('pre-read');
         expect(r).toMatchObject({ block: true });
         expect(r.reason).toMatch(/^Speckl/);
+        if (what === 'killed') expect(r.reason).toBe('Speckl adapter failed: killed by SIGKILL');
+        if (what === 'exit1' || what === 'crash') {
+          expect(r.reason).toBe('Speckl adapter failed: exit 1');
+          expect(r.reason).not.toContain(ctx.project);
+        }
       });
     });
   }
@@ -305,7 +310,10 @@ describe('OpenCode wiring (real hook arguments through the generated .opencode/p
   for (const [what, body] of Object.entries(BROKEN)) {
     it(`blocks when the adapter misbehaves (${what})`, async () => {
       await withAdapter(ctx.project, body, async () => {
-        await expect(call('pre-read')).rejects.toThrow(/^Speckl/);
+        const why = what === 'killed' ? /^Speckl adapter failed: killed by SIGKILL$/
+          : what === 'exit1' || what === 'crash' ? /^Speckl adapter failed: exit 1$/
+            : /^Speckl/;
+        await expect(call('pre-read')).rejects.toThrow(why);
       });
     });
   }
@@ -413,6 +421,11 @@ describe('OpenClaw wiring (real hook events through the generated .openclaw/plug
         const r = pre('pre-read');
         expect(r).toMatchObject({ block: true });
         expect(r.blockReason).toMatch(/^Speckl/);
+        if (what === 'killed') expect(r.blockReason).toBe('Speckl adapter failed: killed by SIGKILL');
+        if (what === 'exit1' || what === 'crash') {
+          expect(r.blockReason).toBe('Speckl adapter failed: exit 1');
+          expect(r.blockReason).not.toContain(ctx.project);
+        }
       });
     });
   }

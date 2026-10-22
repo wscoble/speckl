@@ -1,9 +1,10 @@
 // Key paths that only show up once a symlink is followed, and Node errors that
 // name the path they opened, must not reach a deny sentence or the decision log.
-// Exit codes and allow/deny decisions stay what main's hook and adapter produce.
+// Exit codes and allow/deny decisions stay what main's hook and adapter produce,
+// except a key path under 8 characters, which this branch denies.
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +59,31 @@ function hookRun(state: string, cmd: string, msg: object | string, opts?: { key?
 function logText(state: string): string {
   const log = state + '.decisions/log.jsonl';
   return existsSync(log) ? readFileSync(log, 'utf-8') : '';
+}
+
+/** A file whose path is under 8 characters, removed when the test finishes. */
+function claimShortFile(): { path: string; release: () => void } {
+  for (const name of ['q7', 'm2', 'k9', 'p4', 'n5', 'w3', 'r8', 'ab', 'xy', 'zz']) {
+    const p = '/tmp/' + name;
+    if (p.length >= 8) continue;
+    try {
+      writeFileSync(p, readFileSync(keyFile), { flag: 'wx' });
+      return { path: p, release: () => { try { rmSync(p); } catch { /* already gone */ } } };
+    } catch (e) {
+      const code = e && typeof e === 'object' && 'code' in e ? String((e as { code: string }).code) : '';
+      if (code === 'EEXIST') continue;
+      throw e;
+    }
+  }
+  throw new Error('could not create a temp path under 8 characters');
+}
+
+function longLink(target: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'speckl-long-link-'));
+  const link = join(dir, 'state.key');
+  symlinkSync(target, link);
+  if (link.length < 8) throw new Error('symlink path is under 8 characters');
+  return link;
 }
 
 function absent(text: string, secrets: string[]) {
@@ -306,7 +332,7 @@ describe('realpath on the adapter secret list', () => {
         hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: '/a',
       }),
       config,
-      { ...deps(() => '/unused'), cwd: deep },
+      { ...deps(() => '/unused-long-dir/state.key'), cwd: deep },
     );
     expect(out.code).toBe(2);
     expect(out.stderr.trim()).toBe(SHORT_KEY);
@@ -319,7 +345,7 @@ describe('realpath on the adapter secret list', () => {
       { CLAUDE_PROJECT_DIR: '/proj' },
       JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: '/proj' }),
       config,
-      deps(() => '/unused'),
+      deps(() => '/unused-long-dir/state.key'),
     );
     expect(empty.stderr).not.toContain('shorter than 8');
 
@@ -330,7 +356,7 @@ describe('realpath on the adapter secret list', () => {
       JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'long-enough.key', tool_use_id: 't', cwd: '/proj' }),
       config,
       {
-        ...deps(() => '/unused'),
+        ...deps(() => '/unused-long-dir/state.key'),
         resolvePath: (base, p) => {
           // The short-path check resolves the key against the project and the
           // cwd. Those two throws are ignored. Later resolves must succeed.
@@ -363,6 +389,50 @@ describe('realpath on the adapter secret list', () => {
     );
     expect(notString.stderr).not.toContain('shorter than 8');
     expect(notString.code, notString.stderr).toBe(0);
+  });
+
+  it('refuses a real path or its parent under 8 characters', () => {
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: '/proj',
+    });
+    const argv = ['claude-code', 'pre', '--state', 's.json', '--key', 'long-enough.key'];
+    const env = { CLAUDE_PROJECT_DIR: '/proj' };
+    const realShort = runAdapter(argv, env, payload, config, deps(() => '/tmp/ab'));
+    expect(realShort.code).toBe(2);
+    expect(realShort.stderr.trim()).toBe(SHORT_KEY);
+    expect(realShort.stderr).not.toContain('/tmp/ab');
+
+    const parentShort = runAdapter(argv, env, payload, config, deps(() => '/tmp/abcdefghij'));
+    expect('/tmp/abcdefghij'.length).toBeGreaterThanOrEqual(8);
+    expect(parentShort.stderr.trim()).toBe(SHORT_KEY);
+    expect(parentShort.stderr).not.toContain('abcdefghij');
+
+    const viaRealPath = runAdapter(argv, env, payload, config, {
+      ...deps(() => { throw new Error('ENOENT'); }),
+      realPath: () => '/tmp/ab',
+    });
+    expect(viaRealPath.stderr.trim()).toBe(SHORT_KEY);
+
+    const emptyThenReal = runAdapter(argv, env, payload, config, {
+      ...deps(() => ''),
+      realPath: () => '/tmp/ab',
+    });
+    expect(emptyThenReal.stderr.trim()).toBe(SHORT_KEY);
+
+    const onlyRealPath = deps(() => '/tmp/ab');
+    delete (onlyRealPath as { realpath?: unknown }).realpath;
+    onlyRealPath.realPath = () => '/tmp/ab';
+    expect(runAdapter(argv, env, payload, config, onlyRealPath).stderr.trim()).toBe(SHORT_KEY);
+
+    const dirThrows = runAdapter(argv, env, payload, config, {
+      ...deps(() => '/tmp/abcdefghij'),
+      dirname: (p) => {
+        if (p === '/tmp/abcdefghij') throw new Error('nope');
+        return path.dirname(p);
+      },
+    });
+    expect(dirThrows.stderr).not.toContain('shorter than 8');
+    expect(dirThrows.stderr).not.toContain('abcdefghij');
   });
 });
 
@@ -454,6 +524,104 @@ describe('short key paths and other key encodings stay out of deny text', () => 
     expect((resolved.stdout || '') + (resolved.stderr || '')).not.toContain(given);
   });
 
+  it('refuses a long symlink whose real path or parent is under 8 characters', () => {
+    const held = claimShortFile();
+    const link = longLink(held.path);
+    const parentFile = join('/tmp', 'specklpk' + process.pid);
+    writeFileSync(parentFile, readFileSync(keyFile));
+    const parentLink = longLink(parentFile);
+    const cwd = mkdtempSync(join(tmpdir(), 'speckl-adapter-short-real-'));
+    const adapterState = initState(cwd);
+    const run = (key: string, envKey: string) => spawnSync(
+      process.execPath,
+      [join(agent, 'adapter.mjs'), 'claude-code', 'pre', '--state', adapterState, '--key', key, '--project', cwd],
+      {
+        cwd,
+        input: JSON.stringify({
+          hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd,
+        }),
+        encoding: 'utf-8',
+        env: { ...process.env, SPECKL_STATE_KEY_FILE: envKey, CLAUDE_PROJECT_DIR: cwd },
+      },
+    );
+    try {
+      expect(held.path.length).toBeLessThan(8);
+      expect(link.length).toBeGreaterThanOrEqual(8);
+      expect(parentFile.length).toBeGreaterThanOrEqual(8);
+      expect(path.dirname(parentFile).length).toBeLessThan(8);
+      const state = initState();
+      const byKey = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: link });
+      expect(byKey.status, byKey.stderr).toBe(1);
+      expect(JSON.parse(byKey.stdout).reason).toBe(SHORT_KEY);
+      expect(byKey.stdout + byKey.stderr + logText(state)).not.toContain(held.path);
+      expect(byKey.stdout + byKey.stderr).not.toContain(link);
+
+      const byEnv = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: keyFile, envKey: link });
+      expect(byEnv.status, byEnv.stderr).toBe(1);
+      expect(JSON.parse(byEnv.stdout).reason).toBe(SHORT_KEY);
+      expect(byEnv.stdout + byEnv.stderr).not.toContain(held.path);
+      expect(byEnv.stdout + byEnv.stderr).not.toContain(link);
+      expect(byEnv.stdout + byEnv.stderr).not.toContain(keyFile);
+
+      const byParent = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { key: parentLink });
+      expect(byParent.status, byParent.stderr).toBe(1);
+      expect(JSON.parse(byParent.stdout).reason).toBe(SHORT_KEY);
+      expect(byParent.stdout + byParent.stderr).not.toContain(parentFile);
+
+      const adapterKey = run(link, keyFile);
+      expect(adapterKey.status, adapterKey.stderr).toBe(2);
+      expect((adapterKey.stderr || '').trim()).toBe(SHORT_KEY);
+      expect((adapterKey.stdout || '') + (adapterKey.stderr || '')).not.toContain(held.path);
+      expect((adapterKey.stdout || '') + (adapterKey.stderr || '')).not.toContain(link);
+
+      const adapterEnv = run(keyFile, link);
+      expect(adapterEnv.status, adapterEnv.stderr).toBe(2);
+      expect((adapterEnv.stderr || '').trim()).toBe(SHORT_KEY);
+      expect((adapterEnv.stdout || '') + (adapterEnv.stderr || '')).not.toContain(held.path);
+      expect((adapterEnv.stdout || '') + (adapterEnv.stderr || '')).not.toContain(link);
+      expect((adapterEnv.stdout || '') + (adapterEnv.stderr || '')).not.toContain(keyFile);
+    } finally {
+      held.release();
+      try { rmSync(parentFile); } catch { /* already gone */ }
+    }
+  });
+
+  it('replaces a hook stack that names the key path, and keeps the fixed spawn sentences', () => {
+    const src = readFileSync(join(agent, 'adapter.mjs'), 'utf-8');
+    expect(src).toContain('hook.mjs could not be started');
+    expect(src).toContain('hook.mjs killed by ');
+    expect(src).toContain('hook.mjs failed');
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-hook-stack-'));
+    const state = initState(dir);
+    const hook = join(agent, 'hook.mjs');
+    const saved = readFileSync(hook);
+    const spawnAdapter = () => spawnSync(
+      process.execPath,
+      [join(agent, 'adapter.mjs'), 'claude-code', 'pre', '--state', state, '--key', keyFile, '--project', dir],
+      {
+        input: JSON.stringify({
+          hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't', cwd: dir,
+        }),
+        encoding: 'utf-8',
+        env: process.env,
+      },
+    );
+    try {
+      writeFileSync(hook, 'process.stderr.write(' + JSON.stringify(keyFile + '\nError: boom\n') + ');\nprocess.exit(1);\n');
+      const crashed = spawnAdapter();
+      expect(crashed.status, crashed.stderr).toBe(2);
+      expect(crashed.stderr).toContain('hook.mjs failed');
+      expect((crashed.stdout || '') + (crashed.stderr || '')).not.toContain(keyFile);
+      writeFileSync(hook, 'process.kill(process.pid, "SIGKILL");\n');
+      const killed = spawnAdapter();
+      expect(killed.status, killed.stderr).toBe(2);
+      expect(killed.stderr).toContain('hook.mjs killed by SIGKILL');
+      expect((killed.stdout || '') + (killed.stderr || '')).not.toContain(keyFile);
+    } finally {
+      writeFileSync(hook, saved);
+    }
+  });
+
   it('redacts every encoding of the state key and of a pinned signer key', () => {
     const { publicKey } = crypto.generateKeyPairSync('ed25519');
     const signerDer = publicKey.export({ type: 'spki', format: 'der' });
@@ -493,10 +661,10 @@ describe('allow and deny decisions match a hook and adapter generated from 09eb0
     cwd: '/tmp',
   });
 
-  function adapterRun(bin: string, state: string, event: string, payload: object | string) {
+  function adapterRun(bin: string, state: string, event: string, payload: object | string, key = keyFile) {
     const r = spawnSync(
       process.execPath,
-      [join(bin, 'adapter.mjs'), 'claude-code', event, '--state', state, '--key', keyFile, '--project', path.dirname(state)],
+      [join(bin, 'adapter.mjs'), 'claude-code', event, '--state', state, '--key', key, '--project', path.dirname(state)],
       {
         input: typeof payload === 'string' ? payload : JSON.stringify(payload),
         encoding: 'utf-8',
@@ -610,5 +778,42 @@ describe('allow and deny decisions match a hook and adapter generated from 09eb0
     expect(ours).toEqual(run(mainAgent));
     expect(ours.pre).toEqual({ status: 0, decision: 'allow' });
     expect(ours.post).toEqual({ status: 0, decision: 'allow' });
+  });
+
+  it('a long symlink to a key path under 8 characters is an expected difference from 09eb03c', () => {
+    const held = claimShortFile();
+    const link = longLink(held.path);
+    try {
+      const hookSide = (bin: string) => {
+        const dir = mkdtempSync(join(tmpdir(), 'speckl-verdict-short-'));
+        const state = initState(dir, bin);
+        const got = hookRun(state, 'pre', { tool: 'run_tests', input: {}, call_id: '1' }, { bin, key: link });
+        return { status: got.status, decision: got.decision, stderr: got.stderr };
+      };
+      const oursHook = hookSide(agent);
+      const mainHook = hookSide(mainAgent);
+      expect(oursHook.status, oursHook.stderr).toBe(1);
+      expect(oursHook.decision).toBe('deny');
+      expect({ status: mainHook.status, decision: mainHook.decision }, mainHook.stderr).toEqual({ status: 0, decision: 'allow' });
+      expect({ status: oursHook.status, decision: oursHook.decision }).not.toEqual({ status: mainHook.status, decision: mainHook.decision });
+
+      const adapterSide = (bin: string) => {
+        const dir = mkdtempSync(join(tmpdir(), 'speckl-verdict-short-ad-'));
+        const state = initState(dir, bin);
+        return adapterRun(bin, state, 'pre', {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'npm test' },
+          tool_use_id: 'short-real',
+          cwd: dir,
+        }, link);
+      };
+      const oursAdapter = adapterSide(agent);
+      const mainAdapter = adapterSide(mainAgent);
+      expect(oursAdapter).toEqual({ status: 2, decision: 'deny' });
+      expect(mainAdapter).toEqual({ status: 0, decision: 'allow' });
+    } finally {
+      held.release();
+    }
   });
 });

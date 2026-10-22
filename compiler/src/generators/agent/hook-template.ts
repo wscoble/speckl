@@ -19,7 +19,8 @@ export function emitHookMjs(speckName: string): string {
  * precondition, or an internal error (fail closed). The text never includes
  * the state key, the key path (given, resolved, or the symlink target), the
  * key file contents, a signer key, or the state contents. A key path shorter
- * than 8 characters (as given or resolved) is refused before the hook runs.
+ * than 8 characters (as given, as resolved, or as realpath of the file or
+ * its parent directory) is refused before the hook runs.
  * 64-hex key material is also removed in base64, base64url, and SPKI form.
  * The same redacted sentence is what the decision record stores. Building
  * it cannot change the decision: a throw
@@ -109,10 +110,23 @@ function secretPaths(state) {
 function keyPathTooShort(p) {
   if (typeof p !== 'string' || !p) return false;
   if (p.length < 8) return true;
+  const candidates = [p];
   try {
     const abs = path.resolve(p);
-    if (typeof abs === 'string' && abs.length < 8) return true;
+    if (typeof abs === 'string' && abs) {
+      if (abs.length < 8) return true;
+      if (abs !== p) candidates.push(abs);
+    }
   } catch { /* a path that will not resolve is not treated as short */ }
+  for (let i = 0; i < candidates.length; i++) {
+    try {
+      const real = fs.realpathSync(candidates[i]);
+      if (typeof real !== 'string' || !real) continue;
+      if (real.length < 8) return true;
+      const parent = path.dirname(real);
+      if (typeof parent === 'string' && parent.length < 8) return true;
+    } catch { /* realpath failed: not treated as short */ }
+  }
   return false;
 }
 function finishDeny(exitCode, build) {

@@ -517,9 +517,14 @@ parent directory), the bytes in that file, a pinned signer key, or the
 contents of `state.json`. Those 32 key bytes are also removed when they
 appear as uppercase hex, as base64 or base64url (with or without padding),
 or, for a pinned signer key, as SPKI DER-base64 or PEM. A `--key` or
-`SPECKL_STATE_KEY_FILE` path shorter than 8 characters, as given or as
-resolved, is not printed: the hook and the adapter deny with a fixed
-sentence and do not run. The decision record stores that same sentence.
+`SPECKL_STATE_KEY_FILE` path shorter than 8 characters is not printed: the
+hook and the adapter deny with a fixed sentence and do not run. That check
+covers the path as given, `path.resolve` of it, `realpath` of the key file,
+and the parent directory of that real path. Commit 09eb03c allowed the call
+when such a path named a real key. This denial is an intended stricter
+change; the comparison against the hook and adapter generated from that
+commit marks the row as an expected difference, and every other compared
+call still matches. The decision record stores that same sentence.
 If building it throws, the call is still denied. A failure to load the
 state, read the key, take the lock, or append the decision record prints a
 fixed sentence and not the Node error.
@@ -638,39 +643,63 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
 - Path checks see paths as written; they don't follow symlinks. Deny text does
   follow them: the redaction list includes `realpath` of `--key` and of
   `SPECKL_STATE_KEY_FILE`, and the real directory that contains the key. If
-  `realpath` throws, those entries are not added and the given path stays.
-  `status` and `doctor` run that same redaction over stdout and stderr. A
-  key path they would have printed becomes `<keyfile>`. The state file path
-  and the harness config path stay, because they are not the key.
-- A `--key` or `SPECKL_STATE_KEY_FILE` path shorter than 8 characters, as
-  given or as `path.resolve` returns it, makes the hook and the adapter deny
-  with one fixed sentence and not run. The path is not printed. The state
-  key and each pinned signer key are 64 hex characters. That token is
-  removed in either case, and those 32 bytes are also removed as base64 and
-  base64url with and without padding, and as SPKI DER-base64 and PEM. Any
-  other PEM block is removed. The exact key-file text is removed, including
-  a trailing newline when that whole text appears together.
-- These sentences stay fixed and do not include the Node error: `state file
-  missing`, `state file is not JSON`, `state file could not be read`,
-  `state key not found`, `state key could not be read`, `state key must be
-  32 bytes as 64 hex chars`, `state lock timeout`, `state lock could not be
-  taken`, `stdin read failed`, `decision record unavailable`, `state save
-  failed`, and the short key-path sentence. What can still be printed is not
-  key material: a decision-chain sentence (`decision chain broken at seq N`,
-  `decision head is not JSON`, and the other record checks) names a sequence
-  number or a field; `log replay failed:` plus a fixed replay sentence names
-  the log check; `can()` guard text is the expression written in the spec;
-  the call-bound canonical preimage is the call's arguments after every
-  known secret and the encodings above have been removed (the printed
-  canonical may then not hash to the digest); the Pi, OpenCode, and OpenClaw
-  plugin reports a spawn code (`ENOENT`, `ETIMEDOUT`) and not a path; the
-  decision record stores at most 500 characters of that already-redacted
-  sentence. If the key's real parent directory is also the state file's
-  directory, that directory is removed from the printed sign-off command,
-  so the command loses a path segment and does not gain key bytes. A run of
-  the key shorter than the whole 64-character token is not a separate
-  secret: replacing every shorter run would delete ordinary words. The
-  whole token and the encodings above are what the redactor removes.
+  `realpath` throws, those entries are not added and the given path stays on
+  the list. `status` and `doctor` run that same redaction over stdout and
+  stderr. A key path they would have printed becomes `<keyfile>`. The state
+  file path and the harness config path stay, because they are not the key.
+- A `--key` or `SPECKL_STATE_KEY_FILE` path makes the hook and the adapter
+  deny with one fixed sentence, and not run, when any of these is shorter
+  than 8 characters: the path as given, `path.resolve` of it, `realpath` of
+  the key file, or the parent directory of that real path. A `realpath` that
+  throws is not treated as short. The path is not printed. Commit 09eb03c
+  allowed that call when the path named a real key. This denial is stricter
+  on purpose. The state key and each pinned signer key are 64 hex
+  characters. That token is removed in either case, and those 32 bytes are
+  also removed as base64 and base64url with and without padding, and as
+  SPKI DER-base64 and PEM. Any other PEM block is removed. The exact
+  key-file text is removed, including a trailing newline when that whole
+  text appears together.
+- What can still be printed is a closed list, and none of it is key material.
+  The state key and each pinned signer key are 32 bytes. Every encoding
+  removed above is at least 8 characters, so a shorter token cannot be one
+  of those keys. A key path under 8 characters, including the symlink target
+  and its parent directory, is refused and is not printed.
+  - A secret shorter than 8 characters that is not the key path.
+  - These non-secret sentences: a decision-chain sentence (`decision chain
+    broken at seq N`, `decision head is not JSON`, and the other record
+    checks) names a sequence number or a field; `log replay failed:` plus a
+    fixed replay sentence names the log check; `can()` guard text is the
+    expression written in the spec; the call-bound canonical preimage is the
+    call's arguments after every known secret and the encodings above have
+    been removed (the printed canonical may then not hash to the digest);
+    the decision record stores at most 500 characters of that already-redacted
+    sentence; a deny sentence on stdout is capped at 1800 characters. The
+    state file path and the harness config path, printed by `status` and
+    `doctor`, are the project rails.
+  - Plugin and spawn sentences, which carry a code or a signal name: Pi,
+    OpenCode, and OpenClaw say `Speckl adapter failed: spawn ENOENT`,
+    `spawn ETIMEDOUT`, `spawn error`, `killed by <signal>`, or
+    `exit <status>` when the adapter did not print a Speckl sentence, plus
+    `Speckl: the hook payload could not be serialised` and
+    `Speckl: could not run the adapter`. A Speckl sentence from the adapter
+    is passed through after the adapter has redacted it. The adapter starting
+    hook.mjs says `hook.mjs timed out after N ms`, `hook.mjs could not be
+    started`, `hook.mjs killed by <signal>`, or `hook.mjs failed` in place of
+    a Node stack. `status` and `doctor` say `command timed out after N ms`,
+    `command killed by <signal>`, `command failed (<code>)`, or
+    `command failed`. A probe line that quotes hook output is then redacted,
+    so a key path in it becomes `<keyfile>`.
+  - The other fixed sentences, which replaced Node and OS errors: `state file
+    missing`, `state file is not JSON`, `state file could not be read`,
+    `state key not found`, `state key could not be read`, `state key must be
+    32 bytes as 64 hex chars`, `state lock timeout`, `state lock could not be
+    taken`, `stdin read failed`, `decision record could not be read`,
+    `decision record unavailable`, `log replay failed`, `state save failed`,
+    `hook failed closed`, the short key-path sentence, and
+    `Speckl adapter error: the adapter failed closed. The call stays denied.`
+  If the key's real parent directory is also the state file's directory,
+  that directory is removed from the printed sign-off command, so the
+  command loses a path segment and does not gain key bytes.
 - Cursor can also load Claude Code hooks ("third-party hooks"). Wire one
   harness per project, or Cursor may call the Claude Code adapter with Cursor
   tool names, which it will deny.

@@ -168,18 +168,18 @@ describe('hookCommandResult', () => {
     expect(hookCommandResult(null, 'ETIMEDOUT', 'Error: spawnSync sh ETIMEDOUT', '', '', '', 20000).stderr)
       .toBe('command timed out after 20000ms');
     expect(hookCommandResult(null, 'ETIMEDOUT', 'Error: spawnSync sh ETIMEDOUT', '', '', '', 20000).status).toBe(null);
-    expect(hookCommandResult(null, 'ENOENT', 'Error: spawnSync sh ENOENT', '', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh ENOENT' });
+    expect(hookCommandResult(null, 'ENOENT', 'Error: spawnSync /secret/state.key ENOENT', '', '', '', 20000))
+      .toEqual({ status: null, stdout: '', stderr: 'command failed (ENOENT)' });
     expect(hookCommandResult(null, '', 'Error: empty command', '', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: empty command' });
+      .toEqual({ status: null, stdout: '', stderr: 'command failed' });
     expect(hookCommandResult(1, 'EACCES', '', '', 'out', 'err', 20000))
-      .toEqual({ status: null, stdout: 'out', stderr: 'EACCES' });
+      .toEqual({ status: null, stdout: 'out', stderr: 'command failed (EACCES)' });
     expect(hookCommandResult(null, 'EPIPE', 'Error: spawnSync sh EPIPE', '', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh EPIPE' });
+      .toEqual({ status: null, stdout: '', stderr: 'command failed (EPIPE)' });
     expect(hookCommandResult(null, '', '', 'SIGKILL', 'out', '', 20000))
       .toEqual({ status: null, stdout: 'out', stderr: 'command killed by SIGKILL' });
     expect(hookCommandResult(2, 'EPIPE', 'Error: spawnSync sh EPIPE', 'SIGKILL', '', '', 20000))
-      .toEqual({ status: null, stdout: '', stderr: 'Error: spawnSync sh EPIPE' });
+      .toEqual({ status: null, stdout: '', stderr: 'command killed by SIGKILL' });
     expect(hookCommandResult(0, '', '', '', '', 'hook said no', 20000))
       .toEqual({ status: 0, stdout: '', stderr: 'hook said no' });
   });
@@ -538,9 +538,11 @@ describe('status and doctor failures', () => {
     expect(r.stdout).toContain('NOT PROVED');
     expect(r.code).toBe(1);
     const missing = installed();
-    missing.runCommand = () => ({ status: null, stdout: '', stderr: 'Error: spawn node ENOENT\n' });
+    missing.runCommand = () => ({ status: null, stdout: '', stderr: 'Error: spawnSync /k/state.key ENOENT\n' });
     r = inspectHarness('claude-code', flags, config.harness['claude-code'].rules, config, missing, {}, true);
     expect(r.stdout).toContain('HOOK MISSING');
+    expect(r.stdout).toContain('<keyfile>');
+    expect(r.stdout + r.stderr).not.toContain('/k/state.key');
     const noRun = installed();
     delete (noRun as { runCommand?: unknown }).runCommand;
     r = inspectHarness('claude-code', flags, config.harness['claude-code'].rules, config, noRun, {}, true);

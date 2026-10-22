@@ -135,10 +135,17 @@ alias.
   contains the key), the key file's contents, or a pinned signer key, and that
   same sentence is what `<state>.decisions/log.jsonl` stores. A state-load, key-read,
   lock, or decision-record failure prints a fixed sentence and not the Node error.
-  A key path shorter than 8 characters is refused with a fixed sentence. The
-  state key and each pinned signer key are also removed as base64, base64url,
-  uppercase hex, and SPKI DER-base64 or PEM. `status` and `doctor` print the
-  key path as `<keyfile>` after that same redaction.
+  A key path shorter than 8 characters is refused with a fixed sentence,
+  including a long path whose symlink target or that target's parent
+  directory is under 8 characters. That is stricter than commit 09eb03c,
+  which allowed the call when the path named a real key. The state key and
+  each pinned signer key are also removed as base64, base64url, uppercase
+  hex, and SPKI DER-base64 or PEM. `status` and `doctor` print the key path
+  as `<keyfile>` after that same redaction. Plugin spawn failures, a
+  hook.mjs that does not start, and a doctor probe report a fixed code or
+  signal name (`spawn ENOENT`, `killed by SIGKILL`, `exit 1`,
+  `hook.mjs could not be started`, `hook.mjs failed`, `command failed (ENOENT)`)
+  rather than a Node stack.
   An adapter failure before it can decide prints a fixed line and not the exception. A throw while
   building the sentence still denies. Each harness keeps its own output shape. Adapter
   denials (unmapped tool, shell metacharacters, a protected path, a bad
