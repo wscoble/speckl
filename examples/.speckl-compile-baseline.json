@@ -3,6 +3,7 @@
   "typescript": {
     "AgentPolicy": "AgentPolicy.ts(144,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
     "ClaudeCodePolicy": "ClaudeCodePolicy.ts(157,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
+    "DeployGate": "DeployGate.ts(144,11): error TS2304: Cannot find name 'DeployNeedsChecks'.",
     "KafkaKRaft": "KafkaKRaft.ts(164,11): error TS2304: Cannot find name 'TermMonotonicity'.",
     "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(12,15): error TS2304: Cannot find name 'TokenType'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
@@ -16,7 +17,8 @@
   },
   "agent": {
     "AgentPolicy": "agent/AgentPolicy.ts(156,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
-    "ClaudeCodePolicy": "agent/ClaudeCodePolicy.ts(169,11): error TS2304: Cannot find name 'PrNeedsGreenTests'."
+    "ClaudeCodePolicy": "agent/ClaudeCodePolicy.ts(169,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
+    "DeployGate": "agent/DeployGate.ts(156,11): error TS2304: Cannot find name 'DeployNeedsChecks'."
   },
   "go": {
     "AccountLedger": "./account_ledger.go:36:14: syntax error: unexpected name notIn, expected )",
@@ -36,6 +38,7 @@
     "AccountLedger": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "AgentPolicy": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "ClaudeCodePolicy": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
+    "DeployGate": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "KafkaKRaft": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "OAuth2AuthorizationCode": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "Paxos": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
