@@ -14,6 +14,9 @@ alias.
 
 ### Added
 
+- **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
+  approve`: one signed approval covers one exact `deploy` call (tool plus
+  arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
 - **Decision record.** After the state verifies, generated hooks append each
   allow and each deny (deny reason clipped at 500 characters) to
   `<state>.decisions/log.jsonl`. Each line is SHA-256 chained and HMAC-SHA256'd

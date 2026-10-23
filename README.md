@@ -147,6 +147,7 @@ Formal methods specs from a toggle switch through Raft consensus:
 | tef | Complex product spec with K8s CRDs |
 | ReviewGate | `next:` BMC + can()/serialize()/restore() |
 | AgentPolicy | agent { } → AGENTS.md, tools, hooks, HITL/HNTL signals |
+| DeployGate | Call-bound sign-off: `bind call on approve` covers one exact deploy, once |
 
 Browse all in [examples/](examples/).
 

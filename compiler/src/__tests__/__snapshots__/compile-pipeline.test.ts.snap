@@ -225,6 +225,77 @@ exports[`generated output is pinned for every example > ClaudeCodePolicy.speckdl
 }
 `;
 
+exports[`generated output is pinned for every example > DeployGate.speckdl -t all 1`] = `
+{
+  "DeployGate.ir.smt2": "4b93d19cf03db158",
+  "DeployGate.prov.jsonld": "f48d35f8ed269d37",
+  "DeployGate.smt2": "e83e19f7ac08f1af",
+  "DeployGate.specbom.cdx.json": "8f5da88e1a90983a",
+  "DeployGate.specbom.spdx.json": "4a4253514f84c839",
+  "DeployGate.ts": "a6cad5421a666be5",
+  "DeployGate/Cargo.toml": "2575a09682b501b5",
+  "DeployGate/src/lib.rs": "5e95cc426ae8ffd8",
+  "agent/AGENTS.md": "332a322cb337fe20",
+  "agent/DeployGate.mjs": "bf8d0a9c109a6957",
+  "agent/DeployGate.ts": "416148962d379b90",
+  "agent/README.md": "4488deeb58aa8140",
+  "agent/agent-config.json": "485351dace31a2d4",
+  "agent/hook.mjs": "ca0109ebf2302ce8",
+  "agent/signal.mjs": "095995dde7c5aaca",
+  "agent/spec.sha256": "93c0534e4b88ca4d",
+  "agent/state-integrity.mjs": "189e26e0a997f292",
+  "agent/tools.json": "7aa538eede5fdb22",
+  "agent/verifiers/cli.mjs": "071c27c640ebe414",
+  "agent/verifiers/file-drop.mjs": "e83130b57f8b37cc",
+  "camel/deploy-gate/pom.xml": "eae4b8e9ea13c28d",
+  "camel/deploy-gate/src/main/java/deploygate/camel/DeployGateRoutes.java": "62b4662849300639",
+  "camel/deploy-gate/src/main/java/deploygate/camel/DeployGateState.java": "b196bf7a4697815a",
+  "camel/deploy-gate/src/main/java/deploygate/camel/SpecklRuntime.java": "6a3b713a009db75c",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/DeployProcessor.java": "61416d5a5ca25933",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/ReadFileProcessor.java": "2f94c28bc486bc4f",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/RequestDeployProcessor.java": "727fadb4f6a23686",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/RunChecksProcessor.java": "cbf17f86db21ef97",
+  "camel/deploy-gate/src/main/resources/application.properties": "79ecc8226e076052",
+  "deploy_gate-elm/elm.json": "ad72359d7379fd62",
+  "deploy_gate-elm/index.html": "16bf07903644df88",
+  "deploy_gate-elm/src/DeployGateMachine.elm": "86e08aca1cff1cb7",
+  "deploy_gate-elm/src/Main.elm": "80986931778831f0",
+  "deploy_gate-elm/src/Prelude.elm": "06453db0a5497e0d",
+  "deploy_gate-elm/src/Types.elm": "12300ab245f975ca",
+  "deploy_gate.proto": "86c21e220b78b77c",
+  "deploy_gate/Dockerfile": "e22ef9c8c12c9b0b",
+  "deploy_gate/cmd/server/main.go": "1f263dfcc5eae6ec",
+  "deploy_gate/deploy_gate.go": "fcfcf5e32d2ccb46",
+  "deploy_gate/go.mod": "44451c0c8b9494f3",
+  "deploy_gate/handlers.go": "e5620fa3b9426720",
+  "deploy_gate/prelude.go": "672c7ff61d5625b9",
+  "deploy_gate/store.go": "ab8d8c17e18cbbbe",
+  "k8s/all-crds.yaml": "01ba4719c80b6fe9",
+  "openapi/deploygate.openapi.json": "ec44e300664d2fbe",
+}
+`;
+
+exports[`generated output is pinned for every example > DeployGate.speckdl -t all-ir 1`] = `
+{
+  "DeployGate.ir.smt2": "4b93d19cf03db158",
+  "DeployGate.prov.jsonld": "f48d35f8ed269d37",
+  "DeployGate.specbom.cdx.json": "8f5da88e1a90983a",
+  "DeployGate.specbom.spdx.json": "4a4253514f84c839",
+  "DeployGate.ts": "a6cad5421a666be5",
+  "camel/deploy-gate/pom.xml": "eae4b8e9ea13c28d",
+  "camel/deploy-gate/src/main/java/deploygate/camel/DeployGateRoutes.java": "62b4662849300639",
+  "camel/deploy-gate/src/main/java/deploygate/camel/DeployGateState.java": "b196bf7a4697815a",
+  "camel/deploy-gate/src/main/java/deploygate/camel/SpecklRuntime.java": "6a3b713a009db75c",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/DeployProcessor.java": "61416d5a5ca25933",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/ReadFileProcessor.java": "2f94c28bc486bc4f",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/RequestDeployProcessor.java": "727fadb4f6a23686",
+  "camel/deploy-gate/src/main/java/deploygate/camel/processor/RunChecksProcessor.java": "cbf17f86db21ef97",
+  "camel/deploy-gate/src/main/resources/application.properties": "79ecc8226e076052",
+  "k8s/all-crds.yaml": "01ba4719c80b6fe9",
+  "openapi/deploygate.openapi.json": "ec44e300664d2fbe",
+}
+`;
+
 exports[`generated output is pinned for every example > KafkaKRaft.speckdl -t all 1`] = `
 {
   "KafkaKRaft.ir.smt2": "2cdc4798344937f6",
