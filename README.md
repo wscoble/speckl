@@ -61,6 +61,8 @@ For agent rails in Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot
 CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro or Windsurf, see
 [docs/harness-adapters.md](docs/harness-adapters.md).
 
+Shipping what the agent wrote? I keep a free [AI Code Release Checklist](https://github.com/wscoble/ai-release-checklist) with an AGENTS.md you can drop in.
+
 ## Verification
 
 The Z3 backend emits SMT-LIB2 with bounded model checking, and `npm run verify` (also the CI job) runs a **real Z3 solver** over every example spec:
