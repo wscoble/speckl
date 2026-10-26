@@ -407,15 +407,17 @@ test('review findings: errors, empty editor, target files, and polish', async ({
   const clip = await page.locator('#diagnostics').evaluate((el) => el.scrollHeight - el.clientHeight);
   expect(clip).toBeLessThan(8);
 
+  const copiedAt = await page.evaluate(() => performance.now());
   await page.locator('#copy-file').click();
   await expect(page.locator('#copy-file')).toHaveText('Copied');
-  await expect(page.locator('#copy-file')).toHaveText('Copy file', { timeout: 3200 });
+  await expect(page.locator('#copy-file')).toHaveText('Copy file', { timeout: 4000 });
+  const copiedElapsed = await page.evaluate((t0) => performance.now() - t0, copiedAt);
+  expect(copiedElapsed).toBeGreaterThan(1800);
+  expect(copiedElapsed).toBeLessThan(2700);
 
   await page.goto('/#garbage');
   await expect(page.locator('#banner')).toBeVisible();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('');
-  const position = await page.locator('#banner').evaluate((el) => getComputedStyle(el).position);
-  expect(position).toBe('fixed');
 });
 
 test('round 2: unclosed blocks, stale output, and a failed compiler load', async ({ page }) => {
@@ -447,17 +449,121 @@ test('round 2: unclosed blocks, stale output, and a failed compiler load', async
   lines[brace] = lines[brace].replace('action RunChecks {', 'action RunChecks {{');
   await page.locator('#spec').fill(lines.join('\n'));
   await expect(page.locator('#diagnostics')).toContainText(/unexpected `\{`/);
-  await expect(page.locator('#diagnostics')).toContainText(`line ${brace + 1}`);
+  await expect(page.locator('#diagnostics')).toContainText(new RegExp(`line ${brace + 1}`, 'i'));
 
   lines[brace] = '    action {';
   await page.locator('#spec').fill(lines.join('\n'));
   await expect(page.locator('#diagnostics')).toContainText(/action is missing a name/);
   await expect(page.locator('#diagnostics')).not.toContainText('undeclared variable "checksPassed"');
 
-  await page.setViewportSize({ width: 900, height: 500 });
-  const lede = await page.locator('.lede').evaluate((el) => getComputedStyle(el).webkitLineClamp);
-  expect(lede).toBe('1');
+  await page.setViewportSize({ width: 1000, height: 500 });
+  const lede = await page.locator('.lede').evaluate((el) => {
+    const style = getComputedStyle(el);
+    return {
+      clamp: style.webkitLineClamp,
+      clipped: el.scrollHeight - el.clientHeight,
+      text: el.textContent ?? '',
+    };
+  });
+  expect(lede.clamp).toBe('none');
+  expect(lede.clipped).toBeLessThan(2);
+  expect(lede.text).toContain('nothing is uploaded');
+  const theme = await page.locator('#theme').boundingBox();
+  expect(theme).not.toBeNull();
+  expect(theme!.x).toBeGreaterThanOrEqual(0);
+  expect(theme!.x + theme!.width).toBeLessThanOrEqual(1001);
   await page.setViewportSize({ width: 1280, height: 800 });
+});
+
+test('round 3: comments, same-line fields, hash wording, and paste cost', async ({ page }) => {
+  await page.goto('/#garbage');
+  await expect(page.locator('#banner')).toContainText('An example was loaded instead');
+  await expect(page.locator('#banner')).toContainText(/not a Speckl playground link/i);
+  await expect(page.locator('#spec')).toHaveValue(/speck DeployGate/);
+  const coldBanner = await page.locator('#banner').boundingBox();
+  const coldSpec = await page.locator('#spec').boundingBox();
+  expect(coldBanner).not.toBeNull();
+  expect(coldSpec).not.toBeNull();
+  expect(coldBanner!.y + coldBanner!.height).toBeLessThanOrEqual(coldSpec!.y + 1);
+
+  await page.goto('/');
+  await settled(page);
+  const kept = await page.locator('#spec').inputValue();
+  await page.evaluate(() => { location.hash = '#garbage'; });
+  await expect(page.locator('#banner')).toContainText('left unchanged');
+  await expect(page.locator('#banner')).not.toContainText('example was loaded');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('');
+  expect(await page.locator('#spec').inputValue()).toBe(kept);
+  const banner = await page.locator('#banner').boundingBox();
+  const spec = await page.locator('#spec').boundingBox();
+  expect(banner).not.toBeNull();
+  expect(spec).not.toBeNull();
+  expect(banner!.y + banner!.height).toBeLessThanOrEqual(spec!.y + 1);
+
+  await page.locator('#spec').fill('speck S {\n  // {\n  state { x: Nat }\n  init { x := 0 // set { to zero\n  }\n  // }\n  action Go { x := 1 }\n}\n');
+  await settled(page);
+  await expect(page.locator('#status')).toHaveAttribute('data-state', 'done');
+  await expect(page.locator('#diagnostics')).not.toContainText(/unexpected `\}`|missing `\}`/);
+
+  await page.locator('#spec').fill('speck T {\n state { ready: Bool\n n: Nat }\n action Go { ready := true }\n}\n');
+  await settled(page);
+  await expect(page.locator('#diagnostics')).not.toContainText('undeclared variable "ready"');
+  await expect(page.locator('#status')).toHaveAttribute('data-state', 'done');
+
+  await page.locator('#spec').fill('speck S {\n  state { ready: Boolean }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText(/Line 2, column \d+:/);
+  await expect(page.locator('#diagnostics')).toContainText('unknown type "Boolean"');
+  await expect(page.locator('#diagnostics')).toContainText(/Did you mean `Bool`/);
+
+  await page.locator('#spec').fill('speck S {\n  state { ready Bool }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText(/missing a colon/);
+
+  await page.locator('#spec').fill('speck S {\n  action action {}\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText(/action name "action" is a keyword/);
+
+  await page.locator('#spec').click();
+  const samples = [
+    { name: '5k', text: '// x\n'.repeat(5_000), accept: true },
+    { name: '12k', text: '// x\n'.repeat(12_000), accept: true },
+    { name: '30k', text: '// x\n'.repeat(30_000), accept: false },
+    { name: '1.2mb', text: `speck Big {\n // ${'x'.repeat(1_200_000)}\n}\n`, accept: true },
+    { name: '2mb', text: `speck Big {\n // ${'x'.repeat(1_900_000)}\n}\n`, accept: false },
+  ];
+  const pastePerf: { name: string; long: number[]; chars: number }[] = [];
+  for (const sample of samples) {
+    await page.locator('#spec').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.setSelectionRange(0, el.value.length);
+    });
+    await page.evaluate(async (text) => {
+      await navigator.clipboard.writeText(text);
+      const bag: number[] = [];
+      const obs = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) bag.push(entry.duration);
+      });
+      obs.observe({ entryTypes: ['longtask'] });
+      (window as unknown as { __pasteLong?: number[]; __pasteObs?: PerformanceObserver }).__pasteLong = bag;
+      (window as unknown as { __pasteObs?: PerformanceObserver }).__pasteObs = obs;
+    }, sample.text);
+    await page.locator('#spec').press('Control+V');
+    await page.waitForTimeout(50);
+    const measured = await page.evaluate(() => {
+      const w = window as unknown as { __pasteLong?: number[]; __pasteObs?: PerformanceObserver };
+      w.__pasteObs?.disconnect();
+      return {
+        long: w.__pasteLong ?? [],
+        chars: (document.querySelector('#spec') as HTMLTextAreaElement).value.length,
+      };
+    });
+    pastePerf.push({ name: sample.name, long: measured.long, chars: measured.chars });
+    if (sample.accept) expect(measured.chars, sample.name).toBe(sample.text.length);
+    else {
+      expect(measured.chars, sample.name).not.toBe(sample.text.length);
+      await expect(page.locator('#banner')).toContainText(sample.name === '30k' ? /12,000 line/ : /1\.5 MB/);
+    }
+    expect(Math.max(0, ...measured.long), sample.name).toBeLessThan(200);
+  }
+  console.log('PASTE_PERF ' + JSON.stringify(pastePerf));
 });
 
 test('a missing compiler worker says to refresh', async ({ page }) => {

@@ -396,7 +396,7 @@ exports[`generated output is pinned for every example > OAuth2AuthorizationCode.
   "oauth2_authorization_code-elm/elm.json": "ad72359d7379fd62",
   "oauth2_authorization_code-elm/index.html": "524fe93385f66ea7",
   "oauth2_authorization_code-elm/src/Main.elm": "26b16ccb2f5a1d82",
-  "oauth2_authorization_code-elm/src/OAuth2AuthorizationCodeMachine.elm": "7fd558e095eac527",
+  "oauth2_authorization_code-elm/src/OAuth2AuthorizationCodeMachine.elm": "decc3423788a8457",
   "oauth2_authorization_code-elm/src/Prelude.elm": "06453db0a5497e0d",
   "oauth2_authorization_code-elm/src/Types.elm": "4f05fa1ba7109e56",
   "openapi/oauth2authorizationcode.openapi.json": "e06c9b2be4f4dbe8",
@@ -493,12 +493,12 @@ exports[`generated output is pinned for every example > Paxos.speckdl -t all-ir 
 
 exports[`generated output is pinned for every example > PreconditionTest.speckdl -t all 1`] = `
 {
-  "PreconditionTest.ir.smt2": "ead92a3987b70237",
+  "PreconditionTest.ir.smt2": "f44350bedb1f6441",
   "PreconditionTest.prov.jsonld": "7b81c67bffeb8999",
-  "PreconditionTest.smt2": "9eab48b062cb2862",
+  "PreconditionTest.smt2": "bda0217763e884bc",
   "PreconditionTest.specbom.cdx.json": "00fd6426626bba58",
   "PreconditionTest.specbom.spdx.json": "cbd4f62d82908f46",
-  "PreconditionTest.ts": "380b4b429f282e6d",
+  "PreconditionTest.ts": "20b389e4c917b417",
   "PreconditionTest/Cargo.toml": "1ac0636a48b05e57",
   "PreconditionTest/src/lib.rs": "395663b4fc05d813",
   "camel/precondition-test/pom.xml": "47e00a9b33e2f949",
@@ -516,12 +516,12 @@ exports[`generated output is pinned for every example > PreconditionTest.speckdl
   "precondition_test-elm/src/PreconditionTestMachine.elm": "ba8f30622664e14f",
   "precondition_test-elm/src/Prelude.elm": "06453db0a5497e0d",
   "precondition_test-elm/src/Types.elm": "28421141f0e3f6e2",
-  "precondition_test.proto": "6f381edbeb250397",
+  "precondition_test.proto": "ddaba774d696654e",
   "precondition_test/Dockerfile": "e22ef9c8c12c9b0b",
   "precondition_test/cmd/server/main.go": "092a723f1a0c9f7e",
   "precondition_test/go.mod": "d87060dd872af6cf",
   "precondition_test/handlers.go": "f1b61b74332171e7",
-  "precondition_test/precondition_test.go": "942e97677a89773f",
+  "precondition_test/precondition_test.go": "9360c047bad8911e",
   "precondition_test/prelude.go": "49758301169b8375",
   "precondition_test/store.go": "ddf39caf584a43dd",
 }
@@ -529,11 +529,11 @@ exports[`generated output is pinned for every example > PreconditionTest.speckdl
 
 exports[`generated output is pinned for every example > PreconditionTest.speckdl -t all-ir 1`] = `
 {
-  "PreconditionTest.ir.smt2": "ead92a3987b70237",
+  "PreconditionTest.ir.smt2": "f44350bedb1f6441",
   "PreconditionTest.prov.jsonld": "7b81c67bffeb8999",
   "PreconditionTest.specbom.cdx.json": "00fd6426626bba58",
   "PreconditionTest.specbom.spdx.json": "cbd4f62d82908f46",
-  "PreconditionTest.ts": "380b4b429f282e6d",
+  "PreconditionTest.ts": "20b389e4c917b417",
   "camel/precondition-test/pom.xml": "47e00a9b33e2f949",
   "camel/precondition-test/src/main/java/preconditiontest/camel/PreconditionTestRoutes.java": "23412abc927767b9",
   "camel/precondition-test/src/main/java/preconditiontest/camel/PreconditionTestState.java": "025f29f1cca4d4a5",
@@ -577,7 +577,7 @@ exports[`generated output is pinned for every example > Raft.speckdl -t all 1`] 
   "raft-elm/index.html": "a7a02d553490dc47",
   "raft-elm/src/Main.elm": "c6ca4159ebb52727",
   "raft-elm/src/Prelude.elm": "06453db0a5497e0d",
-  "raft-elm/src/RaftMachine.elm": "0a3b05612fac9fd5",
+  "raft-elm/src/RaftMachine.elm": "5076227ecafb074d",
   "raft-elm/src/Types.elm": "ec1ada7aaca4666b",
   "raft.proto": "387e58d06842c74a",
   "raft/Dockerfile": "e22ef9c8c12c9b0b",
@@ -585,7 +585,7 @@ exports[`generated output is pinned for every example > Raft.speckdl -t all 1`] 
   "raft/go.mod": "69a99efc9d336405",
   "raft/handlers.go": "ead44510e277d30d",
   "raft/prelude.go": "263de2423ad1a440",
-  "raft/raft.go": "ece4aa45a88df1b2",
+  "raft/raft.go": "896ec39a0f37cfd8",
   "raft/store.go": "45ab78b5290b2911",
 }
 `;
@@ -810,7 +810,7 @@ exports[`generated output is pinned for every example > SQLiteWAL.speckdl -t all
 {
   "SQLiteWAL.ir.smt2": "254ce2f59ea9858e",
   "SQLiteWAL.prov.jsonld": "0e89a3f9abb35788",
-  "SQLiteWAL.smt2": "c84a730b609b3cb8",
+  "SQLiteWAL.smt2": "4c2903b0a319ef9c",
   "SQLiteWAL.specbom.cdx.json": "020b4c4486d1ec7a",
   "SQLiteWAL.specbom.spdx.json": "ec1c3bc450cc3686",
   "SQLiteWAL.ts": "fb58bd70df4770ec",
@@ -841,13 +841,13 @@ exports[`generated output is pinned for every example > SQLiteWAL.speckdl -t all
   "sq_lite_wal/go.mod": "9522d06e18fe499e",
   "sq_lite_wal/handlers.go": "165b8f260ed9f40c",
   "sq_lite_wal/prelude.go": "8d34340e7322f003",
-  "sq_lite_wal/sq_lite_wal.go": "1f47e1a17aa0ba14",
+  "sq_lite_wal/sq_lite_wal.go": "85921a9854cbec7b",
   "sq_lite_wal/store.go": "1b18f7974d2d4358",
   "sqlite_wal-elm/elm.json": "ad72359d7379fd62",
   "sqlite_wal-elm/index.html": "3c8df50d50ef4301",
   "sqlite_wal-elm/src/Main.elm": "16a731004e6ffabc",
   "sqlite_wal-elm/src/Prelude.elm": "06453db0a5497e0d",
-  "sqlite_wal-elm/src/SQLiteWALMachine.elm": "7a90bfa675aabc6f",
+  "sqlite_wal-elm/src/SQLiteWALMachine.elm": "471539f5962a71a8",
   "sqlite_wal-elm/src/Types.elm": "006c13d4953dbac0",
 }
 `;

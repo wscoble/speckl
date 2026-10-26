@@ -4,8 +4,27 @@
 /** Specs at least this large must still compile. The hard cap is higher. */
 export const MIN_ACCEPTED_BYTES = 1024 * 1024;
 
-/** Refuse to compile past this. 1MB+ inputs still go through. */
-export const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+/**
+ * Refuse to compile past this. 1MB+ inputs still go through.
+ * Assigning a 2MB string to the editor measured up to 224ms on the main
+ * thread, so the cap is 1.5MB and the footer says so.
+ */
+export const MAX_SOURCE_BYTES = Math.floor(1.5 * 1024 * 1024);
+
+/**
+ * Pasting tens of thousands of lines lays the textarea out on the main
+ * thread (about 175–312ms at 30,000 lines). 12,000 stays under 200ms.
+ */
+export const MAX_SOURCE_LINES = 12_000;
+
+/** Newline count, with a trailing newline not counted as an extra blank line. */
+export function sourceLineCount(text: string): number {
+  if (text.length === 0) return 0;
+  let n = 1;
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++;
+  if (text.charCodeAt(text.length - 1) === 10) n--;
+  return n;
+}
 
 /**
  * Share links are the URL hash. Above this many characters the link is not

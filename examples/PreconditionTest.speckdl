@@ -2,7 +2,7 @@ speck PreconditionTest {
 
 state: {
   balance: Integer
-  active: Boolean
+  active: Bool
 }
 
 action SetBalance(newBalance: Integer) {

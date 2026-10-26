@@ -8,9 +8,12 @@ import {
   COMPILE_TIMEOUT_MS,
   DEBOUNCE_MS,
   MAX_SOURCE_BYTES,
+  MAX_SOURCE_LINES,
   formatBytes,
   sourceByteLength,
+  sourceLineCount,
 } from '../../src/browser/limits';
+import { hashRejectNotice } from '../../src/browser/share';
 import {
   RequestGate,
   applyHash,
@@ -92,9 +95,28 @@ function clearBanner(kind?: string): void {
   delete banner.dataset.kind;
 }
 
+let uiFrame = 0;
+function scheduleUi(): void {
+  if (uiFrame) return;
+  uiFrame = window.requestAnimationFrame(() => {
+    uiFrame = 0;
+    updateCursor();
+    markExamples();
+  });
+}
+
 function updateCursor(): void {
   const pos = cursorLineCol(editor.value, editor.selectionStart ?? 0);
   cursor.textContent = `Line ${pos.line}, column ${pos.column}`;
+}
+
+/** UTF-16 length is a lower bound on UTF-8 bytes, and 3 bytes is the upper bound for one unit. */
+function overByteLimit(text: string): boolean {
+  if (text.length > MAX_SOURCE_BYTES) return true;
+  if (text.length * 3 <= MAX_SOURCE_BYTES) return false;
+  // ASCII is one byte per unit. Skip TextEncoder so a large paste stays off the main thread.
+  if (!/[^\u0000-\u007F]/.test(text)) return false;
+  return sourceByteLength(text) > MAX_SOURCE_BYTES;
 }
 
 function markExamples(): void {
@@ -488,16 +510,25 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+const COPY_FLASH_MS = 2000;
+
 function flash(btn: HTMLButtonElement, label: string): void {
   if (!btn.dataset.rest) btn.dataset.rest = btn.textContent ?? '';
   const pending = Number(btn.dataset.flash || '0');
   if (pending) window.clearTimeout(pending);
   btn.textContent = label;
-  const id = window.setTimeout(() => {
-    btn.textContent = btn.dataset.rest ?? '';
-    delete btn.dataset.flash;
-  }, 2000);
-  btn.dataset.flash = String(id);
+  const deadline = performance.now() + COPY_FLASH_MS;
+  const tick = () => {
+    const left = deadline - performance.now();
+    if (left <= 0) {
+      btn.textContent = btn.dataset.rest ?? '';
+      delete btn.dataset.flash;
+      return;
+    }
+    const id = window.setTimeout(tick, Math.min(50, left));
+    btn.dataset.flash = String(id);
+  };
+  tick();
 }
 
 function bind(): void {
@@ -520,22 +551,46 @@ function bind(): void {
 
   editor.addEventListener('input', () => {
     if (banner.dataset.kind === 'hash') clearBanner('hash');
-    updateCursor();
-    markExamples();
+    scheduleUi();
     scheduleCompile();
     schedulePersist();
   });
-  editor.addEventListener('keyup', updateCursor);
-  editor.addEventListener('click', updateCursor);
+  editor.addEventListener('keyup', scheduleUi);
+  editor.addEventListener('click', scheduleUi);
   editor.addEventListener('paste', (ev) => {
     const text = ev.clipboardData?.getData('text/plain') ?? '';
-    if (sourceByteLength(text) > MAX_SOURCE_BYTES) {
+    if (!text) return;
+    if (overByteLimit(text)) {
       ev.preventDefault();
       showBanner(
-        `That paste is ${formatBytes(sourceByteLength(text))}, above the ${formatBytes(MAX_SOURCE_BYTES)} limit, so it was not inserted.`,
+        `That paste is ${formatBytes(text.length > MAX_SOURCE_BYTES ? text.length : sourceByteLength(text))}, above the ${formatBytes(MAX_SOURCE_BYTES)} limit, so it was not inserted.`,
         'share',
       );
+      return;
     }
+    const lines = sourceLineCount(text);
+    if (lines > MAX_SOURCE_LINES) {
+      ev.preventDefault();
+      showBanner(
+        `That paste is ${lines.toLocaleString('en-US')} lines, above the ${MAX_SOURCE_LINES.toLocaleString('en-US')} line limit, so it was not inserted.`,
+        'share',
+      );
+      return;
+    }
+    // One assignment. Letting the browser insert thousands of lines as
+    // separate edits blocks the page for seconds.
+    ev.preventDefault();
+    const start = editor.selectionStart ?? editor.value.length;
+    const end = editor.selectionEnd ?? start;
+    const next = start === 0 && end === editor.value.length
+      ? text
+      : editor.value.slice(0, start) + text + editor.value.slice(end);
+    editor.value = next;
+    const caret = start + text.length;
+    editor.selectionStart = caret;
+    editor.selectionEnd = caret;
+    clearBanner('share');
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
   });
   editor.addEventListener('keydown', (ev) => {
     if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
@@ -544,7 +599,7 @@ function bind(): void {
     }
   });
   document.addEventListener('selectionchange', () => {
-    if (document.activeElement === editor) updateCursor();
+    if (document.activeElement === editor) scheduleUi();
   });
 
   targetSelect.addEventListener('change', () => compileNow());
@@ -588,7 +643,7 @@ function bind(): void {
     const decision = applyHash(location.hash, editor.value);
     if (decision.action === 'ignore') return;
     if (decision.action === 'reject') {
-      showBanner(decision.message, 'hash');
+      showBanner(hashRejectNotice(decision.message, true), 'hash');
       history.replaceState({ speckl: editor.value }, '', location.pathname + location.search);
       return;
     }
@@ -601,8 +656,13 @@ function initialSource(): string {
   if (hash && hash !== '#') {
     const decision = applyHash(hash, '');
     if (decision.action === 'load') return decision.source;
-    if (decision.action === 'reject') showBanner(decision.message, 'hash');
-    return EXAMPLES[0].source;
+    if (decision.action === 'reject') {
+      const draft = readDraft();
+      const kept = draft !== null;
+      showBanner(hashRejectNotice(decision.message, kept), 'hash');
+      if (kept) return draft;
+      return EXAMPLES[0].source;
+    }
   }
   const draft = readDraft();
   if (draft !== null) return draft;

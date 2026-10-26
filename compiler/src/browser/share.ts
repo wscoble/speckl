@@ -88,6 +88,14 @@ export function encodeSpecHash(source: string): string {
   return 's2.' + encodeBase64Url(packed);
 }
 
+/** What to say after a hash is rejected. The editor is only replaced when nothing was already there. */
+export function hashRejectNotice(message: string, keptEditor: boolean): string {
+  const base = message.trim().replace(/[. ]+$/, '');
+  return keptEditor
+    ? `${base}. The spec in the editor was left unchanged.`
+    : `${base}. An example was loaded instead.`;
+}
+
 export function decodeSpecHash(hash: string): DecodeResult {
   let raw = hash.trim();
   if (raw.startsWith('#')) raw = raw.slice(1);
@@ -102,14 +110,14 @@ export function decodeSpecHash(hash: string): DecodeResult {
   if (version && version[1] !== '1' && version[1] !== '2') {
     return {
       ok: false,
-      message: `This share link uses version s${version[1]}, which this playground does not understand. An example was loaded instead.`,
+      message: `This share link uses version s${version[1]}, which this playground does not understand.`,
     };
   }
   if (raw.startsWith('s1.')) return decodeS1(raw.slice(3));
   if (raw.startsWith('s2.')) return decodeS2(raw.slice(3));
   return {
     ok: false,
-    message: 'This share link is not a Speckl playground link. It was ignored, and an example was loaded instead.',
+    message: 'This share link is not a Speckl playground link, so it was ignored.',
   };
 }
 
@@ -118,7 +126,7 @@ function decodeS1(payload: string): DecodeResult {
   if (!bytes) {
     return {
       ok: false,
-      message: 'This share link is damaged or was edited, so the spec could not be read. An example was loaded instead.',
+      message: 'This share link is damaged or was edited, so the spec could not be read.',
     };
   }
   return decodeUtf8(bytes);
@@ -129,7 +137,7 @@ function decodeS2(payload: string): DecodeResult {
   if (!bytes || bytes.length < 4) {
     return {
       ok: false,
-      message: 'This share link was cut off, so the spec could not be read. An example was loaded instead.',
+      message: 'This share link was cut off, so the spec could not be read.',
     };
   }
   const stated = (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0);
@@ -137,7 +145,7 @@ function decodeS2(payload: string): DecodeResult {
   if (crc32(body) !== stated) {
     return {
       ok: false,
-      message: 'This share link was cut off or edited, so the spec could not be read. An example was loaded instead.',
+      message: 'This share link was cut off or edited, so the spec could not be read.',
     };
   }
   return decodeUtf8(body);
@@ -147,7 +155,7 @@ function decodeUtf8(bytes: Uint8Array): DecodeResult {
   if (bytes.length > MAX_SOURCE_BYTES) {
     return {
       ok: false,
-      message: `This share link decodes to ${formatBytes(bytes.length)}, over the ${formatBytes(MAX_SOURCE_BYTES)} limit. An example was loaded instead.`,
+      message: `This share link decodes to ${formatBytes(bytes.length)}, over the ${formatBytes(MAX_SOURCE_BYTES)} limit.`,
     };
   }
   try {
@@ -156,7 +164,7 @@ function decodeUtf8(bytes: Uint8Array): DecodeResult {
   } catch {
     return {
       ok: false,
-      message: 'This share link does not contain readable text. An example was loaded instead.',
+      message: 'This share link does not contain readable text.',
     };
   }
 }

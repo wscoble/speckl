@@ -44,6 +44,7 @@ import {
 } from './types.js';
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
+import { maskSource } from '../source-scan.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -181,27 +182,34 @@ function extractActionStatements(
  * Body lines of an action spanning 1-based source lines [startLine, endLine]:
  * everything after the opening `{` and before the closing `}`.
  */
+function actionCode(text: string): string {
+  return maskSource(text, { unclosed: 'blank', blankStringBraces: false }).trim();
+}
+
 function actionBodyEntries(lines: string[], startLine: number, endLine: number): { text: string; line: number }[] {
+  const scan = maskSource(lines.join('\n')).split('\n');
   let open = startLine - 1;
-  while (open < endLine - 1 && !(lines[open] ?? '').includes('{')) open++;
+  while (open < endLine - 1 && !(scan[open] ?? '').includes('{')) open++;
   const close = endLine - 1;
   const entries: { text: string; line: number }[] = [];
+  const openIdx = (scan[open] ?? '').indexOf('{');
   if (open >= close) {
-    // Single-line action: `action Name { stmt }`.
+    // Single-line action: `action Name { stmt }`. The `}` in a comment is not the close.
     const l = lines[open] ?? '';
-    const body = l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
-    if (body.trim()) entries.push({ text: body, line: open + 1 });
+    const closeIdx = (scan[open] ?? '').lastIndexOf('}');
+    const body = actionCode(l.slice(openIdx + 1, closeIdx >= 0 ? closeIdx : undefined));
+    if (body) entries.push({ text: body, line: open + 1 });
     return entries;
   }
   // Text after `{` on the header line, body lines, text before `}` on the close.
-  const head = (lines[open] ?? '').slice((lines[open] ?? '').indexOf('{') + 1);
-  if (head.trim()) entries.push({ text: head, line: open + 1 });
+  const head = actionCode((lines[open] ?? '').slice(openIdx + 1));
+  if (head) entries.push({ text: head, line: open + 1 });
   for (let idx = open + 1; idx < close; idx++) {
     entries.push({ text: lines[idx] ?? '', line: idx + 1 });
   }
-  const closeLine = lines[close] ?? '';
-  const tail = closeLine.slice(0, closeLine.lastIndexOf('}'));
-  if (tail.trim()) entries.push({ text: tail, line: close + 1 });
+  const closeIdx = (scan[close] ?? '').lastIndexOf('}');
+  const tail = actionCode(closeIdx >= 0 ? (lines[close] ?? '').slice(0, closeIdx) : (lines[close] ?? ''));
+  if (tail) entries.push({ text: tail, line: close + 1 });
   return entries;
 }
 
@@ -1068,7 +1076,14 @@ function checkTypeName(name: string, known: Set<string>, report: (name: string, 
   if (known.has(name)) return;
   // Specs name external records (Account, Message, Date) without declaring
   // them. Only a typo of a known type is an error: `Booll` is Bool, `Account` is not.
+  // `Boolean` is three edits from `Bool`, past the edit-distance cap, but it is
+  // the usual name for that type.
   if (!/^[A-Za-z_]\w*$/.test(name)) return;
+  const alias = name === 'Boolean' || name === 'boolean' ? 'Bool' : undefined;
+  if (alias && known.has(alias)) {
+    report(name, alias);
+    return;
+  }
   const suggestion = suggestKnownType(name, known);
   if (suggestion) report(name, suggestion);
 }

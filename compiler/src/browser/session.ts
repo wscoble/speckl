@@ -64,11 +64,16 @@ export function hashForSource(source: string): { hash: string; reason?: string }
 
 /** 1-based line and column for a caret offset. Column counts UTF-16 code units, same as a textarea. */
 export function cursorLineCol(source: string, offset: number): { line: number; column: number } {
-  const pos = Math.max(0, Math.min(Number.isFinite(offset) ? offset : 0, source.length));
-  const upto = source.slice(0, pos);
-  const line = upto.split('\n').length;
-  const column = pos - upto.lastIndexOf('\n');
-  return { line, column };
+  const pos = Math.max(0, Math.min(Number.isFinite(offset) ? Math.floor(offset) : 0, source.length));
+  let line = 1;
+  let lastNl = -1;
+  for (let i = 0; i < pos; i++) {
+    if (source.charCodeAt(i) === 10) {
+      line++;
+      lastNl = i;
+    }
+  }
+  return { line, column: pos - lastNl };
 }
 
 /** Character range of a 1-based line, or null when the line is outside the spec. */

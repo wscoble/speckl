@@ -3,6 +3,7 @@
 // with full expression subtrees from the ExpressionParser.
 
 import { TokenType, Tokenizer, tokenize, Token as TokenT } from './tokenizer.js';
+import { maskSource } from '../source-scan.js';
 import { ExpressionParser } from './parser.js';
 import { Expr } from "./ast";
 import { ActionStatement } from './stmt-ast.js';
@@ -115,8 +116,9 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
         if (!bl) { j++; continue; }
         const bt = bl.trim();
         if (bt.startsWith('//')) { j++; continue; }
-        blockLines.push(bt);
-        for (const ch of bt) {
+        const code = maskSource(bt, { unclosed: 'blank', blankStringBraces: false }).trim();
+        if (code) blockLines.push(code);
+        for (const ch of code) {
           if (ch === '{') braceDepth++;
           else if (ch === '}') braceDepth--;
         }

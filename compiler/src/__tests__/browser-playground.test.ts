@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SOURCE_BYTES,
+  MAX_SOURCE_LINES,
+  sourceLineCount,
   MIN_ACCEPTED_BYTES,
   RequestGate,
   applyHash,
@@ -32,6 +34,8 @@ import {
   shouldConfirmDiscard,
   sortDiagnostics,
   cleanErrorMessage,
+  fromIR,
+  hashRejectNotice,
   locateDiagnostic,
   timeoutMessage,
   workerCrashMessage,
@@ -80,7 +84,13 @@ describe('share links', () => {
     if (!foreign.ok) expect(foreign.message).toMatch(/not a Speckl playground link/);
     const garbage = decodeSpecHash('#garbage');
     expect(garbage.ok).toBe(false);
-    if (!garbage.ok) expect(garbage.message).toMatch(/not a Speckl playground link/);
+    if (!garbage.ok) {
+      expect(garbage.message).toMatch(/not a Speckl playground link/);
+      expect(garbage.message).not.toMatch(/example was loaded/);
+      expect(hashRejectNotice(garbage.message, true)).toMatch(/left unchanged/);
+      expect(hashRejectNotice(garbage.message, true)).not.toMatch(/example was loaded/);
+      expect(hashRejectNotice(garbage.message, false)).toMatch(/An example was loaded instead/);
+    }
     const unknown = decodeSpecHash('#s3.abcd');
     expect(unknown.ok).toBe(false);
     if (!unknown.ok) expect(unknown.message).toMatch(/version s3/);
@@ -242,6 +252,11 @@ describe('diagnostic text', () => {
     expect(timeoutMessage(10)).toMatch(/1 second/);
     expect(workerCrashMessage()).toMatch(/still in the editor/);
     expect(MAX_SOURCE_BYTES).toBeGreaterThan(MIN_ACCEPTED_BYTES);
+    expect(MAX_SOURCE_BYTES).toBeLessThan(2 * 1024 * 1024);
+    expect(sourceLineCount('')).toBe(0);
+    expect(sourceLineCount('a')).toBe(1);
+    expect(sourceLineCount('a\nb\n')).toBe(2);
+    expect(MAX_SOURCE_LINES).toBe(12_000);
   });
 
   it('points a parse error at a line and strips stack frames', () => {
@@ -252,6 +267,10 @@ describe('diagnostic text', () => {
     expect(cleanErrorMessage(new Error('   '))).toBe('The compiler failed.');
     const located = locateDiagnostic('a\nb\nverify nope', 'Parse error at line 2: verify nope');
     expect(located.line).toBe(2);
+    const withColumn = locateDiagnostic('}\n', 'Parse error at line 1, column 1: unexpected `}`');
+    expect(withColumn).toMatchObject({ line: 1, column: 1 });
+    const inferred = locateDiagnostic('  }\n', 'Parse error at line 1: unexpected `}`');
+    expect(inferred.column).toBe(3);
     const quoted = locateDiagnostic('keep\nthis exact snippet here', 'Failed: "this exact snippet"');
     expect(quoted.line).toBe(2);
     expect(locateDiagnostic('abc', 'no location')).toEqual({ level: 'error', message: 'no location' });
@@ -261,9 +280,14 @@ describe('diagnostic text', () => {
   it('prefixes a line and a speck name when the message does not', () => {
     expect(presentDiagnostic({ level: 'error', message: 'duplicate tool', line: 9, speck: 'Bad' }))
       .toBe('Line 9: Bad: duplicate tool');
-    expect(presentDiagnostic({ level: 'error', message: 'Parse error at line 3: nope', line: 3 }))
-      .toBe('Parse error at line 3: nope');
+    expect(presentDiagnostic({ level: 'error', message: 'duplicate tool', line: 9, column: 4, speck: 'Bad' }))
+      .toBe('Line 9, column 4: Bad: duplicate tool');
+    expect(presentDiagnostic({ level: 'error', message: 'Parse error at line 3, column 2: nope', line: 3, column: 2 }))
+      .toBe('Line 3, column 2: nope');
     expect(presentDiagnostic({ level: 'info', message: 'hello' })).toBe('hello');
+    const ir = fromIR('x\n  bogus := 1\n', { level: 'error', message: 'undeclared variable "bogus"', line: 2, speck: 'T' });
+    expect(ir.column).toBe(3);
+    expect(presentDiagnostic(ir)).toBe('Line 2, column 3: T: undeclared variable "bogus"');
     const sorted = sortDiagnostics([
       { level: 'info', message: 'i', line: 1 },
       { level: 'error', message: 'e', line: 8 },

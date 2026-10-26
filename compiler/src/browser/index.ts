@@ -4,15 +4,17 @@ export {
   HISTORY_PUSH_MS,
   LONG_LINE_CHARS,
   MAX_SOURCE_BYTES,
+  MAX_SOURCE_LINES,
   MIN_ACCEPTED_BYTES,
   SHARE_MAX_CHARS,
   formatBytes,
   looksBinary,
   shareAllowed,
   sourceByteLength,
+  sourceLineCount,
 } from './limits.js';
 
-export { crc32, decodeBase64Url, decodeSpecHash, encodeBase64Url, encodeSpecHash } from './share.js';
+export { crc32, decodeBase64Url, decodeSpecHash, encodeBase64Url, encodeSpecHash, hashRejectNotice } from './share.js';
 export type { DecodeResult } from './share.js';
 
 export {

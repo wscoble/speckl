@@ -18,7 +18,8 @@ alias.
   as you type, using this compiler (not a reimplementation): diagnostics with
   line numbers, `AGENTS.md`, the hook, and the other targets. Nothing is
   uploaded. `npm run playground` from `compiler/` serves it; `npm run playground:build`
-  writes static files to `compiler/playground/dist`. The Z3 solver is not in
+  writes static files to `compiler/playground/dist`. Specs over 1.5 MB or
+  12,000 lines are refused so a paste cannot freeze the tab. The Z3 solver is not in
   the page; unchecked obligations are still reported.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
@@ -195,7 +196,16 @@ alias.
   line N is never closed. A repeated speck name, a repeated state variable,
   and a repeated stage number are errors on that line. An action with no name
   is an error on that line. A speck name that is missing, or not letters,
-  digits, underscore, or hyphen, is an error on that line.
+  digits, underscore, or hyphen, is an error on that line. Braces inside
+  comments and strings are not block structure. An unclosed block comment
+  is an error on the line where it opened. A state field or statement on
+  the same line as a block's opening or closing brace is part of that block.
+  `Boolean` is reported as a misspelling of `Bool`. A state field written
+  without a colon, and an action whose name is a keyword, are errors on
+  that line. `if`, `forall`, and `for` bodies joined onto one line drop
+  end-of-line comments first, so a comment cannot hide the rest of the block.
+  That removes comments such as the Raft note that the leader counts itself
+  from generated text that reprints those blocks.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as

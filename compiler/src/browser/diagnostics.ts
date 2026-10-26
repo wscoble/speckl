@@ -32,12 +32,37 @@ export function cleanErrorMessage(err: unknown): string {
  * Pull a 1-based line out of a compiler message. Prefers `Parse error at
  * line N`. Otherwise searches the spec for a quoted snippet from the message.
  */
+function lineText(source: string, line: number): string {
+  let start = 0;
+  let n = 1;
+  for (let i = 0; i < source.length; i++) {
+    if (source.charCodeAt(i) !== 10) continue;
+    if (n === line) return source.slice(start, i);
+    n++;
+    start = i + 1;
+  }
+  return n === line ? source.slice(start) : '';
+}
+
+function columnOf(text: string, needle: string): number | undefined {
+  const at = text.indexOf(needle);
+  return at >= 0 ? at + 1 : undefined;
+}
+
 export function locateDiagnostic(source: string, message: string): BrowserDiagnostic {
   const cleaned = message.trim() || 'The compiler failed.';
-  const at = cleaned.match(/Parse error at line (\d+)/i) ?? cleaned.match(/\bline (\d+)\b/i);
+  const at = cleaned.match(/Parse error at line (\d+)(?:, column (\d+))?/i) ?? cleaned.match(/\bline (\d+)\b/i);
   if (at) {
     const line = Number(at[1]);
-    if (line >= 1) return { level: 'error', message: cleaned, line };
+    if (line >= 1) {
+      let column = at[2] ? Number(at[2]) : undefined;
+      if (!column) {
+        const text = lineText(source, line);
+        if (/unexpected `\}`/.test(cleaned)) column = columnOf(text, '}');
+        else if (/unexpected `\{`|never closed|opens twice|missing a name|missing a colon/.test(cleaned)) column = columnOf(text, '{') ?? columnOf(text, cleaned.match(/"([^"]+)"/)?.[1] ?? '');
+      }
+      return { level: 'error', message: cleaned, line, ...(column ? { column } : {}) };
+    }
   }
   const quoted = cleaned.matchAll(/"([^"\n]{3,200})"/g);
   for (const q of quoted) {
@@ -58,17 +83,25 @@ export function fromIR(source: string, d: IRDiagnostic): BrowserDiagnostic {
   };
   if (d.line && d.line >= 1) {
     base.line = d.line;
+    if (!base.column) {
+      const quoted = d.message.match(/"([A-Za-z_][\w.]*)"/);
+      if (quoted) base.column = columnOf(lineText(source, d.line), quoted[1]);
+    }
     return base;
   }
   const located = locateDiagnostic(source, d.message);
   if (located.line) base.line = located.line;
+  if (located.column && !base.column) base.column = located.column;
   return base;
 }
 
 export function presentDiagnostic(d: BrowserDiagnostic): string {
-  let msg = d.message.trim();
+  let msg = d.message.trim().replace(/^Parse error at line \d+(?:, column \d+)?:\s*/i, '');
   if (d.speck && !msg.includes(d.speck)) msg = `${d.speck}: ${msg}`;
-  if (d.line && !/line\s+\d+/i.test(msg)) msg = `Line ${d.line}: ${msg}`;
+  if (d.line && !/^Line \d+/.test(msg)) {
+    const where = d.column ? `Line ${d.line}, column ${d.column}` : `Line ${d.line}`;
+    msg = `${where}: ${msg}`;
+  }
   return msg;
 }
 
