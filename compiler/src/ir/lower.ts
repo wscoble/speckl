@@ -320,7 +320,7 @@ function lowerBehavior(
         stateVars.push({
           name: v.name,
           type: lowerTypeExpr(v.typeExpr),
-          defaultInit: v.defaultInit ? parseExprSafe(v.defaultInit, diagnostics, speck.name) : undefined,
+          defaultInit: v.defaultInit ? parseExprSafe(v.defaultInit, diagnostics, speck.name, baseEnv.constants) : undefined,
         });
       }
     } else if (m.type === 'init') {
@@ -332,7 +332,7 @@ function lowerBehavior(
         checkBinding(a.name, a.expr, baseEnv, line);
         return {
           target: a.name,
-          expr: parseExprSafe(a.expr, diagnostics, speck.name),
+          expr: parseExprSafe(a.expr, diagnostics, speck.name, baseEnv.constants),
         };
       });
     } else if (m.type === 'action') {
@@ -351,12 +351,18 @@ function lowerBehavior(
       // __signal_* actions are added to the IR below, from the agent block.
       const scope = new Set(baseEnv.scope);
       const types = new Map(baseEnv.types);
+      const constants = new Map(baseEnv.constants);
       for (const p of a.params) {
         scope.add(p.name);
+        constants.delete(p.name);
         const kind = primitiveKind(p.type);
         if (kind) types.set(p.name, kind);
+        else types.delete(p.name);
       }
-      const env: ExprEnv = { scope, types, diagnostics, speckName: speck.name, lines: sourceLines, seen: baseEnv.seen };
+      const env: ExprEnv = {
+        ...baseEnv,
+        scope, types, constants, diagnostics, speckName: speck.name, lines: sourceLines, seen: baseEnv.seen,
+      };
       const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, env));
       actions.push({
         name: a.name,
@@ -403,7 +409,7 @@ function lowerBehavior(
 
   const agentMember = speck.members.find((m): m is AgentMemberNode & { startLine?: number } => m.type === 'agent');
   if (agentMember) {
-    behavior.agent = lowerAgent(agentMember, behavior, speck.name, diagnostics);
+    behavior.agent = lowerAgent(agentMember, behavior, speck.name, diagnostics, sourceLines);
   }
   return behavior;
 }
@@ -414,11 +420,16 @@ function lowerBehavior(
  * human-response edges; those actions are never exposed as tools.
  */
 function lowerAgent(
-  agent: AgentMemberNode & { startLine?: number },
+  agent: AgentMemberNode & { startLine?: number; endLine?: number },
   behavior: BehaviorFacet,
   speckName: string,
   diagnostics: IRDiagnostic[],
+  sourceLines: string[],
 ): IRAgentConfig {
+  const note = (level: 'error' | 'warning', message: string, token?: string) => {
+    const where = locateInRange(sourceLines, agent.startLine, agent.endLine, token);
+    diagnostics.push({ level, message, line: where.line, column: where.column, speck: speckName });
+  };
   const actionNames = new Set(behavior.actions.map(a => a.name));
   const stateVarNames = new Set(behavior.stateVars.map(v => v.name));
   const labelToValue = new Map<string, number>();
@@ -427,21 +438,11 @@ function lowerAgent(
   if (agent.stages) {
     stageVar = agent.stages.variable;
     if (!stateVarNames.has(stageVar)) {
-      diagnostics.push({
-        level: 'error',
-        message: `agent stages: unknown state variable "${stageVar}"`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('error', `agent stages: unknown state variable "${stageVar}"`, stageVar);
     }
     for (const l of agent.stages.labels) {
       if (labelToValue.has(l.name)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent stages: duplicate label "${l.name}"`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent stages: duplicate label "${l.name}"`, l.name);
       }
       labelToValue.set(l.name, l.value);
     }
@@ -451,75 +452,45 @@ function lowerAgent(
   const seenToolNames = new Set<string>();
   for (const t of agent.tools) {
     if (seenToolNames.has(t.name)) {
-      diagnostics.push({ level: 'error', message: `agent: duplicate tool "${t.name}"`, line: agent.startLine, speck: speckName });
+      note('error', `agent: duplicate tool "${t.name}"`, t.name);
     }
     seenToolNames.add(t.name);
     if (!actionNames.has(t.action)) {
-      diagnostics.push({
-        level: 'error',
-        message: `agent tool ${t.name}: unknown action "${t.action}"`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('error', `agent tool ${t.name}: unknown action "${t.action}"`, t.action);
     }
     if (t.effect !== 'act' && t.effect !== 'observe') {
-      diagnostics.push({ level: 'error', message: `agent tool ${t.name}: effect must be act or observe`, line: agent.startLine, speck: speckName });
+      note('error', `agent tool ${t.name}: effect must be act or observe`, t.name);
     }
     tools.push({ name: t.name, action: t.action, effect: t.effect });
   }
 
-  validateHarnesses(agent, behavior, speckName, diagnostics);
+  validateHarnesses(agent, behavior, speckName, diagnostics, sourceLines);
 
   const awaits: IRAgentAwait[] = [];
   const syntheticNames: string[] = [];
 
   if (agent.pendingTimeout && agent.pendingTimeout.durationMs <= 0) {
-    diagnostics.push({
-      level: 'error',
-      message: `agent: pending timeout must be greater than zero (got ${agent.pendingTimeout.durationText})`,
-      line: agent.startLine,
-      speck: speckName,
-    });
+    note('error', `agent: pending timeout must be greater than zero (got ${agent.pendingTimeout.durationText})`, 'timeout');
   }
 
   for (const a of agent.awaits) {
     if (!labelToValue.has(a.state)) {
-      diagnostics.push({
-        level: 'error',
-        message: `agent await ${a.state}: unknown stage label (declare it in stages)`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('error', `agent await ${a.state}: unknown stage label (declare it in stages)`, a.state);
       continue;
     }
     const awaitValue = labelToValue.get(a.state)!;
     const rejectOutcomes = new Set(a.rejects ?? []);
     for (const o of a.outcomes) {
       if (/reject|deny|denied|decline/i.test(o) && !rejectOutcomes.has(o)) {
-        diagnostics.push({
-          level: 'warning',
-          message: `agent await ${a.state}: outcome "${o}" looks like a rejection but is not marked; write "${o}!" in require outcome in {...} to make it a reject outcome`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('warning', `agent await ${a.state}: outcome "${o}" looks like a rejection but is not marked; write "${o}!" in require outcome in {...} to make it a reject outcome`, o);
       }
     }
     if (a.timeout) {
       if (!a.outcomes.includes(a.timeout.outcome)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: timeout outcome "${a.timeout.outcome}" not in require outcome in {...}`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent await ${a.state}: timeout outcome "${a.timeout.outcome}" not in require outcome in {...}`, a.timeout.outcome);
       } else if (!rejectOutcomes.has(a.timeout.outcome)) {
         // A timeout may only resolve to an outcome explicitly marked reject.
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: timeout may only resolve to a reject outcome marked with ! (got "${a.timeout.outcome}"; write "${a.timeout.outcome}!" in require outcome in {...} if it really rejects)`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent await ${a.state}: timeout may only resolve to a reject outcome marked with ! (got "${a.timeout.outcome}"; write "${a.timeout.outcome}!" in require outcome in {...} if it really rejects)`, a.timeout.outcome);
       }
     }
     // A reject outcome must not lead where an accepting outcome leads, or a
@@ -528,51 +499,26 @@ function lowerAgent(
       const rTarget = a.on.find(o => o.outcome === r)?.target;
       const accepting = a.on.filter(o => !rejectOutcomes.has(o.outcome)).map(o => o.target);
       if (rTarget !== undefined && accepting.includes(rTarget)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: reject outcome "${r}" leads to ${rTarget}, which a non-reject outcome also reaches`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent await ${a.state}: reject outcome "${r}" leads to ${rTarget}, which a non-reject outcome also reaches`, rTarget);
       }
     }
     if (rejectOutcomes.size === a.outcomes.length && a.outcomes.length > 0) {
-      diagnostics.push({
-        level: 'warning',
-        message: `agent await ${a.state}: every outcome is marked reject; nothing can approve`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('warning', `agent await ${a.state}: every outcome is marked reject; nothing can approve`, a.state);
     }
 
     const syntheticActions: IRAgentAwait['syntheticActions'] = [];
     for (const o of a.on) {
       if (!labelToValue.has(o.target)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: on ${o.outcome} -> ${o.target}: unknown target stage`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent await ${a.state}: on ${o.outcome} -> ${o.target}: unknown target stage`, o.target);
         continue;
       }
       const actionName = `__signal_${a.signal}_${o.outcome}`;
       if (syntheticNames.includes(actionName)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent: duplicate synthetic action "${actionName}"`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent: duplicate synthetic action "${actionName}"`, o.target);
         continue;
       }
       if (actionNames.has(actionName) && !actionName.startsWith('__signal_')) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent: synthetic action name collides with declared action "${actionName}"`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent: synthetic action name collides with declared action "${actionName}"`, actionName);
         continue;
       }
       const targetValue = labelToValue.get(o.target)!;
@@ -605,12 +551,7 @@ function lowerAgent(
       const missing = syntheticNames.filter(n => !have.has(n));
       if (missing.length > 0) behavior.next = [...behavior.next, ...missing];
     } else {
-      diagnostics.push({
-        level: 'warning',
-        message: 'agent: next: is missing; synthetic signal actions will not be covered by BMC',
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('warning', 'agent: next: is missing; synthetic signal actions will not be covered by BMC', 'next');
     }
   }
 
@@ -633,26 +574,32 @@ export const SUPPORTED_HARNESSES = ['claude-code', 'cursor', 'codex', 'gemini', 
  * `-t agent` (index.ts refuses diagnostics that start with "agent").
  */
 function validateHarnesses(
-  agent: AgentMemberNode & { startLine?: number },
+  agent: AgentMemberNode & { startLine?: number; endLine?: number },
   behavior: BehaviorFacet,
   speckName: string,
   diagnostics: IRDiagnostic[],
+  sourceLines: string[] = [],
 ): void {
-  const err = (message: string) => diagnostics.push({ level: 'error', message, line: agent.startLine, speck: speckName });
+  const err = (message: string, token?: string) => {
+    const where = locateInRange(sourceLines, agent.startLine, agent.endLine, token);
+    diagnostics.push({ level: 'error', message, line: where.line, column: where.column, speck: speckName });
+  };
   const toolToAction = new Map(agent.tools.map(t => [t.name, t.action]));
   const paramsOf = new Map(behavior.actions.map(a => [a.name, a.params.map(p => p.name)]));
   const seen = new Set<string>();
   for (const h of agent.harnesses ?? []) {
     if (!(SUPPORTED_HARNESSES as readonly string[]).includes(h.name)) {
-      err(`agent harness ${h.name}: unknown harness (supported: ${SUPPORTED_HARNESSES.join(', ')})`);
+      err(`agent harness ${h.name}: unknown harness (supported: ${SUPPORTED_HARNESSES.join(', ')})`, h.name);
     }
-    if (seen.has(h.name)) err(`agent harness ${h.name}: declared twice`);
+    if (seen.has(h.name)) err(`agent harness ${h.name}: declared twice`, h.name);
     seen.add(h.name);
     if (h.rules.length === 0) {
+      const where = locateInRange(sourceLines, agent.startLine, agent.endLine, h.name);
       diagnostics.push({
         level: 'warning',
         message: `agent harness ${h.name}: no map lines; every tool call will be denied`,
-        line: agent.startLine,
+        line: where.line,
+        column: where.column,
         speck: speckName,
       });
     }
@@ -660,23 +607,23 @@ function validateHarnesses(
       const where = `agent harness ${h.name} map ${r.tools.join('|')}`;
       const action = toolToAction.get(r.target);
       if (!action) {
-        err(`${where}: -> ${r.target} is not a declared tool`);
+        err(`${where}: -> ${r.target} is not a declared tool`, r.target);
         continue;
       }
       const params = paramsOf.get(action) ?? [];
       const seenParams = new Set<string>();
       for (const p of r.params) {
         if (!params.includes(p.param)) {
-          err(`${where}: ${p.param} is not a parameter of ${action} (has: ${params.join(', ') || 'none'})`);
+          err(`${where}: ${p.param} is not a parameter of ${action} (has: ${params.join(', ') || 'none'})`, p.param);
         }
-        if (seenParams.has(p.param)) err(`${where}: ${p.param} is mapped twice`);
+        if (seenParams.has(p.param)) err(`${where}: ${p.param} is mapped twice`, p.param);
         seenParams.add(p.param);
       }
       if (r.pattern !== undefined) {
         try {
           new RegExp('^(?:' + r.pattern + ')$');
         } catch (e) {
-          err(`${where}: pattern "${r.pattern}" is not a valid regular expression (${e instanceof Error ? e.message : String(e)})`);
+          err(`${where}: pattern "${r.pattern}" is not a valid regular expression (${e instanceof Error ? e.message : String(e)})`, r.pattern);
         }
       }
     }
@@ -947,8 +894,8 @@ function lowerStatement(
       return {
         kind: 'assign',
         target: s.target.kind === 'plain' ? s.target.name : `${s.target.mapName}[...]`,
-        ...(s.target.kind === 'map_index' ? { targetIndex: lowerExpr(s.target.index, diagnostics, speckName) } : {}),
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        ...(s.target.kind === 'map_index' ? { targetIndex: lowerExpr(s.target.index, diagnostics, speckName, env.constants) } : {}),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     }
     case 'let':
@@ -958,28 +905,31 @@ function lowerStatement(
       return {
         kind: 'let',
         letName: s.name,
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'require':
       env.line = s.line;
       checkExpr(s.expr, env);
+      checkBoolExpr(env, s.expr, s.line, 'require');
       return {
         kind: 'require',
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'precondition':
       env.line = s.line;
       checkExpr(s.expr, env);
+      checkBoolExpr(env, s.expr, s.line, 'precondition');
       return {
         kind: 'precondition',
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'postcondition':
       env.line = s.line;
       checkExpr(s.expr, env);
+      checkBoolExpr(env, s.expr, s.line, 'postcondition');
       return {
         kind: 'postcondition',
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'emit':
       env.line = s.line;
@@ -989,7 +939,7 @@ function lowerStatement(
         event: s.event,
         fields: s.fields.map(f => ({
           name: f.name,
-          value: lowerExpr(f.value, diagnostics, speckName),
+          value: lowerExpr(f.value, diagnostics, speckName, env.constants),
         })),
       };
     case 'return':
@@ -997,7 +947,7 @@ function lowerStatement(
       checkExpr(s.expr, env);
       return {
         kind: 'return',
-        expr: lowerExpr(s.expr, diagnostics, speckName),
+        expr: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'ifblock': {
       // `if` / `forall` / `for` stay raw. A binder still names the statements
@@ -1037,6 +987,11 @@ type ValueKind = 'bool' | 'nat' | 'int' | 'real' | 'string';
 interface ExprEnv {
   scope: Set<string>;
   types: Map<string, ValueKind>;
+  /** Stage label → Nat value. An ident lowers to that number. */
+  constants: Map<string, number>;
+  stageVar?: string;
+  stageValues?: Set<number>;
+  stageLabels?: { name: string; value: number }[];
   diagnostics: IRDiagnostic[];
   speckName: string;
   lines: string[];
@@ -1062,6 +1017,10 @@ function valueEnv(speck: SpeckNode, lines: string[], diagnostics: IRDiagnostic[]
   const scope = new Set<string>(EXPR_BUILTINS);
   scope.add('this');
   const types = new Map<string, ValueKind>();
+  const constants = new Map<string, number>();
+  let stageVar: string | undefined;
+  const stageValues = new Set<number>();
+  const stageLabels: { name: string; value: number }[] = [];
   for (const m of speck.members) {
     if (m.type === 'state') {
       for (const v of (m as StateNode).variables) {
@@ -1071,16 +1030,33 @@ function valueEnv(speck: SpeckNode, lines: string[], diagnostics: IRDiagnostic[]
       }
     } else if (m.type === 'invariant') {
       scope.add((m as InvariantMemberNode).name);
-    } else if (m.type === 'agent') {
-      for (const label of (m as AgentMemberNode).stages?.labels ?? []) scope.add(label.name);
     } else if (m.type === 'interface') {
       const iface = m as InterfaceNode;
       const enumLike = iface.kind === 'enum' || (iface.methods.length > 0 && iface.fields.length === 0 && iface.methods.every(method => method.params.length === 0));
       if (enumLike) for (const method of iface.methods) scope.add(method.name);
     }
   }
+  // After state, so a variable keeps its declared type if a label reuses the name.
+  for (const m of speck.members) {
+    if (m.type !== 'agent') continue;
+    const agent = m as AgentMemberNode;
+    if (!agent.stages) continue;
+    stageVar = agent.stages.variable;
+    for (const label of agent.stages.labels) {
+      scope.add(label.name);
+      stageValues.add(label.value);
+      stageLabels.push({ name: label.name, value: label.value });
+      if (!types.has(label.name)) {
+        types.set(label.name, 'nat');
+        constants.set(label.name, label.value);
+      }
+    }
+  }
   for (const variant of unionVariants(lines)) scope.add(variant);
-  return { scope, types, diagnostics, speckName: speck.name, lines, seen: new Set() };
+  return {
+    scope, types, constants, stageVar, stageValues, stageLabels,
+    diagnostics, speckName: speck.name, lines, seen: new Set(),
+  };
 }
 
 function unionVariants(lines: string[]): string[] {
@@ -1156,6 +1132,26 @@ function reportUndeclared(env: ExprEnv, name: string, line?: number): void {
   });
 }
 
+/** A token between two source lines (inclusive, 1-based), or the start line. */
+function locateInRange(
+  lines: string[],
+  start: number | undefined,
+  end: number | undefined,
+  name?: string,
+): { line?: number; column?: number } {
+  if (!start) return {};
+  const from = Math.max(0, start - 1);
+  const to = Math.min(lines.length, end ?? lines.length);
+  if (name) {
+    const re = new RegExp(`\\b${escapeRegExp(name)}\\b`);
+    for (let i = from; i < to; i++) {
+      const match = re.exec(lines[i] ?? '');
+      if (match) return { line: i + 1, column: match.index + 1 };
+    }
+  }
+  return locateName(lines, start, undefined);
+}
+
 function locateName(lines: string[], line: number | undefined, name: string | undefined): { line?: number; column?: number } {
   if (!line) return {};
   if (name) {
@@ -1218,6 +1214,12 @@ function kindsClash(left: LiteralSide, right: LiteralSide): boolean {
   return false;
 }
 
+function describeFocus(e: Expr): string | undefined {
+  if (e.kind === 'parens') return describeFocus(e.expr);
+  if (e.kind === 'ident') return e.name;
+  return undefined;
+}
+
 function describeSide(side: LiteralSide): string {
   if (side.negative) return 'a negative number';
   if (side.kind === 'bool') return side.name ? `Bool variable "${side.name}"` : 'a boolean';
@@ -1230,14 +1232,66 @@ function describeSide(side: LiteralSide): string {
   return 'a number';
 }
 
+function numericKind(kind: ValueKind): boolean {
+  return kind === 'nat' || kind === 'int' || kind === 'real';
+}
+
+/**
+ * Nat accepts Nat only. Int accepts Int and Nat. Real accepts Real, Int, and
+ * Nat. Bool and String accept only themselves. A negative or fractional
+ * literal is not a Nat.
+ */
+function assignable(dest: ValueKind, src: LiteralSide): boolean {
+  if (src.negative && dest === 'nat') return false;
+  if (src.literal && src.kind === 'real' && (dest === 'nat' || dest === 'int')) return false;
+  if (dest === src.kind) return true;
+  if (dest === 'int' && src.kind === 'nat') return true;
+  if (dest === 'real' && numericKind(src.kind)) return true;
+  return false;
+}
+
 function checkAssignLiteral(env: ExprEnv, name: string, expr: Expr, line?: number): void {
   const expected = env.types.get(name);
-  const got = literalSide(expr, env.types);
-  if (!expected || !got || !got.literal) return;
-  const dest: LiteralSide = { kind: expected, literal: false, negative: false, name };
-  if (!kindsClash(dest, got)) return;
-  const at = locateName(env.lines, line ?? env.line, name);
-  const message = `type mismatch: cannot assign ${describeSide(got)} to ${describeSide(dest)}`;
+  const got = literalSide(expr, env.types) ?? sideFromKind(expr, env.types);
+  if (expected && got && !assignable(expected, got)) {
+    const dest: LiteralSide = { kind: expected, literal: false, negative: false, name };
+    const message = `type mismatch: cannot assign ${describeSide(got)} to ${describeSide(dest)}`;
+    pushTypeError(env, message, line, name);
+  }
+  checkStageLiteral(env, name, expr, line);
+}
+
+function sideFromKind(expr: Expr, types: Map<string, ValueKind>): LiteralSide | undefined {
+  const kind = valueKind(expr, types);
+  if (!kind) return undefined;
+  if (expr.kind === 'ident') return { kind, literal: false, negative: false, name: expr.name };
+  if (expr.kind === 'parens') return sideFromKind(expr.expr, types);
+  return { kind, literal: false, negative: false };
+}
+
+function literalInt(expr: Expr): number | undefined {
+  if (expr.kind === 'parens') return literalInt(expr.expr);
+  if (expr.kind === 'literal' && expr.type === 'number') {
+    const n = Number(expr.value);
+    return Number.isInteger(n) ? n : undefined;
+  }
+  if (expr.kind === 'unary' && expr.op === 'neg' && expr.operand.kind === 'literal' && expr.operand.type === 'number') {
+    const n = Number(expr.operand.value);
+    return Number.isInteger(n) ? -n : undefined;
+  }
+  return undefined;
+}
+
+function checkStageLiteral(env: ExprEnv, name: string, expr: Expr, line?: number): void {
+  if (!env.stageVar || name !== env.stageVar || !env.stageValues || env.stageValues.size === 0) return;
+  const n = literalInt(expr);
+  if (n === undefined || env.stageValues.has(n)) return;
+  const labels = (env.stageLabels ?? []).map((l) => `${l.name} = ${l.value}`).join(', ');
+  pushTypeError(env, `stage value ${n} is not a declared stage (${labels})`, line, name);
+}
+
+function pushTypeError(env: ExprEnv, message: string, line: number | undefined, focus?: string): void {
+  const at = locateName(env.lines, line ?? env.line, focus);
   const key = `${message}|${at.line ?? ''}`;
   if (env.seen.has(key)) return;
   env.seen.add(key);
@@ -1250,38 +1304,114 @@ function checkAssignLiteral(env: ExprEnv, name: string, expr: Expr, line?: numbe
   });
 }
 
+function checkBoolExpr(env: ExprEnv, expr: Expr, line: number | undefined, keyword: string): void {
+  const kind = valueKind(expr, env.types);
+  if (!kind || kind === 'bool') return;
+  pushTypeError(env, `type mismatch: ${keyword} expects a Bool, got ${describeKind(kind, expr)}`, line, keyword);
+}
+
+function describeKind(kind: ValueKind, expr: Expr): string {
+  if (expr.kind === 'ident') {
+    const label = kind === 'nat' ? 'Nat' : kind === 'int' ? 'Int' : kind === 'real' ? 'Real' : kind === 'bool' ? 'Bool' : 'String';
+    return `${label} variable "${expr.name}"`;
+  }
+  if (expr.kind === 'parens') return describeKind(kind, expr.expr);
+  if (kind === 'bool') return 'a boolean';
+  if (kind === 'string') return 'a string';
+  if (kind === 'nat') return 'a Nat';
+  if (kind === 'int') return 'an Int';
+  return 'a Real';
+}
+
+/** Type of an expression built from declared names and literals. Unknown shapes are skipped. */
+function valueKind(e: Expr, types: Map<string, ValueKind>): ValueKind | undefined {
+  if (e.kind === 'parens') return valueKind(e.expr, types);
+  const side = literalSide(e, types);
+  if (side) return side.kind;
+  if (e.kind === 'unary' && e.op === 'not') {
+    return valueKind(e.operand, types) === 'bool' ? 'bool' : undefined;
+  }
+  if (e.kind === 'unary' && e.op === 'neg') {
+    const k = valueKind(e.operand, types);
+    if (k === 'real') return 'real';
+    if (k === 'nat' || k === 'int') return 'int';
+    return undefined;
+  }
+  if (e.kind !== 'binary') return undefined;
+  const left = valueKind(e.left, types);
+  const right = valueKind(e.right, types);
+  if (!left || !right) return undefined;
+  if (COMPARE_OPS.has(e.op)) {
+    const ls = literalSide(e.left, types);
+    const rs = literalSide(e.right, types);
+    if (ls && rs && kindsClash(ls, rs)) return undefined;
+    if ((left === 'bool') !== (right === 'bool')) return undefined;
+    if ((left === 'string') !== (right === 'string')) return undefined;
+    if ((numericKind(left) && !numericKind(right)) || (!numericKind(left) && numericKind(right))) return undefined;
+    return 'bool';
+  }
+  if (e.op === 'and' || e.op === 'or' || e.op === 'implies') {
+    return left === 'bool' && right === 'bool' ? 'bool' : undefined;
+  }
+  if (e.op === 'add' && left === 'string' && right === 'string') return 'string';
+  if ((e.op === 'add' || e.op === 'sub' || e.op === 'mul' || e.op === 'div' || e.op === 'mod') && numericKind(left) && numericKind(right)) {
+    if (left === 'real' || right === 'real') return 'real';
+    if (left === 'int' || right === 'int') return 'int';
+    return 'nat';
+  }
+  return undefined;
+}
+
 function checkExpr(e: Expr | undefined, env: ExprEnv): void {
   if (!e) return;
   switch (e.kind) {
     case 'literal':
+      return;
     case 'unparsed':
+      reportUnexpected(env, e);
       return;
     case 'ident':
       if (!env.scope.has(e.name) && !EXPR_BUILTINS.has(e.name)) reportUndeclared(env, e.name, env.line);
       return;
     case 'unary':
       checkExpr(e.operand, env);
+      if (e.op === 'not') {
+        const kind = valueKind(e.operand, env.types);
+        if (kind && kind !== 'bool') {
+          pushTypeError(env, `type mismatch: not expects a Bool, got ${describeKind(kind, e.operand)}`, env.line, describeFocus(e.operand));
+        }
+      }
       return;
     case 'binary': {
       checkExpr(e.left, env);
       checkExpr(e.right, env);
-      if (!COMPARE_OPS.has(e.op)) return;
-      const left = literalSide(e.left, env.types);
-      const right = literalSide(e.right, env.types);
-      if (!left || !right || !kindsClash(left, right)) return;
-      const focus = left.name ?? right.name;
-      const at = locateName(env.lines, env.line, focus);
-      const message = `type mismatch: cannot compare ${describeSide(left)} with ${describeSide(right)}`;
-      const key = `${message}|${at.line ?? ''}`;
-      if (env.seen.has(key)) return;
-      env.seen.add(key);
-      env.diagnostics.push({
-        level: 'error',
-        message,
-        line: at.line,
-        column: at.column,
-        speck: env.speckName,
-      });
+      const leftKind = valueKind(e.left, env.types);
+      const rightKind = valueKind(e.right, env.types);
+      if (COMPARE_OPS.has(e.op)) {
+        const left = literalSide(e.left, env.types);
+        const right = literalSide(e.right, env.types);
+        if (!left || !right || !kindsClash(left, right)) return;
+        const focus = left.name ?? right.name;
+        pushTypeError(env, `type mismatch: cannot compare ${describeSide(left)} with ${describeSide(right)}`, env.line, focus);
+        return;
+      }
+      if ((e.op === 'and' || e.op === 'or' || e.op === 'implies') && leftKind && rightKind) {
+        if (leftKind !== 'bool') pushTypeError(env, `type mismatch: ${e.op} expects a Bool, got ${describeKind(leftKind, e.left)}`, env.line, describeFocus(e.left));
+        if (rightKind !== 'bool') pushTypeError(env, `type mismatch: ${e.op} expects a Bool, got ${describeKind(rightKind, e.right)}`, env.line, describeFocus(e.right));
+        return;
+      }
+      if ((e.op === 'add' || e.op === 'sub' || e.op === 'mul' || e.op === 'div' || e.op === 'mod') && leftKind && rightKind) {
+        const concat = e.op === 'add' && leftKind === 'string' && rightKind === 'string';
+        const numeric = numericKind(leftKind) && numericKind(rightKind);
+        if (!concat && !numeric) {
+          pushTypeError(
+            env,
+            `type mismatch: arithmetic only applies to numbers (got ${describeKind(leftKind, e.left)} and ${describeKind(rightKind, e.right)})`,
+            env.line,
+            describeFocus(e.left) ?? describeFocus(e.right),
+          );
+        }
+      }
       return;
     }
     case 'call':
@@ -1358,10 +1488,12 @@ function reportUnknownTypes(
     if (seen.has(key)) return;
     seen.add(key);
     const hint = suggestion ? ` Did you mean \`${suggestion}\`?` : '';
+    const column = line ? columnOfType(source, line, typeName) : undefined;
     diagnostics.push({
       level: 'error',
       message: `unknown type "${typeName}".${hint}`,
       line,
+      column,
       speck: speck.name,
     });
   };
@@ -1411,18 +1543,15 @@ function checkTypeName(name: string, known: Set<string>, report: (name: string, 
     return;
   }
   if (known.has(name)) return;
-  // Specs name external records (Account, Message, Date) without declaring
-  // them. Only a typo of a known type is an error: `Booll` is Bool, `Account` is not.
-  // `Boolean` is three edits from `Bool`, past the edit-distance cap, but it is
-  // the usual name for that type.
+  // A type is a builtin, or a name introduced by `type`, `interface`, `event`,
+  // `oneof`, or `service`. `Boolean` is the usual misspelling of `Bool`.
   if (!/^[A-Za-z_]\w*$/.test(name)) return;
   const alias = name === 'Boolean' || name === 'boolean' ? 'Bool' : undefined;
   if (alias && known.has(alias)) {
     report(name, alias);
     return;
   }
-  const suggestion = suggestKnownType(name, known);
-  if (suggestion) report(name, suggestion);
+  report(name, suggestKnownType(name, known));
 }
 
 function suggestKnownType(name: string, known: Set<string>): string | undefined {
@@ -1484,6 +1613,29 @@ function lineOfFieldType(source: string, field: string, typeName: string): numbe
   return lineOfType(source, typeName);
 }
 
+function columnOfType(source: string, line: number, typeName: string): number | undefined {
+  const text = source.split('\n')[line - 1] ?? '';
+  const at = text.indexOf(typeName);
+  return at >= 0 ? at + 1 : undefined;
+}
+
+function reportUnexpected(env: ExprEnv, expr: Expr): void {
+  const hex = /Unexpected character U\+([0-9A-F]+)/i.exec(expr.kind === 'unparsed' ? (expr.error ?? '') : '');
+  if (!hex) return;
+  const glyph = String.fromCodePoint(parseInt(hex[1], 16));
+  const line = env.line;
+  let column: number | undefined;
+  if (line) {
+    const at = (env.lines[line - 1] ?? '').indexOf(glyph);
+    if (at >= 0) column = at + 1;
+  }
+  const message = `unexpected character U+${hex[1].toUpperCase()}`;
+  const key = `${message}|${line ?? ''}|${column ?? ''}`;
+  if (env.seen.has(key)) return;
+  env.seen.add(key);
+  env.diagnostics.push({ level: 'error', message, line, column, speck: env.speckName });
+}
+
 function lineOfType(source: string, typeName: string): number | undefined {
   const lines = source.split('\n');
   const re = new RegExp(`\\b${escapeRegExp(typeName)}\\b`);
@@ -1505,7 +1657,9 @@ function lowerExpr(
   e: Expr | undefined,
   diagnostics: IRDiagnostic[],
   speckName: string,
+  constants?: ReadonlyMap<string, number>,
 ): IRExpr {
+  const go = (inner: Expr | undefined) => lowerExpr(inner, diagnostics, speckName, constants);
   if (!e) {
     return { kind: 'bool_lit', value: false, parseFailed: true };
   }
@@ -1521,13 +1675,16 @@ function lowerExpr(
       // `null` has no IR literal.
       return { kind: 'bool_lit', value: false, parseFailed: true, source: e.value || 'null' };
     }
-    case 'ident':
+    case 'ident': {
+      const value = constants?.get(e.name);
+      if (value !== undefined) return { kind: 'int_lit', value };
       return { kind: 'ident', name: e.name };
+    }
     case 'unary':
       return {
         kind: 'unop',
         op: e.op === 'not' ? '!' : '-',
-        operand: lowerExpr(e.operand, diagnostics, speckName),
+        operand: go(e.operand),
       };
     case 'binary':
       // Infix `a implies b` lowers to the same node as the call form
@@ -1536,42 +1693,44 @@ function lowerExpr(
         return {
           kind: 'call',
           fn: 'implies',
-          args: [lowerExpr(e.left, diagnostics, speckName), lowerExpr(e.right, diagnostics, speckName)],
+          args: [go(e.left), go(e.right)],
         };
       }
       return {
         kind: 'binop',
         op: lowerBinOp(e.op),
-        left: lowerExpr(e.left, diagnostics, speckName),
-        right: lowerExpr(e.right, diagnostics, speckName),
+        left: go(e.left),
+        right: go(e.right),
       };
     case 'call':
       return {
         kind: 'call',
         fn: e.callee,
-        args: e.args.map(a => lowerExpr(a, diagnostics, speckName)),
+        args: e.args.map(a => go(a)),
       };
     case 'member':
       return {
         kind: 'field',
-        target: lowerExpr(e.object, diagnostics, speckName),
+        target: go(e.object),
         field: e.property,
       };
     case 'index':
       return {
         kind: 'index',
-        target: lowerExpr(e.object, diagnostics, speckName),
-        index: lowerExpr(e.index, diagnostics, speckName),
+        target: go(e.object),
+        index: go(e.index),
       };
     case 'parens':
       // Parenthesized grouping - transparent in the IR.
-      return lowerExpr(e.expr, diagnostics, speckName);
+      return go(e.expr);
     case 'unparsed':
-      diagnostics.push({
-        level: 'warning',
-        message: `expression not parsed in full (${e.error}); carried as an untranslated placeholder: ${e.source}`,
-        speck: speckName,
-      });
+      if (!/Unexpected character U\+/.test(e.error ?? '')) {
+        diagnostics.push({
+          level: 'warning',
+          message: `expression not parsed in full (${e.error}); carried as an untranslated placeholder: ${e.source}`,
+          speck: speckName,
+        });
+      }
       return { kind: 'bool_lit', value: false, parseFailed: true, source: e.source };
     default:
       diagnostics.push({
@@ -1614,12 +1773,13 @@ function parseExprSafe(
   src: string,
   diagnostics: IRDiagnostic[],
   speckName: string,
+  constants?: ReadonlyMap<string, number>,
 ): IRExpr {
   // The whole string must parse; a prefix parse used to drop the tail
   // silently (`P implies Q` read as `P`, `forall x in c: body` as `forall`).
   try {
     const parsed = parseExpressionComplete(src);
-    return lowerExpr(parsed, diagnostics, speckName);
+    return lowerExpr(parsed, diagnostics, speckName, constants);
   } catch (e) {
     diagnostics.push({
       level: 'warning',

@@ -145,7 +145,10 @@ export function compileSpec(file: string, options: CompileOptions): void {
     // Never emit rails from an agent block that failed validation.
     const agentErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('agent'));
     if (agentErrors.length > 0) {
-      throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
+      throw new Error('agent block is invalid:\n' + agentErrors.map(d => {
+        const where = d.line ? (d.column ? `line ${d.line}, column ${d.column}: ` : `line ${d.line}: `) : '';
+        return `  ${d.speck}: ${where}${d.message}`;
+      }).join('\n'));
     }
     generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
   }

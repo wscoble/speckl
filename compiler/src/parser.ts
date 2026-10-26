@@ -609,6 +609,9 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       continue;
     }
 
+    const notPost = notAPostcondition(line, lines[i] ?? line, i + 1);
+    if (notPost) throw new Error(notPost);
+
     // Handle import statements
     if (line.startsWith('import ')) {
       const importNode = parseImportStatement(line);
@@ -675,6 +678,9 @@ function speckHeaderProblem(rawLine: string, lineNo: number): string | null {
     const letter = /^[\w-]+$/.test(raw) ? ' (names must start with a letter)' : '';
     return `Parse error at line ${lineNo}, column ${nameCol}: speck name ${JSON.stringify(raw)} is invalid${letter}`;
   }
+  if (RESERVED_ACTION_NAMES.has(raw)) {
+    return `Parse error at line ${lineNo}, column ${nameCol}: speck name "${raw}" is a keyword`;
+  }
   if (brace < 0) {
     const speckAt = rawLine.indexOf('speck');
     const col = speckAt >= 0 ? speckAt + 1 : 1;
@@ -719,6 +725,9 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
       i++;
       continue;
     }
+
+    const notPost = notAPostcondition(line, rawLine, i + 1);
+    if (notPost) throw new Error(notPost);
 
     if (line.startsWith('next:')) {
       const startLine = i + 1;
@@ -983,6 +992,60 @@ function codeBesideBrace(raw: string, masked: string, which: 'after-open' | 'bef
 /** Comment-stripped line text. String contents, including braces, stay. */
 function visibleLine(line: string): string {
   return maskSource(line, { unclosed: 'blank', blankStringBraces: false }).trim();
+}
+
+/**
+ * `ensure` / `ensures` / `post` are not statements. The action form is
+ * `postcondition:`. Returns a parse error, or null when the line is something else.
+ */
+function notAPostcondition(line: string, rawLine: string, lineNo: number): string | null {
+  const word = line.match(/^(ensure|ensures|post)\b/);
+  if (!word) return null;
+  const col = Math.max(1, rawLine.indexOf(word[1]) + 1);
+  return `Parse error at line ${lineNo}, column ${col}: "${word[1]}" is not a Speckl statement. Write \`postcondition:\` inside the action.`;
+}
+
+function bracketDelta(text: string): number {
+  let depth = 0;
+  let inStr = false;
+  for (const c of text) {
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+  }
+  return depth;
+}
+
+function assertStateNames(fragment: string, lineNo: number, rawLine: string): void {
+  const parts: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let start = 0;
+  for (let i = 0; i < fragment.length; i++) {
+    const c = fragment[i];
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth = Math.max(0, depth - 1);
+    else if (c === ',' && depth === 0) {
+      parts.push(fragment.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(fragment.slice(start));
+  for (const part of parts) {
+    const named = part.trim().match(/^(\w+)\s*:/);
+    if (!named) continue;
+    const name = named[1];
+    const col = Math.max(1, rawLine.indexOf(name) + 1);
+    if (!/^[A-Za-z_]/.test(name)) {
+      throw new Error(`Parse error at line ${lineNo}, column ${col}: state variable "${name}" is invalid (names must start with a letter)`);
+    }
+    if (RESERVED_ACTION_NAMES.has(name)) {
+      throw new Error(`Parse error at line ${lineNo}, column ${col}: state variable "${name}" is a keyword`);
+    }
+  }
 }
 
 function assertFieldColons(fragment: string, lineNo: number, rawLine: string): void {
@@ -1833,6 +1896,7 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     assertUniqueStateVars(lines, startIndex, startIndex);
     const inner = codeBesideBrace(lines[startIndex], headerMasked, 'inside');
     assertFieldColons(inner, startIndex + 1, lines[startIndex]);
+    assertStateNames(inner, startIndex + 1, lines[startIndex]);
     const result = parseStateBlock(inner);
     if (messageName !== undefined) result.messageName = messageName;
     return result;
@@ -1842,8 +1906,15 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   assertUniqueStateVars(lines, startIndex, endIndex);
   const fieldLines: string[] = [];
   const head = codeBesideBrace(lines[startIndex], headerMasked, 'after-open');
+  // Nested record fields (`Map(K, { state: State })`) are not state variables.
+  let nameDepth = 0;
+  const takeField = (fragment: string, lineNo: number, rawLine: string) => {
+    if (nameDepth === 0) assertStateNames(fragment, lineNo, rawLine);
+    nameDepth += bracketDelta(fragment);
+  };
   if (head) {
     assertFieldColons(head, startIndex + 1, lines[startIndex]);
+    takeField(head, startIndex + 1, lines[startIndex]);
     fieldLines.push(head);
   }
   for (let fi = startIndex + 1; fi < endIndex; fi++) {
@@ -1851,12 +1922,14 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     const visible = visibleLine(lines[fi] ?? '');
     if (!visible) continue;
     assertFieldColons(visible, fi + 1, lines[fi]);
+    takeField(visible, fi + 1, lines[fi]);
     fieldLines.push(visible);
   }
   if (endIndex < lines.length) {
     const tail = codeBesideBrace(lines[endIndex], maskedLines(lines)[endIndex] ?? '', 'before-close');
     if (tail) {
       assertFieldColons(tail, endIndex + 1, lines[endIndex]);
+      takeField(tail, endIndex + 1, lines[endIndex]);
       fieldLines.push(tail);
     }
   }

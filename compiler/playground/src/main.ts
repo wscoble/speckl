@@ -44,6 +44,7 @@ const output = document.querySelector<HTMLElement>('#output')!;
 const staleNote = document.querySelector<HTMLElement>('#stale')!;
 const trunc = document.querySelector<HTMLElement>('#trunc')!;
 const fileSelect = document.querySelector<HTMLSelectElement>('#file')!;
+const fileBar = document.querySelector<HTMLElement>('.file-bar')!;
 const targetSelect = document.querySelector<HTMLSelectElement>('#target')!;
 const quick = document.querySelector<HTMLElement>('#quick')!;
 const examplesEl = document.querySelector<HTMLElement>('#examples')!;
@@ -291,6 +292,7 @@ function render(result: BrowserCompileResult, state: 'done' | 'error' | 'timeout
   const files = showingStale ? lastGood! : failed ? [] : result.files;
   staleNote.hidden = !showingStale;
   output.classList.toggle('stale', showingStale);
+  fileBar.classList.toggle('dimmed', showingStale);
 
   fileMap = new Map(files.map((f) => [f.path, f]));
   const ordered = filesForTarget(files.map((f) => f.path), targetSelect.value);

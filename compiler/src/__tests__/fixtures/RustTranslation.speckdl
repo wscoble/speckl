@@ -13,6 +13,8 @@ speck RustTranslation {
         phase: Phase
     }
 
+    type Ticket
+
     state {
         phase: Phase
         count: Nat
@@ -25,7 +27,7 @@ speck RustTranslation {
         seen: List(Nat)
         tags: Set(String)
         owner: Option(String)
-        type: Nat
+        kind: Nat
         ticket: Ticket
         meta: { createdBy: String, revision: Nat }
     }
@@ -39,7 +41,7 @@ speck RustTranslation {
         open := true
         tags := emptySet()
         owner := nil
-        type := count + 1
+        kind := count + 1
     }
 
     event Moved {
@@ -49,7 +51,7 @@ speck RustTranslation {
     }
 
     invariant CountBounded {
-        count <= 1000 and type >= 0
+        count <= 1000 and kind >= 0
     }
 
     constraint: ratio >= 0.0 and label != ""
@@ -64,7 +66,7 @@ speck RustTranslation {
         count := count + step
         delta := delta - step
         ratio := ratio * 2.0 + count
-        label := label + "-" + count
+        label := label + "-"
         phase := Review
         emit Moved { from: count - step, to: count, note: label }
         postcondition: count >= old(count)

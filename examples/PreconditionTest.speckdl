@@ -1,4 +1,5 @@
 speck PreconditionTest {
+type Integer
 
 state: {
   balance: Integer

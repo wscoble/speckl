@@ -14,6 +14,7 @@ import {
   dedupeDiagnostics,
   emptyDiagnostic,
   fromIR,
+  explainTargetError,
   locateDiagnostic,
   cleanErrorMessage,
   longLineDiagnostic,
@@ -215,9 +216,10 @@ function compileSourceInner(
     fs.writeFileSync(file, source, 'utf8');
 
     const lowered = captureConsole(() => lower(ast, { filePath: file, resolveImports: false }));
-    diagnostics.push(...lowered.notes.map((n) => locateDiagnostic(source, n.message).line
-      ? { ...n, line: locateDiagnostic(source, n.message).line }
-      : n));
+    diagnostics.push(...lowered.notes.map((n) => {
+      const located = locateDiagnostic(source, n.message);
+      return located.line ? { ...n, line: located.line, column: located.column ?? n.column } : n;
+    }));
     if (lowered.error) {
       diagnostics.push(locateDiagnostic(source, cleanErrorMessage(lowered.error)));
       return finish(started, false, diagnostics, []);
@@ -239,7 +241,7 @@ function compileSourceInner(
     if (compiled.error) {
       const message = cleanErrorMessage(compiled.error);
       if (!redundantCompilerError(message, diagnostics)) {
-        diagnostics.push(locateDiagnostic(source, message));
+        diagnostics.push(explainTargetError(source, message));
       }
     } else if (target === 'agent' && !files.some((f) => f.path.endsWith('AGENTS.md'))) {
       diagnostics.push(noAgentDiagnostic());

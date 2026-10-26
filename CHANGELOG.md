@@ -182,16 +182,50 @@ alias.
   (`unexpected text after end of speck`) instead of being ignored. A
   misspelled statement (`requires`) or a bare guard (`stage == 1`, `not
   isOn`) is an error naming the spec line, with a did-you-mean hint when the
-  first word is close to a statement keyword. A type name that is a typo of
-  a known type (`Booll`) is an error; other names stay external types, which
-  is how `Account` and `Message` are already written. An assignment to a
-  name that is not state, a parameter, or a `let`   is an error. A name used in `require`, a right-hand side, a
+  first word is close to a statement keyword. A type name must be a builtin
+  (`Nat`, `Int`, `Real`, `Bool`, `String`, `Bytes`, `Void`) or a name
+  introduced in the same file by `type`, `interface`, `event`, `oneof`, or
+  `service`. A bare `type Account` (no `=` and no body) declares an opaque
+  name and does not add a generated record. Anything else is
+  `unknown type "Foo"` on that line and column. A near miss adds a
+  did-you-mean hint (`Booll` and `Boolean` both suggest `Bool`). An assignment to a
+  name that is not state, a parameter, or a `let` is an error. A name used in `require`, a right-hand side, a
   precondition, a postcondition, `return`, `emit`, `init`, or an
   invariant is an error too (`undeclared variable "foo"`), checked
   against state, parameters, `let` names, stage labels, enum constants,
-  and builtins such as `length` and `old`. An obvious literal mismatch
-  is an error: assigning a number to `Bool`, a negative literal to `Nat`,
-  or comparing `Bool` with a number. A repeated
+  and builtins such as `length` and `old`. Stage labels are `Nat`
+  constants: `require stage == Approved` lowers to `stage == 3` when
+  `Approved = 3`, in the IR and in the generated TypeScript machine, so
+  `-t agent` translates the label instead of dropping it. Assigning an
+  integer that is not one of those values (`stage := 99`) is an error
+  naming the declared labels. Assignment also checks declared state
+  variables and parameters against each other. `Bool` accepts only
+  `Bool`. `String` accepts only `String`, and `+` of two strings is
+  concatenation (`s := s + "b"`). `Nat` accepts only `Nat` (`n := i` is
+  an error; `i := n` is allowed). `Int` accepts `Int` or `Nat`. `Real`
+  accepts `Real`, `Int`, or `Nat`. `n := n + 1` stays valid. `+`, `-`,
+  `*`, `/`, and `%` otherwise require numbers, so a string plus a number
+  and `b + 1` are errors. `require`, `precondition`, `postcondition`,
+  `and`, `or`, `implies`, and `not` require `Bool` when the kind is
+  known. Calls, field reads, and `let` names without a declared type are
+  not inferred, and `return` is not checked against a return type. An
+  obvious literal mismatch is still an error: assigning a number to
+  `Bool`, a negative literal to `Nat`, or comparing `Bool` with a number.
+  `ensure`, `ensures`, and `post` are not statements. At the top level
+  they are a parse error pointing at the word; inside an action they are
+  an unrecognized statement. Both name the real form, `postcondition:`
+  inside the action. Other unrecognized text inside an action
+  (`bogus stuff`) is an error on that line and column. A line that
+  contains `{` stays raw text, as do `if`, `forall`, `for`, bare calls,
+  dotted assignments, and `else` fragments. A state variable must start
+  with a letter (`2x` is invalid). A keyword used as a state variable or
+  as a speck name (`state`, `require`, `action`, `type`) is an error on
+  that line. A field named `state` nested inside a record is unchanged.
+  `examples/KafkaKRaft.speckdl` renames its state variable `state` to
+  `role`, so that example's generated output changes. An unexpected
+  character is `unexpected character U+XXXX` (the Unicode code point) on
+  the source line and column. Agent-block errors name the bad token's
+  line and column, and `agent block is invalid:` includes them. A repeated
   action name is `duplicate action "Name"`. `speckl` exits 1 on these
   diagnostics (`spec is invalid:`), and the line includes a column when
   one is known. `if`, `forall`, `for`, bare calls,

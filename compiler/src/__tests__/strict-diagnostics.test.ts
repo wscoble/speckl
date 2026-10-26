@@ -9,7 +9,7 @@ import { maskSource } from '../source-scan.js';
 import { parseActionStatements } from '../expr/stmt-parser.js';
 import { lower } from '../ir/lower.js';
 import { compileSource } from '../browser/compile-source.js';
-import { presentDiagnostic } from '../browser/diagnostics.js';
+import { explainTargetError, presentDiagnostic } from '../browser/diagnostics.js';
 
 beforeAll(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -405,9 +405,11 @@ describe('expression names and literal types', () => {
     for (const file of readdirSync(dir).filter((name) => name.endsWith('.speckdl'))) {
       const src = readFileSync(join(dir, file), 'utf8');
       const ir = lowerSrc(src);
+      const playground = new Set(['DeployGate.speckdl', 'AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'ToggleSwitch.speckdl']);
       for (const d of ir.diagnostics) {
-        if (d.level === 'error' && /undeclared variable|type mismatch/.test(d.message)) {
-          problems.push(`${file}:${d.line ?? '?'}: ${d.message}`);
+        if (d.level === 'error') problems.push(`${file}:${d.line ?? '?'}: ${d.message}`);
+        else if (d.level === 'warning' && (playground.has(file) || /unexpected character|type mismatch|unknown type/.test(d.message))) {
+          problems.push(`${file}:${d.line ?? '?'}: warning: ${d.message}`);
         }
       }
     }
@@ -433,5 +435,194 @@ describe('expression names and literal types', () => {
     expect(() => maskSource('// */\n')).not.toThrow();
     expect(() => maskSource('"*/"\n')).not.toThrow();
     expect(() => maskSource('  /* comment')).toThrow(/Parse error at line 1, column 3: unclosed comment opened at line 1/);
+  });
+});
+
+describe('round 5: types, stages, and statement shape', () => {
+  it('rejects an undeclared type and suggests a near miss', () => {
+    const src = 'speck S {\n  state { x: Foo }\n  action Go(k: Banana) { x := 1 }\n}\n';
+    const ir = lowerSrc(src);
+    const foo = ir.diagnostics.find((d) => /unknown type "Foo"/.test(d.message));
+    const banana = ir.diagnostics.find((d) => /unknown type "Banana"/.test(d.message));
+    expect(foo?.line).toBe(2);
+    expect(foo?.column).toBeGreaterThan(1);
+    expect(presentDiagnostic({ level: 'error', message: foo!.message, line: foo!.line, column: foo!.column })).toMatch(/^Line 2, column \d+: unknown type "Foo"/);
+    expect(banana?.line).toBe(3);
+    expect(banana?.message).not.toMatch(/Did you mean/);
+    const declared = lowerSrc('speck S {\n  type Account\n  state { a: Account }\n}\n');
+    expect(declared.diagnostics.filter((d) => /unknown type/.test(d.message))).toEqual([]);
+    const near = lowerSrc('speck S {\n  state { x: Booll }\n}\n');
+    expect(near.diagnostics.some((d) => /unknown type "Booll"/.test(d.message) && /Did you mean `Bool`/.test(d.message))).toBe(true);
+  });
+
+  it('compares a stage by its declared label', () => {
+    const src = `speck DeployGate {
+  state { stage: Nat }
+  init { stage := 0 }
+  action RequestDeploy {
+    require stage == Approved
+    stage := Approved
+  }
+  next: RequestDeploy
+  agent {
+    stages stage {
+      Idle = 0
+      Approved = 3
+    }
+    tool request_deploy -> RequestDeploy effect act
+    await Approved {
+      signal approval
+      mode near
+      require outcome in { approve, reject! }
+      on approve -> Approved
+      on reject -> Idle
+    }
+  }
+}
+`;
+    const ir = lowerSrc(src);
+    expect(ir.diagnostics.filter((d) => d.level === 'error').map((d) => d.message)).toEqual([]);
+    const action = ir.specks[0]?.facets.behavior.actions.find((a) => a.name === 'RequestDeploy');
+    const guard = action?.statements.find((s) => s.kind === 'require');
+    expect(guard && guard.kind === 'require' ? guard.value : undefined).toMatchObject({
+      kind: 'binop',
+      right: { kind: 'int_lit', value: 3 },
+    });
+    const result = compileSource(src, { target: 'agent' });
+    expect(result.diagnostics.filter((d) => /untranslated|Did not compile/.test(d.message)).map((d) => d.message)).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+
+  it('checks declared variable types against each other', () => {
+    const src = `speck S {
+  state {
+    b: Bool
+    n: Nat
+    i: Int
+    s: String
+    r: Real
+  }
+  action Go {
+    b := n
+    n := b + 1
+    n := i
+    i := n
+    s := s + "b"
+    r := n
+    require n
+    require s
+    require n and b
+    require not b
+    n := n + 1
+    return n
+  }
+}
+`;
+    const errors = lowerSrc(src).diagnostics.filter((d) => d.level === 'error').map((d) => d.message);
+    expect(errors.some((m) => /cannot assign Nat variable "n" to Bool variable "b"/.test(m))).toBe(true);
+    expect(errors.some((m) => /arithmetic only applies to numbers/.test(m))).toBe(true);
+    expect(errors.some((m) => /cannot assign Int variable "i" to Nat variable "n"/.test(m))).toBe(true);
+    expect(errors.some((m) => /require expects a Bool, got Nat variable "n"/.test(m))).toBe(true);
+    expect(errors.some((m) => /require expects a Bool, got String variable "s"/.test(m))).toBe(true);
+    expect(errors.some((m) => /and expects a Bool, got Nat variable "n"/.test(m))).toBe(true);
+    expect(errors.some((m) => /cannot assign Int variable "n" to Int/.test(m))).toBe(false);
+    expect(errors.some((m) => /cannot assign a string to String/.test(m))).toBe(false);
+    expect(errors.some((m) => /Real/.test(m))).toBe(false);
+    expect(errors.some((m) => /not expects a Bool/.test(m))).toBe(false);
+  });
+
+  it('rejects a top-level ensure and keeps postcondition', () => {
+    expect(() => parseSpeckContent('speck S {\n  ensure Go: n > 0\n  state { n: Nat }\n}\n')).toThrow(/Parse error at line 2, column \d+: "ensure" is not a Speckl statement/);
+    expect(() => parseSpeckContent('ensure Go: n > 0\nspeck S {\n  state { n: Nat }\n}\n')).toThrow(/"ensure" is not a Speckl statement/);
+    const inside = lowerSrc('speck S {\n  state { n: Nat }\n  action Go {\n    ensure n > 0\n    postcondition: n > 0\n  }\n}\n');
+    const diag = inside.diagnostics.find((d) => /unrecognized statement "ensure n > 0"/.test(d.message));
+    expect(diag?.line).toBe(4);
+    expect(diag?.column).toBeGreaterThan(0);
+    expect(diag?.message).toMatch(/postcondition/);
+    expect(inside.diagnostics.some((d) => /postcondition: n > 0/.test(d.message) && d.level === 'error')).toBe(false);
+  });
+
+  it('rejects junk in an action with a line and column', () => {
+    const ir = lowerSrc('speck S {\n  state { n: Nat }\n  action Go {\n    bogus stuff\n    n := 1\n  }\n}\n');
+    const diag = ir.diagnostics.find((d) => /unrecognized statement "bogus stuff"/.test(d.message));
+    expect(diag?.level).toBe('error');
+    expect(diag?.line).toBe(4);
+    expect(diag?.column).toBeGreaterThan(0);
+    expect(presentDiagnostic({ level: 'error', message: diag!.message, line: diag!.line, column: diag!.column })).toMatch(/^Line 4, column \d+:/);
+    const kept = lowerSrc('speck S {\n  state { n: Nat }\n  action Go {\n    for x in n { n := 1 }\n    helper()\n    a.b := 1\n  }\n}\n');
+    expect(kept.diagnostics.filter((d) => d.level === 'error')).toEqual([]);
+  });
+
+  it('rejects a stage number, a digit name, and a keyword name', () => {
+    const stage = lowerSrc(`speck S {
+  state { stage: Nat }
+  action Go {
+    stage := 99
+  }
+  agent {
+    stages stage {
+      Idle = 0
+      Approved = 3
+    }
+  }
+}
+`);
+    const bad = stage.diagnostics.find((d) => /stage value 99 is not a declared stage/.test(d.message));
+    expect(bad?.line).toBe(4);
+    expect(bad?.message).toMatch(/Idle = 0/);
+    const ok = lowerSrc('speck S {\n  state { stage: Nat }\n  action Go { stage := 0 }\n  agent { stages stage { Idle = 0 } }\n}\n');
+    expect(ok.diagnostics.filter((d) => /stage value/.test(d.message))).toEqual([]);
+    expect(() => parseSpeckContent('speck S {\n  state { 2x: Bool }\n}\n')).toThrow(/Parse error at line 2, column \d+: state variable "2x" is invalid/);
+    expect(() => parseSpeckContent('speck S {\n  state { state: Bool }\n}\n')).toThrow(/state variable "state" is a keyword/);
+    expect(() => parseSpeckContent('speck S {\n  state { require: Bool }\n}\n')).toThrow(/state variable "require" is a keyword/);
+    expect(() => parseSpeckContent('speck action {\n  state { x: Bool }\n}\n')).toThrow(/speck name "action" is a keyword/);
+  });
+
+  it('reports an emoji as a code point on its real line', () => {
+    const src = 'speck S {\n  state { n: Nat }\n  action Go {\n    n := 1😀\n  }\n}\n';
+    const ir = lowerSrc(src);
+    const diag = ir.diagnostics.find((d) => /unexpected character U\+1F600/.test(d.message));
+    expect(diag?.level).toBe('error');
+    expect(diag?.line).toBe(4);
+    expect(diag?.column).toBeGreaterThan(1);
+    expect(diag?.message).not.toMatch(/\\ud83d|1:6/);
+    expect(presentDiagnostic({ level: 'error', message: diag!.message, line: diag!.line, column: diag!.column })).toMatch(/^Line 4, column \d+: unexpected character U\+1F600/);
+  });
+
+  it('points an agent target error at the bad stage, not the block header', () => {
+    const src = `speck S {
+  state { stage: Nat }
+  action Go { stage := 1 }
+  agent {
+    stages stage { Idle = 0, Approved = 1 }
+    await Approved {
+      signal approval
+      mode near
+      require outcome in { approve }
+      on approve -> Aprovd
+    }
+  }
+}
+`;
+    const ir = lowerSrc(src);
+    const diag = ir.diagnostics.find((d) => /unknown target stage/.test(d.message));
+    const lineNo = src.split('\n').findIndex((l) => l.includes('Aprovd')) + 1;
+    const line = src.split('\n')[lineNo - 1];
+    expect(diag?.line).toBe(lineNo);
+    expect(diag?.column).toBe(line.indexOf('Aprovd') + 1);
+    expect(diag?.line).not.toBe(src.split('\n').findIndex((l) => l.includes('agent {')) + 1);
+    const shown = presentDiagnostic({ level: 'error', message: diag!.message, line: diag!.line, column: diag!.column });
+    expect(shown).toMatch(new RegExp(`^Line ${lineNo}, column \\d+:`));
+  });
+
+  it('explains an untranslated-identifier failure in plain English', () => {
+    const source = 'speck S {\n  state { owner: String }\n  action Go { owner := nil }\n}\n';
+    const explained = explainTargetError(source, '-t agent: the generated machine has untranslated identifiers in Go (nil); its guards would not match the spec, so no rails were emitted');
+    expect(explained.message).toMatch(/left Go \(nil\) untranslated/);
+    expect(explained.message).not.toMatch(/FIXME/);
+    expect(explained.line).toBe(3);
+    expect(explained.column).toBeGreaterThan(1);
+    const bare = explainTargetError('speck S {}', '-t agent: emitted JavaScript machine failed a syntax check');
+    expect(bare.message).toMatch(/could not finish this target/);
   });
 });

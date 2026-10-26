@@ -1,4 +1,5 @@
 speck AccountLedger {
+    type PendingTransfer
     // Naive TigerBeetle account ledger — single-account balance tracking
     // Demonstrates Set and Map types with v0.3 imperative syntax
 

@@ -81,7 +81,10 @@ body {
   background-image: radial-gradient(rgba(200, 121, 65, 0.07) 1px, transparent 1px);
   background-size: 22px 22px;
 }
-:focus-visible { outline: 3px solid var(--copper); outline-offset: 2px; }
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--copper) 70%, transparent);
+  outline-offset: 1px;
+}
 .skip {
   position: absolute;
   left: 8px;
@@ -111,6 +114,7 @@ body {
   border-radius: 12px;
 }
 #app {
+  position: relative;
   min-height: 100%;
   display: flex;
   flex-direction: column;
@@ -145,6 +149,7 @@ h1 {
   letter-spacing: -0.02em;
 }
 .lede { margin: 0; color: var(--muted); max-width: 46rem; }
+.toolbar { position: relative; z-index: 2; }
 .mast-actions, .toolbar, .toolbar-controls, .pane-bar, .dialog-actions, .quick {
   display: flex;
   flex-wrap: wrap;
@@ -191,12 +196,12 @@ select, textarea, pre {
 }
 select { min-height: 40px; padding: 6px 10px; max-width: 100%; }
 .banner {
-  position: static;
-  z-index: 1;
-  top: auto;
-  left: auto;
-  transform: none;
-  width: min(42rem, 100%);
+  position: absolute;
+  z-index: 4;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: auto;
   margin: 0;
   padding: 10px 14px;
   border-radius: 10px;
@@ -205,12 +210,8 @@ select { min-height: 40px; padding: 6px 10px; max-width: 100%; }
   color: var(--ink);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   box-sizing: border-box;
-  min-height: 4.75rem;
 }
-.banner[hidden] {
-  display: block;
-  visibility: hidden;
-}
+.banner[hidden] { display: none; }
 #examples button {
   flex-direction: column;
   align-items: flex-start;
@@ -277,8 +278,9 @@ textarea, pre {
 }
 textarea { resize: none; width: 100%; }
 pre { overflow: auto; white-space: pre; }
-#output.stale { opacity: 0.55; }
-.stale-note { margin: 0; color: var(--faint); font-size: 14px; }
+#output.stale { opacity: 0.32; }
+.file-bar.dimmed { opacity: 0.4; }
+.stale-note { margin: 0; color: var(--warning); font-size: 14px; font-weight: 650; }
 #diagnostics {
   list-style: none;
   margin: 0;
@@ -301,7 +303,12 @@ pre { overflow: auto; white-space: pre; }
   overflow-wrap: anywhere;
   font: 13.5px/1.4 var(--sans);
 }
-#diagnostics .error { color: var(--error); border-color: color-mix(in srgb, var(--error) 55%, var(--line)); }
+#diagnostics .error {
+  color: var(--error);
+  font-weight: 650;
+  border-color: color-mix(in srgb, var(--error) 70%, var(--line));
+  background: color-mix(in srgb, var(--error) 14%, var(--bg));
+}
 #diagnostics .warning { color: var(--warning); }
 #diagnostics .info { color: var(--info); }
 #diagnostics button { cursor: pointer; }

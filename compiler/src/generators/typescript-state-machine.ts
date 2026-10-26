@@ -13,6 +13,26 @@ import path from 'path';
  *  - Verification stubs
  */
 
+/** Stage labels in force while one speck is emitted. Compared as their Nat values. */
+let activeStageLabels = new Map<string, number>();
+
+function stageLabelsOf(speck: SpeckNode): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const m of speck.members) {
+    if (m.type !== 'agent') continue;
+    const labels = (m as { stages?: { labels: { name: string; value: number }[] } }).stages?.labels ?? [];
+    for (const label of labels) map.set(label.name, label.value);
+  }
+  return map;
+}
+
+function applyStageLabels(expr: string, labels: Map<string, number>): string {
+  if (labels.size === 0 || !expr) return expr;
+  const names = [...labels.keys()].sort((a, b) => b.length - a.length);
+  const re = new RegExp('\\b(?:' + names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'g');
+  return expr.replace(re, (name) => String(labels.get(name)));
+}
+
 export function generateTypeScriptStateMachine(ast: AST, outputDir: string): void {
   for (const speck of ast.specks) {
     const code = emitSpeck(speck);
@@ -24,6 +44,7 @@ export function generateTypeScriptStateMachine(ast: AST, outputDir: string): voi
 }
 
 function emitSpeck(speck: SpeckNode): string {
+  activeStageLabels = stageLabelsOf(speck);
   const deduped = new Map<string, MemberNode>();
   for (const m of speck.members) {
     const key = memberKey(m);
@@ -269,7 +290,7 @@ function emitSpeck(speck: SpeckNode): string {
         const name = cleanName(a.name);
         const expr = cleanExpr(a.expr);
         // Replace bare state literals with enum refs in init
-        const enumRef = replaceStateWithEnum(expr, stateEnumName, allKnownStateValues);
+        const enumRef = replaceStateWithEnum(applyStageLabels(expr, activeStageLabels), stateEnumName, allKnownStateValues);
         return `    this.${name} = ${enumRef};`;
       }).join('\n')
     : '';
@@ -754,6 +775,11 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
     stringLiterals.push(match);
     return `__STR_LIT_${stringLiterals.length - 1}__`;
   });
+
+  // Stage labels are Nat constants (`stage == Approved` is `stage == 3`).
+  // Do this after strings are hidden and before enum substitution, which
+  // would turn the label into a string enum the stage number never equals.
+  ts = applyStageLabels(ts, activeStageLabels);
 
   // Step 2b: Replace state enum literals with enum refs BEFORE identifier replacement
   const allStateValues = new Set<string>(knownStateValues);

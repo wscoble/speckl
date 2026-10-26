@@ -77,6 +77,51 @@ function inferColumn(text: string, message: string): number | undefined {
   return word ? word.index + 1 : undefined;
 }
 
+function codePointAt(source: string, message: string): { line: number; column: number } | undefined {
+  const hex = /U\+([0-9A-Fa-f]{4,6})/.exec(message);
+  if (!hex) return undefined;
+  const glyph = String.fromCodePoint(parseInt(hex[1], 16));
+  const idx = source.indexOf(glyph);
+  if (idx < 0) return undefined;
+  const line = source.slice(0, idx).split('\n').length;
+  const lineStart = source.lastIndexOf('\n', idx - 1) + 1;
+  return { line, column: idx - lineStart + 1 };
+}
+
+function nameAt(source: string, name: string): { line: number; column: number } | undefined {
+  const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const match = re.exec(lines[i]);
+    if (match) return { line: i + 1, column: match.index + 1 };
+  }
+  return undefined;
+}
+
+/**
+ * A generator failure the page can show. Untranslated identifiers and other
+ * target errors are rewritten in plain English and given a line when the
+ * spec still contains the name.
+ */
+export function explainTargetError(source: string, message: string): BrowserDiagnostic {
+  const untranslated = /untranslated identifiers in ([^;]+)/.exec(message);
+  if (untranslated) {
+    const detail = untranslated[1].trim();
+    const plain = `The generated machine left ${detail} untranslated, so no rails were emitted. Compare a stage with its declared label or number, and use a name the spec declares.`;
+    const name = /\(([^),]+)/.exec(detail)?.[1]?.trim();
+    const hit = name ? nameAt(source, name) : undefined;
+    return { level: 'error', message: plain, ...(hit ?? {}) };
+  }
+  const point = codePointAt(source, message);
+  if (point) return { level: 'error', message: message.trim(), ...point };
+  const located = locateDiagnostic(source, message);
+  if (located.line) return located;
+  if (message.startsWith('-t ') || /syntax check|generated machine|generated JavaScript/.test(message)) {
+    return { level: 'error', message: `The compiler could not finish this target. ${message.trim()}` };
+  }
+  return located;
+}
+
 export function locateDiagnostic(source: string, message: string): BrowserDiagnostic {
   const cleaned = message.trim() || 'The compiler failed.';
   const at = cleaned.match(/Parse error at line (\d+)(?:, column (\d+))?/i) ?? cleaned.match(/\bline (\d+)\b/i);

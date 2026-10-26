@@ -203,26 +203,29 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
       continue;
     }
 
-    // A misspelled keyword (`requires`) or a bare guard (`stage == 1`, `not
-    // isOn`) used to be stored as an ifblock and then dropped. Those are
-    // errors. Fragments of an if/else the block parser did not collect
-    // (`else ...`, `}`) stay raw text, as do other forms with no IR yet.
+    // A misspelled keyword (`requires`), a bare guard (`stage == 1`, `not
+    // isOn`), or any other text that is not a statement is an error.
+    // Fragments of an if/else the block parser did not collect
+    // (`else ...`, `}`) stay raw text. `for`, bare calls, and dotted
+    // assignments were kept above.
+    const sourceLine = lineNumbers?.[i];
+    const postWord = trimmed.match(/^(ensure|ensures|post)\b/);
     const word = trimmed.match(/^[A-Za-z_]\w*/)?.[0];
-    const suggestion = word ? suggestKeyword(word) : undefined;
-    const fragment = /^(else\b|[{}])/.test(trimmed);
-    const droppedGuard = !fragment && !trimmed.includes('{')
-      && (/(==|!=|>=|<=)/.test(trimmed) || /^not\s+/.test(trimmed));
-    if (suggestion || droppedGuard) {
-      const sourceLine = lineNumbers?.[i];
-      stmts.push({
-        type: 'unrecognized',
-        raw: trimmed,
-        ...(sourceLine ? { line: sourceLine } : {}),
-        ...(suggestion ? { suggestion } : {}),
-      });
+    const suggestion = postWord ? 'postcondition' : word ? suggestKeyword(word) : undefined;
+    // A `{` still belongs to a conditional the block parser did not collect
+    // (Raft writes `path[i].term == ... {`). That stays raw text. `bogus stuff`
+    // has no brace and is an error.
+    const fragment = /^(else\b|[{}])/.test(trimmed) || trimmed.includes('{');
+    if (fragment) {
+      stmts.push({ type: 'ifblock', raw: trimmed });
       continue;
     }
-    stmts.push({ type: 'ifblock', raw: trimmed });
+    stmts.push({
+      type: 'unrecognized',
+      raw: trimmed,
+      ...(sourceLine ? { line: sourceLine } : {}),
+      ...(suggestion ? { suggestion } : {}),
+    });
   }
 
   return stmts;

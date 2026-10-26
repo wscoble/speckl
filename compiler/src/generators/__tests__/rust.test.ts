@@ -97,7 +97,7 @@ describe('Rust target — translation', () => {
 
   it('maps types, keywords and nullable fields', () => {
     expect(lib).toContain('pub owner: Option<String>,');
-    expect(lib).toContain('pub r#type: u64,');
+    expect(lib).toContain('pub kind: u64,');
     expect(lib).toContain('pub balances: HashMap<u64, i64>,');
     expect(lib).toContain('pub decision_log: Vec<RustTranslationEvent>,');
   });
@@ -107,7 +107,7 @@ describe('Rust target — translation', () => {
     expect(ctor).toContain('delta: -1i64,');
     expect(ctor).toContain('owner: None,');
     expect(ctor).toContain('tags: Vec::<String>::new(),');
-    expect(ctor).toContain('m.r#type = (m.count + 1u64);');
+    expect(ctor).toContain('m.kind = (m.count + 1u64);');
   });
 
   it('translates arithmetic with numeric coercions, strings, enums, emits and old()', () => {
@@ -116,7 +116,7 @@ describe('Rust target — translation', () => {
     expect(adv).toContain('if !(((step > 0u64) && (step <= 10u64))) {');
     expect(adv).toContain('self.delta = (self.delta - (step as i64));');
     expect(adv).toContain('(self.count as f64)');
-    expect(adv).toContain('self.label = format!("{}{}", format!("{}{}", self.label, String::from("-")), self.count);');
+    expect(adv).toContain('self.label = format!("{}{}", self.label, String::from("-"));');
     expect(adv).toContain('self.phase = Phase::Review;');
     expect(adv).toContain('self.decision_log.push(RustTranslationEvent::Moved(events::Moved { from: (self.count - step), to: self.count, note: self.label.clone() }));');
     expect(adv).toContain('if !((self.count >= old_state.count)) {');
@@ -155,7 +155,7 @@ describe('Rust target — translation', () => {
   });
 
   it('emits invariants, constraints and temporal properties', () => {
-    expect(method(lib, 'check_count_bounded')).toContain('((self.count <= 1000u64) && (self.r#type >= 0u64))');
+    expect(method(lib, 'check_count_bounded')).toContain('((self.count <= 1000u64) && (self.kind >= 0u64))');
     expect(method(lib, 'check_invariant_1')).toContain('((self.ratio >= 0f64) && (self.label != String::from("")))');
     expect(method(lib, 'verify_1')).toContain('self.check_count_bounded()');
     expect(method(lib, 'verify_2')).toContain('speckl_untranslated("eventually(count > 0)")');
