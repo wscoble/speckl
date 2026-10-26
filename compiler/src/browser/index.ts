@@ -18,6 +18,7 @@ export type { DecodeResult } from './share.js';
 export {
   binaryDiagnostic,
   cleanErrorMessage,
+  compilerLoadFailureMessage,
   dedupeDiagnostics,
   emptyDiagnostic,
   fromIR,

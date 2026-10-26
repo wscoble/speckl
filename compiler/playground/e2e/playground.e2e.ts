@@ -58,7 +58,7 @@ test('editing the spec updates diagnostics and output', async ({ page }) => {
   await page.getByRole('button', { name: 'Toggle switch' }).click();
   await page.getByRole('button', { name: 'Discard and load' }).click();
   await expect(page.locator('#output')).toContainText(/ToggleSwitch|toggle/i);
-  await expect(page.locator('#diagnostics')).toContainText('no `agent');
+  await expect(page.locator('#diagnostics')).toContainText('no agent block');
 });
 
 test('empty editor and deleting the spec stay readable', async ({ page }) => {
@@ -358,6 +358,8 @@ test('review findings: errors, empty editor, target files, and polish', async ({
   await settled(page);
   await expect(page.locator('.lede')).toContainText('AGENTS.md');
   await expect(page.getByRole('link', { name: 'Language reference' })).toHaveAttribute('href', /speckdl\/SPEC\.md/);
+  await expect(page.getByRole('link', { name: 'Language reference' })).toHaveAttribute('target', '_blank');
+  await expect(page.getByRole('link', { name: 'Source' })).toHaveAttribute('rel', /noopener/);
   await expect(page.getByRole('link', { name: 'Docs' })).toHaveAttribute('href', /speckl-by-example\.md/);
   await expect(page.locator('#examples')).toContainText('Call-bound sign-off');
 
@@ -370,7 +372,7 @@ test('review findings: errors, empty editor, target files, and polish', async ({
   await expect(page.locator('#spec')).toHaveValue(/isOn := false/);
 
   const base = await page.locator('#spec').inputValue();
-  await page.locator('#spec').fill(`${base}\nthis is trailing garbage }}} ((( !!!\n`);
+  await page.locator('#spec').fill(`${base}\nthis is trailing garbage !!!\n`);
   await expect(page.locator('#diagnostics')).toContainText(/unexpected text after end of speck/);
   await expect(page.locator('#status')).not.toContainText(/Compiled \d+ file/);
 
@@ -407,12 +409,63 @@ test('review findings: errors, empty editor, target files, and polish', async ({
 
   await page.locator('#copy-file').click();
   await expect(page.locator('#copy-file')).toHaveText('Copied');
-  await expect(page.locator('#copy-file')).toHaveText('Copy file', { timeout: 5000 });
+  await expect(page.locator('#copy-file')).toHaveText('Copy file', { timeout: 3200 });
 
   await page.goto('/#garbage');
   await expect(page.locator('#banner')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('');
   const position = await page.locator('#banner').evaluate((el) => getComputedStyle(el).position);
   expect(position).toBe('fixed');
+});
+
+test('round 2: unclosed blocks, stale output, and a failed compiler load', async ({ page }) => {
+  const html = await (await page.request.get('/')).text();
+  expect(html).toContain("Couldn't load the compiler. Refresh the page.");
+  expect(html).toContain('no-cache');
+
+  await page.goto('/');
+  await settled(page);
+  await page.getByRole('button', { name: 'Toggle switch' }).click();
+  await settled(page);
+  await expect(page.locator('#diagnostics')).toContainText(/no agent block/);
+  await expect(page.locator('#diagnostics')).toContainText(/does not drive an agent/);
+
+  await page.getByRole('button', { name: 'DeployGate' }).click();
+  await settled(page);
+  const full = await page.locator('#spec').inputValue();
+  await expect(page.locator('#output')).toContainText('Call-bound');
+  await page.locator('#spec').fill(full.split('\n').slice(0, 40).join('\n'));
+  await expect(page.locator('#diagnostics')).toContainText(/missing `}`: block opened at line 1 is never closed/);
+  await expect(page.locator('#status')).toContainText('Did not compile');
+  await expect(page.locator('#status')).not.toContainText(/Compiled \d+ file/);
+  await expect(page.locator('#stale')).toBeVisible();
+  await expect(page.locator('#output')).toHaveClass(/stale/);
+  await expect(page.locator('#output')).toContainText('Call-bound');
+
+  const lines = full.split('\n');
+  const brace = lines.findIndex((line) => line.includes('action RunChecks'));
+  lines[brace] = lines[brace].replace('action RunChecks {', 'action RunChecks {{');
+  await page.locator('#spec').fill(lines.join('\n'));
+  await expect(page.locator('#diagnostics')).toContainText(/unexpected `\{`/);
+  await expect(page.locator('#diagnostics')).toContainText(`line ${brace + 1}`);
+
+  lines[brace] = '    action {';
+  await page.locator('#spec').fill(lines.join('\n'));
+  await expect(page.locator('#diagnostics')).toContainText(/action is missing a name/);
+  await expect(page.locator('#diagnostics')).not.toContainText('undeclared variable "checksPassed"');
+
+  await page.setViewportSize({ width: 900, height: 500 });
+  const lede = await page.locator('.lede').evaluate((el) => getComputedStyle(el).webkitLineClamp);
+  expect(lede).toBe('1');
+  await page.setViewportSize({ width: 1280, height: 800 });
+});
+
+test('a missing compiler worker says to refresh', async ({ page }) => {
+  await page.route('**/*worker*', (route) => route.abort());
+  await page.goto('/');
+  await expect(page.locator('body')).toContainText(/Couldn't load the compiler/);
+  const bag = page as Page & { __errors?: string[] };
+  bag.__errors = (bag.__errors ?? []).filter((entry) => !/Failed to load resource/.test(entry));
 });
 
 test('records first compiled output and gzipped bundle size', async ({ page }) => {

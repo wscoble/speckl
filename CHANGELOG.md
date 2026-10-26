@@ -191,7 +191,11 @@ alias.
   `init` still records `:=` only; `examples/ToggleSwitch.speckdl` now
   assigns with `:=`, so that example's generated init changes.
   Playground share links are `#s2.` plus a checksum. Older `#s1.` links still
-  open.
+  open. An unclosed block is an error: missing closing brace, block opened at
+  line N is never closed. A repeated speck name, a repeated state variable,
+  and a repeated stage number are errors on that line. An action with no name
+  is an error on that line. A speck name that is missing, or not letters,
+  digits, underscore, or hyphen, is an error on that line.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as

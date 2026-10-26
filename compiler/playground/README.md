@@ -24,6 +24,8 @@ npm run playground:build
 
 Upload `compiler/playground/dist/`. Asset URLs are relative, so the folder can live at a site root or a subpath such as `/play/`. Any static host works. There is no server.
 
+Serve `index.html` with `Cache-Control: no-cache` (revalidate on every load). The script and style URLs are content-hashed, so those files can be cached for a long time (`Cache-Control: public, max-age=31536000, immutable`). If `index.html` is cached across a deploy, the browser asks for the previous hashed files, they 404, and the page stays on “Loading the Speckl compiler…”. A failed script or worker load now says “Couldn't load the compiler. Refresh the page.” Refresh only helps after `index.html` itself is no longer stale, which is what `no-cache` on that one file is for.
+
 `speckl.scoble.me` is not built from this repository. The existing `/demo/` page is a static walkthrough, not this playground. Putting `dist/` on that site, and linking it, is a hosting decision.
 
 ## Checks

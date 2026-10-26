@@ -416,9 +416,172 @@ export function parseSpeckFile(filePath: string): AST {
 }
 
 /**
+ * A member header. Field names such as `state: Nat` and `type: Nat` are not
+ * headers; `state {` and `type Name =` are.
+ */
+function isMemberHeader(trimmed: string): boolean {
+  return /^(?:action\b\s*(?:\{|[A-Za-z_]\w*)|event\b\s+[A-Za-z_]\w*|invariant\b\s+\S|interface\b\s+[A-Za-z_]\w*|agent\b|verify\b|state\s*\{|state\s+as\b|state\s*:\s*\{|init\s*\{|init\s*:|type\b\s+[A-Za-z_]\w*\s*=|service\b\s+\S|oneof\b\s+\S|transition\b\s+\S|provenance\b|bom\b|constraint\b|next:|input\s*:|output\s*:|component\b|speck\b)/.test(trimmed);
+}
+
+/** Source text with strings and comments removed, so braces in them do not count. */
+function visibleCode(raw: string): string {
+  let out = '';
+  let inStr = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '/' && raw[i + 1] === '/') break;
+    if (c === '/' && raw[i + 1] === '*') break;
+    if (c === '"') { inStr = true; continue; }
+    out += c;
+  }
+  return out;
+}
+
+/**
+ * Brace structure for a whole file. An unclosed `speck` or `action` used to
+ * be absorbed as raw text and the compile still succeeded. Strings and
+ * comments are ignored. A new member header while a member is still open
+ * means that member's `}` is missing.
+ */
+function assertBlocksClosed(content: string): void {
+  const lines = content.split('\n');
+  const stack: { line: number; kind: 'speck' | 'member' | 'nested' }[] = [];
+  let inBlock = false;
+  let pendingMember = 0;
+  let pendingSpeck = 0;
+
+  for (let li = 0; li < lines.length; li++) {
+    const raw = lines[li];
+    const lineNo = li + 1;
+    if (!inBlock) {
+      const trimmed = visibleCode(raw).trim();
+      if (trimmed) {
+        const isSpeck = /^speck\b/.test(trimmed);
+        const header = isMemberHeader(trimmed);
+        if (header && !isSpeck) {
+          const open = [...stack].reverse().find((frame) => frame.kind === 'member');
+          if (open) {
+            throw new Error(`Parse error at line ${open.line}: missing \`}\`: block opened at line ${open.line} is never closed (expected a \`}\` before line ${lineNo})`);
+          }
+          pendingMember = trimmed.includes('{') ? 0 : lineNo;
+        } else if (!header) {
+          pendingMember = 0;
+        }
+        if (isSpeck) pendingSpeck = trimmed.includes('{') ? 0 : lineNo;
+      }
+    }
+
+    let bracesOnLine = 0;
+    let inStr = false;
+    let lineComment = false;
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw[i];
+      if (inBlock) {
+        if (c === '*' && raw[i + 1] === '/') { inBlock = false; i++; }
+        continue;
+      }
+      // Braces after `//` still count: the printer can put code after a
+      // comment on the same line. `/*` in that comment must not swallow
+      // the rest of the file (`hooks/*.json`).
+      if (!lineComment && !inStr && c === '/' && raw[i + 1] === '/') {
+        lineComment = true;
+        continue;
+      }
+      if (lineComment) {
+        // fall through to brace counting only
+      } else if (inStr) {
+        if (c === '\\') { i++; continue; }
+        if (c === '"') inStr = false;
+        continue;
+      } else if (c === '/' && raw[i + 1] === '*') {
+        inBlock = true;
+        i++;
+        continue;
+      } else if (c === '"') {
+        inStr = true;
+        continue;
+      }
+      if (c === '{') {
+        const trimmed = visibleCode(raw).trim();
+        const isSpeck = /^speck\b/.test(trimmed);
+        const header = isMemberHeader(trimmed);
+        let kind: 'speck' | 'member' | 'nested' = 'nested';
+        let openedAt = lineNo;
+        if (pendingSpeck || (bracesOnLine === 0 && isSpeck)) {
+          kind = 'speck';
+          openedAt = pendingSpeck || lineNo;
+          pendingSpeck = 0;
+          pendingMember = 0;
+        } else if (pendingMember || (bracesOnLine === 0 && header && !isSpeck)) {
+          kind = 'member';
+          openedAt = pendingMember || lineNo;
+          pendingMember = 0;
+          if (visibleCode(raw.slice(i + 1)).trim().startsWith('{')) {
+            throw new Error(`Parse error at line ${lineNo}: unexpected \`{\` (the block on this line opens twice)`);
+          }
+        }
+        bracesOnLine++;
+        stack.push({ line: openedAt, kind });
+        continue;
+      }
+      if (c === '}') {
+        if (stack.length === 0) {
+          throw new Error(`Parse error at line ${lineNo}: unexpected \`}\` (no block is open)`);
+        }
+        stack.pop();
+        pendingMember = 0;
+        pendingSpeck = 0;
+      }
+    }
+  }
+
+  if (stack.length > 0) {
+    const structural = [...stack].reverse().find((frame) => frame.kind !== 'nested');
+    const open = structural ?? stack[0];
+    throw new Error(`Parse error at line ${open.line}: missing \`}\`: block opened at line ${open.line} is never closed (expected a \`}\` by line ${lines.length})`);
+  }
+}
+
+/** Declarations directly inside `state { }`. A repeated name is an error. */
+function assertUniqueStateVars(lines: string[], header: number, close: number): void {
+  const seen = new Map<string, number>();
+  let depth = 0;
+  for (let i = header; i <= close && i < lines.length; i++) {
+    const code = visibleCode(lines[i]);
+    let seg = '';
+    const consider = () => {
+      if (depth !== 1) { seg = ''; return; }
+      const match = seg.match(/^\s*([A-Za-z_]\w*)\s*:/);
+      if (match) {
+        const name = match[1];
+        const first = seen.get(name);
+        if (first !== undefined) {
+          throw new Error(`Parse error at line ${i + 1}: duplicate state variable "${name}" (first declared at line ${first})`);
+        }
+        seen.set(name, i + 1);
+      }
+      seg = '';
+    };
+    for (const ch of code) {
+      if (ch === '{') { consider(); depth++; }
+      else if (ch === '}') { consider(); depth--; }
+      else if (ch === ',' || ch === ';') consider();
+      else seg += ch;
+    }
+    consider();
+  }
+}
+
+/**
  * Parse SpeckDL content and return the AST
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
+  assertBlocksClosed(content);
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
 
@@ -454,9 +617,24 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     }
 
     // Handle speck definitions
-    if (line.startsWith('speck ')) {
+    if (/^speck\b/.test(line)) {
+      const header = line.match(/^speck\s+([\w-]+)\s*\{/);
+      if (!header) {
+        const tok = line.match(/^speck(?:\s+(\S+))?/);
+        const name = tok?.[1];
+        if (!name || name === '{') {
+          throw new Error(`Parse error at line ${i + 1}: speck name is missing`);
+        }
+        if (!/^[\w-]+$/.test(name)) {
+          throw new Error(`Parse error at line ${i + 1}: speck name ${JSON.stringify(name)} is invalid`);
+        }
+        throw new Error(`Parse error at line ${i + 1}: speck ${name} is missing its opening \`{\``);
+      }
       const speck = parseSpeck(lines, i);
       if (speck) {
+        if (specks.some((seen) => seen.name === speck.name)) {
+          throw new Error(`Parse error at line ${speck.startLine ?? i + 1}: duplicate speck "${speck.name}"`);
+        }
         specks.push(speck);
         // endLine is the 1-based line of the closing brace. The next index
         // to scan is that line number. Always move forward.
@@ -613,6 +791,14 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
         i++;
         continue;
       }
+    }
+
+    if (/^action\b/.test(line) && !parseActionHeader(line)) {
+      const named = line.match(/^action\s+([A-Za-z_]\w*)\b/);
+      if (!named) {
+        throw new Error(`Parse error at line ${i + 1}: action is missing a name (expected \`action Name {\`)`);
+      }
+      throw new Error(`Parse error at line ${i + 1}: action ${named[1]} is missing its opening \`{\``);
     }
 
     if (isBlockStarter && openCount > 0) {
@@ -1531,6 +1717,7 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   const headerOpens = (headerLine.match(/{/g) || []).length;
   const headerCloses = (headerLine.match(/}/g) || []).length;
   if (headerLine.includes('{') && headerOpens > 0 && headerCloses >= headerOpens) {
+    assertUniqueStateVars(lines, startIndex, startIndex);
     const inner = headerLine.slice(headerLine.indexOf('{') + 1, headerLine.lastIndexOf('}'));
     const result = parseStateBlock(inner);
     if (messageName !== undefined) result.messageName = messageName;
@@ -1538,6 +1725,7 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   }
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
+  assertUniqueStateVars(lines, startIndex, endIndex);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
   // State blocks separate fields with commas or newlines/semicolons.
   // Strip trailing commas (they are field separators, not continuations)
@@ -2715,25 +2903,36 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       const openOnLine = (raw.match(/{/g) || []).length;
       const closeOnLine = (raw.match(/}/g) || []).length;
       let inner: string[] = [];
+      let labelBase = startIndex + 2 + i;
       if (closeOnLine >= openOnLine && openOnLine > 0) {
-        // single-line stages block — unlikely but handle
+        // single-line stages block — labels share the header line
         const m = line.match(/\{([^}]*)\}/);
-        inner = m ? [m[1]] : [];
+        inner = m ? m[1].split(',') : [];
         i++;
       } else {
         const subEnd = findBlockEnd(bodyLines, i + 1, openOnLine);
         inner = bodyLines.slice(i + 1, subEnd);
+        labelBase = startIndex + 3 + i;
         i = subEnd + 1;
       }
       const labels: { name: string; value: number }[] = [];
-      for (const il of inner) {
+      const seenStageValues = new Map<number, string>();
+      for (let j = 0; j < inner.length; j++) {
+        const il = inner[j];
         const t = il.trim();
         if (!t || t.startsWith('//') || t === '}') continue;
         const lm = t.match(/^(\w+)\s*=\s*(\d+)\s*,?$/);
         if (!lm) {
           throw new Error(`Parse error in agent stages: expected Name = n, got ${JSON.stringify(t)}`);
         }
-        labels.push({ name: lm[1], value: parseInt(lm[2], 10) });
+        const value = parseInt(lm[2], 10);
+        const lineNo = labelBase + j;
+        const first = seenStageValues.get(value);
+        if (first !== undefined) {
+          throw new Error(`Parse error at line ${lineNo}: duplicate stage number ${value} ("${first}" and "${lm[1]}")`);
+        }
+        seenStageValues.set(value, lm[1]);
+        labels.push({ name: lm[1], value });
       }
       stages = { variable, labels };
       continue;

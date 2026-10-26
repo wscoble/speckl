@@ -169,8 +169,12 @@ export function noSpeckDiagnostic(): BrowserDiagnostic {
 export function noAgentDiagnostic(): BrowserDiagnostic {
   return {
     level: 'info',
-    message: 'This spec has no `agent { }` block, so there is no AGENTS.md or hook. The other compiled files are still listed.',
+    message: 'This spec has no agent block, so it does not produce AGENTS.md or a hook. That is normal for a state machine that does not drive an agent. The other compiled files are still listed.',
   };
+}
+
+export function compilerLoadFailureMessage(): string {
+  return "Couldn't load the compiler. Refresh the page. Your spec is still in the editor.";
 }
 
 export function z3InfoDiagnostic(): BrowserDiagnostic {

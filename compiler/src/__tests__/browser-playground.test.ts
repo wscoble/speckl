@@ -8,6 +8,7 @@ import {
   RequestGate,
   applyHash,
   compileSource,
+  compilerLoadFailureMessage,
   cursorLineCol,
   decodeBase64Url,
   decodeSpecHash,
@@ -309,7 +310,9 @@ describe('compileSource', () => {
     expect(machine.files.some((f) => f.path.endsWith('.ts'))).toBe(true);
     expect(machine.files.some((f) => f.path.endsWith('AGENTS.md'))).toBe(false);
     const all = compileSource(toggle, { target: 'all' });
-    expect(all.diagnostics.some((d) => /no `agent \{ \}` block/.test(d.message))).toBe(true);
+    expect(all.diagnostics.some((d) => /no agent block/.test(d.message))).toBe(true);
+    expect(all.diagnostics.some((d) => /does not drive an agent/.test(d.message))).toBe(true);
+    expect(compilerLoadFailureMessage()).toMatch(/Couldn't load the compiler/);
   });
 
   it('reports an empty editor, garbage, and a parse error on a line', () => {

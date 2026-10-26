@@ -26,11 +26,15 @@ describe('trailing text after a speck', () => {
   const speck = 'speck S {\n  state { x: Nat }\n}\n';
 
   it('is an error on that line', () => {
-    expect(() => parseSpeckContent(speck + 'this is trailing garbage }}} ((( !!!\n')).toThrow(
+    expect(() => parseSpeckContent(speck + 'this is trailing garbage !!!\n')).toThrow(
       /Parse error at line 4: unexpected text after end of speck/,
     );
+  });
+
+  it('reports a stray brace as an imbalance, not as trailing text', () => {
+    expect(() => parseSpeckContent(speck + '}\n')).toThrow(/Parse error at line 4: unexpected `}`/);
     const many = speck + Array.from({ length: 80 }, () => 'a{').join('\n') + '\n';
-    expect(() => parseSpeckContent(many)).toThrow(/Parse error at line 4: unexpected text after end of speck/);
+    expect(() => parseSpeckContent(many)).toThrow(/missing `}`: block opened at line 4 is never closed/);
   });
 
   it('still allows a comment, a blank line, an import, and another speck', () => {
@@ -132,6 +136,84 @@ describe('unknown types and undeclared names', () => {
 `;
     const ir = lowerSrc(src);
     expect(ir.diagnostics.filter((d) => /undeclared/.test(d.message))).toEqual([]);
+  });
+});
+
+describe('unclosed blocks and structural duplicates', () => {
+  it('rejects a speck that is never closed', () => {
+    const src = 'speck S {\n  state { x: Nat }\n  action Go {\n    x := 1\n';
+    expect(() => parseSpeckContent(src)).toThrow(/missing `}`: block opened at line 3 is never closed/);
+    const result = compileSource(src, { target: 'typescript' });
+    expect(result.ok).toBe(false);
+    expect(result.files).toEqual([]);
+    expect(result.diagnostics.some((d) => d.line === 3 && /never closed/.test(d.message))).toBe(true);
+  });
+
+  it('rejects an action whose closing brace was deleted', () => {
+    const src = `speck S {
+  state { x: Nat }
+  action Go {
+    x := 1
+  action Stop { x := 0 }
+}
+`;
+    expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 3: missing `}`: block opened at line 3 is never closed \(expected a `}` before line 5\)/);
+  });
+
+  it('rejects a doubled action brace on that line', () => {
+    const src = `speck S {
+  state { x: Nat }
+  action RunChecks {{
+    x := 1
+  }
+}
+`;
+    expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 3: unexpected `\{`/);
+  });
+
+  it('rejects a nameless action at that line', () => {
+    const src = `speck S {
+  action {
+    checksPassed := true
+  }
+}
+`;
+    expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 2: action is missing a name/);
+    const result = compileSource(src, { target: 'typescript' });
+    expect(result.diagnostics.some((d) => /undeclared variable/.test(d.message))).toBe(false);
+  });
+
+  it('rejects two specks with the same name', () => {
+    const src = 'speck S {\n  state { x: Nat }\n}\nspeck S {\n  state { y: Nat }\n}\n';
+    expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 4: duplicate speck "S"/);
+  });
+
+  it('rejects a repeated state variable on its line', () => {
+    const src = 'speck S {\n  state {\n    stage: Nat\n    stage: Bool\n  }\n}\n';
+    expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 4: duplicate state variable "stage"/);
+    expect(() => parseSpeckContent('speck S {\n  state { x: Nat, x: Bool }\n}\n')).toThrow(/duplicate state variable "x"/);
+  });
+
+  it('rejects a repeated stage number on its line', () => {
+    const src = `speck S {
+  state { stage: Nat }
+  action Go { stage := 1 }
+  agent {
+    stages stage {
+      Idle = 1
+      ChecksGreen = 1
+    }
+    tool go -> Go effect act
+  }
+}
+`;
+    expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 7: duplicate stage number 1 \("Idle" and "ChecksGreen"\)/);
+  });
+
+  it('says when a speck name is missing or invalid', () => {
+    expect(() => parseSpeckContent('speck\n')).toThrow(/Parse error at line 1: speck name is missing/);
+    expect(() => parseSpeckContent('speck ../../etc/passwd {\n  state { x: Nat }\n}\n')).toThrow(/Parse error at line 1: speck name "\.\.\/\.\.\/etc\/passwd" is invalid/);
+    expect(() => parseSpeckContent('speck Dëplöy日本 {\n  state { x: Nat }\n}\n')).toThrow(/Parse error at line 1: speck name "Dëplöy日本" is invalid/);
   });
 });
 

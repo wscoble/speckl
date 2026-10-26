@@ -1,4 +1,5 @@
 import {
+  compilerLoadFailureMessage,
   presentDiagnostic,
   timeoutMessage,
   workerCrashMessage,
@@ -37,6 +38,7 @@ const banner = document.querySelector<HTMLElement>('#banner')!;
 const diagnostics = document.querySelector<HTMLElement>('#diagnostics')!;
 const errorChip = document.querySelector<HTMLButtonElement>('#error-chip')!;
 const output = document.querySelector<HTMLElement>('#output')!;
+const staleNote = document.querySelector<HTMLElement>('#stale')!;
 const trunc = document.querySelector<HTMLElement>('#trunc')!;
 const fileSelect = document.querySelector<HTMLSelectElement>('#file')!;
 const targetSelect = document.querySelector<HTMLSelectElement>('#target')!;
@@ -63,6 +65,10 @@ function compileTimeout(): number {
 let loadedSource = '';
 let lastPushAt = 0;
 let fileMap = new Map<string, OutputFile>();
+/** Files from the last compile that succeeded. A later failure must not present them as current. */
+let lastGood: OutputFile[] | null = null;
+let sawWorkerMessage = false;
+let compilerMissing = false;
 let worker: Worker | null = null;
 /** Blob URL of the bundled worker, so a cancelled compile can spawn again offline. */
 let workerObjectUrl: string | null = null;
@@ -121,8 +127,9 @@ function persist(source: string, reason: HistoryReason): void {
   // The default example and example switches stay off the URL. A multi-kilobyte
   // hash is written when the user edits, or when they click Share.
   if (reason === 'boot') {
-    const url = location.hash && location.hash !== '#' ? bare + location.hash : bare;
-    history.replaceState(state, '', url);
+    const hash = location.hash;
+    const keep = !!hash && hash !== '#' && applyHash(hash, '').action === 'load';
+    history.replaceState(state, '', keep ? bare + hash : bare);
     return;
   }
   if (reason === 'example') {
@@ -242,8 +249,15 @@ function render(result: BrowserCompileResult, state: 'done' | 'error' | 'timeout
     errorChip.onclick = null;
   }
 
-  fileMap = new Map(result.files.map((f) => [f.path, f]));
-  const ordered = filesForTarget(result.files.map((f) => f.path), targetSelect.value);
+  const failed = state === 'timeout' || errors > 0;
+  if (!failed && result.files.length > 0) lastGood = result.files;
+  const showingStale = failed && !!lastGood && lastGood.length > 0;
+  const files = showingStale ? lastGood! : failed ? [] : result.files;
+  staleNote.hidden = !showingStale;
+  output.classList.toggle('stale', showingStale);
+
+  fileMap = new Map(files.map((f) => [f.path, f]));
+  const ordered = filesForTarget(files.map((f) => f.path), targetSelect.value);
   fileSelect.replaceChildren();
   if (ordered.length === 0) {
     const opt = document.createElement('option');
@@ -293,12 +307,26 @@ async function cacheWorkerSource(): Promise<void> {
   if (!import.meta.env.PROD) return;
   try {
     const res = await fetch(workerUrl);
-    if (!res.ok) return;
+    if (!res.ok) {
+      compilerMissing = true;
+      return;
+    }
     const code = await res.text();
     workerObjectUrl = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
   } catch {
-    // The module URL still works until the network goes away.
+    compilerMissing = true;
   }
+}
+
+function showCompilerLoadFailure(): void {
+  const bootEl = document.querySelector('#boot');
+  if (bootEl) bootEl.textContent = compilerLoadFailureMessage();
+  render({
+    ok: false,
+    diagnostics: [{ level: 'error', message: compilerLoadFailureMessage() }],
+    files: [],
+    elapsedMs: 0,
+  }, 'error');
 }
 
 function spawnWorker(): Worker {
@@ -319,6 +347,7 @@ function compileNow(): void {
   worker = spawnWorker();
   worker.onmessage = (ev: MessageEvent<{ id: number; result: BrowserCompileResult }>) => {
     if (!ev.data || !gate.isCurrent(ev.data.id)) return;
+    sawWorkerMessage = true;
     window.clearTimeout(compileTimer);
     const result = ev.data.result;
     const errors = result.diagnostics.some((d) => d.level === 'error');
@@ -329,7 +358,7 @@ function compileNow(): void {
     window.clearTimeout(compileTimer);
     render({
       ok: false,
-      diagnostics: [{ level: 'error', message: workerCrashMessage() }],
+      diagnostics: [{ level: 'error', message: sawWorkerMessage ? workerCrashMessage() : compilerLoadFailureMessage() }],
       files: [],
       elapsedMs: 0,
     }, 'error');
@@ -467,7 +496,7 @@ function flash(btn: HTMLButtonElement, label: string): void {
   const id = window.setTimeout(() => {
     btn.textContent = btn.dataset.rest ?? '';
     delete btn.dataset.flash;
-  }, 3000);
+  }, 2000);
   btn.dataset.flash = String(id);
 }
 
@@ -560,6 +589,7 @@ function bind(): void {
     if (decision.action === 'ignore') return;
     if (decision.action === 'reject') {
       showBanner(decision.message, 'hash');
+      history.replaceState({ speckl: editor.value }, '', location.pathname + location.search);
       return;
     }
     void loadSource(decision.source, 'navigation', 'the spec from this link');
@@ -590,6 +620,11 @@ async function boot(): Promise<void> {
   updateCursor();
   app.hidden = false;
   await cacheWorkerSource();
+  if (compilerMissing) {
+    showCompilerLoadFailure();
+    document.querySelector('#boot')?.remove();
+    return;
+  }
   if (editor.value !== initial) {
     markExamples();
     updateCursor();
@@ -603,6 +638,6 @@ async function boot(): Promise<void> {
 
 void boot().catch(() => {
   const el = document.querySelector('#boot');
-  if (el) el.textContent = 'The playground failed to start. Reload the page.';
+  if (el) el.textContent = compilerLoadFailureMessage();
   app.hidden = false;
 });
