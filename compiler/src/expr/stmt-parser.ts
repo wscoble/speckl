@@ -105,7 +105,8 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
     }
 
     // --- cost <n> (non-negative integer literal, one per action) ---
-    if (trimmed.startsWith('cost')) {
+    // `costTotal := ...` and `cost := ...` are assignments, not this statement.
+    if (/^cost\s+\S/.test(trimmed) && !/^cost\s*:=/.test(trimmed)) {
       const costMatch = trimmed.match(/^cost\s+(\d+)\s*$/);
       const amount = costMatch ? Number(costMatch[1]) : NaN;
       if (!costMatch || !Number.isSafeInteger(amount)) {

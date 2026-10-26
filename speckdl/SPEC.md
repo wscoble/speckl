@@ -292,14 +292,21 @@ counts as not mapped). Observe tools are not checked. An act tool on a
 speck that is not in a domain is not checked. This is a spec check. It is
 not the generated adapter's `doctor` probe, which runs an installed hook.
 
+Listing an event in `produces` does not require any member to emit it.
+The clause is the domain's permission to emit that event. An emit the
+domain did not list is an error. A listed event that nobody emits is not.
+
 **Not yet implemented:** a tick scheduler, queues, runtime routing of
 events between domains, completion signals, and trace IDs. A domain does
-not fuse member specks into one state machine. The Camel target records
-each contract as a comment block and a typed event class. It does not
-throttle, queue, or route. Apache Camel's Throttle and Circuit Breaker
-enterprise integration patterns limit traffic while a route runs. The
-budget here is complementary: it is checked before deploy. Speckl is not
-part of Apache Camel and is not affiliated with the Apache Software
+not fuse member specks into one state machine. The budget check assumes
+the model in §3.5 (BMC depth only; each member stutters or takes exactly
+one `next` action per tick; members are independent; each firing chooses
+fresh parameters; no runtime scheduler enforces the model). The Camel
+target records each contract as a comment block and a typed event class.
+It does not throttle, queue, or route. Apache Camel's Throttle and Circuit
+Breaker enterprise integration patterns limit traffic while a route runs.
+The budget here is complementary: it is checked before deploy. Speckl is
+not part of Apache Camel and is not affiliated with the Apache Software
 Foundation.
 
 ### 2.10 Expression Operators
@@ -400,13 +407,32 @@ each member's witness is a state of its own, reachable within the BMC
 depth from its initial state.
 
 The solver is asked whether any such sum is greater than the budget.
-`unsat` proves the bound inside that depth. `sat` is a counterexample
-trace: per-step state, `Member_choice` (0 is stutter; then the `next`
-actions in order), and `tick_cost`. An action that is not in `next` does
-not fire, so its cost is not part of the sum. A guard that is never true
-inside the depth does not contribute. The depth is the same `--verify-depth`
-/ `-d` bound as other BMC checks. A cost that becomes enabled only past
-that depth is outside the proof.
+`unsat` proves the bound inside that depth, and only under the assumptions
+below. `sat` is a counterexample trace: per-step state, `Member_choice`
+(0 is stutter; then the `next` actions in order), and `tick_cost`. An
+action that is not in `next` does not fire, so its cost is not part of the
+sum. A guard that is never true inside the depth does not contribute. The
+depth is the same `--verify-depth` / `-d` bound as other BMC checks. A cost
+that becomes enabled only past that depth is outside the proof.
+
+The proof assumes all of the following:
+
+- It is bounded by the BMC depth. A run longer than that depth is not a
+  counterexample this query can find, and it is not covered by `unsat`.
+- Each member either stutters or takes exactly one `next` action in the
+  tick. It does not take two actions, and it does not take an action that
+  is outside `next`.
+- Members are independent. One member's witness is a state reachable for
+  that member alone. It is not required to be the same step index as
+  another member's witness.
+- Each firing of an action chooses its parameters fresh. A parameter at
+  one step is not the same value as that parameter at another step, a
+  parameter of one action is not the same value as a parameter of the same
+  name on another action, and the values that show the tick's action is
+  enabled are not the values used to step the state.
+- Nothing at runtime enforces this model. There is no scheduler that makes
+  a tick match the query. The bound is a check before deploy, not a limit
+  applied while the system runs.
 
 The obligation is **UNCHECKED**, and never counted as passed, when the
 tick cannot be lowered. That includes a member with no `next` relation, a

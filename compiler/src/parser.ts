@@ -504,9 +504,8 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
 }
 
 function braceDelta(rawLine: string): number {
-  const opens = (rawLine.match(/{/g) || []).length;
-  const closes = (rawLine.match(/}/g) || []).length;
-  return opens - closes;
+  const counted = braceCounts(rawLine);
+  return counted.open - counted.close;
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
@@ -613,8 +612,9 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     }
 
     // Count braces on this line first
-    const openCount = (rawLine.match(/{/g) || []).length;
-    const closeCount = (rawLine.match(/}/g) || []).length;
+    const counted = braceCounts(rawLine);
+    const openCount = counted.open;
+    const closeCount = counted.close;
 
     // Check for block-opening members (those that open braces on the same line)
     const blockStarters = ['state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -748,42 +748,63 @@ function unsupportedVerify(line: string, index: number): Error {
  * field or statement on the line was dropped and later members (`next:`)
  * were read as if they belonged to it.
  */
+/**
+ * Visit `{` and `}` that are not inside a double-quoted string.
+ * A brace in `require n > "}"` is text, not the end of the block.
+ * Returns true from `visit` to stop.
+ */
+function forEachCodeBrace(text: string, visit: (ch: '{' | '}', index: number) => boolean | void): void {
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\' && inStr) { i++; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === '{' || c === '}') {
+      if (visit(c, i) === true) return;
+    }
+  }
+}
+
+function braceCounts(text: string): { open: number; close: number } {
+  let open = 0;
+  let close = 0;
+  forEachCodeBrace(text, (ch) => { if (ch === '{') open++; else close++; });
+  return { open, close };
+}
+
 function closedInlineBody(line: string): string | null {
   const open = line.indexOf('{');
   if (open < 0) return null;
   let depth = 0;
-  let inStr = false;
-  for (let i = open; i < line.length; i++) {
-    const c = line[i];
-    if (c === '"') inStr = !inStr;
-    if (inStr) continue;
-    if (c === '{') depth++;
-    else if (c === '}') {
+  let end = -1;
+  forEachCodeBrace(line, (ch, index) => {
+    if (index < open) return;
+    if (ch === '{') depth++;
+    else {
       depth--;
-      if (depth === 0) {
-        const rest = line.slice(i + 1).trim();
-        if (rest !== '' && !rest.startsWith('//')) return null;
-        return line.slice(open + 1, i).trim();
-      }
+      if (depth === 0) { end = index; return true; }
     }
-  }
-  return null;
+  });
+  if (end < 0) return null;
+  const rest = line.slice(end + 1).trim();
+  if (rest !== '' && !rest.startsWith('//')) return null;
+  return line.slice(open + 1, end).trim();
 }
 
 function findBlockEnd(lines: string[], startIndex: number, startBraceCount: number): number {
   let braceCount = startBraceCount;
   let i = startIndex;
   while (i < lines.length) {
-    const line = lines[i];
-    for (const ch of line) {
+    let closed = false;
+    forEachCodeBrace(lines[i], (ch) => {
       if (ch === '{') braceCount++;
-      if (ch === '}') {
+      else {
         braceCount--;
-        if (braceCount < startBraceCount) {
-          return i;
-        }
+        if (braceCount < startBraceCount) closed = true;
       }
-    }
+    });
+    if (closed) return i;
     i++;
   }
   return i;
@@ -805,7 +826,7 @@ function isExpressionComplete(expr: string): boolean {
 
 function parseMemberBlock(lines: string[], startIndex: number): MemberNode | null {
   const firstLine = lines[startIndex].trim();
-  const startBraceCount = (firstLine.match(/{/g) || []).length;
+  const startBraceCount = braceCounts(firstLine).open;
   
   if (firstLine.startsWith('state:')) {
     return parseStateBlockMultiline(lines, startIndex, startBraceCount);
@@ -1143,11 +1164,50 @@ function parseMember(line: string): MemberNode | null {
   return null;
 }
 
+/**
+ * Split a state/init declaration list on commas, semicolons, and newlines
+ * that are not inside brackets or strings. `n: Nat, ok: Bool` is two
+ * fields. `signals: Map<Nat, Bool>` is one.
+ */
+function splitDeclarations(inner: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let angle = 0, paren = 0, brace = 0, bracket = 0;
+  let inStr = false;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '\\' && inStr) {
+      cur += c;
+      if (i + 1 < inner.length) cur += inner[++i];
+      continue;
+    }
+    if (c === '"') { inStr = !inStr; cur += c; continue; }
+    if (!inStr) {
+      if (c === '<') angle++;
+      else if (c === '>' && angle > 0) angle--;
+      else if (c === '(') paren++;
+      else if (c === ')' && paren > 0) paren--;
+      else if (c === '{') brace++;
+      else if (c === '}' && brace > 0) brace--;
+      else if (c === '[') bracket++;
+      else if (c === ']' && bracket > 0) bracket--;
+      else if ((c === ',' || c === ';' || c === '\n') && angle + paren + brace + bracket === 0) {
+        if (cur.trim()) parts.push(cur.trim());
+        cur = '';
+        continue;
+      }
+    }
+    cur += c;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
 function parseStateBlock(inner: string): StateNode {
   const variables: StateVar[] = [];
   if (!inner.trim()) return { type: 'state', variables };
 
-  const varStrs = inner.split(/;|\n/).map(s => s.trim()).filter(Boolean);
+  const varStrs = splitDeclarations(inner);
 
   for (const vStr of varStrs) {
     const withDefault = vStr.match(/^(\w+)\s*:\s*(.+?)\s*:=\s*(.+)$/);
@@ -1930,6 +1990,11 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   return { type: 'invariant', name, expr: body.trim() };
 }
 
+/** A `cost <n>` statement, not an assignment whose name starts with "cost". */
+function isCostStatement(stmt: string): boolean {
+  return /^cost\s+\S/.test(stmt) && !/^cost\s*:=/.test(stmt);
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const inlineBody = closedInlineBody(firstLine);
@@ -1955,7 +2020,10 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   if (headerTail) bodyEntries.unshift({ text: headerTail, indent: 0 });
   if (endIndex < lines.length) {
     const closeLine = lines[endIndex];
-    const closeAt = closeLine.indexOf('}');
+    let closeAt = -1;
+    forEachCodeBrace(closeLine, (ch, index) => {
+      if (ch === '}') { closeAt = index; return true; }
+    });
     if (closeAt >= 0) {
       const before = closeLine.slice(0, closeAt).trim();
       if (before && !before.startsWith('//')) {
@@ -2068,7 +2136,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (nextLine.startsWith('precondition:') || nextLine.startsWith('postcondition:') ||
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
-            nextLine.startsWith('if ') || nextLine.startsWith('cost ') ||
+            nextLine.startsWith('if ') || isCostStatement(nextLine) ||
             nextLine.includes(':=')) {
           break;
         }
@@ -2105,7 +2173,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       continue;
     }
     // cost <n> — non-negative integer literal. One per action.
-    if (stmt.startsWith('cost')) {
+    if (isCostStatement(stmt)) {
       const costMatch = stmt.match(/^cost\s+(\d+)\s*$/);
       const amount = costMatch ? Number(costMatch[1]) : NaN;
       if (!costMatch || !Number.isSafeInteger(amount)) {
@@ -2175,7 +2243,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (!nt || nt.startsWith('//')) break;
         if (nt.startsWith('require ') || nt.startsWith('return ') ||
             nt.startsWith('emit ') || nt.startsWith('let ') ||
-            nt.startsWith('cost ') ||
+            isCostStatement(nt) ||
             /\w+\s*:=/.test(nt)) {
           break;
         }

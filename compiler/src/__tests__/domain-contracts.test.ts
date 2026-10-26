@@ -137,6 +137,39 @@ speck Invoice {
     expect(() => parseSpeckContent('domain D {\n    members: A;\n    consumes Gone, Gone;\n}\n')).toThrow(/consumes Gone more than once/);
     expect(() => parseSpeckContent('domain D {\n    members: A;\n    produces ;\n}\n')).toThrow(/produces has no event/);
   });
+
+  it('assigns state variables named cost and costTotal, and keeps a brace inside a string', () => {
+    const src = `speck Meter {
+    state { cost: Nat, costTotal: Nat }
+    init {
+        cost := 0
+        costTotal := 0
+    }
+    action Add {
+        costTotal := costTotal + 1
+        cost := cost + 1
+    }
+    action Say { require cost > "}" }
+    next: Add
+}
+`;
+    const ast = parseSpeckContent(src);
+    const state = ast.specks[0].members.find(m => m.type === 'state');
+    expect(state && state.type === 'state' ? state.variables.map(v => v.name) : []).toEqual(['cost', 'costTotal']);
+    const types = state && state.type === 'state' ? state.variables.map(v => v.typeExpr.type === 'ident' || v.typeExpr.type === 'primitive' ? v.typeExpr.name : v.typeExpr.type) : [];
+    expect(types).toEqual(['Nat', 'Nat']);
+    const add = ast.specks[0].members.find(m => m.type === 'action' && m.name === 'Add');
+    expect(add && add.type === 'action' ? add.statements.map(s => s.type === 'assign' ? s.target : s.type) : []).toEqual(['costTotal', 'cost']);
+    const say = ast.specks[0].members.find(m => m.type === 'action' && m.name === 'Say');
+    expect(say && say.type === 'action' ? say.statements : []).toEqual([{ type: 'require', expr: 'cost > "}"' }]);
+    const root = dir();
+    const file = write(root, 'cost.speckdl', src);
+    const ir = load(file);
+    expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
+    const lowered = ir.specks[0].facets.behavior.actions.find(a => a.name === 'Add');
+    expect(lowered?.statements.some(s => s.kind === 'assign' && s.target === 'costTotal')).toBe(true);
+    expect(lowered?.cost).toBeUndefined();
+  });
 });
 
 describe('contract checks fail closed before output', () => {
@@ -730,6 +763,145 @@ domain Trading {
     expect(readFileSync(join(out, 'camel', contract!), 'utf8')).toContain('consumes: none');
     const routes = readFileSync(join(out, 'camel', files.find(f => f.endsWith('BookRoutes.java'))!), 'utf8');
     expect(routes).not.toMatch(/throttle|circuitBreaker/);
+  });
+});
+
+describe('parameterised budget soundness', () => {
+  function spec(body: string, budget = 5): string {
+    return `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+${body}    next: Inc | Big
+}
+domain Books { members: Meter; budget ${budget} per tick; }
+`;
+  }
+
+  it('is violated when two actions need different values of the same parameter', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    const shared = write(root, 'Shared.speckdl', spec(`    action Inc(x: Nat) {
+        cost 1
+        require x < 2
+        n := n + 1
+    }
+    action Big(x: Nat) {
+        cost 100
+        require x > 5
+        require n >= 3
+    }
+`));
+    const stepped = write(root, 'Stepped.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Set(v: Nat) {
+        cost 1
+        require v == n + 1
+        n := v
+    }
+    action Big {
+        cost 100
+        require n >= 3
+    }
+    next: Set | Big
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const fresh = write(root, 'Fresh.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Grow(x: Nat) {
+        cost 1
+        require x > 0
+        n := n + x
+    }
+    action Prize(x: Nat) {
+        cost 100
+        require x == 0
+        require n >= 1
+    }
+    next: Grow | Prize
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const pair = write(root, 'Pair.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Inc(a: Nat, b: Nat) {
+        cost 1
+        require a < 2
+        require b == 1
+        n := n + b
+    }
+    action Big(a: Nat) {
+        cost 100
+        require a > 5
+        require n >= 2
+    }
+    next: Inc | Big
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    for (const file of [shared, stepped, fresh, pair]) {
+      const smt = readFileSync(join(compile(file, 'z3', 4), 'Books.budget.smt2'), 'utf8');
+      expect(smt, file).toMatch(/__p_/);
+      expect(smt, file).toMatch(/__e_/);
+      expect(smt, file).not.toMatch(/declare-const Meter__p_/);
+      const judged = runZ3(smt);
+      expect(judged.verdict.obligations[0].got, file + '\n' + smt).toBe('sat');
+    }
+
+    const impossible = write(root, 'NatFloor.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Big(x: Nat) {
+        cost 100
+        require x < 0
+        n := n
+    }
+    next: Big
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const floor = readFileSync(join(compile(impossible, 'z3', 3), 'Books.budget.smt2'), 'utf8');
+    expect(runZ3(floor).verdict.obligations[0].got).toBe('unsat');
+
+    const wrapper = join(root, 'speckl-bin.mjs');
+    writeFileSync(wrapper, `import { spawnSync } from 'node:child_process';
+const r = spawnSync(process.execPath, [${JSON.stringify(viteNode)}, ${JSON.stringify(indexTs)}, ...process.argv.slice(2)], { encoding: 'utf-8', cwd: ${JSON.stringify(compilerDir)} });
+process.stdout.write(r.stdout ?? '');
+process.stderr.write(r.stderr ?? '');
+process.exit(r.status ?? 1);
+`);
+    const res = spawnSync(process.execPath, [verifyScript, shared, stepped, '--depth', '4'], {
+      encoding: 'utf-8',
+      env: { ...process.env, SPECKL_BIN: wrapper },
+    });
+    const out = (res.stdout ?? '') + (res.stderr ?? '');
+    expect(res.status, out).toBe(1);
+    expect(out).toMatch(/Shared\.speckdl \[ast\].*VIOLATED/);
+    expect(out).toMatch(/Stepped\.speckdl \[ast\].*VIOLATED/);
+  }, 180_000);
+});
+
+describe('contract edges', () => {
+  it('rejects a domain that names the same member twice, before writing output', () => {
+    const root = dir();
+    const file = write(root, 'twice.speckdl', `${machine('A', 'n := 1')}
+domain Billing { members: A, A; }
+`);
+    expect(errorsOf(file).join('\n')).toMatch(/domain: Billing lists A more than once/);
+    const out = join(root, 'out');
+    expect(() => compileSpec(file, { outputDir: out, target: 'z3', bomFormat: 'both', verifyDepth: 2 })).toThrow(/lists A more than once/);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('allows produces to name an event no member emits', () => {
+    const root = dir();
+    const file = write(root, 'quiet.speckdl', `${machine('A', 'n := 1', 'event Note { n: Nat }')}
+domain Billing { members: A; produces Note; }
+`);
+    expect(errorsOf(file)).toEqual([]);
   });
 });
 

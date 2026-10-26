@@ -361,11 +361,14 @@ event comes from outside the compilation, so nothing here has to produce
 it. A member that emits an event the domain does not produce is a compile
 error, and the compiler writes no output. `cost 4` inside an action and
 `budget 10 per tick` on the domain ask Z3 whether the worst-case sum of
-costs in one tick stays within the budget. One tick is one step: each
-member stutters or runs one `next` action. If the tick cannot be lowered
-(no `next`, an action with no `cost`, a guard this encoding does not
-translate), the obligation is UNCHECKED. UNCHECKED is not a pass. Over
-budget fails with a counterexample trace.
+costs in one tick stays within the budget. `unsat` proves that bound only
+inside the model: the BMC depth, each member stuttering or taking exactly
+one `next` action, members checked independently, and a fresh parameter
+value for every firing. No runtime scheduler enforces that model. If the
+tick cannot be lowered (no `next`, an action with no `cost`, a guard this
+encoding does not translate), the obligation is UNCHECKED. UNCHECKED is
+not a pass. Over budget fails with a counterexample trace. An event in
+`produces` need not be emitted by any member.
 
 The Camel target emits the contract as a comment block and a typed event
 class. It does not throttle, queue, or route. Apache Camel's Throttle and
@@ -378,8 +381,9 @@ tool that is not mapped in its harness block, and when a contract cannot
 be wired.
 
 **Not yet implemented:** a tick scheduler, queues, runtime routing from one
-domain to another, completion signals, and trace IDs. Rewriting an
-expression that names an imported speck is also **not yet implemented**.
+domain to another, completion signals, and trace IDs. The budget query
+does not install a scheduler. Rewriting an expression that names an
+imported speck is also **not yet implemented**.
 
 ## Next Steps
 

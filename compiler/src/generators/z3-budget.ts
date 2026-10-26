@@ -7,9 +7,15 @@
 // shared step index.
 //
 // The solver is asked whether any such sum is greater than the budget.
-// unsat proves the bound inside the depth. sat is a counterexample: the
-// model carries per-step state, `Member_choice` (0 = stutter, then the
-// next-actions in order), and `tick_cost`.
+// unsat proves the bound inside the depth, under the model below. sat is a
+// counterexample: the model carries per-step state, `Member_choice`
+// (0 = stutter, then the next-actions in order), and `tick_cost`.
+//
+// Action parameters are not one symbol for the member. Each transition
+// step of each action gets its own symbols (`Member__Action__p_name_step`),
+// and the tick's enabledness check gets another set
+// (`Member__Action__e_name_step`). Sharing them made two firings use one
+// value, which hid ticks that are actually over budget.
 //
 // When the tick cannot be lowered (no next, a next action with no cost, a
 // state sort or guard this encoding does not translate, an if/let block),
@@ -89,7 +95,16 @@ function buildBudget(ast: AST, domain: IRDomain, depthIn: number): Built {
     for (const v of m.state) {
       for (let i = 0; i <= depth; i++) lines.push(`(declare-const ${stateSym(m.prefix, v.name)}_${i} ${v.sort})`);
     }
-    for (const p of m.params) lines.push(`(declare-const ${paramSym(m.prefix, p.name)} ${p.sort})`);
+    for (const a of m.actions) {
+      for (const p of a.params) {
+        for (let i = 0; i < depth; i++) {
+          lines.push(`(declare-const ${stepParamSym(m.prefix, a.name, p.name, i)} ${p.sort})`);
+        }
+        for (let i = 0; i <= depth; i++) {
+          lines.push(`(declare-const ${enabledParamSym(m.prefix, a.name, p.name, i)} ${p.sort})`);
+        }
+      }
+    }
     lines.push(`(declare-const ${m.prefix}_choice Int)`);
     for (let i = 0; i <= depth; i++) lines.push(`(declare-const ${m.prefix}_choice_${i} Int)`);
   }
@@ -106,8 +121,16 @@ function buildBudget(ast: AST, domain: IRDomain, depthIn: number): Built {
       lines.push('  )');
       lines.push(')');
     }
-    for (const p of m.params) {
-      if (p.nat) lines.push(`(assert (>= ${paramSym(m.prefix, p.name)} 0))`);
+    for (const a of m.actions) {
+      for (const p of a.params) {
+        if (!p.nat) continue;
+        for (let i = 0; i < depth; i++) {
+          lines.push(`(assert (>= ${stepParamSym(m.prefix, a.name, p.name, i)} 0))`);
+        }
+        for (let i = 0; i <= depth; i++) {
+          lines.push(`(assert (>= ${enabledParamSym(m.prefix, a.name, p.name, i)} 0))`);
+        }
+      }
     }
     for (let i = 0; i < depth; i++) {
       lines.push(`(assert ; ${m.name} step ${i}`);
@@ -177,10 +200,11 @@ interface ParamPlan {
 interface ActionPlan {
   name: string;
   cost: number;
+  params: ParamPlan[];
   always: boolean;
-  /** Guard SMT at each step 0..depth (inclusive). */
+  /** Guard SMT at each step 0..depth (inclusive), on enabledness symbols. */
   enabledAt: string[];
-  /** Guard SMT at each pre-step 0..depth-1, used by the transition. */
+  /** Guard SMT at each pre-step 0..depth-1, on that step's transition symbols. */
   guards: string[];
   /** Assignment SMT per pre-step. */
   assigns: string[][];
@@ -191,7 +215,6 @@ interface MemberPlan {
   name: string;
   prefix: string;
   state: StatePlan[];
-  params: ParamPlan[];
   actions: ActionPlan[];
   init: string[];
   /** Nat state vars with no init assignment. */
@@ -243,7 +266,7 @@ function planMember(speck: SpeckNode, depth: number): { ok: true; member: Member
     if (!stateNames.includes(a.name)) {
       return { ok: false, reason: `init of ${speck.name}.${a.name} is not a state variable` };
     }
-    const smt = exprSmt(a.expr, prefix, stateNames, [], '_0');
+    const smt = exprSmt(a.expr, prefix, stateNames, new Map(), '_0');
     if (!smt) return { ok: false, reason: `init of ${speck.name}.${a.name} cannot be lowered` };
     const v = state.find(s => s.name === a.name)!;
     init.push(`(= ${stateSym(prefix, a.name)}_0 ${smt})`);
@@ -277,7 +300,6 @@ function planMember(speck: SpeckNode, depth: number): { ok: true; member: Member
         params.push(p);
       }
     }
-    const paramNames = actionParams.map(p => p.name);
     const guardsSrc: string[] = [];
     const assigns: { target: string; expr: string }[] = [];
     const writes = new Set<string>();
@@ -300,26 +322,34 @@ function planMember(speck: SpeckNode, depth: number): { ok: true; member: Member
       }
       return { ok: false, reason: `action ${speck.name}.${action.name} contains a statement the budget check cannot lower` };
     }
+    const lowerGuards = (step: number, kind: 'step' | 'enabled'): string | null => {
+      if (guardsSrc.length === 0) return 'true';
+      const symbols = paramSymbols(prefix, action.name, actionParams, step, kind);
+      const parts: string[] = [];
+      for (const g of guardsSrc) {
+        const smt = exprSmt(g, prefix, stateNames, symbols, `_${step}`);
+        if (!smt) return null;
+        parts.push(smt);
+      }
+      return parts.length === 1 ? parts[0] : `(and ${parts.join(' ')})`;
+    };
     const enabledAt: string[] = [];
     const guards: string[] = [];
     for (let i = 0; i <= depth; i++) {
-      if (guardsSrc.length === 0) {
-        enabledAt.push('true');
-        continue;
-      }
-      const parts: string[] = [];
-      for (const g of guardsSrc) {
-        const smt = exprSmt(g, prefix, stateNames, paramNames, `_${i}`);
-        if (!smt) return { ok: false, reason: `guard of ${speck.name}.${action.name} cannot be lowered` };
-        parts.push(smt);
-      }
-      enabledAt.push(parts.length === 1 ? parts[0] : `(and ${parts.join(' ')})`);
+      const smt = lowerGuards(i, 'enabled');
+      if (smt === null) return { ok: false, reason: `guard of ${speck.name}.${action.name} cannot be lowered` };
+      enabledAt.push(smt);
     }
-    for (let i = 0; i < depth; i++) guards.push(enabledAt[i]);
+    for (let i = 0; i < depth; i++) {
+      const smt = lowerGuards(i, 'step');
+      if (smt === null) return { ok: false, reason: `guard of ${speck.name}.${action.name} cannot be lowered` };
+      guards.push(smt);
+    }
     const assignSteps: string[][] = assigns.map(() => []);
     for (let i = 0; i < depth; i++) {
+      const symbols = paramSymbols(prefix, action.name, actionParams, i, 'step');
       for (let k = 0; k < assigns.length; k++) {
-        const smt = exprSmt(assigns[k].expr, prefix, stateNames, paramNames, `_${i}`);
+        const smt = exprSmt(assigns[k].expr, prefix, stateNames, symbols, `_${i}`);
         if (!smt) return { ok: false, reason: `assignment in ${speck.name}.${action.name} cannot be lowered` };
         assignSteps[k].push(`(= ${stateSym(prefix, assigns[k].target)}_${i + 1} ${smt})`);
       }
@@ -327,6 +357,7 @@ function planMember(speck: SpeckNode, depth: number): { ok: true; member: Member
     actionPlans.push({
       name: action.name,
       cost,
+      params: actionParams,
       always: guardsSrc.length === 0,
       enabledAt,
       guards,
@@ -341,7 +372,7 @@ function planMember(speck: SpeckNode, depth: number): { ok: true; member: Member
 
   return {
     ok: true,
-    member: { name: speck.name, prefix, state, params, actions: actionPlans, init, natFloor, costExpr },
+    member: { name: speck.name, prefix, state, actions: actionPlans, init, natFloor, costExpr },
   };
 }
 
@@ -361,9 +392,25 @@ function stateSym(prefix: string, name: string): string {
   return `${prefix}__${name}`;
 }
 
-/** Action parameter symbol. Not step-indexed. */
-function paramSym(prefix: string, name: string): string {
-  return `${prefix}__p_${name}`;
+/** Transition parameter at one step: `Meter__Inc__p_x_0`. */
+function stepParamSym(prefix: string, action: string, name: string, step: number): string {
+  return `${prefix}__${action}__p_${name}_${step}`;
+}
+
+/** Enabledness parameter, not the symbol the transition uses: `Meter__Inc__e_x_0`. */
+function enabledParamSym(prefix: string, action: string, name: string, step: number): string {
+  return `${prefix}__${action}__e_${name}_${step}`;
+}
+
+function paramSymbols(
+  prefix: string,
+  action: string,
+  params: ParamPlan[],
+  step: number,
+  kind: 'step' | 'enabled',
+): Map<string, string> {
+  const sym = kind === 'step' ? stepParamSym : enabledParamSym;
+  return new Map(params.map(p => [p.name, sym(prefix, action, p.name, step)]));
 }
 
 function sortOf(t: TypeExpr | undefined): { sort: 'Int' | 'Bool' | 'Real'; nat: boolean } | null {
@@ -380,7 +427,13 @@ function sortOf(t: TypeExpr | undefined): { sort: 'Int' | 'Bool' | 'Real'; nat: 
  * is not total: a dropped guard would make an action look enabled, and a
  * dropped assignment would make a transition look like stutter.
  */
-function exprSmt(src: string, prefix: string, stateNames: string[], paramNames: string[], suffix: string): string | null {
+function exprSmt(
+  src: string,
+  prefix: string,
+  stateNames: string[],
+  paramSymbolsForStep: Map<string, string>,
+  suffix: string,
+): string | null {
   if (/['".[\]]/.test(src)) return null;
   let tree;
   try {
@@ -390,14 +443,13 @@ function exprSmt(src: string, prefix: string, stateNames: string[], paramNames: 
   }
   if (containsParseFailure(tree)) return null;
   const locals = new Set(stateNames);
-  const params = new Set(paramNames);
-  const rename = (n: string) => (locals.has(n) ? stateSym(prefix, n) : params.has(n) ? paramSym(prefix, n) : n);
+  const rename = (n: string) => (locals.has(n) ? stateSym(prefix, n) : paramSymbolsForStep.get(n) ?? n);
   const prefixed = new Set([...locals].map(n => stateSym(prefix, n)));
   const smt = translateExpr(tree, { stateVars: prefixed, suffix, rename });
   if (!smt || smt.includes('undefined')) return null;
   const declared = [
     ...stateNames.map(n => `(declare-const ${stateSym(prefix, n)}${suffix} Int)`),
-    ...paramNames.map(n => `(declare-const ${paramSym(prefix, n)} Int)`),
+    ...[...paramSymbolsForStep.values()].map(n => `(declare-const ${n} Int)`),
   ];
   const probe = `${declared.join('\n')}\n(assert ${smt})\n`;
   if (sanitizeSMT(probe).dropped.length > 0) return null;
