@@ -97,6 +97,9 @@ describe('share links', () => {
     const short = decodeSpecHash('#s2.abcd');
     expect(short.ok).toBe(false);
     if (!short.ok) expect(short.message).toMatch(/cut off/);
+    const bangs = decodeSpecHash('#s2.garbage!!');
+    expect(bangs.ok).toBe(false);
+    if (!bangs.ok) expect(bangs.message).toMatch(/Couldn't read this share link/);
     expect(decodeSpecHash('').ok).toBe(false);
     expect(decodeSpecHash('s1.' + 'a'.repeat(4_000_001)).ok).toBe(false);
     const badUtf = decodeSpecHash('s1.' + encodeBase64Url(new Uint8Array([0xff, 0xfe, 0xfd])));
@@ -277,17 +280,17 @@ describe('diagnostic text', () => {
     expect(locateDiagnostic('abc', '   ')).toEqual({ level: 'error', message: 'The compiler failed.' });
   });
 
-  it('prefixes a line and a speck name when the message does not', () => {
+  it('prefixes a line and leaves the speck name off the playground text', () => {
     expect(presentDiagnostic({ level: 'error', message: 'duplicate tool', line: 9, speck: 'Bad' }))
-      .toBe('Line 9: Bad: duplicate tool');
+      .toBe('Line 9: duplicate tool');
     expect(presentDiagnostic({ level: 'error', message: 'duplicate tool', line: 9, column: 4, speck: 'Bad' }))
-      .toBe('Line 9, column 4: Bad: duplicate tool');
+      .toBe('Line 9, column 4: duplicate tool');
     expect(presentDiagnostic({ level: 'error', message: 'Parse error at line 3, column 2: nope', line: 3, column: 2 }))
       .toBe('Line 3, column 2: nope');
     expect(presentDiagnostic({ level: 'info', message: 'hello' })).toBe('hello');
     const ir = fromIR('x\n  bogus := 1\n', { level: 'error', message: 'undeclared variable "bogus"', line: 2, speck: 'T' });
     expect(ir.column).toBe(3);
-    expect(presentDiagnostic(ir)).toBe('Line 2, column 3: T: undeclared variable "bogus"');
+    expect(presentDiagnostic(ir)).toBe('Line 2, column 3: undeclared variable "bogus"');
     const sorted = sortDiagnostics([
       { level: 'info', message: 'i', line: 1 },
       { level: 'error', message: 'e', line: 8 },

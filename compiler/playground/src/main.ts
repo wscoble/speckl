@@ -94,6 +94,7 @@ function showBanner(text: string, kind: string): void {
   banner.hidden = false;
   banner.dataset.kind = kind;
   banner.textContent = text;
+  if (kind === 'hash') window.scrollTo(0, 0);
 }
 
 function clearBanner(kind?: string): void {
@@ -432,6 +433,12 @@ function setSource(source: string, reason: HistoryReason): void {
   loadedSource = source;
   markExamples();
   updateCursor();
+  if (reason === 'example') {
+    editor.setSelectionRange(0, 0);
+    editor.scrollTop = 0;
+    if (document.activeElement === editor) editor.blur();
+    window.scrollTo(0, 0);
+  }
   persist(source, reason);
   compileNow();
 }
@@ -447,7 +454,7 @@ function confirmDiscard(message: string): Promise<boolean> {
       settled = true;
       if (dialog.open) dialog.close();
       resolve(ok);
-      editor.focus();
+      if (!ok) editor.focus();
     };
     keepBtn.onclick = () => finish(false);
     discardBtn.onclick = () => finish(true);
@@ -710,6 +717,8 @@ async function boot(): Promise<void> {
     setSource(initial, 'boot');
   }
   document.querySelector('#boot')?.remove();
+  window.scrollTo(0, 0);
+  editor.scrollTop = 0;
 }
 
 void boot().catch(() => {

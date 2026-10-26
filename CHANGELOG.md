@@ -254,6 +254,18 @@ alias.
   end-of-line comments first, so a comment cannot hide the rest of the block.
   That removes comments such as the Raft note that the leader counts itself
   from generated text that reprints those blocks.
+- Infix and call-form `implies` in a generated TypeScript machine is
+  `!p || q`, so `-t agent` accepts `require dry implies retries > 0`.
+  The words `iff`, `xor`, and `mod` are not expression operators. A
+  `require` that uses them still warns `expression not parsed in full`,
+  and the TypeScript machine rewrites them (`iff` and `xor` as the
+  boolean expansions, the word `mod` as `%`) so `-t agent` does not
+  refuse the rails. `%` and unary `-` were already JavaScript. `let name = expr` is an error that
+  says to use `:=`, and the name stays in scope. An unknown `on` target
+  suggests a declared stage. Assigning `n + p` when `p` is `Int` and `n`
+  is `Nat` names that expression. A bare `type Name` is an opaque name,
+  not a distinct record: two such names are not checked against each
+  other.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as

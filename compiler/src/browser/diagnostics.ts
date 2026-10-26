@@ -103,21 +103,39 @@ function nameAt(source: string, name: string): { line: number; column: number } 
  * target errors are rewritten in plain English and given a line when the
  * spec still contains the name.
  */
+/** `Go (nil)` or `Bump (implies, foo)` → `` `nil` in Go ``. */
+function describeUntranslated(detail: string): string {
+  return detail.split(';').map((part) => {
+    const m = /^(\S+)\s+\(([^)]*)\)/.exec(part.trim());
+    if (!m) return part.trim();
+    const names = m[2].split(',').map((s) => s.trim()).filter(Boolean).map((n) => `\`${n}\``);
+    return names.length > 0 ? `${names.join(' and ')} in ${m[1]}` : m[1];
+  }).join('; ');
+}
+
 export function explainTargetError(source: string, message: string): BrowserDiagnostic {
   const untranslated = /untranslated identifiers in ([^;]+)/.exec(message);
   if (untranslated) {
-    const detail = untranslated[1].trim();
-    const plain = `The generated machine left ${detail} untranslated, so no rails were emitted. Compare a stage with its declared label or number, and use a name the spec declares.`;
-    const name = /\(([^),]+)/.exec(detail)?.[1]?.trim();
+    const plain = `The generated machine left ${describeUntranslated(untranslated[1].trim())} untranslated, so no rails were emitted.`;
+    const name = /\(([^),]+)/.exec(untranslated[1])?.[1]?.trim();
     const hit = name ? nameAt(source, name) : undefined;
     return { level: 'error', message: plain, ...(hit ?? {}) };
+  }
+  if (/syntax check|\/tmp\/|speckl-play-/.test(message)) {
+    const point = codePointAt(source, message);
+    return {
+      level: 'error',
+      message: 'The compiler could not finish this target. The generated machine is not valid JavaScript.',
+      ...(point ?? {}),
+    };
   }
   const point = codePointAt(source, message);
   if (point) return { level: 'error', message: message.trim(), ...point };
   const located = locateDiagnostic(source, message);
   if (located.line) return located;
-  if (message.startsWith('-t ') || /syntax check|generated machine|generated JavaScript/.test(message)) {
-    return { level: 'error', message: `The compiler could not finish this target. ${message.trim()}` };
+  if (message.startsWith('-t ') || /generated machine|generated JavaScript/.test(message)) {
+    const scrubbed = message.replace(/\/\S+/g, '').replace(/\s+/g, ' ').trim();
+    return { level: 'error', message: `The compiler could not finish this target. ${scrubbed}` };
   }
   return located;
 }
@@ -163,7 +181,7 @@ export function fromIR(source: string, d: IRDiagnostic): BrowserDiagnostic {
 
 export function presentDiagnostic(d: BrowserDiagnostic): string {
   let msg = d.message.trim().replace(/^Parse error at line \d+(?:, column \d+)?:\s*/i, '');
-  if (d.speck && !msg.includes(d.speck)) msg = `${d.speck}: ${msg}`;
+  // One editor buffer. The line is the location; the CLI keeps the speck name.
   if (d.line && !/^Line \d+/.test(msg)) {
     const where = d.column ? `Line ${d.line}, column ${d.column}` : `Line ${d.line}`;
     msg = `${where}: ${msg}`;

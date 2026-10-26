@@ -240,7 +240,11 @@ function compileSourceInner(
     const files = readOutputs(out, options);
     if (compiled.error) {
       const message = cleanErrorMessage(compiled.error);
-      if (!redundantCompilerError(message, diagnostics)) {
+      // A parse or type error is the thing to fix. The target emitter then
+      // fails on the same spec (a temp path, a syntax check, an untranslated
+      // word) and that second message is noise.
+      const rooted = diagnostics.some((d) => d.level === 'error');
+      if (!rooted && !redundantCompilerError(message, diagnostics)) {
         diagnostics.push(explainTargetError(source, message));
       }
     } else if (target === 'agent' && !files.some((f) => f.path.endsWith('AGENTS.md'))) {

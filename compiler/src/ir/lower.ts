@@ -509,7 +509,9 @@ function lowerAgent(
     const syntheticActions: IRAgentAwait['syntheticActions'] = [];
     for (const o of a.on) {
       if (!labelToValue.has(o.target)) {
-        note('error', `agent await ${a.state}: on ${o.outcome} -> ${o.target}: unknown target stage`, o.target);
+        const hint = suggestKnownType(o.target, new Set(labelToValue.keys()));
+        const suggest = hint ? `. Did you mean \`${hint}\`?` : '';
+        note('error', `agent await ${a.state}: on ${o.outcome} -> ${o.target}: unknown target stage${suggest}`, o.target);
         continue;
       }
       const actionName = `__signal_${a.signal}_${o.outcome}`;
@@ -900,6 +902,17 @@ function lowerStatement(
     }
     case 'let':
       env.line = s.line;
+      if (s.badEquals) {
+        const lineText = env.lines[(s.line ?? 1) - 1] ?? '';
+        const eq = lineText.indexOf('=');
+        diagnostics.push({
+          level: 'error',
+          message: `let ${s.name} uses \`=\`. Use \`:=\`.`,
+          line: s.line,
+          column: eq >= 0 ? eq + 1 : undefined,
+          speck: speckName,
+        });
+      }
       checkExpr(s.expr, env);
       env.scope.add(s.name);
       return {
@@ -1232,6 +1245,41 @@ function describeSide(side: LiteralSide): string {
   return 'a number';
 }
 
+function kindLabel(kind: ValueKind): string {
+  if (kind === 'nat') return 'Nat';
+  if (kind === 'int') return 'Int';
+  if (kind === 'real') return 'Real';
+  if (kind === 'bool') return 'Bool';
+  return 'String';
+}
+
+/** A computed right-hand side names the expression and the value that widened it. */
+function describeAssigned(expr: Expr, got: LiteralSide, types: Map<string, ValueKind>): string {
+  if (got.negative || got.literal || got.name) return describeSide(got);
+  const src = expr.kind === 'parens' ? exprToSource(expr.expr) : exprToSource(expr);
+  const notes: string[] = [];
+  const seen = new Set<string>();
+  const walk = (e: Expr): void => {
+    if (e.kind === 'ident') {
+      const k = types.get(e.name);
+      if (k === got.kind && !seen.has(e.name)) {
+        seen.add(e.name);
+        notes.push(`${e.name} is ${kindLabel(k)}`);
+      }
+      return;
+    }
+    if (e.kind === 'parens') walk(e.expr);
+    else if (e.kind === 'unary') walk(e.operand);
+    else if (e.kind === 'binary') {
+      walk(e.left);
+      walk(e.right);
+    }
+  };
+  walk(expr);
+  const detail = notes.length > 0 ? `${src}; ${notes.join(', ')}` : src;
+  return `${kindLabel(got.kind)} expression (${detail})`;
+}
+
 function numericKind(kind: ValueKind): boolean {
   return kind === 'nat' || kind === 'int' || kind === 'real';
 }
@@ -1255,7 +1303,7 @@ function checkAssignLiteral(env: ExprEnv, name: string, expr: Expr, line?: numbe
   const got = literalSide(expr, env.types) ?? sideFromKind(expr, env.types);
   if (expected && got && !assignable(expected, got)) {
     const dest: LiteralSide = { kind: expected, literal: false, negative: false, name };
-    const message = `type mismatch: cannot assign ${describeSide(got)} to ${describeSide(dest)}`;
+    const message = `type mismatch: cannot assign ${describeAssigned(expr, got, env.types)} to ${describeSide(dest)}`;
     pushTypeError(env, message, line, name);
   }
   checkStageLiteral(env, name, expr, line);

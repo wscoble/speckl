@@ -134,7 +134,13 @@ function decodeS1(payload: string): DecodeResult {
 
 function decodeS2(payload: string): DecodeResult {
   const bytes = decodeBase64Url(payload);
-  if (!bytes || bytes.length < 4) {
+  if (!bytes) {
+    return {
+      ok: false,
+      message: "Couldn't read this share link. It is not valid Speckl data.",
+    };
+  }
+  if (bytes.length < 4) {
     return {
       ok: false,
       message: 'This share link was cut off, so the spec could not be read.',

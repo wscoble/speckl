@@ -613,16 +613,225 @@ describe('round 5: types, stages, and statement shape', () => {
     expect(diag?.line).not.toBe(src.split('\n').findIndex((l) => l.includes('agent {')) + 1);
     const shown = presentDiagnostic({ level: 'error', message: diag!.message, line: diag!.line, column: diag!.column });
     expect(shown).toMatch(new RegExp(`^Line ${lineNo}, column \\d+:`));
+    expect(diag?.message).toMatch(/Did you mean `Approved`/);
+    expect(presentDiagnostic({ level: 'error', message: diag!.message, line: diag!.line, column: diag!.column, speck: 'S' }))
+      .not.toMatch(/S:/);
   });
 
   it('explains an untranslated-identifier failure in plain English', () => {
     const source = 'speck S {\n  state { owner: String }\n  action Go { owner := nil }\n}\n';
     const explained = explainTargetError(source, '-t agent: the generated machine has untranslated identifiers in Go (nil); its guards would not match the spec, so no rails were emitted');
-    expect(explained.message).toMatch(/left Go \(nil\) untranslated/);
-    expect(explained.message).not.toMatch(/FIXME/);
+    expect(explained.message).toBe('The generated machine left `nil` in Go untranslated, so no rails were emitted.');
+    expect(explained.message).not.toMatch(/compare a stage|FIXME/);
     expect(explained.line).toBe(3);
     expect(explained.column).toBeGreaterThan(1);
-    const bare = explainTargetError('speck S {}', '-t agent: emitted JavaScript machine failed a syntax check');
-    expect(bare.message).toMatch(/could not finish this target/);
+    const ops = explainTargetError(source, '-t agent: the generated machine has untranslated identifiers in Bump (implies); its guards would not match the spec, so no rails were emitted');
+    expect(ops.message).toBe('The generated machine left `implies` in Bump untranslated, so no rails were emitted.');
+    const both = explainTargetError(source, '-t agent: the generated machine has untranslated identifiers in Bump (implies, foo); its guards would not match the spec, so no rails were emitted');
+    expect(both.message).toBe('The generated machine left `implies` and `foo` in Bump untranslated, so no rails were emitted.');
+    const bare = explainTargetError('speck S {}', '-t agent: emitted JavaScript machine failed a syntax check (/tmp/speckl-play-fx3qdy/out/agent/DeployGate.mjs): Unexpected character');
+    expect(bare.message).toBe('The compiler could not finish this target. The generated machine is not valid JavaScript.');
+    expect(bare.message).not.toMatch(/\/tmp\/|Unexpected character|speckl-play-/);
+  });
+});
+
+const AGENT = `
+  next: Go
+  agent {
+    stages stage {
+      Idle = 0
+      Approved = 3
+    }
+    tool go -> Go effect act
+    await Approved {
+      signal approval
+      mode near
+      require outcome in { approve, reject! }
+      on approve -> Approved
+      on reject -> Idle
+    }
+  }
+`;
+
+function machineText(result: { files: { path: string; text: string }[] }): string {
+  return result.files.filter((f) => /\.(mjs|ts)$/.test(f.path)).map((f) => f.text).join('\n');
+}
+
+function errorText(result: { diagnostics: { level: string; message: string }[] }): string {
+  return result.diagnostics.filter((d) => d.level === 'error').map((d) => d.message).join('\n');
+}
+
+describe('round 6: operators, cascades, and assignment wording', () => {
+  it('translates implies, %, and unary minus into the agent machine', () => {
+    const src = `speck DeployGate {
+  state {
+    stage: Nat
+    retries: Int
+    dry: Bool
+    open: Bool
+    n: Nat
+    s: String
+  }
+  init { stage := 0 }
+  action Go {
+    require dry implies retries > 0
+    require (dry implies open)
+    require not dry implies open
+    require dry implies open and retries > 0
+    require retries % 2 == 0
+    require -retries < 1
+    s := "implies"
+  }
+${AGENT}}
+`;
+    const result = compileSource(src, { target: 'agent' });
+    expect(errorText(result)).toBe('');
+    expect(result.ok).toBe(true);
+    const js = machineText(result);
+    expect(js).toContain('(!(this.dry) || (this.retries > 0))');
+    expect(js).toContain('(!(this.dry) || (this.open))');
+    expect(js).toContain('(!(!this.dry) || (this.open))');
+    expect(js).toContain('(!(this.dry) || (this.open && this.retries > 0))');
+    expect(js).toContain('this.retries % 2 === 0');
+    expect(js).toContain('-this.retries < 1');
+    expect(js).toContain('"implies"');
+    expect(js).not.toMatch(/FIXME: parser dropped/);
+    const plain = compileSource(src.replace(AGENT, ''), { target: 'typescript' });
+    expect(errorText(plain)).toBe('');
+    expect(machineText(plain)).toContain('(!(this.dry) || (this.retries > 0))');
+  });
+
+  it('rewrites call-form implies and the words iff, xor, and mod', () => {
+    const src = `speck DeployGate {
+  state {
+    stage: Nat
+    retries: Int
+    dry: Bool
+    open: Bool
+  }
+  init { stage := 0 }
+  action Go {
+    require implies(dry, retries > 0)
+    require dry iff open
+    require dry xor open xor retries > 0
+    require retries mod 2 == 0
+  }
+${AGENT}}
+`;
+    const result = compileSource(src, { target: 'agent' });
+    expect(errorText(result)).not.toMatch(/untranslated|\/tmp\/|syntax check|compare a stage|could not finish/);
+    const js = machineText(result);
+    expect(js).toContain('(!(this.dry) || (this.retries > 0))');
+    expect(js).toContain('((!(this.dry) || (this.open)) && (!(this.open) || (this.dry)))');
+    expect(js).toContain('((this.retries) % (2))');
+    expect(js).not.toMatch(/FIXME: parser dropped/);
+    expect(result.diagnostics.some((d) => d.level === 'warning' && /expression not parsed in full/.test(d.message))).toBe(true);
+  });
+
+  it('shows only the front-end error when the agent emitter also fails', () => {
+    const emoji = `speck DeployGate {
+  state {
+    stage: Nat
+    n: Nat
+  }
+  init { stage := 0 }
+  action Go { n := 1😀 }
+${AGENT}}
+`;
+    const emojiResult = compileSource(emoji, { target: 'agent' });
+    const emojiErrors = emojiResult.diagnostics.filter((d) => d.level === 'error');
+    expect(emojiErrors.map((d) => d.message).join('\n')).toMatch(/unexpected character U\+1F600/);
+    expect(emojiErrors.map((d) => d.message).join('\n')).not.toMatch(/\/tmp\/|syntax check|could not finish|Unexpected character|untranslated/);
+    expect(emojiErrors).toHaveLength(1);
+
+    const junk = `speck DeployGate {
+  state {
+    stage: Nat
+    n: Nat
+  }
+  init { stage := 0 }
+  action Go {
+    bogus stuff
+    n := 1
+  }
+${AGENT}}
+`;
+    const junkErrors = compileSource(junk, { target: 'agent' }).diagnostics.filter((d) => d.level === 'error');
+    expect(junkErrors.map((d) => d.message)).toEqual([
+      expect.stringMatching(/unrecognized statement "bogus stuff"/),
+    ]);
+
+    const foo = `speck DeployGate {
+  state { stage: Nat }
+  init { stage := 0 }
+  action Go { require stage == Foo }
+${AGENT}}
+`;
+    const fooErrors = compileSource(foo, { target: 'agent' }).diagnostics.filter((d) => d.level === 'error');
+    expect(fooErrors.map((d) => d.message)).toEqual([
+      expect.stringMatching(/undeclared variable "Foo"/),
+    ]);
+  });
+
+  it('tells a single-equals let to use := and does not call the name undeclared', () => {
+    const src = `speck S {
+  state { n: Nat }
+  action Go {
+    let k = n + 1
+    require k > 0
+  }
+}
+`;
+    const result = compileSource(src, { target: 'agent' });
+    const diag = result.diagnostics.find((d) => /let k uses `=`/.test(d.message));
+    const line = src.split('\n').find((l) => l.includes('let k'))!;
+    expect(diag?.level).toBe('error');
+    expect(diag?.column).toBe(line.indexOf('=') + 1);
+    expect(presentDiagnostic(diag!)).toMatch(/^Line \d+, column \d+: let k uses `=`\. Use `:=`\./);
+    expect(presentDiagnostic({ ...diag!, speck: 'S' })).not.toMatch(/S:/);
+    expect(result.diagnostics.some((d) => /undeclared variable "k"/.test(d.message))).toBe(false);
+    expect(errorText(result)).not.toMatch(/untranslated|could not finish/);
+  });
+
+  it('names the Int operand when a Nat sum widens', () => {
+    const src = `speck S {
+  state {
+    n: Nat
+    b: Bool
+    s: String
+    r: Real
+  }
+  action Go(p: Int) {
+    n := n + p
+    b := n + 1
+    n := s + "a"
+    b := r + 1
+  }
+}
+`;
+    const errors = lowerSrc(src).diagnostics.filter((d) => d.level === 'error').map((d) => d.message);
+    expect(errors).toContain('type mismatch: cannot assign Int expression (n + p; p is Int) to Nat variable "n"');
+    expect(errors.some((m) => /cannot assign Nat expression \(n \+ 1; n is Nat\) to Bool variable "b"/.test(m))).toBe(true);
+    expect(errors.some((m) => /cannot assign String expression \(s \+ "a"; s is String\) to Nat variable "n"/.test(m))).toBe(true);
+    expect(errors.some((m) => /cannot assign Real expression \(r \+ 1; r is Real\) to Bool variable "b"/.test(m))).toBe(true);
+  });
+
+  it('suggests a stage only when the target is close', () => {
+    const src = `speck S {
+  state { stage: Nat }
+  action Go { stage := 1 }
+  agent {
+    stages stage { Idle = 0, Approved = 1 }
+    await Approved {
+      signal approval
+      mode near
+      require outcome in { approve }
+      on approve -> Nope
+    }
+  }
+}
+`;
+    const diag = lowerSrc(src).diagnostics.find((d) => /unknown target stage/.test(d.message));
+    expect(diag?.message).not.toMatch(/Did you mean/);
   });
 });

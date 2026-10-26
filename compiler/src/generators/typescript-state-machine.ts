@@ -779,6 +779,10 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   // Stage labels are Nat constants (`stage == Approved` is `stage == 3`).
   // Do this after strings are hidden and before enum substitution, which
   // would turn the label into a string enum the stage number never equals.
+  // SpeckDL operators that are not JavaScript (`implies`, `iff`, `xor`,
+  // and the word `mod`) are rewritten first, or the later scan treats the
+  // word as a dropped variable and `-t agent` refuses the rails.
+  ts = translateSpeckOperators(ts);
   ts = applyStageLabels(ts, activeStageLabels);
 
   // Step 2b: Replace state enum literals with enum refs BEFORE identifier replacement
@@ -1040,6 +1044,178 @@ function rewriteExpr(expr: string, stateVarNames: Set<string>, mapVarNames: Set<
   });
 
   return ts.trim();
+}
+
+/**
+ * Rewrite SpeckDL operators the TypeScript machine would otherwise leave as
+ * identifiers. `implies` is `!p || q`. `iff` and `xor` are the boolean
+ * expansions of that. The word `mod` is `%` (the `%` token is already
+ * JavaScript). Unary minus is already `-`.
+ */
+function translateSpeckOperators(expr: string): string {
+  return translateInfixOps(translateCallOps(expr));
+}
+
+function translateCallOps(expr: string): string {
+  let out = '';
+  for (let i = 0; i < expr.length;) {
+    const call = matchSpeckCall(expr, i);
+    if (!call) {
+      out += expr[i];
+      i++;
+      continue;
+    }
+    const args = splitTopLevel(call.args).map((arg) => translateSpeckOperators(arg.trim()));
+    const rewritten = rewriteSpeckCall(call.name, args);
+    out += rewritten ?? expr.slice(i, call.end);
+    i = call.end;
+  }
+  return out;
+}
+
+function matchSpeckCall(expr: string, i: number): { name: string; args: string; end: number } | null {
+  const m = /^(implies|iff|xor)\(/.exec(expr.slice(i));
+  if (!m) return null;
+  if (i > 0 && /[A-Za-z0-9_]/.test(expr[i - 1])) return null;
+  const argsStart = i + m[0].length;
+  let depth = 1;
+  let j = argsStart;
+  while (j < expr.length && depth > 0) {
+    if (expr[j] === '(') depth++;
+    else if (expr[j] === ')') depth--;
+    if (depth === 0) break;
+    j++;
+  }
+  if (depth !== 0) return null;
+  return { name: m[1], args: expr.slice(argsStart, j), end: j + 1 };
+}
+
+function rewriteSpeckCall(name: string, args: string[]): string | null {
+  if (args.length !== 2) return null;
+  const [p, q] = args;
+  if (name === 'implies') return `(!(${p}) || (${q}))`;
+  if (name === 'iff') return `((!(${p}) || (${q})) && (!(${q}) || (${p})))`;
+  if (name === 'xor') return `(((${p}) && !(${q})) || (!(${p}) && (${q})))`;
+  return null;
+}
+
+function translateInfixOps(expr: string): string {
+  // Lowest precedence first, so `a implies b > 0` keeps the comparison on
+  // the right. `mod` is `%` and binds tighter than `==`, so a comparison
+  // is split before the word `mod` is rewritten.
+  const ops: { word: string; last: boolean; rewrite: (l: string, r: string) => string }[] = [
+    { word: 'implies', last: false, rewrite: (l, r) => `(!(${l}) || (${r}))` },
+    { word: 'iff', last: false, rewrite: (l, r) => `((!(${l}) || (${r})) && (!(${r}) || (${l})))` },
+    { word: 'xor', last: true, rewrite: (l, r) => `(((${l}) && !(${r})) || (!(${l}) && (${r})))` },
+  ];
+  for (const op of ops) {
+    const idx = indexOfKeyword(expr, op.word, op.last);
+    if (idx < 0) continue;
+    const left = translateInfixOps(expr.slice(0, idx).trim());
+    const right = translateInfixOps(expr.slice(idx + op.word.length).trim());
+    return op.rewrite(left, right);
+  }
+  const boundary = splitAtBoundary(expr);
+  if (boundary) {
+    const left = translateInfixOps(boundary.left.trim());
+    const right = translateInfixOps(boundary.right.trim());
+    return `${left} ${boundary.op} ${right}`;
+  }
+  const modAt = indexOfKeyword(expr, 'mod', true);
+  if (modAt >= 0) {
+    const left = translateInfixOps(expr.slice(0, modAt).trim());
+    const right = translateInfixOps(expr.slice(modAt + 3).trim());
+    return `((${left}) % (${right}))`;
+  }
+  return mapParenGroups(expr, translateInfixOps);
+}
+
+/** Comparisons and `and`/`or`, which bind tighter than `implies` and looser than `mod`. */
+function splitAtBoundary(expr: string): { left: string; op: string; right: string } | null {
+  const ops = ['==', '!=', '<=', '>=', 'and', 'or', '<', '>'];
+  let depth = 0;
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i];
+    if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    else if (depth !== 0) continue;
+    for (const op of ops) {
+      if (!expr.startsWith(op, i) || i === 0) continue;
+      // `k -> v` is a map entry and `=>` is a generated arrow, not a comparison.
+      if ((op === '>' || op === '>=') && (expr[i - 1] === '-' || expr[i - 1] === '=')) continue;
+      if (/[A-Za-z]/.test(op)) {
+        const before = !/[A-Za-z0-9_.]/.test(expr[i - 1]);
+        const afterAt = i + op.length;
+        const after = afterAt >= expr.length || !/[A-Za-z0-9_]/.test(expr[afterAt]);
+        if (!before || !after) continue;
+      }
+      return { left: expr.slice(0, i), op, right: expr.slice(i + op.length) };
+    }
+  }
+  return null;
+}
+
+function indexOfKeyword(expr: string, word: string, last: boolean): number {
+  let depth = 0;
+  let found = -1;
+  for (let i = 0; i <= expr.length - word.length; i++) {
+    const c = expr[i];
+    if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && expr.startsWith(word, i)) {
+      const before = i === 0 || !/[A-Za-z0-9_]/.test(expr[i - 1]);
+      const afterAt = i + word.length;
+      const after = afterAt >= expr.length || !/[A-Za-z0-9_]/.test(expr[afterAt]);
+      if (before && after && expr[afterAt] !== '(') {
+        found = i;
+        if (!last) return i;
+      }
+    }
+  }
+  return found;
+}
+
+function mapParenGroups(expr: string, fn: (inner: string) => string): string {
+  if (!expr.includes('(')) return expr;
+  let out = '';
+  for (let i = 0; i < expr.length; i++) {
+    if (expr[i] !== '(') {
+      out += expr[i];
+      continue;
+    }
+    let depth = 1;
+    let j = i + 1;
+    while (j < expr.length && depth > 0) {
+      if (expr[j] === '(') depth++;
+      else if (expr[j] === ')') depth--;
+      if (depth === 0) break;
+      j++;
+    }
+    if (depth !== 0) {
+      out += expr.slice(i);
+      break;
+    }
+    out += '(' + fn(expr.slice(i + 1, j)) + ')';
+    i = j;
+  }
+  return out;
+}
+
+function splitTopLevel(s: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    else if (c === ',' && depth === 0) {
+      parts.push(s.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(s.slice(start));
+  return parts;
 }
 
 // Helpers ------------------------------------------------------------------

@@ -631,6 +631,40 @@ test('a missing compiler worker says to refresh', async ({ page }) => {
   bag.__errors = (bag.__errors ?? []).filter((entry) => !/Failed to load resource/.test(entry));
 });
 
+test('round 6: a bad share link stays on screen and examples do not steal focus', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 520 });
+  await page.goto('/#s2.garbage!!');
+  await expect(page.locator('#banner')).toBeVisible();
+  await expect(page.locator('#banner')).toContainText(/couldn't read this share link/i);
+  await expect(page.locator('#spec')).toHaveValue(/speck DeployGate/);
+  const banner = await page.locator('#banner').boundingBox();
+  const viewport = page.viewportSize();
+  expect(banner).not.toBeNull();
+  expect(banner!.y).toBeGreaterThanOrEqual(0);
+  expect(banner!.y + banner!.height).toBeLessThanOrEqual((viewport?.height ?? 520) + 1);
+  expect(await page.evaluate(() => window.scrollY)).toBeLessThan(4);
+
+  await page.goto('/');
+  await settled(page);
+  await page.getByRole('button', { name: 'Toggle switch' }).click();
+  await settled(page);
+  await expect(page.locator('#spec')).toHaveValue(/speck ToggleSwitch/);
+  expect(await page.evaluate(() => window.scrollY)).toBeLessThan(4);
+  expect(await page.evaluate(() => document.activeElement?.id ?? '')).not.toBe('spec');
+  expect(await page.locator('#spec').evaluate((el: HTMLTextAreaElement) => el.scrollTop)).toBe(0);
+
+  await page.locator('#spec').fill('speck Edited {\n state { x: Nat }\n}\n');
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.getByRole('button', { name: 'Agent policy' }).click();
+  await page.getByRole('button', { name: 'Discard and load' }).click();
+  await settled(page);
+  await expect(page.locator('#spec')).toHaveValue(/speck AgentPolicy/);
+  expect(await page.evaluate(() => window.scrollY)).toBeLessThan(4);
+  expect(await page.evaluate(() => document.activeElement?.id ?? '')).not.toBe('spec');
+  expect(await page.locator('#spec').evaluate((el: HTMLTextAreaElement) => el.scrollTop)).toBe(0);
+  await page.setViewportSize({ width: 1280, height: 800 });
+});
+
 test('records first compiled output and gzipped bundle size', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#output')).toContainText('Call-bound');

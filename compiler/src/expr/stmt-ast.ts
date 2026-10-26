@@ -35,6 +35,8 @@ export interface LetStmt {
   expr: Expr;
   /** 1-based source line of the statement, when the caller provided one. */
   line?: number;
+  /** `let name = expr` instead of `let name := expr`. */
+  badEquals?: boolean;
 }
 
 export interface RequireStmt {

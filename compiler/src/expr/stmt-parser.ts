@@ -160,6 +160,22 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
       continue;
     }
 
+    // `let name = expr` is the same binding written with the wrong sign.
+    // Keep the name in scope so a later use is not a second undeclared error.
+    const letEq = trimmed.match(/^let\s+([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/);
+    if (letEq) {
+      const sourceLine = lineNumbers?.[i];
+      const rhs = stripLineComment((letEq[2] ?? '').trim()) || '0';
+      stmts.push({
+        type: 'let',
+        name: letEq[1],
+        expr: parseExprSingle(rhs),
+        badEquals: true,
+        ...(sourceLine ? { line: sourceLine } : {}),
+      });
+      continue;
+    }
+
     // --- assignment: target := expr ---
     const assignMatch = trimmed.match(/^(\w+(?:\[.*?\])?)\s*:=\s*(.*)$/);
     if (assignMatch) {
