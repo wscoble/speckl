@@ -288,6 +288,9 @@ function renderProvGraph(speck: IRSpeck, domains: IRDomain[]): any {
       'speckl:kind': 'domain',
       ...(domain.language !== undefined ? { 'speckl:language': domain.language } : {}),
       'prov:hadMember': members,
+      ...(domain.consumes.length > 0 ? { 'speckl:consumes': domain.consumes } : {}),
+      ...(domain.produces.length > 0 ? { 'speckl:produces': domain.produces } : {}),
+      ...(domain.budgetPerTick !== undefined ? { 'speckl:budgetPerTick': domain.budgetPerTick } : {}),
     });
   }
 

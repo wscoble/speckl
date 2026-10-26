@@ -104,6 +104,20 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
       continue;
     }
 
+    // --- cost <n> (non-negative integer literal, one per action) ---
+    if (trimmed.startsWith('cost')) {
+      const costMatch = trimmed.match(/^cost\s+(\d+)\s*$/);
+      const amount = costMatch ? Number(costMatch[1]) : NaN;
+      if (!costMatch || !Number.isSafeInteger(amount)) {
+        throw new Error(`cost must be a non-negative integer, got ${JSON.stringify(trimmed)}`);
+      }
+      if (stmts.some(s => s.type === 'cost')) {
+        throw new Error(`cost is declared more than once`);
+      }
+      stmts.push({ type: 'cost', amount });
+      continue;
+    }
+
     // --- if condition { ... } else ... ---
     if (trimmed.startsWith('if ')) {
       // Collect the full if/else block as raw text
@@ -277,7 +291,7 @@ function splitTopLevel(text: string): string[] {
   return parts.map(p => p.trim()).filter(Boolean);
 }
 
-const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|precondition:|postcondition:|[\w.]+(\[.*?\])?\s*:=)/;
+const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|cost\s|precondition:|postcondition:|[\w.]+(\[.*?\])?\s*:=)/;
 
 function collectExpression(lines: string[], startIdx: number, prefixLen: number, continuationPfx: string): CollectResult {
   let text = lines[startIdx].trim().substring(prefixLen).trim();

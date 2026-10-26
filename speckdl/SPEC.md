@@ -98,7 +98,7 @@ speck ToggleSwitch {
 **Quantifier sugar.** Invariants and init blocks support
 `forall v in collection: <expr>` where collection may be `var.keys`,
 `var.values`, or a range. This sugar is recognized by the language but not
-yet lowered to Z3 (see §3.5).
+yet lowered to Z3 (see §3.4).
 
 **Comments** — `//` line comments and `/* ... */` block comments.
 
@@ -160,10 +160,19 @@ event RetryAttempted {
     attemptNumber: Nat
     delay: Real
 }
+
+event MarketTick external {
+    price: Nat
+}
 ```
 
 Events are emitted from actions (`emit RetryAttempted { attemptNumber: 1 }`)
-and recorded in the provenance graph. They do not affect verification.
+and recorded in the provenance graph. `external` marks an event that enters
+from outside the compilation. A domain may consume an external event without
+any domain producing it. An event is either external or internal: declaring
+it both ways is a compile error.
+
+Completion signals and trace IDs on events are **not yet implemented**.
 
 ### 2.7 Wire-Format Members
 
@@ -226,6 +235,9 @@ domain Billing {
 domain Fulfillment {
     members: Shipment;
     language: "A shipment leaves the warehouse";
+    consumes InvoiceIssued;
+    produces ShipmentLeft;
+    budget 10 per tick;
 }
 ```
 
@@ -236,12 +248,37 @@ is still one speck.
 
 `members` is required and lists speck names (local, or merged in from
 imports). `language` is a quoted string or bare text up to the semicolon.
-The same failures are compile errors:
+`consumes` and `produces` name events that are already declared with
+`event` (in this file or a merged import). Repeat the clause, or separate
+names with commas. `budget <n> per tick` is one non-negative integer; zero
+is a real budget. The same failures are compile errors:
 
 - a member listed twice in one domain;
 - a speck that is a member of two domains;
 - a member that is not a speck in this compilation;
-- the same domain name declared twice.
+- the same domain name declared twice;
+- `consumes` or `produces` names an event that is not declared;
+- the same event is listed twice in one domain's `consumes` or `produces`;
+- `budget` is not a non-negative integer `per tick`, or it is declared twice;
+- an action declares `cost` more than once, or `cost` is not a non-negative integer.
+
+Contracts are checked after imports are merged, and the compile stops
+before any output is written:
+
+- every consumed event is produced by some domain, or the event is
+  declared `external`;
+- a domain does not `produces` an event that is declared `external`
+  (one origin: inside the compilation, or outside it);
+- no member action emits an event its domain does not list in `produces`,
+  including an `emit` written inside an `if` block.
+
+A produces/consumes cycle between domains is allowed. The check is a
+lookup, not a walk, so the cycle terminates. Two domains may produce the
+same event. Which domain delivers it at runtime is **not yet implemented**.
+
+`cost <n>` on an action is a non-negative integer literal. It is a
+verification annotation. It is not a runtime throttle. An action with no
+`cost` is not treated as cost 0.
 
 The IR records each one as an `IRDomain`. Provenance appends a domain
 entity to each member's PROV-O graph: a `prov:Collection` whose
@@ -255,10 +292,15 @@ counts as not mapped). Observe tools are not checked. An act tool on a
 speck that is not in a domain is not checked. This is a spec check. It is
 not the generated adapter's `doctor` probe, which runs an installed hook.
 
-**Not yet implemented** on a domain: `consumes` / `produces` contracts,
-per-action `cost`, a domain `budget`, and runtime routing of events
-between domains. A domain does not change how a speck compiles to a state
-machine.
+**Not yet implemented:** a tick scheduler, queues, runtime routing of
+events between domains, completion signals, and trace IDs. A domain does
+not fuse member specks into one state machine. The Camel target records
+each contract as a comment block and a typed event class. It does not
+throttle, queue, or route. Apache Camel's Throttle and Circuit Breaker
+enterprise integration patterns limit traffic while a route runs. The
+budget here is complementary: it is checked before deploy. Speckl is not
+part of Apache Camel and is not affiliated with the Apache Software
+Foundation.
 
 ### 2.10 Expression Operators
 
@@ -347,6 +389,33 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
   pending IR quantifier support.
 - **Free-form temporal expressions** other than `Always(InvariantName)` /
   `Eventually(InvariantName)` are not yet unrolled.
+
+### 3.5 Domain budgets
+
+A domain that declares `budget <n> per tick` adds one Z3 obligation,
+`<Domain>.budget`. One tick is one step of the domain. Each member
+stutters (cost 0) or takes one action from its `next` relation. The cost
+of the tick is the sum of those costs. Members are separate machines, so
+each member's witness is a state of its own, reachable within the BMC
+depth from its initial state.
+
+The solver is asked whether any such sum is greater than the budget.
+`unsat` proves the bound inside that depth. `sat` is a counterexample
+trace: per-step state, `Member_choice` (0 is stutter; then the `next`
+actions in order), and `tick_cost`. An action that is not in `next` does
+not fire, so its cost is not part of the sum. A guard that is never true
+inside the depth does not contribute. The depth is the same `--verify-depth`
+/ `-d` bound as other BMC checks. A cost that becomes enabled only past
+that depth is outside the proof.
+
+The obligation is **UNCHECKED**, and never counted as passed, when the
+tick cannot be lowered. That includes a member with no `next` relation, a
+`next` action with no `cost` (including a synthetic signal action), a
+state sort or expression this encoding does not translate, and an `if` or
+`let` in a tick action. The IR backend does not unroll transitions, so it
+declares the obligation unchecked and leaves the proof to the state-machine
+backend, the same way it treats other verify blocks. A domain with no
+`budget` adds no obligation and does not change the SMT output.
 
 ---
 

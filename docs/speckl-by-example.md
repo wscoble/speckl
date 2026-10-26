@@ -325,9 +325,23 @@ changes the rule that one speck is one agent.
 ```speck
 import "ledger.speckdl" as ledger
 
+speck Invoice {
+    event PaymentReceived external { amount: Nat }
+    event InvoiceIssued { amount: Nat }
+
+    action Issue {
+        cost 4
+        emit InvoiceIssued { amount: 1 }
+    }
+    next: Issue
+}
+
 domain Billing {
     members: Invoice, Ledger;
     language: "An invoice is issued before a ledger posts it";
+    consumes PaymentReceived;
+    produces InvoiceIssued;
+    budget 10 per tick;
 }
 ```
 
@@ -338,13 +352,34 @@ recorded. A registry lookup for that pin is **not yet implemented**.
 
 `domain` lists member specks and an optional language note. A member listed
 twice, or a speck that sits in two domains, is a compile error. Provenance
-for each member gains a domain entity linked with `prov:hadMember`.
+for each member gains a domain entity linked with `prov:hadMember`. When
+the domain consumes, produces, or sets a budget, that fact is on the same
+entity.
+
+`consumes` and `produces` reuse `event` declarations. `external` means the
+event comes from outside the compilation, so nothing here has to produce
+it. A member that emits an event the domain does not produce is a compile
+error, and the compiler writes no output. `cost 4` inside an action and
+`budget 10 per tick` on the domain ask Z3 whether the worst-case sum of
+costs in one tick stays within the budget. One tick is one step: each
+member stutters or runs one `next` action. If the tick cannot be lowered
+(no `next`, an action with no `cost`, a guard this encoding does not
+translate), the obligation is UNCHECKED. UNCHECKED is not a pass. Over
+budget fails with a counterexample trace.
+
+The Camel target emits the contract as a comment block and a typed event
+class. It does not throttle, queue, or route. Apache Camel's Throttle and
+Circuit Breaker patterns limit traffic while a route runs. This bound is
+complementary: it is checked before deploy. Speckl is not part of Apache
+Camel and is not affiliated with the Apache Software Foundation.
 
 `speckl doctor <file>` fails when one of those members declares an `act`
-tool that is not mapped in its harness block.
+tool that is not mapped in its harness block, and when a contract cannot
+be wired.
 
-**Not yet implemented:** `consumes` / `produces` on a domain, a cost per
-action, a budget per tick, and runtime routing from one domain to another.
+**Not yet implemented:** a tick scheduler, queues, runtime routing from one
+domain to another, completion signals, and trace IDs. Rewriting an
+expression that names an imported speck is also **not yet implemented**.
 
 ## Next Steps
 

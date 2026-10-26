@@ -43,6 +43,7 @@ import {
   IRStateVar,
   IREvent,
   IRType,
+  IRDomain,
 } from '../ir/types.js';
 
 export interface CamelOptions {
@@ -71,18 +72,31 @@ export function generateCamel(ir: IR, options: CamelOptions): void {
     fs.mkdirSync(camelDir, { recursive: true });
   }
 
+  const events = eventsByName(ir);
   for (const speck of ir.specks) {
     const pkg = options.packageName || derivePackageName(speck);
     const artifactId = options.artifactId || kebabCase(speck.name);
     const groupId = options.groupId || 'com.speckl';
     const version = options.version || speck.facets.metadata.version || '0.1.0';
 
-    generateForSpeck(speck, camelDir, pkg, artifactId, groupId, version);
+    generateForSpeck(speck, ir, events, camelDir, pkg, artifactId, groupId, version);
   }
+}
+
+function eventsByName(ir: IR): Map<string, IREvent> {
+  const out = new Map<string, IREvent>();
+  for (const speck of ir.specks) {
+    for (const ev of speck.facets.behavior.events) {
+      if (!out.has(ev.name)) out.set(ev.name, ev);
+    }
+  }
+  return out;
 }
 
 function generateForSpeck(
   speck: IRSpeck,
+  ir: IR,
+  events: Map<string, IREvent>,
   camelDir: string,
   pkg: string,
   artifactId: string,
@@ -115,11 +129,34 @@ function generateForSpeck(
     }
   }
 
-  // 2. Event classes
+  // 2. Event classes. A domain contract adds a comment block. It does not
+  //    throttle, queue, or route. Events the contract names but this speck
+  //    does not declare are still emitted as typed classes.
+  const domain = (ir.domains ?? []).find(d => d.members.includes(speck.name));
+  const banner = domain && hasContract(domain) ? contractBanner(domain, ir, events) : '';
+  const contractEvents = new Set([...(domain?.consumes ?? []), ...(domain?.produces ?? [])]);
+  const declared = new Set(behavior.events.map(ev => ev.name));
   for (const ev of behavior.events) {
-    const code = emitEventClass(ctx, ev);
+    const note = banner && contractEvents.has(ev.name) ? banner : '';
+    const code = emitEventClass(ctx, ev, note);
     fs.writeFileSync(path.join(javaDir, pkgPath, 'event', `${ev.name}.java`), code);
     console.log(`Generated Camel event: ${ev.name}.java`);
+  }
+  for (const name of contractEvents) {
+    if (declared.has(name)) continue;
+    const ev = events.get(name);
+    if (!ev) continue;
+    const code = emitEventClass(ctx, ev, banner);
+    fs.writeFileSync(path.join(javaDir, pkgPath, 'event', `${ev.name}.java`), code);
+    console.log(`Generated Camel event: ${ev.name}.java`);
+  }
+  if (banner && domain) {
+    const className = `${javaIdent(domain.name)}Contract`;
+    fs.writeFileSync(
+      path.join(javaDir, pkgPath, `${className}.java`),
+      emitContractClass(pkg, className, banner),
+    );
+    console.log(`Generated Camel contract: ${className}.java`);
   }
 
   // 3. State holder bean and the fail-closed runtime helper
@@ -349,7 +386,72 @@ ${variants}
 // Event classes
 // ─────────────────────────────────────────────────────────────────────
 
-function emitEventClass(ctx: SpeckContext, ev: IREvent): string {
+function hasContract(domain: IRDomain): boolean {
+  return domain.consumes.length > 0 || domain.produces.length > 0 || domain.budgetPerTick !== undefined;
+}
+
+/**
+ * Comment block for one domain contract. The budget is a static bound the
+ * compiler checks before deploy. Nothing here is a Camel Throttle or
+ * Circuit Breaker, and Speckl is not part of Apache Camel.
+ */
+function contractBanner(domain: IRDomain, ir: IR, events: Map<string, IREvent>): string {
+  const mark = (name: string) => (events.get(name)?.external ? `${name} (external)` : name);
+  const consumes = domain.consumes.length ? domain.consumes.map(mark).join(', ') : 'none';
+  const produces = domain.produces.length ? domain.produces.map(mark).join(', ') : 'none';
+  const budget = domain.budgetPerTick !== undefined ? `${domain.budgetPerTick} per tick` : 'none';
+  const lines = [
+    '/*',
+    ` * Speckl domain contract: ${safeComment(domain.name)}`,
+    ` * members: ${domain.members.map(safeComment).join(', ')}`,
+    ` * consumes: ${safeComment(consumes)}`,
+    ` * produces: ${safeComment(produces)}`,
+    ` * budget: ${budget}`,
+  ];
+  if (domain.language) lines.push(` * language: ${safeComment(domain.language)}`);
+  const costs: string[] = [];
+  for (const member of domain.members) {
+    const speck = ir.specks.find(s => s.name === member);
+    if (!speck) continue;
+    for (const action of speck.facets.behavior.actions) {
+      if (action.cost === undefined) continue;
+      costs.push(` *   ${safeComment(member)}.${safeComment(action.name)} = ${action.cost}`);
+    }
+  }
+  if (costs.length > 0) {
+    lines.push(' * action costs:');
+    lines.push(...costs);
+  }
+  lines.push(
+    ' *',
+    ' * The budget is a static bound: the worst-case sum of action costs',
+    ' * reachable in one tick. The compiler checks it with Z3 before deploy',
+    ' * when the tick can be lowered. This compilation unit does not',
+    ' * throttle, queue, or route messages at runtime.',
+    ' *',
+    ' * Apache Camel Throttle and Circuit Breaker enterprise integration',
+    ' * patterns limit traffic while a route runs. This bound is',
+    ' * complementary: it is checked before deploy. Speckl is not part of',
+    ' * Apache Camel and is not affiliated with the Apache Software Foundation.',
+    ' */',
+  );
+  return lines.join('\n') + '\n';
+}
+
+function safeComment(text: string): string {
+  return text.replace(/\*\//g, '* /').replace(/\r?\n/g, ' ');
+}
+
+function emitContractClass(pkg: string, className: string, banner: string): string {
+  return `package ${pkg};
+
+${banner}public final class ${className} {
+    private ${className}() {}
+}
+`;
+}
+
+function emitEventClass(ctx: SpeckContext, ev: IREvent, banner = ''): string {
   const fields = ev.fields.map((f) => ({ name: javaIdent(f.name), type: ctx.java(ctx.resolve(f.type)) }));
   const fieldDecls = fields.map((f) => `    private ${f.type} ${f.name};`).join('\n');
   const ctorParams = fields.map((f) => `${f.type} ${f.name}`).join(', ');
@@ -362,7 +464,7 @@ function emitEventClass(ctx: SpeckContext, ev: IREvent): string {
 
   return `package ${ctx.pkg}.event;
 
-${doc}public class ${ev.name} {
+${banner}${doc}public class ${ev.name} {
 
 ${fieldDecls}
 

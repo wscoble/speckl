@@ -20,8 +20,19 @@ alias.
   specks into a bounded context (`IRDomain`) and a PROV-O collection linked
   to those specks. A duplicate member or a speck in two domains is a
   compile error. `speckl doctor` fails when a domain member's `act` tool
-  is not mapped in its harness block. Contracts, cost, budgets, and
-  runtime routing are not yet implemented.
+  is not mapped in its harness block.
+- **Domain contracts and budgets.** `consumes` / `produces` name existing
+  `event` declarations. `event Name external` is an outside event. A
+  consumed event that nobody produces and that is not external, or a
+  member that emits an event its domain does not produce, is a compile
+  error raised before output is written. `cost <n>` on an action and
+  `budget <n> per tick` on the domain are a Z3 obligation: the worst-case
+  sum of costs reachable in one tick is at most the budget. Over budget
+  fails with a counterexample trace. When the tick cannot be lowered the
+  obligation is UNCHECKED and is not a pass. The Camel target emits the
+  contract as a comment block and a typed event class. It does not
+  throttle at runtime. A tick scheduler, queues, routing, completion
+  signals, and trace IDs are not yet implemented.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
