@@ -20,9 +20,9 @@ import {
   noAgentDiagnostic,
   noSpeckDiagnostic,
   sortDiagnostics,
+  proofNote,
   tooBigDiagnostic,
-  uncheckedDiagnostics,
-  z3InfoDiagnostic,
+  uncheckedObligationCount,
   type BrowserDiagnostic,
 } from './diagnostics.js';
 import { looksBinary, MAX_SOURCE_BYTES, sourceByteLength } from './limits.js';
@@ -135,6 +135,18 @@ function readOutputs(outDir: string, options: CompileSourceOptions): OutputFile[
   return files;
 }
 
+function redundantCompilerError(message: string, diagnostics: BrowserDiagnostic[]): boolean {
+  if (message.startsWith('agent block is invalid')
+    && diagnostics.some((d) => d.level === 'error' && d.message.includes('agent'))) return true;
+  if (message.startsWith('spec is invalid')
+    && diagnostics.some((d) => d.level === 'error')) return true;
+  if (/next: references unknown action/.test(message)
+    && diagnostics.some((d) => d.level === 'error' && d.line !== undefined && /next: references unknown action/.test(d.message))) {
+    return true;
+  }
+  return false;
+}
+
 function finish(
   started: number,
   ok: boolean,
@@ -226,14 +238,15 @@ function compileSourceInner(
     const files = readOutputs(out, options);
     if (compiled.error) {
       const message = cleanErrorMessage(compiled.error);
-      const redundant = message.startsWith('agent block is invalid')
-        && diagnostics.some((d) => d.level === 'error' && d.message.includes('agent'));
-      if (!redundant) diagnostics.push(locateDiagnostic(source, message));
+      if (!redundantCompilerError(message, diagnostics)) {
+        diagnostics.push(locateDiagnostic(source, message));
+      }
     } else if ((target === 'all' || target === 'agent') && !files.some((f) => f.path.endsWith('AGENTS.md'))) {
       diagnostics.push(noAgentDiagnostic());
     }
-    if (files.some((f) => f.path.endsWith('.smt2'))) diagnostics.push(z3InfoDiagnostic());
-    diagnostics.push(...uncheckedDiagnostics(files));
+    if (files.some((f) => f.path.endsWith('.smt2'))) {
+      diagnostics.push(proofNote(uncheckedObligationCount(files)));
+    }
     const ok = !compiled.error && !diagnostics.some((d) => d.level === 'error');
     return finish(started, ok, diagnostics, files);
   } finally {

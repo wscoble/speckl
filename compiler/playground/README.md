@@ -4,7 +4,7 @@ Edit a `.speckdl` spec in the browser. Diagnostics (with line numbers) and the c
 
 The page runs the compiler from this repository. It is not a second implementation. A Web Worker does the compile so a bad spec cannot lock the tab. Nothing is uploaded.
 
-Z3 does not run in the browser. The page still shows obligations the compiler marks unchecked. `speckl verify` on a machine with the `z3` binary is the solver proof.
+Z3 does not run in the browser. The page says so once, as a note, and counts checks the compiler could not prove. `speckl verify` on a machine with the `z3` binary is the solver proof. Share links are `#s2.` (a checksum, so a cut-off link is rejected). Older `#s1.` links still open.
 
 ## Run it
 

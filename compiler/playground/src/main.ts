@@ -17,7 +17,7 @@ import {
   hashForSource,
   historyMode,
   lineRange,
-  orderOutputPaths,
+  filesForTarget,
   preferredOutput,
   shouldConfirmDiscard,
   type HistoryReason,
@@ -35,6 +35,7 @@ const cursor = document.querySelector<HTMLElement>('#cursor')!;
 const statusEl = document.querySelector<HTMLElement>('#status')!;
 const banner = document.querySelector<HTMLElement>('#banner')!;
 const diagnostics = document.querySelector<HTMLElement>('#diagnostics')!;
+const errorChip = document.querySelector<HTMLButtonElement>('#error-chip')!;
 const output = document.querySelector<HTMLElement>('#output')!;
 const trunc = document.querySelector<HTMLElement>('#trunc')!;
 const fileSelect = document.querySelector<HTMLSelectElement>('#file')!;
@@ -115,10 +116,24 @@ function writeDraft(source: string): void {
 
 function persist(source: string, reason: HistoryReason): void {
   writeDraft(source);
+  const state = { speckl: source };
+  const bare = location.pathname + location.search;
+  // The default example and example switches stay off the URL. A multi-kilobyte
+  // hash is written when the user edits, or when they click Share.
+  if (reason === 'boot') {
+    const url = location.hash && location.hash !== '#' ? bare + location.hash : bare;
+    history.replaceState(state, '', url);
+    return;
+  }
+  if (reason === 'example') {
+    history.pushState(state, '', bare);
+    lastPushAt = Date.now();
+    return;
+  }
   const next = hashForSource(source);
   if (!next.hash) {
     if (next.reason) showBanner(next.reason, 'share');
-    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+    if (location.hash) history.replaceState(state, '', bare);
     return;
   }
   clearBanner('share');
@@ -129,12 +144,12 @@ function persist(source: string, reason: HistoryReason): void {
     reason,
   });
   if (mode === 'skip') return;
-  const url = location.pathname + location.search + next.hash;
+  const url = bare + next.hash;
   if (mode === 'push') {
-    history.pushState(null, '', url);
+    history.pushState(state, '', url);
     lastPushAt = Date.now();
   } else {
-    history.replaceState(null, '', url);
+    history.replaceState(state, '', url);
   }
 }
 
@@ -209,9 +224,33 @@ function render(result: BrowserCompileResult, state: 'done' | 'error' | 'timeout
     diagnostics.appendChild(li);
   }
 
+  const errorList = result.diagnostics.filter((d) => d.level === 'error');
+  const firstError = errorList.find((d) => d.line);
+  if (errorList.length > 0) {
+    errorChip.hidden = false;
+    const n = errorList.length;
+    const line = firstError?.line;
+    errorChip.textContent = line
+      ? `${n} error${n === 1 ? '' : 's'}, line ${line}`
+      : `${n} error${n === 1 ? '' : 's'}`;
+    errorChip.onclick = () => {
+      if (line) focusLine(line);
+    };
+  } else {
+    errorChip.hidden = true;
+    errorChip.textContent = '';
+    errorChip.onclick = null;
+  }
+
   fileMap = new Map(result.files.map((f) => [f.path, f]));
-  const ordered = orderOutputPaths(result.files.map((f) => f.path));
+  const ordered = filesForTarget(result.files.map((f) => f.path), targetSelect.value);
   fileSelect.replaceChildren();
+  if (ordered.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Load an example to see a compiled file';
+    fileSelect.appendChild(opt);
+  }
   for (const p of ordered) {
     const opt = document.createElement('option');
     opt.value = p;
@@ -356,7 +395,7 @@ let dialogBusy = false;
 
 async function loadSource(source: string, reason: HistoryReason, label: string): Promise<void> {
   if (source === editor.value || dialogBusy) return;
-  if (shouldConfirmDiscard(editor.value !== loadedSource)) {
+  if (shouldConfirmDiscard(editor.value, loadedSource)) {
     dialogBusy = true;
     try {
       const ok = await confirmDiscard(`Load ${label}? The text in the editor will be replaced.`);
@@ -421,11 +460,15 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 function flash(btn: HTMLButtonElement, label: string): void {
-  const previous = btn.textContent;
+  if (!btn.dataset.rest) btn.dataset.rest = btn.textContent ?? '';
+  const pending = Number(btn.dataset.flash || '0');
+  if (pending) window.clearTimeout(pending);
   btn.textContent = label;
-  window.setTimeout(() => {
-    btn.textContent = previous;
-  }, 1400);
+  const id = window.setTimeout(() => {
+    btn.textContent = btn.dataset.rest ?? '';
+    delete btn.dataset.flash;
+  }, 3000);
+  btn.dataset.flash = String(id);
 }
 
 function bind(): void {
@@ -434,7 +477,13 @@ function bind(): void {
     btn.type = 'button';
     btn.className = 'ghost';
     btn.dataset.example = example.id;
-    btn.textContent = example.title;
+    const title = document.createElement('span');
+    title.className = 'ex-title';
+    title.textContent = example.title;
+    const blurb = document.createElement('span');
+    blurb.className = 'ex-blurb';
+    blurb.textContent = example.blurb;
+    btn.append(title, blurb);
     btn.title = example.blurb;
     btn.addEventListener('click', () => void onExample(example.id));
     examplesEl.appendChild(btn);
@@ -494,6 +543,17 @@ function bind(): void {
     if (ok) flash(copyBtn, 'Copied');
     else showBanner('The file could not be copied.', 'share');
   })());
+
+  window.addEventListener('popstate', (ev: PopStateEvent) => {
+    const state = ev.state as { speckl?: string } | null;
+    if (typeof state?.speckl !== 'string' || state.speckl === editor.value) return;
+    editor.value = state.speckl;
+    loadedSource = state.speckl;
+    markExamples();
+    updateCursor();
+    clearBanner('hash');
+    compileNow();
+  });
 
   window.addEventListener('hashchange', () => {
     const decision = applyHash(location.hash, editor.value);

@@ -421,17 +421,29 @@ export function parseSpeckFile(filePath: string): AST {
 export function parseSpeckContent(content: string, filePath?: string): AST {
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
-  
+
   let i = 0;
+  let inBlockComment = false;
   while (i < lines.length) {
     const line = lines[i].trim();
-    
-    // Skip empty lines and comments
-    if (!line || line.startsWith('//') || line.startsWith('/*')) {
+
+    if (inBlockComment) {
+      if (line.includes('*/')) inBlockComment = false;
       i++;
       continue;
     }
-    
+
+    // Skip empty lines and comments
+    if (!line || line.startsWith('//')) {
+      i++;
+      continue;
+    }
+    if (line.startsWith('/*')) {
+      if (!line.includes('*/')) inBlockComment = true;
+      i++;
+      continue;
+    }
+
     // Handle import statements
     if (line.startsWith('import ')) {
       const importNode = parseImportStatement(line);
@@ -440,23 +452,30 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       i++;
       continue;
     }
-    
+
     // Handle speck definitions
     if (line.startsWith('speck ')) {
       const speck = parseSpeck(lines, i);
       if (speck) {
         specks.push(speck);
-        // Move index past the speck we just parsed
-        i++; // Increment by 1, the loop will continue from next line
+        // endLine is the 1-based line of the closing brace. The next index
+        // to scan is that line number. Always move forward.
+        const next = speck.endLine && speck.endLine > i ? speck.endLine : i + 1;
+        i = next;
       } else {
         i++;
       }
       continue;
     }
-    
+
+    // A speck already closed. Anything else used to be skipped, so trailing
+    // garbage still reported a successful compile.
+    if (specks.length > 0) {
+      throw new Error(`Parse error at line ${i + 1}: unexpected text after end of speck`);
+    }
     i++;
   }
-  
+
   return { specks };
 }
 
@@ -1506,6 +1525,17 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   const headerLine = lines[startIndex].trim();
   const asMatch = headerLine.match(/^state\s+as\s+(\w+)\s*{/);
   const messageName = asMatch ? asMatch[1] : undefined;
+
+  // `state { x: Nat }` keeps the variable on the header line. Scanning
+  // forward for the brace would miss it and swallow the next member.
+  const headerOpens = (headerLine.match(/{/g) || []).length;
+  const headerCloses = (headerLine.match(/}/g) || []).length;
+  if (headerLine.includes('{') && headerOpens > 0 && headerCloses >= headerOpens) {
+    const inner = headerLine.slice(headerLine.indexOf('{') + 1, headerLine.lastIndexOf('}'));
+    const result = parseStateBlock(inner);
+    if (messageName !== undefined) result.messageName = messageName;
+    return result;
+  }
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));

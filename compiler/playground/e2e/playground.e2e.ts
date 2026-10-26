@@ -40,7 +40,10 @@ test('loads DeployGate and compiles AGENTS.md plus the hook', async ({ page }) =
   await settled(page);
   await expect(page.locator('#spec')).toHaveValue(/speck DeployGate/);
   await expect(page.locator('#output')).toContainText('Call-bound');
-  await expect(page.locator('#diagnostics')).toContainText('Z3 was not run');
+  await expect(page.locator('#diagnostics')).toContainText('Proofs are not run in the browser');
+  await expect(page.locator('#diagnostics')).not.toContainText('output line');
+  await expect(page.locator('#diagnostics')).not.toContainText('.ir.smt2');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('');
   await page.getByRole('button', { name: 'hook.mjs' }).click();
   await expect(page.locator('#output')).toContainText('pre');
   await expect(page.locator('#status')).toHaveAttribute('data-state', 'done');
@@ -157,13 +160,23 @@ test('a damaged share link and a tampered hash do not crash', async ({ page }) =
   await expect(page.locator('#spec')).toHaveValue(/speck DeployGate/);
   await settled(page);
 
+  await page.goto('/#garbage');
+  await expect(page.locator('#banner')).toContainText(/not a Speckl playground link/i);
+  await page.goto('/#s3.abcd');
+  await expect(page.locator('#banner')).toContainText(/version s3/);
+  await page.goto('/#s2.abcd');
+  await expect(page.locator('#banner')).toContainText(/cut off/i);
+
   await page.goto('/');
   await settled(page);
-  const hash = await page.evaluate(() => location.hash);
-  const tampered = hash.slice(0, -1) + (hash.endsWith('a') ? '!' : '!');
-  await page.goto('/' + tampered);
-  await settled(page);
-  await expect(page.locator('#spec')).toBeVisible();
+  await page.locator('#share').click();
+  const href = await page.evaluate(() => location.href);
+  expect(href).toContain('#s2.');
+  await page.goto(href.slice(0, -6));
+  await expect(page.locator('#banner')).toContainText(/cut off/i);
+  await page.goto(href + 'zzz');
+  await expect(page.locator('#banner')).toContainText(/cut off|edited/i);
+  await expect(page.locator('#spec')).toHaveValue(/speck DeployGate/);
   await expect(page.locator('h1')).toHaveText('Playground');
 });
 
@@ -252,7 +265,7 @@ test('keyboard use, copy buttons, and the cursor line', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Call-bound');
 
   await page.locator('#share').click();
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('#s1.');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('#s2.');
 
   await page.locator('#theme').focus();
   await page.keyboard.press('Enter');
@@ -333,6 +346,73 @@ test('without JavaScript the fallback message is visible', async ({ browser }) =
   await expect(page.locator('.noscript')).toContainText('needs JavaScript');
   await expect(page.locator('#boot')).toContainText('JavaScript did not start');
   await context.close();
+});
+
+test('review findings: errors, empty editor, target files, and polish', async ({ page }) => {
+  const html = await (await page.request.get('/')).text();
+  expect(html).toContain('Compiling…');
+  expect(html).toContain('Load an example');
+  expect(html).toContain('speck Name');
+
+  await page.goto('/');
+  await settled(page);
+  await expect(page.locator('.lede')).toContainText('AGENTS.md');
+  await expect(page.getByRole('link', { name: 'Language reference' })).toHaveAttribute('href', /speckdl\/SPEC\.md/);
+  await expect(page.getByRole('link', { name: 'Docs' })).toHaveAttribute('href', /speckl-by-example\.md/);
+  await expect(page.locator('#examples')).toContainText('Call-bound sign-off');
+
+  await page.locator('#spec').fill('');
+  await settled(page);
+  await expect(page.locator('#spec')).toHaveAttribute('placeholder', /Load an example/i);
+  await expect(page.locator('#file')).toContainText(/Load an example/i);
+  await page.getByRole('button', { name: 'Toggle switch' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('#spec')).toHaveValue(/isOn := false/);
+
+  const base = await page.locator('#spec').inputValue();
+  await page.locator('#spec').fill(`${base}\nthis is trailing garbage }}} ((( !!!\n`);
+  await expect(page.locator('#diagnostics')).toContainText(/unexpected text after end of speck/);
+  await expect(page.locator('#status')).not.toContainText(/Compiled \d+ file/);
+
+  await page.locator('#spec').fill('speck S {\n  state {\n    checksPassed: Booll\n  }\n  action Go {\n    requires stage == 1\n    bogus := 1\n  }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText('unknown type "Booll"');
+  await expect(page.locator('#diagnostics')).toContainText(/Did you mean `require`/);
+  await expect(page.locator('#diagnostics')).toContainText('undeclared variable "bogus"');
+  await expect(page.locator('#error-chip')).toContainText(/error/);
+  await page.setViewportSize({ width: 390, height: 700 });
+  const chip = await page.locator('#error-chip').boundingBox();
+  const editorBox = await page.locator('#spec').boundingBox();
+  expect(chip).not.toBeNull();
+  expect(editorBox).not.toBeNull();
+  expect(chip!.y).toBeLessThan(editorBox!.y + editorBox!.height + 120);
+  await page.locator('#error-chip').click();
+  await expect(page.locator('#spec')).toBeFocused();
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  await page.locator('#spec').fill('speck S {\n  state {\n    x: Nat\n  }\n  action Go { x := 1 }\n  action Go { x := 2 }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText('duplicate action "Go"');
+
+  await page.getByRole('button', { name: 'DeployGate' }).click();
+  await page.getByRole('button', { name: 'Discard and load' }).click();
+  await settled(page);
+  await page.locator('#target').selectOption('openapi');
+  await settled(page);
+  await expect(page.locator('#file')).not.toContainText(/\.ts$/);
+  const file = await page.locator('#file').inputValue();
+  expect(file).toMatch(/openapi/i);
+
+  await page.evaluate(() => { (document.body.style as CSSStyleDeclaration & { zoom?: string }).zoom = '1.75'; });
+  const clip = await page.locator('#diagnostics').evaluate((el) => el.scrollHeight - el.clientHeight);
+  expect(clip).toBeLessThan(8);
+
+  await page.locator('#copy-file').click();
+  await expect(page.locator('#copy-file')).toHaveText('Copied');
+  await expect(page.locator('#copy-file')).toHaveText('Copy file', { timeout: 5000 });
+
+  await page.goto('/#garbage');
+  await expect(page.locator('#banner')).toBeVisible();
+  const position = await page.locator('#banner').evaluate((el) => getComputedStyle(el).position);
+  expect(position).toBe('fixed');
 });
 
 test('records first compiled output and gzipped bundle size', async ({ page }) => {

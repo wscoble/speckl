@@ -96,22 +96,31 @@ export function dedupeDiagnostics(items: BrowserDiagnostic[]): BrowserDiagnostic
 
 const UNCHECKED = /^;\s*speckl-unchecked:\s*(.*)$/;
 
-/** Unchecked markers are about the SMT file, not a spec line. */
-export function uncheckedDiagnostics(files: { path: string; text: string }[]): BrowserDiagnostic[] {
-  const out: BrowserDiagnostic[] = [];
+/** How many SMT obligations the compiler marked unchecked. Not a spec line. */
+export function uncheckedObligationCount(files: { path: string; text: string }[]): number {
+  let count = 0;
   for (const file of files) {
     if (!file.path.endsWith('.smt2')) continue;
-    const lines = file.text.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const m = UNCHECKED.exec(lines[i].trim());
-      if (!m) continue;
-      out.push({
-        level: 'warning',
-        message: `${file.path}, output line ${i + 1}: not proved — ${m[1].trim()}. Z3 does not run in the browser; this is the compiler marking an obligation it could not check.`,
-      });
+    for (const line of file.text.split('\n')) {
+      if (UNCHECKED.test(line.trim())) count++;
     }
   }
-  return out;
+  return count;
+}
+
+/**
+ * One note for the whole compile. The per-file unchecked markers are about
+ * generated SMT, and listing each one as a warning buried real problems.
+ */
+export function proofNote(uncheckedCount: number): BrowserDiagnostic {
+  const n = Number.isFinite(uncheckedCount) ? Math.max(0, Math.floor(uncheckedCount)) : 0;
+  const extra = n > 0
+    ? ` ${n} check${n === 1 ? '' : 's'} could not be proved here.`
+    : '';
+  return {
+    level: 'info',
+    message: `Proofs are not run in the browser.${extra} Use \`speckl verify\` with Z3 to check them.`,
+  };
 }
 
 export function longLineDiagnostic(source: string): BrowserDiagnostic | null {
@@ -165,10 +174,7 @@ export function noAgentDiagnostic(): BrowserDiagnostic {
 }
 
 export function z3InfoDiagnostic(): BrowserDiagnostic {
-  return {
-    level: 'info',
-    message: 'SMT was emitted, and Z3 was not run. `speckl verify` on your machine is what asks the solver for a proof.',
-  };
+  return proofNote(0);
 }
 
 export function timeoutMessage(ms: number): string {

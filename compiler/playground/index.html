@@ -38,8 +38,10 @@
           <h1>Playground</h1>
         </div>
       </div>
-      <p class="lede">Edit a spec. Diagnostics and the compiled files update as you type. The compiler runs in this browser. Nothing is uploaded.</p>
+      <p class="lede">Speckl specs describe agent behavior and compile to AGENTS.md, tool definitions, and hooks. Edit one here; diagnostics and compiled files update as you type, in this browser, and nothing is uploaded.</p>
       <div class="mast-actions">
+        <a class="ghost" href="https://github.com/wscoble/speckl/blob/main/speckdl/SPEC.md">Language reference</a>
+        <a class="ghost" href="https://github.com/wscoble/speckl/blob/main/docs/speckl-by-example.md">Docs</a>
         <a class="ghost" href="https://github.com/wscoble/speckl">Source</a>
         <a class="ghost" href="https://speckl.scoble.me">speckl.scoble.me</a>
         <button type="button" id="theme" class="ghost">Theme: match system</button>
@@ -78,30 +80,31 @@
           <p id="cursor">Line 1, column 1</p>
         </div>
         <label class="sr" for="spec">Speckl spec</label>
-        <textarea id="spec" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+        <textarea id="spec" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" placeholder="speck Name {&#10;  state { ready: Bool }&#10;  action Go { ready := true }&#10;}&#10;&#10;Load an example above, or start typing."></textarea>
+        <button type="button" id="error-chip" class="error-chip" hidden></button>
       </section>
 
       <section class="pane" aria-labelledby="out-heading">
         <div class="pane-bar">
           <h2 id="out-heading">Output</h2>
-          <p id="status" role="status" data-state="idle">Waiting to compile.</p>
+          <p id="status" role="status" data-state="compiling">Compiling…</p>
         </div>
         <h3 class="subhead">Diagnostics</h3>
-        <ul id="diagnostics"></ul>
+        <ul id="diagnostics"><li><p class="info">Compiling…</p></li></ul>
         <div class="pane-bar file-bar">
           <div id="quick" class="quick" aria-label="Common outputs"></div>
           <label for="file">File
-            <select id="file"></select>
+            <select id="file"><option value="">Load an example to see a compiled file</option></select>
           </label>
           <button type="button" id="copy-file" class="ghost" disabled>Copy file</button>
         </div>
         <p id="trunc" class="trunc" hidden></p>
-        <pre id="output" tabindex="0"></pre>
+        <pre id="output" tabindex="0">Compiling the spec…</pre>
       </section>
     </main>
 
     <footer>
-      <p>Ctrl+Enter compiles now. Specs over 2 MB are refused. Share links hold about 60,000 characters. Z3 does not run here; unchecked obligations are still reported. Output is shown as text, not rendered HTML.</p>
+      <p>Ctrl+Enter compiles now. Specs over 2 MB are refused. Share links hold about 60,000 characters. Proofs need the speckl command with Z3; this page does not run them. Output is shown as text, not rendered HTML.</p>
     </footer>
 
     <dialog id="dialog" aria-labelledby="dialog-title">

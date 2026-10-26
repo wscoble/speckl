@@ -11,8 +11,10 @@ import {
   cursorLineCol,
   decodeBase64Url,
   decodeSpecHash,
+  crc32,
   encodeBase64Url,
   encodeSpecHash,
+  filesForTarget,
   formatBytes,
   hashForSource,
   historyMode,
@@ -22,6 +24,9 @@ import {
   orderOutputPaths,
   preferredOutput,
   presentDiagnostic,
+  proofNote,
+  uncheckedObligationCount,
+  z3InfoDiagnostic,
   shareAllowed,
   shouldConfirmDiscard,
   sortDiagnostics,
@@ -72,6 +77,15 @@ describe('share links', () => {
     const foreign = decodeSpecHash('#<script>alert(1)</script>');
     expect(foreign.ok).toBe(false);
     if (!foreign.ok) expect(foreign.message).toMatch(/not a Speckl playground link/);
+    const garbage = decodeSpecHash('#garbage');
+    expect(garbage.ok).toBe(false);
+    if (!garbage.ok) expect(garbage.message).toMatch(/not a Speckl playground link/);
+    const unknown = decodeSpecHash('#s3.abcd');
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) expect(unknown.message).toMatch(/version s3/);
+    const short = decodeSpecHash('#s2.abcd');
+    expect(short.ok).toBe(false);
+    if (!short.ok) expect(short.message).toMatch(/cut off/);
     expect(decodeSpecHash('').ok).toBe(false);
     expect(decodeSpecHash('s1.' + 'a'.repeat(4_000_001)).ok).toBe(false);
     const badUtf = decodeSpecHash('s1.' + encodeBase64Url(new Uint8Array([0xff, 0xfe, 0xfd])));
@@ -106,7 +120,25 @@ describe('share links', () => {
     expect(big.hash).toBe('');
     expect(big.reason).toMatch(/too large/);
     const small = hashForSource('speck S {}');
-    expect(small.hash.startsWith('#s1.')).toBe(true);
+    expect(small.hash.startsWith('#s2.')).toBe(true);
+  });
+
+  it('rejects a cut-off or edited s2 link and still reads s1', () => {
+    const hash = encodeSpecHash('speck S { state { x: Nat } }');
+    expect(hash.startsWith('s2.')).toBe(true);
+    const cut = decodeSpecHash('#' + hash.slice(0, -4));
+    expect(cut.ok).toBe(false);
+    if (!cut.ok) expect(cut.message).toMatch(/cut off/);
+    const extra = decodeSpecHash('#' + hash + 'zzz');
+    expect(extra.ok).toBe(false);
+    if (!extra.ok) expect(extra.message).toMatch(/cut off|edited/);
+    const payload = hash.slice(3);
+    const at = 4;
+    const flipped = payload.slice(0, at) + (payload[at] === 'A' ? 'B' : 'A') + payload.slice(at + 1);
+    const edited = decodeSpecHash('s2.' + flipped);
+    expect(edited.ok).toBe(false);
+    if (!edited.ok) expect(edited.message).toMatch(/cut off|edited/);
+    expect(crc32(new TextEncoder().encode('123456789'))).toBe(0xcbf43926);
   });
 });
 
@@ -129,8 +161,10 @@ describe('session rules', () => {
   });
 
   it('asks before discarding dirty edits', () => {
-    expect(shouldConfirmDiscard(true)).toBe(true);
-    expect(shouldConfirmDiscard(false)).toBe(false);
+    expect(shouldConfirmDiscard('speck Edited {}', 'speck Loaded {}')).toBe(true);
+    expect(shouldConfirmDiscard('speck Loaded {}', 'speck Loaded {}')).toBe(false);
+    expect(shouldConfirmDiscard('', 'speck Loaded {}')).toBe(false);
+    expect(shouldConfirmDiscard('   \n', 'speck Loaded {}')).toBe(false);
   });
 
   it('maps a caret and a line number back to the text', () => {
@@ -164,6 +198,34 @@ describe('session rules', () => {
     expect(preferredOutput(ordered)).toBe('agent/AGENTS.md');
     expect(preferredOutput([])).toBeNull();
     expect(orderOutputPaths(['notes/AGENTS.md', 'other/hook.mjs'])[0]).toBe('notes/AGENTS.md');
+  });
+
+  it('lists the files for the selected target', () => {
+    const paths = [
+      'ClaudeCodePolicy.ts',
+      'openapi/claudecodepolicy.openapi.json',
+      'k8s/policies.speckl.dev.yaml',
+      'claudecodepolicy.proto',
+      'claudecodepolicy-elm/src/Types.elm',
+      'camel/src/main/java/Go.java',
+      'toggleswitch/toggle.go',
+      'Toggle.ir.smt2',
+      'agent/AGENTS.md',
+    ];
+    expect(filesForTarget(paths, 'openapi')[0]).toMatch(/openapi/);
+    expect(filesForTarget(paths, 'openapi').some((p) => p.endsWith('.ts'))).toBe(false);
+    expect(filesForTarget(paths, 'protobuf').every((p) => p.endsWith('.proto'))).toBe(true);
+    expect(filesForTarget(paths, 'k8s').every((p) => p.includes('k8s/'))).toBe(true);
+    expect(filesForTarget(paths, 'elm').every((p) => p.endsWith('.elm'))).toBe(true);
+    expect(filesForTarget(paths, 'go').every((p) => p.endsWith('.go'))).toBe(true);
+    expect(filesForTarget(paths, 'camel').every((p) => p.endsWith('.java'))).toBe(true);
+    expect(filesForTarget(paths, 'z3').every((p) => p.endsWith('.smt2'))).toBe(true);
+    expect(filesForTarget(paths, 'agent')[0]).toBe('agent/AGENTS.md');
+    expect(filesForTarget(paths, 'typescript')).toEqual(['ClaudeCodePolicy.ts']);
+    expect(filesForTarget(paths, 'all')).toHaveLength(paths.length);
+    expect(filesForTarget(paths, 'all-ir')).toHaveLength(paths.length);
+    expect(filesForTarget(['only.ts'], 'rust')).toEqual(['only.ts']);
+    expect(filesForTarget(paths, 'nope')).toHaveLength(paths.length);
   });
 });
 
@@ -229,7 +291,11 @@ describe('compileSource', () => {
     expect(hook?.text).toContain('pre');
     expect(result.files.some((f) => f.path.endsWith('.smt2'))).toBe(true);
     expect(result.files.some((f) => f.path.endsWith('.ts'))).toBe(true);
-    expect(result.diagnostics.some((d) => d.message.includes('Z3 was not run'))).toBe(true);
+    expect(result.diagnostics.some((d) => d.level === 'info' && d.message.includes('Proofs are not run in the browser'))).toBe(true);
+    expect(result.diagnostics.some((d) => d.level === 'warning' && /\.ir\.smt2|output line/.test(d.message))).toBe(false);
+    expect(z3InfoDiagnostic().message).toMatch(/Proofs are not run/);
+    expect(proofNote(2).message).toMatch(/2 checks/);
+    expect(uncheckedObligationCount([{ path: 'A.smt2', text: '; speckl-unchecked: goal\n; ok\n' }])).toBe(1);
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -286,6 +352,9 @@ describe('compileSource', () => {
     expect(diag?.level).toBe('error');
     expect(diag?.line).toBeGreaterThan(0);
     expect(result.files.length).toBeGreaterThan(0);
+    const nexts = result.diagnostics.filter((d) => /next: references unknown action/.test(d.message));
+    expect(nexts.length).toBeGreaterThan(0);
+    expect(nexts.every((d) => d.line !== undefined)).toBe(true);
   });
 
   it('accepts CRLF, tabs, emoji, and RTL text', () => {

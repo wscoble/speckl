@@ -105,6 +105,7 @@ function lowerSpeck(
 
   // Build the eight facets.
   const typed_schema = lowerTypedSchema(speck, ast, diagnostics);
+  reportUnknownTypes(speck, rawSource, declaredTypeNames(ast, rawSource), diagnostics);
   const behavior = lowerBehavior(speck, rawStatementsByAction, diagnostics);
   const formal_spec = lowerFormalSpec(speck, ast, diagnostics);
   const wire_format = lowerWireFormat(speck);
@@ -169,7 +170,8 @@ function extractActionStatements(
     if (m.type !== 'action') continue;
     const { startLine, endLine } = m as { startLine?: number; endLine?: number };
     if (!startLine || !endLine) continue;
-    out.set((m as ActionNode).name, parseActionStatements(actionBodyLines(lines, startLine, endLine)));
+    const body = actionBodyEntries(lines, startLine, endLine);
+    out.set((m as ActionNode).name, parseActionStatements(body.map(e => e.text), body.map(e => e.line)));
   }
 
   return out;
@@ -179,24 +181,28 @@ function extractActionStatements(
  * Body lines of an action spanning 1-based source lines [startLine, endLine]:
  * everything after the opening `{` and before the closing `}`.
  */
-function actionBodyLines(lines: string[], startLine: number, endLine: number): string[] {
+function actionBodyEntries(lines: string[], startLine: number, endLine: number): { text: string; line: number }[] {
   let open = startLine - 1;
-  while (open < endLine - 1 && !lines[open].includes('{')) open++;
+  while (open < endLine - 1 && !(lines[open] ?? '').includes('{')) open++;
   const close = endLine - 1;
+  const entries: { text: string; line: number }[] = [];
   if (open >= close) {
     // Single-line action: `action Name { stmt }`.
     const l = lines[open] ?? '';
     const body = l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
-    return body.trim() ? [body] : [];
+    if (body.trim()) entries.push({ text: body, line: open + 1 });
+    return entries;
   }
-  const body = lines.slice(open + 1, close);
-  // Text after `{` on the header line, or before `}` on the closing line.
-  const head = lines[open].slice(lines[open].indexOf('{') + 1);
-  if (head.trim()) body.unshift(head);
-  const closeLine = lines[close];
+  // Text after `{` on the header line, body lines, text before `}` on the close.
+  const head = (lines[open] ?? '').slice((lines[open] ?? '').indexOf('{') + 1);
+  if (head.trim()) entries.push({ text: head, line: open + 1 });
+  for (let idx = open + 1; idx < close; idx++) {
+    entries.push({ text: lines[idx] ?? '', line: idx + 1 });
+  }
+  const closeLine = lines[close] ?? '';
   const tail = closeLine.slice(0, closeLine.lastIndexOf('}'));
-  if (tail.trim()) body.push(tail);
-  return body;
+  if (tail.trim()) entries.push({ text: tail, line: close + 1 });
+  return entries;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -285,6 +291,13 @@ function lowerBehavior(
   let init: IRAssign[] = [];
   const actions: IRAction[] = [];
   const events: IREvent[] = [];
+  const stateNames = new Set<string>();
+  for (const m of speck.members) {
+    if (m.type === 'state') {
+      for (const v of (m as StateNode).variables) stateNames.add(v.name);
+    }
+  }
+  const seenActions = new Set<string>();
 
   for (const m of speck.members) {
     if (m.type === 'state') {
@@ -304,10 +317,21 @@ function lowerBehavior(
       }));
     } else if (m.type === 'action') {
       const a = m as ActionNode;
+      if (seenActions.has(a.name)) {
+        diagnostics.push({
+          level: 'error',
+          message: `duplicate action "${a.name}"`,
+          line: (a as ActionNode & { startLine?: number }).startLine,
+          speck: speck.name,
+        });
+      }
+      seenActions.add(a.name);
       const rawStmts = rawStatementsByAction.get(a.name) || [];
       // No caller lowers a signal-injected AST: the agent block's synthetic
       // __signal_* actions are added to the IR below, from the agent block.
-      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
+      const scope = new Set(stateNames);
+      for (const p of a.params) scope.add(p.name);
+      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name, scope));
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
@@ -877,16 +901,30 @@ function lowerStatement(
   s: ActionStatement,
   diagnostics: IRDiagnostic[],
   speckName: string,
+  scope?: Set<string>,
 ): IRStmt {
   switch (s.type) {
-    case 'assign':
+    case 'assign': {
+      if (scope) {
+        const name = s.target.kind === 'plain' ? s.target.name : s.target.mapName;
+        if (!scope.has(name)) {
+          diagnostics.push({
+            level: 'error',
+            message: `undeclared variable "${name}"`,
+            line: s.line,
+            speck: speckName,
+          });
+        }
+      }
       return {
         kind: 'assign',
         target: s.target.kind === 'plain' ? s.target.name : `${s.target.mapName}[...]`,
         ...(s.target.kind === 'map_index' ? { targetIndex: lowerExpr(s.target.index, diagnostics, speckName) } : {}),
         value: lowerExpr(s.expr, diagnostics, speckName),
       };
+    }
     case 'let':
+      scope?.add(s.name);
       return {
         kind: 'let',
         letName: s.name,
@@ -930,7 +968,181 @@ function lowerStatement(
         speck: speckName,
       });
       return { kind: 'if', expr: undefined, raw: s.raw };
+    case 'unrecognized': {
+      const hint = s.suggestion ? ` Did you mean \`${s.suggestion}\`?` : '';
+      diagnostics.push({
+        level: 'error',
+        message: `unrecognized statement "${s.raw}".${hint}`,
+        line: s.line,
+        speck: speckName,
+      });
+      return { kind: 'if', expr: undefined, raw: s.raw };
+    }
   }
+}
+
+const BUILTIN_TYPES = ['Nat', 'Int', 'Real', 'Bool', 'String', 'Bytes', 'Void'];
+const GENERIC_WRAPPER = /^(Option|Maybe|Result)\(([\s\S]*)\)$/;
+
+function declaredTypeNames(ast: AST, source: string): Set<string> {
+  const names = new Set<string>(BUILTIN_TYPES);
+  for (const speck of ast.specks) {
+    for (const m of speck.members) {
+      if (m.type === 'interface' || m.type === 'event' || m.type === 'oneof' || m.type === 'service') {
+        const name = (m as { name?: string }).name;
+        if (name) names.add(name);
+      }
+    }
+  }
+  for (const match of source.matchAll(/^\s*(?:type|interface|event|oneof|service)\s+([A-Za-z_]\w*)/gm)) {
+    names.add(match[1]);
+  }
+  return names;
+}
+
+function reportUnknownTypes(
+  speck: SpeckNode,
+  source: string,
+  known: Set<string>,
+  diagnostics: IRDiagnostic[],
+): void {
+  const seen = new Set<string>();
+  const report = (typeName: string, field?: string, suggestion?: string) => {
+    const line = field ? lineOfFieldType(source, field, typeName) : lineOfType(source, typeName);
+    const key = `${typeName}|${line ?? ''}|${field ?? ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const hint = suggestion ? ` Did you mean \`${suggestion}\`?` : '';
+    diagnostics.push({
+      level: 'error',
+      message: `unknown type "${typeName}".${hint}`,
+      line,
+      speck: speck.name,
+    });
+  };
+  const walk = (t: TypeExpr | undefined, field?: string) => {
+    if (!t) return;
+    if ((t.type === 'ident' || t.type === 'primitive') && t.name) {
+      checkTypeName(t.name, known, (n, suggestion) => report(n, field, suggestion));
+    }
+    if (t.type === 'list' || t.type === 'set') walk(t.elementType, field);
+    if (t.type === 'map') {
+      walk(t.keyType, field);
+      walk(t.valueType, field);
+    }
+    if (t.type === 'record') {
+      for (const f of t.fields ?? []) walk(f.type, f.name);
+    }
+  };
+
+  for (const m of speck.members) {
+    if (m.type === 'state') {
+      for (const v of (m as StateNode).variables) walk(v.typeExpr, v.name);
+    } else if (m.type === 'action') {
+      for (const p of (m as ActionNode).params) walk(p.type, p.name);
+    } else if (m.type === 'event') {
+      for (const f of (m as EventNode).fields) walk(f.type, f.name);
+    } else if (m.type === 'interface') {
+      const iface = m as InterfaceNode;
+      for (const f of iface.fields ?? []) walk(f.type, f.name);
+      for (const method of iface.methods ?? []) {
+        walk(method.returnType, method.name);
+        for (const p of method.params ?? []) walk(p.type, p.name);
+      }
+    } else if (m.type === 'oneof') {
+      for (const v of (m as OneofNode).variants) {
+        if (v.typeName) checkTypeName(v.typeName, known, (n, suggestion) => report(n, v.fieldName, suggestion));
+      }
+    } else if (m.type === 'transition') {
+      for (const f of (m as TransitionNode).fields) walk(f.type, f.name);
+    }
+  }
+}
+
+function checkTypeName(name: string, known: Set<string>, report: (name: string, suggestion?: string) => void): void {
+  const generic = GENERIC_WRAPPER.exec(name);
+  if (generic) {
+    for (const part of splitTypeArgs(generic[2])) checkTypeName(part, known, report);
+    return;
+  }
+  if (known.has(name)) return;
+  // Specs name external records (Account, Message, Date) without declaring
+  // them. Only a typo of a known type is an error: `Booll` is Bool, `Account` is not.
+  if (!/^[A-Za-z_]\w*$/.test(name)) return;
+  const suggestion = suggestKnownType(name, known);
+  if (suggestion) report(name, suggestion);
+}
+
+function suggestKnownType(name: string, known: Set<string>): string | undefined {
+  let best: { n: string; d: number } | undefined;
+  for (const candidate of known) {
+    if (!/^[A-Za-z_]\w*$/.test(candidate)) continue;
+    const d = typeEditDistance(name, candidate);
+    if (d === 0) continue;
+    const limit = Math.max(name.length, candidate.length) >= 6 ? 2 : 1;
+    if (d <= limit && (!best || d < best.d)) best = { n: candidate, d };
+  }
+  return best?.n;
+}
+
+function typeEditDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  const prev = new Array<number>(b.length + 1);
+  const next = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    next[0] = i;
+    let rowMin = next[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      next[j] = Math.min(prev[j] + 1, next[j - 1] + 1, prev[j - 1] + cost);
+      if (next[j] < rowMin) rowMin = next[j];
+    }
+    if (rowMin > 2) return 3;
+    for (let j = 0; j <= b.length; j++) prev[j] = next[j];
+  }
+  return prev[b.length];
+}
+
+function splitTypeArgs(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '(' || c === '<' || c === '{') depth++;
+    else if (c === ')' || c === '>' || c === '}') depth--;
+    else if (c === ',' && depth === 0) {
+      parts.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const last = text.slice(start).trim();
+  if (last) parts.push(last);
+  return parts;
+}
+
+function lineOfFieldType(source: string, field: string, typeName: string): number | undefined {
+  const lines = source.split('\n');
+  const re = new RegExp(`\\b${escapeRegExp(field)}\\b[^\\n]*\\b${escapeRegExp(typeName)}\\b`);
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) return i + 1;
+  }
+  return lineOfType(source, typeName);
+}
+
+function lineOfType(source: string, typeName: string): number | undefined {
+  const lines = source.split('\n');
+  const re = new RegExp(`\\b${escapeRegExp(typeName)}\\b`);
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) return i + 1;
+  }
+  return undefined;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ─────────────────────────────────────────────────────────────────────

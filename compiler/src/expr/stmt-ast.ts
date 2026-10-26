@@ -13,12 +13,15 @@ export type ActionStatement =
   | PostconditionStmt
   | EmitStmt
   | ReturnStmt
-  | IfBlockStmt;
+  | IfBlockStmt
+  | UnrecognizedStmt;
 
 export interface AssignStmt {
   type: 'assign';
   target: AssignTarget;
   expr: Expr;
+  /** 1-based source line of the statement, when the caller provided one. */
+  line?: number;
 }
 
 /** Target of an assignment: plain ident or map[x] bracket access. */
@@ -63,4 +66,15 @@ export interface IfBlockStmt {
   type: 'ifblock';
   raw: string;
   // Future: properly parsed conditional block
+}
+
+/**
+ * A line that is not a statement this parser knows. Kept out of the IR as a
+ * guard: a typo such as `requires` used to become an ifblock and disappear.
+ */
+export interface UnrecognizedStmt {
+  type: 'unrecognized';
+  raw: string;
+  line?: number;
+  suggestion?: string;
 }

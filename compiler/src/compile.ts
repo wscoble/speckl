@@ -150,5 +150,15 @@ export function compileSpec(file: string, options: CompileOptions): void {
     generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
   }
 
+  // Error diagnostics used to be ignored except for `agent ...` messages, so
+  // a typo, an unknown type, or an undeclared name still exited 0.
+  const specErrors = irAst.diagnostics.filter(d => d.level === 'error' && !d.message.startsWith('agent'));
+  if (specErrors.length > 0) {
+    throw new Error('spec is invalid:\n' + specErrors.map(d => {
+      const where = d.line ? `line ${d.line}: ` : '';
+      return `  ${d.speck ?? ''}: ${where}${d.message}`;
+    }).join('\n'));
+  }
+
   console.log(`\nCompilation complete. Output: ${options.outputDir}/`);
 }

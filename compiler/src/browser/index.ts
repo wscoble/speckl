@@ -12,7 +12,7 @@ export {
   sourceByteLength,
 } from './limits.js';
 
-export { decodeBase64Url, decodeSpecHash, encodeBase64Url, encodeSpecHash } from './share.js';
+export { crc32, decodeBase64Url, decodeSpecHash, encodeBase64Url, encodeSpecHash } from './share.js';
 export type { DecodeResult } from './share.js';
 
 export {
@@ -28,8 +28,9 @@ export {
   presentDiagnostic,
   sortDiagnostics,
   timeoutMessage,
+  proofNote,
   tooBigDiagnostic,
-  uncheckedDiagnostics,
+  uncheckedObligationCount,
   workerCrashMessage,
   z3InfoDiagnostic,
 } from './diagnostics.js';
@@ -42,6 +43,7 @@ export {
   hashForSource,
   historyMode,
   lineRange,
+  filesForTarget,
   orderOutputPaths,
   preferredOutput,
   shouldConfirmDiscard,

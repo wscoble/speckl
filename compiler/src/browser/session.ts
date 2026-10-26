@@ -47,8 +47,9 @@ export function applyHash(hash: string, currentSource: string): ApplyHash {
   return { action: 'load', source: decoded.source };
 }
 
-export function shouldConfirmDiscard(dirty: boolean): boolean {
-  return dirty;
+/** Ask only when the editor holds text that is not the spec already loaded. */
+export function shouldConfirmDiscard(editor: string, loaded: string): boolean {
+  return editor.trim() !== '' && editor !== loaded;
 }
 
 export function hashForSource(source: string): { hash: string; reason?: string } {
@@ -112,4 +113,47 @@ export function orderOutputPaths(paths: string[]): string[] {
 export function preferredOutput(paths: string[]): string | null {
   const ordered = orderOutputPaths(paths);
   return ordered[0] ?? null;
+}
+
+/**
+ * Files to show for a playground target. The compiler still emits TypeScript
+ * beside OpenAPI, Protobuf, Kubernetes, Elm, Go, and Camel. The page lists
+ * the files for the target the user picked.
+ */
+export function filesForTarget(paths: string[], target: string): string[] {
+  const pred = targetFile(target);
+  if (!pred) return orderOutputPaths(paths);
+  const filtered = paths.filter((p) => pred(p.replace(/\\/g, '/')));
+  return orderOutputPaths(filtered.length > 0 ? filtered : paths);
+}
+
+function targetFile(target: string): ((norm: string) => boolean) | null {
+  switch (target) {
+    case 'all':
+    case 'all-ir':
+    case '':
+      return null;
+    case 'typescript':
+      return (p) => p.endsWith('.ts') && !inAgentDir(p);
+    case 'z3':
+      return (p) => p.endsWith('.smt2');
+    case 'rust':
+      return (p) => p.endsWith('.rs') || p.endsWith('Cargo.toml');
+    case 'go':
+      return (p) => p.endsWith('.go');
+    case 'protobuf':
+      return (p) => p.endsWith('.proto');
+    case 'k8s':
+      return (p) => p.startsWith('k8s/') || p.includes('/k8s/');
+    case 'openapi':
+      return (p) => p.startsWith('openapi/') || p.includes('/openapi/') || p.endsWith('.openapi.json');
+    case 'camel':
+      return (p) => p.endsWith('.java');
+    case 'elm':
+      return (p) => p.endsWith('.elm');
+    case 'agent':
+      return (p) => inAgentDir(p) || p.endsWith('AGENTS.md') || p.endsWith('hook.mjs') || p.endsWith('tools.json');
+    default:
+      return null;
+  }
 }

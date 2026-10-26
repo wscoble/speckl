@@ -191,13 +191,51 @@ select, textarea, pre {
 }
 select { min-height: 40px; padding: 6px 10px; max-width: 100%; }
 .banner {
+  position: fixed;
+  z-index: 30;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(42rem, calc(100% - 24px));
   margin: 0;
   padding: 10px 14px;
   border-radius: 10px;
   background: var(--paper);
   border: 1px solid var(--copper);
   color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
+.banner[hidden] { display: none; }
+#examples button {
+  flex-direction: column;
+  align-items: flex-start;
+  height: auto;
+  max-width: 18rem;
+  border-radius: 12px;
+  text-align: left;
+  gap: 2px;
+}
+.ex-title { font-weight: 650; }
+.ex-blurb {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--faint);
+  font-weight: 450;
+}
+textarea::placeholder { color: var(--faint); opacity: 1; }
+.error-chip {
+  align-self: flex-start;
+  margin: 0;
+  border-radius: 999px;
+  padding: 4px 12px;
+  min-height: 32px;
+  border: 1px solid color-mix(in srgb, var(--error) 55%, var(--line));
+  background: var(--bg);
+  color: var(--error);
+  cursor: pointer;
+  font: 14px/1.3 var(--sans);
+}
+.error-chip[hidden] { display: none; }
 .workspace {
   flex: 1;
   min-height: 0;
@@ -239,8 +277,7 @@ pre { overflow: auto; white-space: pre; }
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 28vh;
-  overflow: auto;
+  overflow: visible;
   display: flex;
   flex-direction: column;
   gap: 6px;

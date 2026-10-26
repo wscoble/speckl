@@ -1,5 +1,7 @@
-// Share links live in the URL hash: `#s1.` plus unpadded base64url of the
-// UTF-8 spec. No extra dependency, and the alphabet survives a copied URL.
+// Share links live in the URL hash.
+// `#s1.` is unpadded base64url of the UTF-8 spec (older links, no checksum).
+// `#s2.` is unpadded base64url of a big-endian CRC-32 followed by the UTF-8
+// spec, so a link that was cut off or edited does not load a partial spec.
 
 import { MAX_SOURCE_BYTES, formatBytes } from './limits.js';
 
@@ -75,7 +77,15 @@ export type DecodeResult =
   | { ok: false; message: string };
 
 export function encodeSpecHash(source: string): string {
-  return 's1.' + encodeBase64Url(new TextEncoder().encode(source));
+  const body = new TextEncoder().encode(source);
+  const packed = new Uint8Array(4 + body.length);
+  const crc = crc32(body);
+  packed[0] = (crc >>> 24) & 255;
+  packed[1] = (crc >>> 16) & 255;
+  packed[2] = (crc >>> 8) & 255;
+  packed[3] = crc & 255;
+  packed.set(body, 4);
+  return 's2.' + encodeBase64Url(packed);
 }
 
 export function decodeSpecHash(hash: string): DecodeResult {
@@ -88,19 +98,52 @@ export function decodeSpecHash(hash: string): DecodeResult {
       message: 'This share link is too long to read. Open a shorter link, or load an example.',
     };
   }
-  if (!raw.startsWith('s1.')) {
+  const version = /^s(\d+)\./.exec(raw);
+  if (version && version[1] !== '1' && version[1] !== '2') {
     return {
       ok: false,
-      message: 'This share link is not a Speckl playground link. It was ignored, and an example was loaded instead.',
+      message: `This share link uses version s${version[1]}, which this playground does not understand. An example was loaded instead.`,
     };
   }
-  const bytes = decodeBase64Url(raw.slice(3));
+  if (raw.startsWith('s1.')) return decodeS1(raw.slice(3));
+  if (raw.startsWith('s2.')) return decodeS2(raw.slice(3));
+  return {
+    ok: false,
+    message: 'This share link is not a Speckl playground link. It was ignored, and an example was loaded instead.',
+  };
+}
+
+function decodeS1(payload: string): DecodeResult {
+  const bytes = decodeBase64Url(payload);
   if (!bytes) {
     return {
       ok: false,
       message: 'This share link is damaged or was edited, so the spec could not be read. An example was loaded instead.',
     };
   }
+  return decodeUtf8(bytes);
+}
+
+function decodeS2(payload: string): DecodeResult {
+  const bytes = decodeBase64Url(payload);
+  if (!bytes || bytes.length < 4) {
+    return {
+      ok: false,
+      message: 'This share link was cut off, so the spec could not be read. An example was loaded instead.',
+    };
+  }
+  const stated = (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0);
+  const body = bytes.subarray(4);
+  if (crc32(body) !== stated) {
+    return {
+      ok: false,
+      message: 'This share link was cut off or edited, so the spec could not be read. An example was loaded instead.',
+    };
+  }
+  return decodeUtf8(body);
+}
+
+function decodeUtf8(bytes: Uint8Array): DecodeResult {
   if (bytes.length > MAX_SOURCE_BYTES) {
     return {
       ok: false,
@@ -117,3 +160,22 @@ export function decodeSpecHash(hash: string): DecodeResult {
     };
   }
 }
+
+/** IEEE CRC-32. Used so an s2 link that lost its tail does not decode. */
+export function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();

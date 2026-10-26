@@ -11,7 +11,7 @@ import { ActionStatement } from './stmt-ast.js';
  * Parse a single action's body lines into typed statement nodes.
  * Handles: precondition, postcondition, require, let, assign, emit, return, ifblock.
  */
-export function parseActionStatements(lines: string[]): ActionStatement[] {
+export function parseActionStatements(lines: string[], lineNumbers?: number[]): ActionStatement[] {
   const stmts: ActionStatement[] = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -169,6 +169,8 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
       }
       const target = assignMatch[1];
       const expr = parseExprSingle(exprText);
+      const sourceLine = lineNumbers?.[i];
+      const lineField = sourceLine ? { line: sourceLine } : {};
 
       // Determine target kind: plain or map_index
       const bracketMatch = target.match(/^(\w+)\[(.+)\]$/);
@@ -177,15 +179,41 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
           type: 'assign',
           target: { kind: 'map_index', mapName: bracketMatch[1], index: parseExprSingle(bracketMatch[2]) },
           expr,
+          ...lineField,
         });
       } else {
-        stmts.push({ type: 'assign', target: { kind: 'plain', name: target }, expr });
+        stmts.push({ type: 'assign', target: { kind: 'plain', name: target }, expr, ...lineField });
       }
       continue;
     }
 
-    // Anything else (a bare call, an assignment to a dotted path, ...) is
-    // kept as raw text so it is reported as not lowered instead of vanishing.
+    // A bare call, a `for` header, or an assignment to a dotted path has no
+    // IR form yet. Keep it as raw text so it is reported, not deleted.
+    const dottedAssign = /^(.+?)\s*:=/.exec(trimmed);
+    if (/^for\b/.test(trimmed) || /^[\w.]+\s*\(/.test(trimmed) || (dottedAssign && dottedAssign[1].includes('.'))) {
+      stmts.push({ type: 'ifblock', raw: trimmed });
+      continue;
+    }
+
+    // A misspelled keyword (`requires`) or a bare guard (`stage == 1`, `not
+    // isOn`) used to be stored as an ifblock and then dropped. Those are
+    // errors. Fragments of an if/else the block parser did not collect
+    // (`else ...`, `}`) stay raw text, as do other forms with no IR yet.
+    const word = trimmed.match(/^[A-Za-z_]\w*/)?.[0];
+    const suggestion = word ? suggestKeyword(word) : undefined;
+    const fragment = /^(else\b|[{}])/.test(trimmed);
+    const droppedGuard = !fragment && !trimmed.includes('{')
+      && (/(==|!=|>=|<=)/.test(trimmed) || /^not\s+/.test(trimmed));
+    if (suggestion || droppedGuard) {
+      const sourceLine = lineNumbers?.[i];
+      stmts.push({
+        type: 'unrecognized',
+        raw: trimmed,
+        ...(sourceLine ? { line: sourceLine } : {}),
+        ...(suggestion ? { suggestion } : {}),
+      });
+      continue;
+    }
     stmts.push({ type: 'ifblock', raw: trimmed });
   }
 
@@ -317,6 +345,43 @@ function collectRequireExpression(lines: string[], startIdx: number): CollectRes
     text += ' ' + nt;
   }
   return { text, endIdx: i };
+}
+
+const STATEMENT_KEYWORDS = [
+  'require', 'return', 'emit', 'let', 'if', 'forall', 'for', 'precondition', 'postcondition',
+];
+
+/** Edit distance 1, or 2 when either word is at least 6 characters. */
+function suggestKeyword(word: string): string | undefined {
+  const lower = word.toLowerCase();
+  let best: { kw: string; d: number } | undefined;
+  for (const kw of STATEMENT_KEYWORDS) {
+    const d = editDistance(lower, kw);
+    if (d === 0) continue;
+    const limit = Math.max(lower.length, kw.length) >= 6 ? 2 : 1;
+    if (d <= limit && (!best || d < best.d)) best = { kw, d };
+  }
+  return best?.kw;
+}
+
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  const prev = new Array<number>(b.length + 1);
+  const next = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    next[0] = i;
+    let rowMin = next[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      next[j] = Math.min(prev[j] + 1, next[j - 1] + 1, prev[j - 1] + cost);
+      if (next[j] < rowMin) rowMin = next[j];
+    }
+    if (rowMin > 2) return 3;
+    for (let j = 0; j <= b.length; j++) prev[j] = next[j];
+  }
+  return prev[b.length];
 }
 
 // Re-export Expr type

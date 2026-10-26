@@ -177,6 +177,22 @@ alias.
 
 ### Changed
 
+- **Stricter parsing.** Text after a speck's closing `}` is a parse error
+  (`unexpected text after end of speck`) instead of being ignored. A
+  misspelled statement (`requires`) or a bare guard (`stage == 1`, `not
+  isOn`) is an error naming the spec line, with a did-you-mean hint when the
+  first word is close to a statement keyword. A type name that is a typo of
+  a known type (`Booll`) is an error; other names stay external types, which
+  is how `Account` and `Message` are already written. An assignment to a
+  name that is not state, a parameter, or a `let` is an error. A repeated
+  action name is `duplicate action "Name"`. `speckl` exits 1 on these
+  diagnostics (`spec is invalid:`). `if`, `forall`, `for`, bare calls,
+  dotted assignments, and `else` fragments stay in the IR as raw text.
+  `init` still records `:=` only; `examples/ToggleSwitch.speckdl` now
+  assigns with `:=`, so that example's generated init changes.
+  Playground share links are `#s2.` plus a checksum. Older `#s1.` links still
+  open.
+
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
   `realpath` of the key file, or as that real path's parent directory — is

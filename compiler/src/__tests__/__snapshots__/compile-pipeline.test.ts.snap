@@ -946,18 +946,18 @@ exports[`generated output is pinned for every example > TigerBeetleLedger.speckd
 
 exports[`generated output is pinned for every example > ToggleSwitch.speckdl -t all 1`] = `
 {
-  "ToggleSwitch.ir.smt2": "36e91be8d5afcc80",
+  "ToggleSwitch.ir.smt2": "3a50f31987350603",
   "ToggleSwitch.prov.jsonld": "ac643cab3d92cb27",
   "ToggleSwitch.smt2": "baf80e9afddd62d2",
   "ToggleSwitch.specbom.cdx.json": "63a7d505b3cb0ca8",
   "ToggleSwitch.specbom.spdx.json": "284877de7a897d54",
-  "ToggleSwitch.ts": "37b262a491d6ba03",
+  "ToggleSwitch.ts": "78868b15e9e33892",
   "ToggleSwitch/Cargo.toml": "401e840e21da4f3a",
   "ToggleSwitch/src/lib.rs": "0589aaf2319cd9fb",
   "camel/toggle-switch/pom.xml": "0ea55848ea5b1ea4",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/SpecklRuntime.java": "ca7875d1292d1186",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/ToggleSwitchRoutes.java": "92e58142fa9f088d",
-  "camel/toggle-switch/src/main/java/toggleswitch/camel/ToggleSwitchState.java": "f113a8635c1c942e",
+  "camel/toggle-switch/src/main/java/toggleswitch/camel/ToggleSwitchState.java": "bd83f64c4e79fddf",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/processor/TurnOffProcessor.java": "0d9d4e9a877fcb4d",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/processor/TurnOnProcessor.java": "6e8b047fdac6081c",
   "camel/toggle-switch/src/main/resources/application.properties": "ae7d9669b7eb854c",
@@ -976,21 +976,21 @@ exports[`generated output is pinned for every example > ToggleSwitch.speckdl -t 
   "toggle_switch/handlers.go": "8dfc33a4e445e9d1",
   "toggle_switch/prelude.go": "6818c27e5fa83fad",
   "toggle_switch/store.go": "83d601f4bf834b57",
-  "toggle_switch/toggle_switch.go": "7ffff78aca63b18a",
+  "toggle_switch/toggle_switch.go": "0e3fed8dda6ff860",
 }
 `;
 
 exports[`generated output is pinned for every example > ToggleSwitch.speckdl -t all-ir 1`] = `
 {
-  "ToggleSwitch.ir.smt2": "36e91be8d5afcc80",
+  "ToggleSwitch.ir.smt2": "3a50f31987350603",
   "ToggleSwitch.prov.jsonld": "ac643cab3d92cb27",
   "ToggleSwitch.specbom.cdx.json": "63a7d505b3cb0ca8",
   "ToggleSwitch.specbom.spdx.json": "284877de7a897d54",
-  "ToggleSwitch.ts": "37b262a491d6ba03",
+  "ToggleSwitch.ts": "78868b15e9e33892",
   "camel/toggle-switch/pom.xml": "0ea55848ea5b1ea4",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/SpecklRuntime.java": "ca7875d1292d1186",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/ToggleSwitchRoutes.java": "92e58142fa9f088d",
-  "camel/toggle-switch/src/main/java/toggleswitch/camel/ToggleSwitchState.java": "f113a8635c1c942e",
+  "camel/toggle-switch/src/main/java/toggleswitch/camel/ToggleSwitchState.java": "bd83f64c4e79fddf",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/processor/TurnOffProcessor.java": "0d9d4e9a877fcb4d",
   "camel/toggle-switch/src/main/java/toggleswitch/camel/processor/TurnOnProcessor.java": "6e8b047fdac6081c",
   "camel/toggle-switch/src/main/resources/application.properties": "ae7d9669b7eb854c",
