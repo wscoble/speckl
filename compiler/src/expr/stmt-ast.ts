@@ -33,32 +33,39 @@ export interface LetStmt {
   type: 'let';
   name: string;
   expr: Expr;
+  /** 1-based source line of the statement, when the caller provided one. */
+  line?: number;
 }
 
 export interface RequireStmt {
   type: 'require';
   expr: Expr;
+  line?: number;
 }
 
 export interface PreconditionStmt {
   type: 'precondition';
   expr: Expr;
+  line?: number;
 }
 
 export interface PostconditionStmt {
   type: 'postcondition';
   expr: Expr;
+  line?: number;
 }
 
 export interface EmitStmt {
   type: 'emit';
   event: string;
   fields: { name: string; value: Expr }[];
+  line?: number;
 }
 
 export interface ReturnStmt {
   type: 'return';
   expr: Expr;
+  line?: number;
 }
 
 /** Incomplete if/else block — preserved as raw text for manual handling. */

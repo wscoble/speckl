@@ -47,35 +47,40 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
 
     // --- precondition: expr ---
     if (trimmed.startsWith('precondition:')) {
+      const sourceLine = lineNumbers?.[i];
       const exprs = collectExpression(lines, i, 13, 'or ');
       i = exprs.endIdx;
-      stmts.push({ type: 'precondition', expr: parseExprSingle(exprs.text) });
+      stmts.push({ type: 'precondition', expr: parseExprSingle(exprs.text), ...(sourceLine ? { line: sourceLine } : {}) });
       continue;
     }
 
     // --- postcondition: expr ---
     if (trimmed.startsWith('postcondition:')) {
+      const sourceLine = lineNumbers?.[i];
       const exprs = collectExpression(lines, i, 14, 'or ');
       i = exprs.endIdx;
-      stmts.push({ type: 'postcondition', expr: parseExprSingle(exprs.text) });
+      stmts.push({ type: 'postcondition', expr: parseExprSingle(exprs.text), ...(sourceLine ? { line: sourceLine } : {}) });
       continue;
     }
 
     // --- require expr ---
     if (trimmed.startsWith('require ')) {
+      const sourceLine = lineNumbers?.[i];
       const exprs = collectRequireExpression(lines, i);
       i = exprs.endIdx;
-      stmts.push({ type: 'require', expr: parseExprSingle(exprs.text) });
+      stmts.push({ type: 'require', expr: parseExprSingle(exprs.text), ...(sourceLine ? { line: sourceLine } : {}) });
       continue;
     }
 
     // --- return expr ---
     if (trimmed.startsWith('return ')) {
-      stmts.push({ type: 'return', expr: parseExprSingle(trimmed.substring(7).trim()) });
+      const sourceLine = lineNumbers?.[i];
+      stmts.push({ type: 'return', expr: parseExprSingle(trimmed.substring(7).trim()), ...(sourceLine ? { line: sourceLine } : {}) });
       continue;
     }
 
     // --- emit Event { fields } (may span several lines) ---
+    const emitLine = lineNumbers?.[i];
     let emitText = trimmed;
     if (/^emit\s+\w+\s*\{/.test(emitText)) {
       emitText = stripLineComment(emitText);
@@ -101,7 +106,7 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
           }
         }
       }
-      stmts.push({ type: 'emit', event: eventName, fields });
+      stmts.push({ type: 'emit', event: eventName, fields, ...(emitLine ? { line: emitLine } : {}) });
       continue;
     }
 
@@ -135,6 +140,7 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
     const letMatch = trimmed.match(/^let\s+([A-Za-z_]\w*)\s*:=\s*(.+)$/)
       ?? trimmed.match(/^let\s+([A-Za-z_]\w*)\s*:\s*[\w.<>\[\], ]+?\s*=(?!=)\s*(.+)$/);
     if (letMatch) {
+      const sourceLine = lineNumbers?.[i];
       let rhs = letMatch[2].trim();
       if (/^if\b/.test(rhs) && !/\belse\b/.test(rhs)) {
         stmts.push({ type: 'ifblock', raw: trimmed });
@@ -150,13 +156,14 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
         rhs += ' ' + nt;
         i++;
       }
-      stmts.push({ type: 'let', name: letMatch[1], expr: parseExprSingle(rhs) });
+      stmts.push({ type: 'let', name: letMatch[1], expr: parseExprSingle(rhs), ...(sourceLine ? { line: sourceLine } : {}) });
       continue;
     }
 
     // --- assignment: target := expr ---
     const assignMatch = trimmed.match(/^(\w+(?:\[.*?\])?)\s*:=\s*(.*)$/);
     if (assignMatch) {
+      const sourceLine = lineNumbers?.[i];
       let exprText = stripLineComment(assignMatch[2].trim());
       // Join continuation lines only while the right-hand side is still
       // incomplete (dangling operator, open bracket) or the next line starts
@@ -171,7 +178,6 @@ export function parseActionStatements(lines: string[], lineNumbers?: number[]): 
       }
       const target = assignMatch[1];
       const expr = parseExprSingle(exprText);
-      const sourceLine = lineNumbers?.[i];
       const lineField = sourceLine ? { line: sourceLine } : {};
 
       // Determine target kind: plain or map_index

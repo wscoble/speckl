@@ -204,8 +204,13 @@ select { min-height: 40px; padding: 6px 10px; max-width: 100%; }
   border: 1px solid var(--copper);
   color: var(--ink);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  box-sizing: border-box;
+  min-height: 4.75rem;
 }
-.banner[hidden] { display: none; }
+.banner[hidden] {
+  display: block;
+  visibility: hidden;
+}
 #examples button {
   flex-direction: column;
   align-items: flex-start;
@@ -224,8 +229,7 @@ select { min-height: 40px; padding: 6px 10px; max-width: 100%; }
 }
 textarea::placeholder { color: var(--faint); opacity: 1; }
 .error-chip {
-  align-self: flex-start;
-  margin: 0;
+  margin: 0 0 0 auto;
   border-radius: 999px;
   padding: 4px 12px;
   min-height: 32px;

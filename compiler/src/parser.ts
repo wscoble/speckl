@@ -496,7 +496,8 @@ function assertBlocksClosed(lines: string[]): void {
           openedAt = pendingMember || lineNo;
           pendingMember = 0;
           if (code.slice(i + 1).trim().startsWith('{')) {
-            throw new Error(`Parse error at line ${lineNo}: unexpected \`{\` (the block on this line opens twice)`);
+            const again = code.indexOf('{', i + 1);
+            throw new Error(`Parse error at line ${lineNo}, column ${again + 1}: unexpected \`{\` (the block on this line opens twice)`);
           }
         }
         bracesOnLine++;
@@ -515,10 +516,12 @@ function assertBlocksClosed(lines: string[]): void {
             }
             if (early) break;
           }
-          const hint = early
-            ? ` A block opened at line ${early.openedAt} may have closed early at line ${early.line}.`
-            : '';
-          throw new Error(`Parse error at line ${lineNo}, column ${i + 1}: unexpected \`}\` (no block is open).${hint}`);
+          if (early) {
+            const closed = lines[early.line - 1] ?? '';
+            const closeCol = Math.max(1, closed.lastIndexOf('}') + 1);
+            throw new Error(`Parse error at line ${early.line}, column ${closeCol}: a block opened at line ${early.openedAt} may have closed early at line ${early.line}. The extra \`}\` ended up at line ${lineNo}, column ${i + 1}.`);
+          }
+          throw new Error(`Parse error at line ${lineNo}, column ${i + 1}: unexpected \`}\` (no block is open).`);
         }
         const frame = stack.pop()!;
         closes.push({ line: lineNo, indent: indentOf(lines[li] ?? ''), openedAt: frame.line });
@@ -555,7 +558,12 @@ function assertUniqueStateVars(lines: string[], header: number, close: number): 
         const name = match[1];
         const first = seen.get(name);
         if (first !== undefined) {
-          throw new Error(`Parse error at line ${i + 1}: duplicate state variable "${name}" (first declared at line ${first})`);
+          const raw = lines[i] ?? '';
+          let at = raw.indexOf(name);
+          const again = at >= 0 ? raw.indexOf(name, at + name.length) : -1;
+          if (again >= 0) at = again;
+          const col = Math.max(1, at + 1);
+          throw new Error(`Parse error at line ${i + 1}, column ${col}: duplicate state variable "${name}" (first declared at line ${first})`);
         }
         seen.set(name, i + 1);
       }
@@ -612,22 +620,14 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
 
     // Handle speck definitions
     if (/^speck\b/.test(line)) {
-      const header = line.match(/^speck\s+([\w-]+)\s*\{/);
-      if (!header) {
-        const tok = line.match(/^speck(?:\s+(\S+))?/);
-        const name = tok?.[1];
-        if (!name || name === '{') {
-          throw new Error(`Parse error at line ${i + 1}: speck name is missing`);
-        }
-        if (!/^[\w-]+$/.test(name)) {
-          throw new Error(`Parse error at line ${i + 1}: speck name ${JSON.stringify(name)} is invalid`);
-        }
-        throw new Error(`Parse error at line ${i + 1}: speck ${name} is missing its opening \`{\``);
-      }
+      const nameProblem = speckHeaderProblem(lines[i] ?? line, i + 1);
+      if (nameProblem) throw new Error(nameProblem);
       const speck = parseSpeck(lines, i);
       if (speck) {
         if (specks.some((seen) => seen.name === speck.name)) {
-          throw new Error(`Parse error at line ${speck.startLine ?? i + 1}: duplicate speck "${speck.name}"`);
+          const raw = lines[i] ?? '';
+          const col = Math.max(1, raw.indexOf(speck.name) + 1);
+          throw new Error(`Parse error at line ${speck.startLine ?? i + 1}, column ${col}: duplicate speck "${speck.name}"`);
         }
         specks.push(speck);
         // endLine is the 1-based line of the closing brace. The next index
@@ -643,7 +643,9 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     // A speck already closed. Anything else used to be skipped, so trailing
     // garbage still reported a successful compile.
     if (specks.length > 0) {
-      throw new Error(`Parse error at line ${i + 1}: unexpected text after end of speck`);
+      const raw = lines[i] ?? line;
+      const col = Math.max(1, raw.search(/\S/) + 1);
+      throw new Error(`Parse error at line ${i + 1}, column ${col}: unexpected text after end of speck`);
     }
     i++;
   }
@@ -651,8 +653,38 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   return { specks };
 }
 
+/**
+ * A speck name is an identifier: a letter, then letters, digits, `_`, or `-`.
+ * Spaces get their own message. Returns a parse-error string, or null when
+ * the header is `speck Name {`.
+ */
+function speckHeaderProblem(rawLine: string, lineNo: number): string | null {
+  const line = rawLine.trim();
+  const rest = line.replace(/^speck\b/, '');
+  const body = rest.trimStart();
+  const brace = body.indexOf('{');
+  const raw = (brace >= 0 ? body.slice(0, brace) : body).trim();
+  const nameAt = raw ? rawLine.indexOf(raw) : rawLine.indexOf('speck');
+  const nameCol = nameAt >= 0 ? nameAt + 1 : 1;
+  if (!raw) return `Parse error at line ${lineNo}, column ${nameCol}: speck name is missing`;
+  if (/\s/.test(raw)) {
+    const spaceAt = raw.search(/\s/);
+    return `Parse error at line ${lineNo}, column ${nameCol + spaceAt}: spec names can't contain spaces`;
+  }
+  if (!/^[A-Za-z][\w-]*$/.test(raw)) {
+    const letter = /^[\w-]+$/.test(raw) ? ' (names must start with a letter)' : '';
+    return `Parse error at line ${lineNo}, column ${nameCol}: speck name ${JSON.stringify(raw)} is invalid${letter}`;
+  }
+  if (brace < 0) {
+    const speckAt = rawLine.indexOf('speck');
+    const col = speckAt >= 0 ? speckAt + 1 : 1;
+    return `Parse error at line ${lineNo}, column ${col}: speck ${raw} is missing its opening \`{\``;
+  }
+  return null;
+}
+
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
-  const headerMatch = lines[startIndex].match(/^speck\s+([\w-]+)\s*{/);
+  const headerMatch = lines[startIndex].match(/^speck\s+([A-Za-z][\w-]*)\s*{/);
   if (!headerMatch) return null;
 
   const name = headerMatch[1];
@@ -790,14 +822,21 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
 
     const actionNamed = line.match(/^action\s+([A-Za-z_]\w*)\b/);
     if (actionNamed && RESERVED_ACTION_NAMES.has(actionNamed[1])) {
-      throw new Error(`Parse error at line ${i + 1}: action name "${actionNamed[1]}" is a keyword`);
+      const raw = lines[i] ?? line;
+      const keyAt = raw.indexOf(actionNamed[1]);
+      const second = keyAt >= 0 ? raw.indexOf(actionNamed[1], keyAt + actionNamed[1].length) : -1;
+      const col = Math.max(1, (second >= 0 ? second : keyAt) + 1);
+      throw new Error(`Parse error at line ${i + 1}, column ${col}: action name "${actionNamed[1]}" is a keyword`);
     }
     if (/^action\b/.test(line) && !parseActionHeader(line)) {
       const named = line.match(/^action\s+([A-Za-z_]\w*)\b/);
+      const raw = lines[i] ?? line;
       if (!named) {
-        throw new Error(`Parse error at line ${i + 1}: action is missing a name (expected \`action Name {\`)`);
+        const col = Math.max(1, raw.indexOf('action') + 1);
+        throw new Error(`Parse error at line ${i + 1}, column ${col}: action is missing a name (expected \`action Name {\`)`);
       }
-      throw new Error(`Parse error at line ${i + 1}: action ${named[1]} is missing its opening \`{\``);
+      const col = Math.max(1, raw.indexOf(named[1]) + 1);
+      throw new Error(`Parse error at line ${i + 1}, column ${col}: action ${named[1]} is missing its opening \`{\``);
     }
 
     if (isBlockStarter && openCount > 0) {
@@ -3081,7 +3120,8 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
         const lineNo = labelBase + j;
         const first = seenStageValues.get(value);
         if (first !== undefined) {
-          throw new Error(`Parse error at line ${lineNo}: duplicate stage number ${value} ("${first}" and "${lm[1]}")`);
+          const col = Math.max(1, il.indexOf(lm[1]) + 1);
+          throw new Error(`Parse error at line ${lineNo}, column ${col}: duplicate stage number ${value} ("${first}" and "${lm[1]}")`);
         }
         seenStageValues.set(value, lm[1]);
         labels.push({ name: lm[1], value });

@@ -185,10 +185,20 @@ alias.
   first word is close to a statement keyword. A type name that is a typo of
   a known type (`Booll`) is an error; other names stay external types, which
   is how `Account` and `Message` are already written. An assignment to a
-  name that is not state, a parameter, or a `let` is an error. A repeated
+  name that is not state, a parameter, or a `let`   is an error. A name used in `require`, a right-hand side, a
+  precondition, a postcondition, `return`, `emit`, `init`, or an
+  invariant is an error too (`undeclared variable "foo"`), checked
+  against state, parameters, `let` names, stage labels, enum constants,
+  and builtins such as `length` and `old`. An obvious literal mismatch
+  is an error: assigning a number to `Bool`, a negative literal to `Nat`,
+  or comparing `Bool` with a number. A repeated
   action name is `duplicate action "Name"`. `speckl` exits 1 on these
-  diagnostics (`spec is invalid:`). `if`, `forall`, `for`, bare calls,
+  diagnostics (`spec is invalid:`), and the line includes a column when
+  one is known. `if`, `forall`, `for`, bare calls,
   dotted assignments, and `else` fragments stay in the IR as raw text.
+  Names bound by `forall` and `for` are visible to the statements that
+  follow them. Quantified constraint and `verify` text that is not a
+  plain expression is not name-checked.
   `init` still records `:=` only; `examples/ToggleSwitch.speckdl` now
   assigns with `:=`, so that example's generated init changes.
   Playground share links are `#s2.` plus a checksum. Older `#s1.` links still
@@ -196,9 +206,13 @@ alias.
   line N is never closed. A repeated speck name, a repeated state variable,
   and a repeated stage number are errors on that line. An action with no name
   is an error on that line. A speck name that is missing, or not letters,
-  digits, underscore, or hyphen, is an error on that line. Braces inside
+  digits, underscore, or hyphen, is an error on that line. A name that
+  does not start with a letter (`2fast`) is invalid. A name with a space
+  says spec names can't contain spaces. Block comments do not nest: the
+  first `*/` closes the comment, and a later `c */` is an error. Braces inside
   comments and strings are not block structure. An unclosed block comment
-  is an error on the line where it opened. A state field or statement on
+  is an error on the line and column where it opened. A stray `}` names
+  the earlier close first and says where the extra brace ended up. A state field or statement on
   the same line as a block's opening or closing brace is part of that block.
   `Boolean` is reported as a misspelling of `Bool`. A state field written
   without a colon, and an action whose name is a keyword, are errors on

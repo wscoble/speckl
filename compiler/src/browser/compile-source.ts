@@ -241,7 +241,7 @@ function compileSourceInner(
       if (!redundantCompilerError(message, diagnostics)) {
         diagnostics.push(locateDiagnostic(source, message));
       }
-    } else if ((target === 'all' || target === 'agent') && !files.some((f) => f.path.endsWith('AGENTS.md'))) {
+    } else if (target === 'agent' && !files.some((f) => f.path.endsWith('AGENTS.md'))) {
       diagnostics.push(noAgentDiagnostic());
     }
     if (files.some((f) => f.path.endsWith('.smt2'))) {

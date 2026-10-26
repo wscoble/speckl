@@ -155,7 +155,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   const specErrors = irAst.diagnostics.filter(d => d.level === 'error' && !d.message.startsWith('agent'));
   if (specErrors.length > 0) {
     throw new Error('spec is invalid:\n' + specErrors.map(d => {
-      const where = d.line ? `line ${d.line}: ` : '';
+      const where = d.line ? (d.column ? `line ${d.line}, column ${d.column}: ` : `line ${d.line}: `) : '';
       return `  ${d.speck ?? ''}: ${where}${d.message}`;
     }).join('\n'));
   }

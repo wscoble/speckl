@@ -70,6 +70,8 @@ let lastPushAt = 0;
 let fileMap = new Map<string, OutputFile>();
 /** Files from the last compile that succeeded. A later failure must not present them as current. */
 let lastGood: OutputFile[] | null = null;
+/** Speck name those files belong to. A rename must not keep the previous spec's files. */
+let lastGoodName: string | null = null;
 let sawWorkerMessage = false;
 let compilerMissing = false;
 let worker: Worker | null = null;
@@ -81,6 +83,11 @@ let persistTimer = 0;
 let killed = false;
 let markedOutput = false;
 const gate = new RequestGate();
+
+function speckNameOf(source: string): string | null {
+  const match = source.match(/(?:^|\n)\s*speck\s+([A-Za-z][\w-]*)\b/);
+  return match ? match[1] : null;
+}
 
 function showBanner(text: string, kind: string): void {
   banner.hidden = false;
@@ -272,7 +279,14 @@ function render(result: BrowserCompileResult, state: 'done' | 'error' | 'timeout
   }
 
   const failed = state === 'timeout' || errors > 0;
-  if (!failed && result.files.length > 0) lastGood = result.files;
+  const currentName = speckNameOf(editor.value);
+  if (!failed && result.files.length > 0) {
+    lastGood = result.files;
+    lastGoodName = currentName;
+  } else if (failed && currentName !== lastGoodName) {
+    lastGood = null;
+    lastGoodName = null;
+  }
   const showingStale = failed && !!lastGood && lastGood.length > 0;
   const files = showingStale ? lastGood! : failed ? [] : result.files;
   staleNote.hidden = !showingStale;

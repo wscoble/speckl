@@ -45,8 +45,36 @@ function lineText(source: string, line: number): string {
 }
 
 function columnOf(text: string, needle: string): number | undefined {
+  if (!needle) return undefined;
   const at = text.indexOf(needle);
   return at >= 0 ? at + 1 : undefined;
+}
+
+/** A column for a diagnostic that names a token, or the first character on the line. */
+function inferColumn(text: string, message: string): number | undefined {
+  if (!text) return undefined;
+  if (/unclosed comment/.test(message)) {
+    const at = columnOf(text, '/*');
+    if (at) return at;
+  }
+  if (/unexpected `\}`|ended up at line|closed early/.test(message)) {
+    const at = columnOf(text, '}');
+    if (at) return at;
+  }
+  const quoted = message.matchAll(/"([^"\n]+)"/g);
+  for (const q of quoted) {
+    const whole = columnOf(text, q[1]);
+    if (whole) return whole;
+    const word = q[1].match(/[A-Za-z_][\w.]*/)?.[0];
+    const part = word ? columnOf(text, word) : undefined;
+    if (part) return part;
+  }
+  if (/unexpected `\{`|never closed|opens twice|missing a name|missing a colon/.test(message)) {
+    const at = columnOf(text, '{') ?? columnOf(text, message.match(/"([^"]+)"/)?.[1] ?? '');
+    if (at) return at;
+  }
+  const word = /\S/.exec(text);
+  return word ? word.index + 1 : undefined;
 }
 
 export function locateDiagnostic(source: string, message: string): BrowserDiagnostic {
@@ -56,11 +84,7 @@ export function locateDiagnostic(source: string, message: string): BrowserDiagno
     const line = Number(at[1]);
     if (line >= 1) {
       let column = at[2] ? Number(at[2]) : undefined;
-      if (!column) {
-        const text = lineText(source, line);
-        if (/unexpected `\}`/.test(cleaned)) column = columnOf(text, '}');
-        else if (/unexpected `\{`|never closed|opens twice|missing a name|missing a colon/.test(cleaned)) column = columnOf(text, '{') ?? columnOf(text, cleaned.match(/"([^"]+)"/)?.[1] ?? '');
-      }
+      if (!column) column = inferColumn(lineText(source, line), cleaned);
       return { level: 'error', message: cleaned, line, ...(column ? { column } : {}) };
     }
   }
@@ -83,10 +107,7 @@ export function fromIR(source: string, d: IRDiagnostic): BrowserDiagnostic {
   };
   if (d.line && d.line >= 1) {
     base.line = d.line;
-    if (!base.column) {
-      const quoted = d.message.match(/"([A-Za-z_][\w.]*)"/);
-      if (quoted) base.column = columnOf(lineText(source, d.line), quoted[1]);
-    }
+    if (!base.column) base.column = inferColumn(lineText(source, d.line), d.message);
     return base;
   }
   const located = locateDiagnostic(source, d.message);
@@ -202,7 +223,7 @@ export function noSpeckDiagnostic(): BrowserDiagnostic {
 export function noAgentDiagnostic(): BrowserDiagnostic {
   return {
     level: 'info',
-    message: 'This spec has no agent block, so it does not produce AGENTS.md or a hook. That is normal for a state machine that does not drive an agent. The other compiled files are still listed.',
+    message: 'This spec has no agent block, so it does not drive an agent.',
   };
 }
 

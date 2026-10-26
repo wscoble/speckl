@@ -78,11 +78,11 @@
       <section class="pane" aria-labelledby="editor-heading">
         <div class="pane-bar">
           <h2 id="editor-heading">Spec</h2>
+          <button type="button" id="error-chip" class="error-chip" hidden></button>
           <p id="cursor">Line 1, column 1</p>
         </div>
         <label class="sr" for="spec">Speckl spec</label>
         <textarea id="spec" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" placeholder="speck Name {&#10;  state { ready: Bool }&#10;  action Go { ready := true }&#10;}&#10;&#10;Load an example above, or start typing."></textarea>
-        <button type="button" id="error-chip" class="error-chip" hidden></button>
       </section>
 
       <section class="pane" aria-labelledby="out-heading">

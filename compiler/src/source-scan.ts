@@ -62,6 +62,7 @@ export function maskSource(source: string, opts?: MaskOptions): string {
     if (c === '/' && source[i + 1] === '*') {
       flush(i);
       const openLine = line;
+      const openIndex = i;
       const start = i;
       i += 2;
       let closed = false;
@@ -77,13 +78,28 @@ export function maskSource(source: string, opts?: MaskOptions): string {
       parts.push(source.slice(start, i).replace(/[^\n]/g, ' '));
       rawFrom = i;
       if (!closed && unclosed === 'throw') {
-        throw new Error(`Parse error at line ${openLine}: unclosed comment opened at line ${openLine}`);
+        throw new Error(`Parse error at line ${openLine}, column ${columnAt(source, openIndex)}: unclosed comment opened at line ${openLine}`);
       }
       continue;
+    }
+    // Block comments do not nest. The first `*/` closed one; another is leftover text.
+    if (c === '*' && source[i + 1] === '/') {
+      const lineStart = source.lastIndexOf('\n', i - 1) + 1;
+      const before = source.slice(lineStart, i);
+      const prev = before.lastIndexOf('*/');
+      const leftover = (prev >= 0 ? before.slice(prev + 2) : before).trim();
+      const shown = leftover ? `${leftover} */` : '*/';
+      throw new Error(`Parse error at line ${line}, column ${columnAt(source, i)}: unexpected \`${shown}\` (block comments do not nest)`);
     }
     if (c === '\n') line++;
     i++;
   }
   flush(source.length);
   return parts.join('');
+}
+
+/** 1-based column of `index` in `source`. */
+function columnAt(source: string, index: number): number {
+  const nl = source.lastIndexOf('\n', index - 1);
+  return index - nl;
 }

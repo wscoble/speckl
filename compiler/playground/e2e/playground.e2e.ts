@@ -58,6 +58,8 @@ test('editing the spec updates diagnostics and output', async ({ page }) => {
   await page.getByRole('button', { name: 'Toggle switch' }).click();
   await page.getByRole('button', { name: 'Discard and load' }).click();
   await expect(page.locator('#output')).toContainText(/ToggleSwitch|toggle/i);
+  await expect(page.locator('#diagnostics')).not.toContainText('no agent block');
+  await page.locator('#target').selectOption('agent');
   await expect(page.locator('#diagnostics')).toContainText('no agent block');
 });
 
@@ -429,6 +431,9 @@ test('round 2: unclosed blocks, stale output, and a failed compiler load', async
   await settled(page);
   await page.getByRole('button', { name: 'Toggle switch' }).click();
   await settled(page);
+  await expect(page.locator('#diagnostics')).not.toContainText(/no agent block/);
+  await page.locator('#target').selectOption('agent');
+  await settled(page);
   await expect(page.locator('#diagnostics')).toContainText(/no agent block/);
   await expect(page.locator('#diagnostics')).toContainText(/does not drive an agent/);
 
@@ -564,6 +569,58 @@ test('round 3: comments, same-line fields, hash wording, and paste cost', async 
     expect(Math.max(0, ...measured.long), sample.name).toBeLessThan(200);
   }
   console.log('PASTE_PERF ' + JSON.stringify(pastePerf));
+});
+
+test('round 4: names, types, stray brace, and a steady error chip', async ({ page }) => {
+  await page.goto('/');
+  await settled(page);
+  const quiet = await page.locator('#spec').boundingBox();
+  await page.goto('/#garbage');
+  await expect(page.locator('#banner')).toBeVisible();
+  const loud = await page.locator('#spec').boundingBox();
+  expect(quiet).not.toBeNull();
+  expect(loud).not.toBeNull();
+  expect(Math.abs(quiet!.y - loud!.y)).toBeLessThan(4);
+
+  await page.goto('/');
+  await settled(page);
+  await expect(page.locator('#file')).toContainText(/AGENTS\.md|hook\.mjs/);
+  const full = await page.locator('#spec').inputValue();
+  await page.locator('#spec').fill(full.replace('speck DeployGate', 'speck 2fast'));
+  await expect(page.locator('#diagnostics')).toContainText(/names must start with a letter/);
+  await expect(page.locator('#stale')).toBeHidden();
+  await expect(page.locator('#file')).not.toContainText('AGENTS.md');
+  await expect(page.locator('#output')).not.toContainText('Call-bound');
+
+  await page.locator('#spec').fill('speck My Spec {\n  state { x: Nat }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText("spec names can't contain spaces");
+
+  await page.locator('#spec').fill('speck S {\n  state { ready: Bool }\n  action Go { require foo == 1\n    ready := true }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText(/Line \d+, column \d+:/);
+  await expect(page.locator('#diagnostics')).toContainText('undeclared variable "foo"');
+
+  await page.locator('#spec').fill('speck S {\n  state { ready: Bool }\n  action Go { ready := 5 }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText(/cannot assign a number to Bool variable "ready"/);
+
+  await page.setViewportSize({ width: 1920, height: 1113 });
+  const chip = await page.locator('#error-chip').boundingBox();
+  const editor = await page.locator('#spec').boundingBox();
+  expect(chip).not.toBeNull();
+  expect(editor).not.toBeNull();
+  expect(chip!.y).toBeLessThan(editor!.y);
+  expect(chip!.y + chip!.height).toBeLessThan(1113);
+
+  const lines = full.split('\n');
+  lines.splice(20, 0, '}');
+  await page.locator('#spec').fill(lines.join('\n'));
+  await expect(page.locator('#diagnostics')).toContainText(/Line 21, column \d+:/);
+  await expect(page.locator('#diagnostics')).toContainText(/closed early at line 21/);
+  await expect(page.locator('#diagnostics')).toContainText(/ended up at line 88/);
+  await expect(page.locator('#error-chip')).toContainText(/line 21/);
+
+  await page.locator('#spec').fill('speck S {\n  /* a /* b */ c */\n  state { x: Nat }\n}\n');
+  await expect(page.locator('#diagnostics')).toContainText(/block comments do not nest/);
+  await page.setViewportSize({ width: 1280, height: 800 });
 });
 
 test('a missing compiler worker says to refresh', async ({ page }) => {
