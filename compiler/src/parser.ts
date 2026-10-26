@@ -1990,9 +1990,16 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   return { type: 'invariant', name, expr: body.trim() };
 }
 
+/** Drop a trailing `//` comment. Cost lines are `cost <n>`, not `cost <n> // note`. */
+function withoutTrailingComment(stmt: string): string {
+  const cut = stmt.indexOf('//');
+  return (cut >= 0 ? stmt.slice(0, cut) : stmt).trim();
+}
+
 /** A `cost <n>` statement, not an assignment whose name starts with "cost". */
 function isCostStatement(stmt: string): boolean {
-  return /^cost\s+\S/.test(stmt) && !/^cost\s*:=/.test(stmt);
+  const text = withoutTrailingComment(stmt);
+  return /^cost\s+\S/.test(text) && !/^cost\s*:=/.test(text);
 }
 
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
@@ -2173,8 +2180,9 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       continue;
     }
     // cost <n> — non-negative integer literal. One per action.
+    // A trailing `//` comment is not part of the literal (`cost 3 // per call`).
     if (isCostStatement(stmt)) {
-      const costMatch = stmt.match(/^cost\s+(\d+)\s*$/);
+      const costMatch = withoutTrailingComment(stmt).match(/^cost\s+(\d+)\s*$/);
       const amount = costMatch ? Number(costMatch[1]) : NaN;
       if (!costMatch || !Number.isSafeInteger(amount)) {
         throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} cost must be a non-negative integer`);

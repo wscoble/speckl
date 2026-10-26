@@ -276,7 +276,8 @@ A produces/consumes cycle between domains is allowed. The check is a
 lookup, not a walk, so the cycle terminates. Two domains may produce the
 same event. Which domain delivers it at runtime is **not yet implemented**.
 
-`cost <n>` on an action is a non-negative integer literal. It is a
+`cost <n>` on an action is a non-negative integer literal. A trailing
+`//` comment on that line is ignored (`cost 3 // per call`). It is a
 verification annotation. It is not a runtime throttle. An action with no
 `cost` is not treated as cost 0.
 
@@ -437,8 +438,8 @@ The proof assumes all of the following:
 The obligation is **UNCHECKED**, and never counted as passed, when the
 tick cannot be lowered. That includes a member with no `next` relation, a
 `next` action with no `cost` (including a synthetic signal action), a
-state sort or expression this encoding does not translate, and an `if` or
-`let` in a tick action. The IR backend does not unroll transitions, so it
+state sort or expression this encoding does not translate, a parameter
+whose name is also a state variable, and an `if` or `let` in a tick action. The IR backend does not unroll transitions, so it
 declares the obligation unchecked and leaves the proof to the state-machine
 backend, the same way it treats other verify blocks. A domain with no
 `budget` adds no obligation and does not change the SMT output.

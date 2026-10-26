@@ -170,6 +170,52 @@ speck Invoice {
     expect(lowered?.statements.some(s => s.kind === 'assign' && s.target === 'costTotal')).toBe(true);
     expect(lowered?.cost).toBeUndefined();
   });
+
+  it('ignores a trailing line comment on a cost statement', () => {
+    const src = `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+        cost 3 // per call
+        n := n + 1
+    }
+    action Inline { cost 0 // zero is a real cost }
+    next: Go | Inline
+}
+`;
+    const ast = parseSpeckContent(src);
+    const amount = (name: string) => {
+      const action = ast.specks[0].members.find(m => m.type === 'action' && m.name === name);
+      const cost = action && action.type === 'action' ? action.statements.find(s => s.type === 'cost') : undefined;
+      return cost && cost.type === 'cost' ? cost.amount : undefined;
+    };
+    expect(amount('Go')).toBe(3);
+    expect(amount('Inline')).toBe(0);
+    const go = ast.specks[0].members.find(m => m.type === 'action' && m.name === 'Go');
+    expect(go && go.type === 'action' ? go.statements.map(s => s.type === 'assign' ? s.target : s.type) : []).toEqual(['cost', 'n']);
+    const root = dir();
+    const ir = load(write(root, 'cost-comment.speckdl', src));
+    expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
+    const lowered = ir.specks[0].facets.behavior.actions.find(a => a.name === 'Go');
+    expect(lowered?.cost).toBe(3);
+  });
+
+  it('parses a single-line state list whose generic types contain commas', () => {
+    const ast = parseSpeckContent(`speck Meter {
+    state { m: Map<String, Set<Nat>>, k: Nat }
+    init { k := 0 }
+}
+`);
+    const state = ast.specks[0].members.find(m => m.type === 'state');
+    expect(state && state.type === 'state' ? state.variables.map(v => v.name) : []).toEqual(['m', 'k']);
+    const vars = state && state.type === 'state' ? state.variables : [];
+    expect(vars[0].typeExpr).toEqual({
+      type: 'map',
+      keyType: { type: 'primitive', name: 'String' },
+      valueType: { type: 'set', elementType: { type: 'primitive', name: 'Nat' } },
+    });
+    expect(vars[1].typeExpr).toEqual({ type: 'primitive', name: 'Nat' });
+  });
 });
 
 describe('contract checks fail closed before output', () => {
@@ -866,6 +912,55 @@ domain Books { members: Meter; budget 5 per tick; }
     const floor = readFileSync(join(compile(impossible, 'z3', 3), 'Books.budget.smt2'), 'utf8');
     expect(runZ3(floor).verdict.obligations[0].got).toBe('unsat');
 
+    const two = write(root, 'TwoParam.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Step(a: Nat, b: Nat) {
+        cost 1
+        require a == n
+        require b == 1
+        n := a + b
+    }
+    action Spend(a: Nat, b: Nat) {
+        cost 100
+        require a >= 3
+        require b == a
+        n := a + b
+    }
+    next: Step | Spend
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const twoSmt = readFileSync(join(compile(two, 'z3', 4), 'Books.budget.smt2'), 'utf8');
+    expect(twoSmt).toMatch(/Meter__Step__p_a_/);
+    expect(twoSmt).toMatch(/Meter__Step__p_b_/);
+    expect(twoSmt).toMatch(/Meter__Spend__e_a_/);
+    expect(twoSmt).toMatch(/Meter__Spend__e_b_/);
+    expect(twoSmt).not.toMatch(/speckl-unchecked/);
+    expect(runZ3(twoSmt).verdict.obligations[0].got).toBe('sat');
+
+    const holds = write(root, 'Holds.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Inc(x: Nat) {
+        cost 1
+        require x < 10
+        n := n + 1
+    }
+    action Also(y: Nat) {
+        cost 2
+        require y == n
+        n := n + 1
+    }
+    next: Inc | Also
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const holdsSmt = readFileSync(join(compile(holds, 'z3', 4), 'Books.budget.smt2'), 'utf8');
+    expect(holdsSmt).toMatch(/speckl-expect: unsat/);
+    expect(holdsSmt).not.toMatch(/speckl-unchecked/);
+    expect(runZ3(holdsSmt).verdict.obligations[0].got).toBe('unsat');
+
     const wrapper = join(root, 'speckl-bin.mjs');
     writeFileSync(wrapper, `import { spawnSync } from 'node:child_process';
 const r = spawnSync(process.execPath, [${JSON.stringify(viteNode)}, ${JSON.stringify(indexTs)}, ...process.argv.slice(2)], { encoding: 'utf-8', cwd: ${JSON.stringify(compilerDir)} });
@@ -873,7 +968,7 @@ process.stdout.write(r.stdout ?? '');
 process.stderr.write(r.stderr ?? '');
 process.exit(r.status ?? 1);
 `);
-    const res = spawnSync(process.execPath, [verifyScript, shared, stepped, '--depth', '4'], {
+    const res = spawnSync(process.execPath, [verifyScript, shared, stepped, two, holds, '--depth', '4'], {
       encoding: 'utf-8',
       env: { ...process.env, SPECKL_BIN: wrapper },
     });
@@ -881,6 +976,9 @@ process.exit(r.status ?? 1);
     expect(res.status, out).toBe(1);
     expect(out).toMatch(/Shared\.speckdl \[ast\].*VIOLATED/);
     expect(out).toMatch(/Stepped\.speckdl \[ast\].*VIOLATED/);
+    expect(out).toMatch(/TwoParam\.speckdl \[ast\].*VIOLATED/);
+    expect(out).toMatch(/Holds\.speckdl \[ast\].*unsat/);
+    expect(out).not.toMatch(/Holds\.speckdl \[ast\].*VIOLATED/);
   }, 180_000);
 });
 
