@@ -27,7 +27,7 @@ speck ToggleSwitch {
     }
 
     init {
-        isOn == false
+        isOn := false
     }
 
     invariant SwitchConsistent {

@@ -1,4 +1,8 @@
 speck TigerBeetleLedger {
+    type Account
+    type Transfer
+    type Replica
+    type LogEntry
     // State machine primitives for a naive TigerBeetle
     // TigerBeetle is a distributed financial transaction database
     // with co-designed consensus protocol + storage engine.

@@ -45,7 +45,7 @@ speck CamelTranslation {
         require step > 0 and step <= 10
         count := count + step
         ratio := ratio * 2.0 + count
-        label := label + "-" + count
+        label := label + "-"
         phase := Review
         emit Moved { from: count - step, to: count, note: label }
         postcondition: count >= step

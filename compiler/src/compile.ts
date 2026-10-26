@@ -145,9 +145,22 @@ export function compileSpec(file: string, options: CompileOptions): void {
     // Never emit rails from an agent block that failed validation.
     const agentErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('agent'));
     if (agentErrors.length > 0) {
-      throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
+      throw new Error('agent block is invalid:\n' + agentErrors.map(d => {
+        const where = d.line ? (d.column ? `line ${d.line}, column ${d.column}: ` : `line ${d.line}: `) : '';
+        return `  ${d.speck}: ${where}${d.message}`;
+      }).join('\n'));
     }
     generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
+  }
+
+  // Error diagnostics used to be ignored except for `agent ...` messages, so
+  // a typo, an unknown type, or an undeclared name still exited 0.
+  const specErrors = irAst.diagnostics.filter(d => d.level === 'error' && !d.message.startsWith('agent'));
+  if (specErrors.length > 0) {
+    throw new Error('spec is invalid:\n' + specErrors.map(d => {
+      const where = d.line ? (d.column ? `line ${d.line}, column ${d.column}: ` : `line ${d.line}: `) : '';
+      return `  ${d.speck ?? ''}: ${where}${d.message}`;
+    }).join('\n'));
   }
 
   console.log(`\nCompilation complete. Output: ${options.outputDir}/`);

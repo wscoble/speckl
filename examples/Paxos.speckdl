@@ -1,4 +1,7 @@
 speck Paxos {
+    type Ballot
+    type Proposal
+    type AcceptorSlot
     // Classic Paxos consensus protocol ported from TLA+ to SpeckDL v0.3
     // Demonstrates multi-role state machines, ballot numbers, quorums,
     // and safety invariants (at most one value chosen per slot).

@@ -14,6 +14,13 @@ alias.
 
 ### Added
 
+- **Browser playground.** `compiler/playground` compiles a spec in the browser
+  as you type, using this compiler (not a reimplementation): diagnostics with
+  line numbers, `AGENTS.md`, the hook, and the other targets. Nothing is
+  uploaded. `npm run playground` from `compiler/` serves it; `npm run playground:build`
+  writes static files to `compiler/playground/dist`. Specs over 1.5 MB or
+  12,000 lines are refused so a paste cannot freeze the tab. The Z3 solver is not in
+  the page; unchecked obligations are still reported.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
@@ -170,6 +177,107 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Stricter parsing.** Text after a speck's closing `}` is a parse error
+  (`unexpected text after end of speck`) instead of being ignored. A
+  misspelled statement (`requires`) or a bare guard (`stage == 1`, `not
+  isOn`) is an error naming the spec line, with a did-you-mean hint when the
+  first word is close to a statement keyword. A type name must be a builtin
+  (`Nat`, `Int`, `Real`, `Bool`, `String`, `Bytes`, `Void`) or a name
+  introduced in the same file by `type`, `interface`, `event`, `oneof`, or
+  `service`. A bare `type Account` (no `=` and no body) declares an opaque
+  name and does not add a generated record. Anything else is
+  `unknown type "Foo"` on that line and column. A near miss adds a
+  did-you-mean hint (`Booll` and `Boolean` both suggest `Bool`). An assignment to a
+  name that is not state, a parameter, or a `let` is an error. A name used in `require`, a right-hand side, a
+  precondition, a postcondition, `return`, `emit`, `init`, or an
+  invariant is an error too (`undeclared variable "foo"`), checked
+  against state, parameters, `let` names, stage labels, enum constants,
+  and builtins such as `length` and `old`. Stage labels are `Nat`
+  constants: `require stage == Approved` lowers to `stage == 3` when
+  `Approved = 3`, in the IR and in the generated TypeScript machine, so
+  `-t agent` translates the label instead of dropping it. Assigning an
+  integer that is not one of those values (`stage := 99`) is an error
+  naming the declared labels. Assignment also checks declared state
+  variables and parameters against each other. `Bool` accepts only
+  `Bool`. `String` accepts only `String`, and `+` of two strings is
+  concatenation (`s := s + "b"`). `Nat` accepts only `Nat` (`n := i` is
+  an error; `i := n` is allowed). `Int` accepts `Int` or `Nat`. `Real`
+  accepts `Real`, `Int`, or `Nat`. `n := n + 1` stays valid. `+`, `-`,
+  `*`, `/`, and `%` otherwise require numbers, so a string plus a number
+  and `b + 1` are errors. `require`, `precondition`, `postcondition`,
+  `and`, `or`, `implies`, and `not` require `Bool` when the kind is
+  known. Calls, field reads, and `let` names without a declared type are
+  not inferred, and `return` is not checked against a return type. An
+  obvious literal mismatch is still an error: assigning a number to
+  `Bool`, a negative literal to `Nat`, or comparing `Bool` with a number.
+  `ensure`, `ensures`, and `post` are not statements. At the top level
+  they are a parse error pointing at the word; inside an action they are
+  an unrecognized statement. Both name the real form, `postcondition:`
+  inside the action. Other unrecognized text inside an action
+  (`bogus stuff`) is an error on that line and column. A line that
+  contains `{` stays raw text, as do `if`, `forall`, `for`, bare calls,
+  dotted assignments, and `else` fragments. A state variable must start
+  with a letter (`2x` is invalid). A keyword used as a state variable or
+  as a speck name (`state`, `require`, `action`, `type`) is an error on
+  that line. A field named `state` nested inside a record is unchanged.
+  `examples/KafkaKRaft.speckdl` renames its state variable `state` to
+  `role`, so that example's generated output changes. An unexpected
+  character is `unexpected character U+XXXX` (the Unicode code point) on
+  the source line and column. Agent-block errors name the bad token's
+  line and column, and `agent block is invalid:` includes them. A repeated
+  action name is `duplicate action "Name"`. `speckl` exits 1 on these
+  diagnostics (`spec is invalid:`), and the line includes a column when
+  one is known. `if`, `forall`, `for`, bare calls,
+  dotted assignments, and `else` fragments stay in the IR as raw text.
+  Names bound by `forall` and `for` are visible to the statements that
+  follow them. Quantified constraint and `verify` text that is not a
+  plain expression is not name-checked.
+  `init` still records `:=` only; `examples/ToggleSwitch.speckdl` now
+  assigns with `:=`, so that example's generated init changes.
+  Playground share links are `#s2.` plus a checksum. Older `#s1.` links still
+  open. An unclosed block is an error: missing closing brace, block opened at
+  line N is never closed. A repeated speck name, a repeated state variable,
+  and a repeated stage number are errors on that line. An action with no name
+  is an error on that line. A speck name that is missing, or not a letter
+  followed by letters, digits, or underscore, is an error on that line.
+  A hyphen is not allowed. A name that
+  does not start with a letter (`2fast`) is invalid. A name with a space
+  says spec names can't contain spaces. Block comments do not nest: the
+  first `*/` closes the comment, and a later `c */` is an error. Braces inside
+  comments and strings are not block structure. An unclosed block comment
+  is an error on the line and column where it opened. A stray `}` names
+  the earlier close first and says where the extra brace ended up. A state field or statement on
+  the same line as a block's opening or closing brace is part of that block.
+  `Boolean` is reported as a misspelling of `Bool`. A state field written
+  without a colon, and an action whose name is a keyword, are errors on
+  that line. `if`, `forall`, and `for` bodies joined onto one line drop
+  end-of-line comments first, so a comment cannot hide the rest of the block.
+  That removes comments such as the Raft note that the leader counts itself
+  from generated text that reprints those blocks.
+- Infix and call-form `implies` in a generated TypeScript machine is
+  `!p || q`, so `-t agent` accepts `require dry implies retries > 0`.
+  The words `iff`, `xor`, and `mod` are not expression operators. A
+  `require` that uses them still warns `expression not parsed in full`,
+  and the TypeScript machine rewrites them (`iff` and `xor` as the
+  boolean expansions, the word `mod` as `%`) so `-t agent` does not
+  refuse the rails. `%` and unary `-` were already JavaScript. `let name = expr` is an error that
+  says to use `:=`, and the name stays in scope. An unknown `on` target
+  suggests a declared stage. Assigning `n + p` when `p` is `Int` and `n`
+  is `Nat` names that expression. A bare `type Name` is an opaque name,
+  not a distinct record: two such names are not checked against each
+  other.
+- A speck name may not contain a hyphen or any other character that is
+  not a letter, digit, or underscore. `speck Agent-Policy` and `speck A-B`
+  are a parse error on that line and column, `speck name "…" is invalid
+  (letters, digits, underscore only)`, for every target. `speck A.B` uses
+  the same message. `speck A_B` still compiles. Two tools that bind one
+  action warn `agent: tools "foo" and "bar" both bind action "RunTests"`.
+  The compile still exits 0. A repeated tool name stays an error and does
+  not add that warning. A `Nat` subtraction is not checked for underflow
+  (`n := n - 1` is accepted), and pasting about 2,000 lines can lag on
+  the page. Both are known. The page still refuses pastes over 1.5 MB or
+  12,000 lines.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as

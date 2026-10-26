@@ -3,6 +3,10 @@ node_modules/
 
 # Build output
 dist/
+playground/dist/
+test-results/
+playwright-report/
+blob-report/
 out-tef/
 test-output/
 .last-build

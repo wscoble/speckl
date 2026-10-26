@@ -33,6 +33,7 @@ speck TEF {
   // ─── K8s Object Metadata (shared by all CRDs) ────────────────────
   // Subset of metav1.ObjectMeta that TEF CRDs actually use.
 
+  type Date
   type TypeMeta = {
     kind: String,
     apiVersion: String

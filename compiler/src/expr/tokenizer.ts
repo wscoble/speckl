@@ -248,9 +248,11 @@ export class Tokenizer {
       return this.readIdent();
     }
 
-    // Unknown character — skip and warn
-    console.warn(`Tokenizer: unexpected character '${ch}' at ${this.line}:${this.col}`);
-    return this.advance(1, TokenType.EOF, ch);
+    // Unknown character. Report the Unicode code point, not a UTF-16
+    // surrogate, and let the caller attach the spec line.
+    const cp = this.src.codePointAt(this.pos) ?? ch.charCodeAt(0);
+    const hex = cp.toString(16).toUpperCase().padStart(4, '0');
+    throw new Error(`Unexpected character U+${hex}`);
   }
 
   /** Peek at the next token without consuming it (used by parser). */

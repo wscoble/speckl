@@ -1,4 +1,5 @@
 speck TwoPhaseCommit {
+    type Message
     // TLA+ classic: Two-Phase Commit protocol ported to SpeckDL v0.3
     // Demonstrates Map types, Set operations, and complex action bodies
     // Adapted from https://lamport.azurewebsites.net/tla/two-phase.html

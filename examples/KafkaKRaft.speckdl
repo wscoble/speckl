@@ -19,7 +19,7 @@ speck KafkaKRaft {
     state {
         // Per-server state variables
         currentTerm: Nat
-        state: State
+        role: State
         votedFor: Option(NodeId)
         log: List(LogEntry)
         commitIndex: Nat
@@ -35,7 +35,7 @@ speck KafkaKRaft {
     init {
         // Initial state
         currentTerm == 1
-        state == Follower
+        role == Follower
         votedFor == None
         log == emptyList
         commitIndex == 0
@@ -50,7 +50,7 @@ speck KafkaKRaft {
         // At most one leader per term. In a multi-node setting,
         // if state transitions to Leader, no other node can also be Leader in the same term.
         // Single-node formulation: if we are leader, our term is >= previous terms.
-        state == Leader -> currentTerm > 0
+        role == Leader -> currentTerm > 0
     }
 
     invariant LeaderCompleteness {
@@ -87,7 +87,7 @@ speck KafkaKRaft {
     // --- Actions (core 5 for initial spec) ---
 
     action RequestVote(candidate: NodeId, lastLogTerm: Nat, lastLogIndex: Nat) {
-        require state == Candidate
+        require role == Candidate
         require currentTerm >= lastLogTerm
 
         // Candidate requests vote from peer
@@ -108,15 +108,15 @@ speck KafkaKRaft {
     }
 
     action BecomeLeader() {
-        require state == Candidate
+        require role == Candidate
         require votesGranted.size() >= 3
 
-        state := Leader
+        role := Leader
         commitIndex := length(log)
     }
 
     action AppendEntries(follower: NodeId) {
-        require state == Leader
+        require role == Leader
 
         // Leader sends entries to follower
         let newEntry: LogEntry = { term: currentTerm, value: "data" }

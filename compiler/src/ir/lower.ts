@@ -25,7 +25,7 @@ import {
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
   ProvenanceNode, ReviewNode, AuthorNode, SourceNode, DerivesNode,
   SatisfiesNode, BOMNode, TypeExpr, OneofNode, TransitionNode,
-  InputNode, OutputNode, AgentMemberNode,
+  InputNode, OutputNode, AgentMemberNode, InvariantMemberNode,
 } from '../parser.js';
 import {
   IR, IRSpeck, IRFacets, IRImport,
@@ -44,6 +44,7 @@ import {
 } from './types.js';
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
+import { maskSource } from '../source-scan.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -86,6 +87,7 @@ function lowerSpeck(
   // Read the raw source for expression re-parsing.
   // The main AST has string expressions; the IR needs typed trees.
   const rawSource = readFileSync(options.filePath, 'utf-8');
+  const sourceLines = rawSource.split('\n');
   const rawStatementsByAction = extractActionStatements(rawSource, speck);
 
   // Resolve imports. (For now: no-op if resolveImports is false. Future:
@@ -105,7 +107,8 @@ function lowerSpeck(
 
   // Build the eight facets.
   const typed_schema = lowerTypedSchema(speck, ast, diagnostics);
-  const behavior = lowerBehavior(speck, rawStatementsByAction, diagnostics);
+  reportUnknownTypes(speck, rawSource, declaredTypeNames(ast, rawSource), diagnostics);
+  const behavior = lowerBehavior(speck, rawStatementsByAction, diagnostics, sourceLines);
   const formal_spec = lowerFormalSpec(speck, ast, diagnostics);
   const wire_format = lowerWireFormat(speck);
   const validation: ValidationFacet = { rules: new Map() };
@@ -169,7 +172,8 @@ function extractActionStatements(
     if (m.type !== 'action') continue;
     const { startLine, endLine } = m as { startLine?: number; endLine?: number };
     if (!startLine || !endLine) continue;
-    out.set((m as ActionNode).name, parseActionStatements(actionBodyLines(lines, startLine, endLine)));
+    const body = actionBodyEntries(lines, startLine, endLine);
+    out.set((m as ActionNode).name, parseActionStatements(body.map(e => e.text), body.map(e => e.line)));
   }
 
   return out;
@@ -179,24 +183,35 @@ function extractActionStatements(
  * Body lines of an action spanning 1-based source lines [startLine, endLine]:
  * everything after the opening `{` and before the closing `}`.
  */
-function actionBodyLines(lines: string[], startLine: number, endLine: number): string[] {
+function actionCode(text: string): string {
+  return maskSource(text, { unclosed: 'blank', blankStringBraces: false }).trim();
+}
+
+function actionBodyEntries(lines: string[], startLine: number, endLine: number): { text: string; line: number }[] {
+  const scan = maskSource(lines.join('\n')).split('\n');
   let open = startLine - 1;
-  while (open < endLine - 1 && !lines[open].includes('{')) open++;
+  while (open < endLine - 1 && !(scan[open] ?? '').includes('{')) open++;
   const close = endLine - 1;
+  const entries: { text: string; line: number }[] = [];
+  const openIdx = (scan[open] ?? '').indexOf('{');
   if (open >= close) {
-    // Single-line action: `action Name { stmt }`.
+    // Single-line action: `action Name { stmt }`. The `}` in a comment is not the close.
     const l = lines[open] ?? '';
-    const body = l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
-    return body.trim() ? [body] : [];
+    const closeIdx = (scan[open] ?? '').lastIndexOf('}');
+    const body = actionCode(l.slice(openIdx + 1, closeIdx >= 0 ? closeIdx : undefined));
+    if (body) entries.push({ text: body, line: open + 1 });
+    return entries;
   }
-  const body = lines.slice(open + 1, close);
-  // Text after `{` on the header line, or before `}` on the closing line.
-  const head = lines[open].slice(lines[open].indexOf('{') + 1);
-  if (head.trim()) body.unshift(head);
-  const closeLine = lines[close];
-  const tail = closeLine.slice(0, closeLine.lastIndexOf('}'));
-  if (tail.trim()) body.push(tail);
-  return body;
+  // Text after `{` on the header line, body lines, text before `}` on the close.
+  const head = actionCode((lines[open] ?? '').slice(openIdx + 1));
+  if (head) entries.push({ text: head, line: open + 1 });
+  for (let idx = open + 1; idx < close; idx++) {
+    entries.push({ text: lines[idx] ?? '', line: idx + 1 });
+  }
+  const closeIdx = (scan[close] ?? '').lastIndexOf('}');
+  const tail = actionCode(closeIdx >= 0 ? (lines[close] ?? '').slice(0, closeIdx) : (lines[close] ?? ''));
+  if (tail) entries.push({ text: tail, line: close + 1 });
+  return entries;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -280,34 +295,75 @@ function lowerBehavior(
   speck: SpeckNode,
   rawStatementsByAction: Map<string, ActionStatement[]>,
   diagnostics: IRDiagnostic[],
+  sourceLines: string[],
 ): BehaviorFacet {
   const stateVars: IRStateVar[] = [];
   let init: IRAssign[] = [];
   const actions: IRAction[] = [];
   const events: IREvent[] = [];
+  const stateNames = new Set<string>();
+  for (const m of speck.members) {
+    if (m.type === 'state') {
+      for (const v of (m as StateNode).variables) stateNames.add(v.name);
+    }
+  }
+  const baseEnv = valueEnv(speck, sourceLines, diagnostics);
+  const seenActions = new Set<string>();
 
   for (const m of speck.members) {
     if (m.type === 'state') {
       const s = m as StateNode;
       for (const v of s.variables) {
+        if (v.defaultInit) {
+          checkBinding(v.name, v.defaultInit, baseEnv, lineOfBinding(sourceLines, v.name));
+        }
         stateVars.push({
           name: v.name,
           type: lowerTypeExpr(v.typeExpr),
-          defaultInit: v.defaultInit ? parseExprSafe(v.defaultInit, diagnostics, speck.name) : undefined,
+          defaultInit: v.defaultInit ? parseExprSafe(v.defaultInit, diagnostics, speck.name, baseEnv.constants) : undefined,
         });
       }
     } else if (m.type === 'init') {
       const i = m as InitNode;
-      init = i.assignments.map(a => ({
-        target: a.name,
-        expr: parseExprSafe(a.expr, diagnostics, speck.name),
-      }));
+      const initLine = (i as InitNode & { startLine?: number }).startLine;
+      const initEnd = (i as InitNode & { endLine?: number }).endLine;
+      init = i.assignments.map(a => {
+        const line = lineOfBinding(sourceLines, a.name, initLine, initEnd);
+        checkBinding(a.name, a.expr, baseEnv, line);
+        return {
+          target: a.name,
+          expr: parseExprSafe(a.expr, diagnostics, speck.name, baseEnv.constants),
+        };
+      });
     } else if (m.type === 'action') {
       const a = m as ActionNode;
+      if (seenActions.has(a.name)) {
+        diagnostics.push({
+          level: 'error',
+          message: `duplicate action "${a.name}"`,
+          line: (a as ActionNode & { startLine?: number }).startLine,
+          speck: speck.name,
+        });
+      }
+      seenActions.add(a.name);
       const rawStmts = rawStatementsByAction.get(a.name) || [];
       // No caller lowers a signal-injected AST: the agent block's synthetic
       // __signal_* actions are added to the IR below, from the agent block.
-      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
+      const scope = new Set(baseEnv.scope);
+      const types = new Map(baseEnv.types);
+      const constants = new Map(baseEnv.constants);
+      for (const p of a.params) {
+        scope.add(p.name);
+        constants.delete(p.name);
+        const kind = primitiveKind(p.type);
+        if (kind) types.set(p.name, kind);
+        else types.delete(p.name);
+      }
+      const env: ExprEnv = {
+        ...baseEnv,
+        scope, types, constants, diagnostics, speckName: speck.name, lines: sourceLines, seen: baseEnv.seen,
+      };
+      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, env));
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
@@ -344,9 +400,16 @@ function lowerBehavior(
     behavior.next = [...names];
   }
 
+  for (const m of speck.members) {
+    if (m.type !== 'invariant') continue;
+    const inv = m as InvariantMemberNode;
+    const line = (m as InvariantMemberNode & { startLine?: number }).startLine;
+    checkSourceExpr(inv.expr, { ...baseEnv, line });
+  }
+
   const agentMember = speck.members.find((m): m is AgentMemberNode & { startLine?: number } => m.type === 'agent');
   if (agentMember) {
-    behavior.agent = lowerAgent(agentMember, behavior, speck.name, diagnostics);
+    behavior.agent = lowerAgent(agentMember, behavior, speck.name, diagnostics, sourceLines);
   }
   return behavior;
 }
@@ -357,11 +420,16 @@ function lowerBehavior(
  * human-response edges; those actions are never exposed as tools.
  */
 function lowerAgent(
-  agent: AgentMemberNode & { startLine?: number },
+  agent: AgentMemberNode & { startLine?: number; endLine?: number },
   behavior: BehaviorFacet,
   speckName: string,
   diagnostics: IRDiagnostic[],
+  sourceLines: string[],
 ): IRAgentConfig {
+  const note = (level: 'error' | 'warning', message: string, token?: string) => {
+    const where = locateInRange(sourceLines, agent.startLine, agent.endLine, token);
+    diagnostics.push({ level, message, line: where.line, column: where.column, speck: speckName });
+  };
   const actionNames = new Set(behavior.actions.map(a => a.name));
   const stateVarNames = new Set(behavior.stateVars.map(v => v.name));
   const labelToValue = new Map<string, number>();
@@ -370,21 +438,11 @@ function lowerAgent(
   if (agent.stages) {
     stageVar = agent.stages.variable;
     if (!stateVarNames.has(stageVar)) {
-      diagnostics.push({
-        level: 'error',
-        message: `agent stages: unknown state variable "${stageVar}"`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('error', `agent stages: unknown state variable "${stageVar}"`, stageVar);
     }
     for (const l of agent.stages.labels) {
       if (labelToValue.has(l.name)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent stages: duplicate label "${l.name}"`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent stages: duplicate label "${l.name}"`, l.name);
       }
       labelToValue.set(l.name, l.value);
     }
@@ -392,77 +450,54 @@ function lowerAgent(
 
   const tools = [];
   const seenToolNames = new Set<string>();
+  const seenToolActions = new Map<string, string>();
   for (const t of agent.tools) {
     if (seenToolNames.has(t.name)) {
-      diagnostics.push({ level: 'error', message: `agent: duplicate tool "${t.name}"`, line: agent.startLine, speck: speckName });
+      note('error', `agent: duplicate tool "${t.name}"`, t.name);
     }
     seenToolNames.add(t.name);
+    const priorTool = seenToolActions.get(t.action);
+    if (priorTool && priorTool !== t.name) {
+      note('warning', `agent: tools "${priorTool}" and "${t.name}" both bind action "${t.action}"`, t.name);
+    } else if (!priorTool) {
+      seenToolActions.set(t.action, t.name);
+    }
     if (!actionNames.has(t.action)) {
-      diagnostics.push({
-        level: 'error',
-        message: `agent tool ${t.name}: unknown action "${t.action}"`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('error', `agent tool ${t.name}: unknown action "${t.action}"`, t.action);
     }
     if (t.effect !== 'act' && t.effect !== 'observe') {
-      diagnostics.push({ level: 'error', message: `agent tool ${t.name}: effect must be act or observe`, line: agent.startLine, speck: speckName });
+      note('error', `agent tool ${t.name}: effect must be act or observe`, t.name);
     }
     tools.push({ name: t.name, action: t.action, effect: t.effect });
   }
 
-  validateHarnesses(agent, behavior, speckName, diagnostics);
+  validateHarnesses(agent, behavior, speckName, diagnostics, sourceLines);
 
   const awaits: IRAgentAwait[] = [];
   const syntheticNames: string[] = [];
 
   if (agent.pendingTimeout && agent.pendingTimeout.durationMs <= 0) {
-    diagnostics.push({
-      level: 'error',
-      message: `agent: pending timeout must be greater than zero (got ${agent.pendingTimeout.durationText})`,
-      line: agent.startLine,
-      speck: speckName,
-    });
+    note('error', `agent: pending timeout must be greater than zero (got ${agent.pendingTimeout.durationText})`, 'timeout');
   }
 
   for (const a of agent.awaits) {
     if (!labelToValue.has(a.state)) {
-      diagnostics.push({
-        level: 'error',
-        message: `agent await ${a.state}: unknown stage label (declare it in stages)`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('error', `agent await ${a.state}: unknown stage label (declare it in stages)`, a.state);
       continue;
     }
     const awaitValue = labelToValue.get(a.state)!;
     const rejectOutcomes = new Set(a.rejects ?? []);
     for (const o of a.outcomes) {
       if (/reject|deny|denied|decline/i.test(o) && !rejectOutcomes.has(o)) {
-        diagnostics.push({
-          level: 'warning',
-          message: `agent await ${a.state}: outcome "${o}" looks like a rejection but is not marked; write "${o}!" in require outcome in {...} to make it a reject outcome`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('warning', `agent await ${a.state}: outcome "${o}" looks like a rejection but is not marked; write "${o}!" in require outcome in {...} to make it a reject outcome`, o);
       }
     }
     if (a.timeout) {
       if (!a.outcomes.includes(a.timeout.outcome)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: timeout outcome "${a.timeout.outcome}" not in require outcome in {...}`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent await ${a.state}: timeout outcome "${a.timeout.outcome}" not in require outcome in {...}`, a.timeout.outcome);
       } else if (!rejectOutcomes.has(a.timeout.outcome)) {
         // A timeout may only resolve to an outcome explicitly marked reject.
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: timeout may only resolve to a reject outcome marked with ! (got "${a.timeout.outcome}"; write "${a.timeout.outcome}!" in require outcome in {...} if it really rejects)`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent await ${a.state}: timeout may only resolve to a reject outcome marked with ! (got "${a.timeout.outcome}"; write "${a.timeout.outcome}!" in require outcome in {...} if it really rejects)`, a.timeout.outcome);
       }
     }
     // A reject outcome must not lead where an accepting outcome leads, or a
@@ -471,51 +506,28 @@ function lowerAgent(
       const rTarget = a.on.find(o => o.outcome === r)?.target;
       const accepting = a.on.filter(o => !rejectOutcomes.has(o.outcome)).map(o => o.target);
       if (rTarget !== undefined && accepting.includes(rTarget)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: reject outcome "${r}" leads to ${rTarget}, which a non-reject outcome also reaches`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent await ${a.state}: reject outcome "${r}" leads to ${rTarget}, which a non-reject outcome also reaches`, rTarget);
       }
     }
     if (rejectOutcomes.size === a.outcomes.length && a.outcomes.length > 0) {
-      diagnostics.push({
-        level: 'warning',
-        message: `agent await ${a.state}: every outcome is marked reject; nothing can approve`,
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('warning', `agent await ${a.state}: every outcome is marked reject; nothing can approve`, a.state);
     }
 
     const syntheticActions: IRAgentAwait['syntheticActions'] = [];
     for (const o of a.on) {
       if (!labelToValue.has(o.target)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent await ${a.state}: on ${o.outcome} -> ${o.target}: unknown target stage`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        const hint = suggestKnownType(o.target, new Set(labelToValue.keys()));
+        const suggest = hint ? `. Did you mean \`${hint}\`?` : '';
+        note('error', `agent await ${a.state}: on ${o.outcome} -> ${o.target}: unknown target stage${suggest}`, o.target);
         continue;
       }
       const actionName = `__signal_${a.signal}_${o.outcome}`;
       if (syntheticNames.includes(actionName)) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent: duplicate synthetic action "${actionName}"`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent: duplicate synthetic action "${actionName}"`, o.target);
         continue;
       }
       if (actionNames.has(actionName) && !actionName.startsWith('__signal_')) {
-        diagnostics.push({
-          level: 'error',
-          message: `agent: synthetic action name collides with declared action "${actionName}"`,
-          line: agent.startLine,
-          speck: speckName,
-        });
+        note('error', `agent: synthetic action name collides with declared action "${actionName}"`, actionName);
         continue;
       }
       const targetValue = labelToValue.get(o.target)!;
@@ -548,12 +560,7 @@ function lowerAgent(
       const missing = syntheticNames.filter(n => !have.has(n));
       if (missing.length > 0) behavior.next = [...behavior.next, ...missing];
     } else {
-      diagnostics.push({
-        level: 'warning',
-        message: 'agent: next: is missing; synthetic signal actions will not be covered by BMC',
-        line: agent.startLine,
-        speck: speckName,
-      });
+      note('warning', 'agent: next: is missing; synthetic signal actions will not be covered by BMC', 'next');
     }
   }
 
@@ -576,26 +583,32 @@ export const SUPPORTED_HARNESSES = ['claude-code', 'cursor', 'codex', 'gemini', 
  * `-t agent` (index.ts refuses diagnostics that start with "agent").
  */
 function validateHarnesses(
-  agent: AgentMemberNode & { startLine?: number },
+  agent: AgentMemberNode & { startLine?: number; endLine?: number },
   behavior: BehaviorFacet,
   speckName: string,
   diagnostics: IRDiagnostic[],
+  sourceLines: string[] = [],
 ): void {
-  const err = (message: string) => diagnostics.push({ level: 'error', message, line: agent.startLine, speck: speckName });
+  const err = (message: string, token?: string) => {
+    const where = locateInRange(sourceLines, agent.startLine, agent.endLine, token);
+    diagnostics.push({ level: 'error', message, line: where.line, column: where.column, speck: speckName });
+  };
   const toolToAction = new Map(agent.tools.map(t => [t.name, t.action]));
   const paramsOf = new Map(behavior.actions.map(a => [a.name, a.params.map(p => p.name)]));
   const seen = new Set<string>();
   for (const h of agent.harnesses ?? []) {
     if (!(SUPPORTED_HARNESSES as readonly string[]).includes(h.name)) {
-      err(`agent harness ${h.name}: unknown harness (supported: ${SUPPORTED_HARNESSES.join(', ')})`);
+      err(`agent harness ${h.name}: unknown harness (supported: ${SUPPORTED_HARNESSES.join(', ')})`, h.name);
     }
-    if (seen.has(h.name)) err(`agent harness ${h.name}: declared twice`);
+    if (seen.has(h.name)) err(`agent harness ${h.name}: declared twice`, h.name);
     seen.add(h.name);
     if (h.rules.length === 0) {
+      const where = locateInRange(sourceLines, agent.startLine, agent.endLine, h.name);
       diagnostics.push({
         level: 'warning',
         message: `agent harness ${h.name}: no map lines; every tool call will be denied`,
-        line: agent.startLine,
+        line: where.line,
+        column: where.column,
         speck: speckName,
       });
     }
@@ -603,23 +616,23 @@ function validateHarnesses(
       const where = `agent harness ${h.name} map ${r.tools.join('|')}`;
       const action = toolToAction.get(r.target);
       if (!action) {
-        err(`${where}: -> ${r.target} is not a declared tool`);
+        err(`${where}: -> ${r.target} is not a declared tool`, r.target);
         continue;
       }
       const params = paramsOf.get(action) ?? [];
       const seenParams = new Set<string>();
       for (const p of r.params) {
         if (!params.includes(p.param)) {
-          err(`${where}: ${p.param} is not a parameter of ${action} (has: ${params.join(', ') || 'none'})`);
+          err(`${where}: ${p.param} is not a parameter of ${action} (has: ${params.join(', ') || 'none'})`, p.param);
         }
-        if (seenParams.has(p.param)) err(`${where}: ${p.param} is mapped twice`);
+        if (seenParams.has(p.param)) err(`${where}: ${p.param} is mapped twice`, p.param);
         seenParams.add(p.param);
       }
       if (r.pattern !== undefined) {
         try {
           new RegExp('^(?:' + r.pattern + ')$');
         } catch (e) {
-          err(`${where}: pattern "${r.pattern}" is not a valid regular expression (${e instanceof Error ? e.message : String(e)})`);
+          err(`${where}: pattern "${r.pattern}" is not a valid regular expression (${e instanceof Error ? e.message : String(e)})`, r.pattern);
         }
       }
     }
@@ -875,62 +888,820 @@ function lowerTypeExpr(t: TypeExpr): IRTypeRef {
 
 function lowerStatement(
   s: ActionStatement,
-  diagnostics: IRDiagnostic[],
-  speckName: string,
+  env: ExprEnv,
 ): IRStmt {
+  const diagnostics = env.diagnostics;
+  const speckName = env.speckName;
   switch (s.type) {
-    case 'assign':
+    case 'assign': {
+      const name = s.target.kind === 'plain' ? s.target.name : s.target.mapName;
+      if (!env.scope.has(name)) reportUndeclared(env, name, s.line);
+      env.line = s.line;
+      if (s.target.kind === 'map_index') checkExpr(s.target.index, env);
+      checkExpr(s.expr, env);
+      if (s.target.kind === 'plain') checkAssignLiteral(env, name, s.expr, s.line);
       return {
         kind: 'assign',
         target: s.target.kind === 'plain' ? s.target.name : `${s.target.mapName}[...]`,
-        ...(s.target.kind === 'map_index' ? { targetIndex: lowerExpr(s.target.index, diagnostics, speckName) } : {}),
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        ...(s.target.kind === 'map_index' ? { targetIndex: lowerExpr(s.target.index, diagnostics, speckName, env.constants) } : {}),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
+    }
     case 'let':
+      env.line = s.line;
+      if (s.badEquals) {
+        const lineText = env.lines[(s.line ?? 1) - 1] ?? '';
+        const eq = lineText.indexOf('=');
+        diagnostics.push({
+          level: 'error',
+          message: `let ${s.name} uses \`=\`. Use \`:=\`.`,
+          line: s.line,
+          column: eq >= 0 ? eq + 1 : undefined,
+          speck: speckName,
+        });
+      }
+      checkExpr(s.expr, env);
+      env.scope.add(s.name);
       return {
         kind: 'let',
         letName: s.name,
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'require':
+      env.line = s.line;
+      checkExpr(s.expr, env);
+      checkBoolExpr(env, s.expr, s.line, 'require');
       return {
         kind: 'require',
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'precondition':
+      env.line = s.line;
+      checkExpr(s.expr, env);
+      checkBoolExpr(env, s.expr, s.line, 'precondition');
       return {
         kind: 'precondition',
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'postcondition':
+      env.line = s.line;
+      checkExpr(s.expr, env);
+      checkBoolExpr(env, s.expr, s.line, 'postcondition');
       return {
         kind: 'postcondition',
-        value: lowerExpr(s.expr, diagnostics, speckName),
+        value: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
     case 'emit':
+      env.line = s.line;
+      for (const f of s.fields) checkExpr(f.value, env);
       return {
         kind: 'emit',
         event: s.event,
         fields: s.fields.map(f => ({
           name: f.name,
-          value: lowerExpr(f.value, diagnostics, speckName),
+          value: lowerExpr(f.value, diagnostics, speckName, env.constants),
         })),
       };
     case 'return':
+      env.line = s.line;
+      checkExpr(s.expr, env);
       return {
         kind: 'return',
-        expr: lowerExpr(s.expr, diagnostics, speckName),
+        expr: lowerExpr(s.expr, diagnostics, speckName, env.constants),
       };
-    case 'ifblock':
-      // Future: lower the ifblock properly. For now, keep as a synthetic
-      // statement that the generators can choose to ignore.
+    case 'ifblock': {
+      // `if` / `forall` / `for` stay raw. A binder still names the statements
+      // that follow it (`forall s in ...` then `use s`), which are separate
+      // statements in this parser.
+      const bound = /^(?:forall|for)\s+([A-Za-z_]\w*)\b/.exec(s.raw.trim());
+      if (bound) env.scope.add(bound[1]);
       diagnostics.push({
         level: 'info',
         message: `statement preserved as raw text in IR, not lowered: ${s.raw}`,
         speck: speckName,
       });
       return { kind: 'if', expr: undefined, raw: s.raw };
+    }
+    case 'unrecognized': {
+      const hint = s.suggestion ? ` Did you mean \`${s.suggestion}\`?` : '';
+      const word = s.raw.match(/[A-Za-z_]\w*/)?.[0];
+      const at = locateName(env.lines, s.line, word);
+      diagnostics.push({
+        level: 'error',
+        message: `unrecognized statement "${s.raw}".${hint}`,
+        line: at.line ?? s.line,
+        column: at.column,
+        speck: speckName,
+      });
+      return { kind: 'if', expr: undefined, raw: s.raw };
+    }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Names and obvious literal types
+// ─────────────────────────────────────────────────────────────────────
+
+type ValueKind = 'bool' | 'nat' | 'int' | 'real' | 'string';
+
+interface ExprEnv {
+  scope: Set<string>;
+  types: Map<string, ValueKind>;
+  /** Stage label → Nat value. An ident lowers to that number. */
+  constants: Map<string, number>;
+  stageVar?: string;
+  stageValues?: Set<number>;
+  stageLabels?: { name: string; value: number }[];
+  diagnostics: IRDiagnostic[];
+  speckName: string;
+  lines: string[];
+  line?: number;
+  seen: Set<string>;
+}
+
+/** Functions and constants the expression language already knows. */
+const EXPR_BUILTINS = new Set([
+  'abs', 'add', 'always', 'Always', 'and', 'append', 'card', 'ceil', 'concat', 'old',
+  'contains', 'count', 'delete', 'diff', 'disjoint', 'dom', 'empty', 'emptyList',
+  'emptyMap', 'emptySet', 'Err', 'eventually', 'Eventually', 'filter', 'first',
+  'floor', 'fold', 'get', 'has', 'hash', 'head', 'implies', 'insert', 'isEmpty',
+  'isNone', 'isSome', 'keys', 'last', 'length', 'List', 'lookup', 'Map', 'map',
+  'max', 'member', 'min', 'nil', 'None', 'not', 'Ok', 'or', 'pop', 'push', 'range',
+  'remove', 'round', 'Set', 'size', 'Some', 'subset', 'sum', 'tail', 'update',
+  'values',
+]);
+
+const COMPARE_OPS = new Set(['eq', 'neq', 'lt', 'gt', 'lte', 'gte']);
+
+function valueEnv(speck: SpeckNode, lines: string[], diagnostics: IRDiagnostic[]): ExprEnv {
+  const scope = new Set<string>(EXPR_BUILTINS);
+  scope.add('this');
+  const types = new Map<string, ValueKind>();
+  const constants = new Map<string, number>();
+  let stageVar: string | undefined;
+  const stageValues = new Set<number>();
+  const stageLabels: { name: string; value: number }[] = [];
+  for (const m of speck.members) {
+    if (m.type === 'state') {
+      for (const v of (m as StateNode).variables) {
+        scope.add(v.name);
+        const kind = primitiveKind(v.typeExpr);
+        if (kind) types.set(v.name, kind);
+      }
+    } else if (m.type === 'invariant') {
+      scope.add((m as InvariantMemberNode).name);
+    } else if (m.type === 'interface') {
+      const iface = m as InterfaceNode;
+      const enumLike = iface.kind === 'enum' || (iface.methods.length > 0 && iface.fields.length === 0 && iface.methods.every(method => method.params.length === 0));
+      if (enumLike) for (const method of iface.methods) scope.add(method.name);
+    }
+  }
+  // After state, so a variable keeps its declared type if a label reuses the name.
+  for (const m of speck.members) {
+    if (m.type !== 'agent') continue;
+    const agent = m as AgentMemberNode;
+    if (!agent.stages) continue;
+    stageVar = agent.stages.variable;
+    for (const label of agent.stages.labels) {
+      scope.add(label.name);
+      stageValues.add(label.value);
+      stageLabels.push({ name: label.name, value: label.value });
+      if (!types.has(label.name)) {
+        types.set(label.name, 'nat');
+        constants.set(label.name, label.value);
+      }
+    }
+  }
+  for (const variant of unionVariants(lines)) scope.add(variant);
+  return {
+    scope, types, constants, stageVar, stageValues, stageLabels,
+    diagnostics, speckName: speck.name, lines, seen: new Set(),
+  };
+}
+
+function unionVariants(lines: string[]): string[] {
+  const names: string[] = [];
+  for (const raw of lines) {
+    const line = raw.replace(/\/\/.*$/, '').trim();
+    const match = /^type\s+\w+\s*=\s*([A-Za-z_]\w*(?:\s*\|\s*[A-Za-z_]\w*)+)\s*$/.exec(line);
+    if (!match) continue;
+    for (const part of match[1].split('|')) {
+      const name = part.trim();
+      if (name) names.push(name);
+    }
+  }
+  return names;
+}
+
+function primitiveKind(t: TypeExpr | undefined): ValueKind | undefined {
+  if (!t || (t.type !== 'primitive' && t.type !== 'ident')) return undefined;
+  if (t.name === 'Bool' || t.name === 'Boolean') return 'bool';
+  if (t.name === 'Nat') return 'nat';
+  if (t.name === 'Int') return 'int';
+  if (t.name === 'Real') return 'real';
+  if (t.name === 'String') return 'string';
+  return undefined;
+}
+
+function lineOfBinding(lines: string[], name: string, start?: number, end?: number): number | undefined {
+  const from = start ? start - 1 : 0;
+  const to = end ?? lines.length;
+  const re = new RegExp(`\\b${escapeRegExp(name)}\\b`);
+  for (let i = from; i < to && i < lines.length; i++) {
+    if (re.test(lines[i]) && lines[i].includes(':=')) return i + 1;
+  }
+  return start;
+}
+
+function checkBinding(name: string, src: string, env: ExprEnv, line?: number): void {
+  if (!env.scope.has(name)) reportUndeclared(env, name, line);
+  let parsed: Expr;
+  try {
+    parsed = parseExpressionComplete(src);
+  } catch {
+    return;
+  }
+  const saved = env.line;
+  env.line = line;
+  checkExpr(parsed, env);
+  checkAssignLiteral(env, name, parsed, line);
+  env.line = saved;
+}
+
+function checkSourceExpr(src: string, env: ExprEnv): void {
+  let parsed: Expr;
+  try {
+    parsed = parseExpressionComplete(src);
+  } catch {
+    return;
+  }
+  checkExpr(parsed, env);
+}
+
+function reportUndeclared(env: ExprEnv, name: string, line?: number): void {
+  const at = locateName(env.lines, line ?? env.line, name);
+  const key = `undeclared|${name}|${at.line ?? ''}|${at.column ?? ''}`;
+  if (env.seen.has(key)) return;
+  env.seen.add(key);
+  env.diagnostics.push({
+    level: 'error',
+    message: `undeclared variable "${name}"`,
+    line: at.line,
+    column: at.column,
+    speck: env.speckName,
+  });
+}
+
+/** A token between two source lines (inclusive, 1-based), or the start line. */
+function locateInRange(
+  lines: string[],
+  start: number | undefined,
+  end: number | undefined,
+  name?: string,
+): { line?: number; column?: number } {
+  if (!start) return {};
+  const from = Math.max(0, start - 1);
+  const to = Math.min(lines.length, end ?? lines.length);
+  if (name) {
+    const re = new RegExp(`\\b${escapeRegExp(name)}\\b`);
+    for (let i = from; i < to; i++) {
+      const match = re.exec(lines[i] ?? '');
+      if (match) return { line: i + 1, column: match.index + 1 };
+    }
+  }
+  return locateName(lines, start, undefined);
+}
+
+function locateName(lines: string[], line: number | undefined, name: string | undefined): { line?: number; column?: number } {
+  if (!line) return {};
+  if (name) {
+    const re = new RegExp(`\\b${escapeRegExp(name)}\\b`);
+    const last = Math.min(lines.length, line + 12);
+    for (let i = line - 1; i < last; i++) {
+      if (i < 0) continue;
+      const match = re.exec(lines[i] ?? '');
+      if (match) return { line: i + 1, column: match.index + 1 };
+    }
+  }
+  const text = lines[line - 1] ?? '';
+  const word = /\S/.exec(text);
+  return { line, column: word ? word.index + 1 : 1 };
+}
+
+interface LiteralSide {
+  kind: ValueKind;
+  /** True when this side is a written literal, not a named variable. */
+  literal: boolean;
+  /** True when the literal is a negative number. */
+  negative: boolean;
+  name?: string;
+}
+
+function literalSide(e: Expr, types: Map<string, ValueKind>): LiteralSide | undefined {
+  if (e.kind === 'parens') return literalSide(e.expr, types);
+  if (e.kind === 'unary' && e.op === 'neg' && e.operand.kind === 'literal' && e.operand.type === 'number') {
+    const n = Number(e.operand.value);
+    if (!Number.isFinite(n)) return undefined;
+    return { kind: Number.isInteger(n) ? 'int' : 'real', literal: true, negative: true };
+  }
+  if (e.kind === 'literal') {
+    if (e.type === 'bool') return { kind: 'bool', literal: true, negative: false };
+    if (e.type === 'string') return { kind: 'string', literal: true, negative: false };
+    if (e.type === 'number') {
+      const n = Number(e.value);
+      if (!Number.isFinite(n)) return undefined;
+      if (!Number.isInteger(n)) return { kind: 'real', literal: true, negative: n < 0 };
+      if (n < 0) return { kind: 'int', literal: true, negative: true };
+      return { kind: 'nat', literal: true, negative: false };
+    }
+    return undefined;
+  }
+  if (e.kind === 'ident') {
+    const kind = types.get(e.name);
+    if (!kind) return undefined;
+    return { kind, literal: false, negative: false, name: e.name };
+  }
+  return undefined;
+}
+
+function kindsClash(left: LiteralSide, right: LiteralSide): boolean {
+  if (left.kind === 'bool' || right.kind === 'bool') return left.kind !== right.kind;
+  if (left.kind === 'string' || right.kind === 'string') return left.kind !== right.kind;
+  if (left.kind === 'nat' && right.negative) return true;
+  if (right.kind === 'nat' && left.negative) return true;
+  if ((left.kind === 'nat' || left.kind === 'int') && right.kind === 'real' && right.literal) return true;
+  if ((right.kind === 'nat' || right.kind === 'int') && left.kind === 'real' && left.literal) return true;
+  return false;
+}
+
+function describeFocus(e: Expr): string | undefined {
+  if (e.kind === 'parens') return describeFocus(e.expr);
+  if (e.kind === 'ident') return e.name;
+  return undefined;
+}
+
+function describeSide(side: LiteralSide): string {
+  if (side.negative) return 'a negative number';
+  if (side.kind === 'bool') return side.name ? `Bool variable "${side.name}"` : 'a boolean';
+  if (side.kind === 'string') return side.name ? `String variable "${side.name}"` : 'a string';
+  if (side.kind === 'real' && side.literal) return 'a non-integer number';
+  if (side.name) {
+    const label = side.kind === 'nat' ? 'Nat' : side.kind === 'int' ? 'Int' : side.kind === 'real' ? 'Real' : side.kind;
+    return `${label} variable "${side.name}"`;
+  }
+  return 'a number';
+}
+
+function kindLabel(kind: ValueKind): string {
+  if (kind === 'nat') return 'Nat';
+  if (kind === 'int') return 'Int';
+  if (kind === 'real') return 'Real';
+  if (kind === 'bool') return 'Bool';
+  return 'String';
+}
+
+/** A computed right-hand side names the expression and the value that widened it. */
+function describeAssigned(expr: Expr, got: LiteralSide, types: Map<string, ValueKind>): string {
+  if (got.negative || got.literal || got.name) return describeSide(got);
+  const src = expr.kind === 'parens' ? exprToSource(expr.expr) : exprToSource(expr);
+  const notes: string[] = [];
+  const seen = new Set<string>();
+  const walk = (e: Expr): void => {
+    if (e.kind === 'ident') {
+      const k = types.get(e.name);
+      if (k === got.kind && !seen.has(e.name)) {
+        seen.add(e.name);
+        notes.push(`${e.name} is ${kindLabel(k)}`);
+      }
+      return;
+    }
+    if (e.kind === 'parens') walk(e.expr);
+    else if (e.kind === 'unary') walk(e.operand);
+    else if (e.kind === 'binary') {
+      walk(e.left);
+      walk(e.right);
+    }
+  };
+  walk(expr);
+  const detail = notes.length > 0 ? `${src}; ${notes.join(', ')}` : src;
+  return `${kindLabel(got.kind)} expression (${detail})`;
+}
+
+function numericKind(kind: ValueKind): boolean {
+  return kind === 'nat' || kind === 'int' || kind === 'real';
+}
+
+/**
+ * Nat accepts Nat only. Int accepts Int and Nat. Real accepts Real, Int, and
+ * Nat. Bool and String accept only themselves. A negative or fractional
+ * literal is not a Nat.
+ */
+function assignable(dest: ValueKind, src: LiteralSide): boolean {
+  if (src.negative && dest === 'nat') return false;
+  if (src.literal && src.kind === 'real' && (dest === 'nat' || dest === 'int')) return false;
+  if (dest === src.kind) return true;
+  if (dest === 'int' && src.kind === 'nat') return true;
+  if (dest === 'real' && numericKind(src.kind)) return true;
+  return false;
+}
+
+function checkAssignLiteral(env: ExprEnv, name: string, expr: Expr, line?: number): void {
+  const expected = env.types.get(name);
+  const got = literalSide(expr, env.types) ?? sideFromKind(expr, env.types);
+  if (expected && got && !assignable(expected, got)) {
+    const dest: LiteralSide = { kind: expected, literal: false, negative: false, name };
+    const message = `type mismatch: cannot assign ${describeAssigned(expr, got, env.types)} to ${describeSide(dest)}`;
+    pushTypeError(env, message, line, name);
+  }
+  checkStageLiteral(env, name, expr, line);
+}
+
+function sideFromKind(expr: Expr, types: Map<string, ValueKind>): LiteralSide | undefined {
+  const kind = valueKind(expr, types);
+  if (!kind) return undefined;
+  if (expr.kind === 'ident') return { kind, literal: false, negative: false, name: expr.name };
+  if (expr.kind === 'parens') return sideFromKind(expr.expr, types);
+  return { kind, literal: false, negative: false };
+}
+
+function literalInt(expr: Expr): number | undefined {
+  if (expr.kind === 'parens') return literalInt(expr.expr);
+  if (expr.kind === 'literal' && expr.type === 'number') {
+    const n = Number(expr.value);
+    return Number.isInteger(n) ? n : undefined;
+  }
+  if (expr.kind === 'unary' && expr.op === 'neg' && expr.operand.kind === 'literal' && expr.operand.type === 'number') {
+    const n = Number(expr.operand.value);
+    return Number.isInteger(n) ? -n : undefined;
+  }
+  return undefined;
+}
+
+function checkStageLiteral(env: ExprEnv, name: string, expr: Expr, line?: number): void {
+  if (!env.stageVar || name !== env.stageVar || !env.stageValues || env.stageValues.size === 0) return;
+  const n = literalInt(expr);
+  if (n === undefined || env.stageValues.has(n)) return;
+  const labels = (env.stageLabels ?? []).map((l) => `${l.name} = ${l.value}`).join(', ');
+  pushTypeError(env, `stage value ${n} is not a declared stage (${labels})`, line, name);
+}
+
+function pushTypeError(env: ExprEnv, message: string, line: number | undefined, focus?: string): void {
+  const at = locateName(env.lines, line ?? env.line, focus);
+  const key = `${message}|${at.line ?? ''}`;
+  if (env.seen.has(key)) return;
+  env.seen.add(key);
+  env.diagnostics.push({
+    level: 'error',
+    message,
+    line: at.line,
+    column: at.column,
+    speck: env.speckName,
+  });
+}
+
+function checkBoolExpr(env: ExprEnv, expr: Expr, line: number | undefined, keyword: string): void {
+  const kind = valueKind(expr, env.types);
+  if (!kind || kind === 'bool') return;
+  pushTypeError(env, `type mismatch: ${keyword} expects a Bool, got ${describeKind(kind, expr)}`, line, keyword);
+}
+
+function describeKind(kind: ValueKind, expr: Expr): string {
+  if (expr.kind === 'ident') {
+    const label = kind === 'nat' ? 'Nat' : kind === 'int' ? 'Int' : kind === 'real' ? 'Real' : kind === 'bool' ? 'Bool' : 'String';
+    return `${label} variable "${expr.name}"`;
+  }
+  if (expr.kind === 'parens') return describeKind(kind, expr.expr);
+  if (kind === 'bool') return 'a boolean';
+  if (kind === 'string') return 'a string';
+  if (kind === 'nat') return 'a Nat';
+  if (kind === 'int') return 'an Int';
+  return 'a Real';
+}
+
+/** Type of an expression built from declared names and literals. Unknown shapes are skipped. */
+function valueKind(e: Expr, types: Map<string, ValueKind>): ValueKind | undefined {
+  if (e.kind === 'parens') return valueKind(e.expr, types);
+  const side = literalSide(e, types);
+  if (side) return side.kind;
+  if (e.kind === 'unary' && e.op === 'not') {
+    return valueKind(e.operand, types) === 'bool' ? 'bool' : undefined;
+  }
+  if (e.kind === 'unary' && e.op === 'neg') {
+    const k = valueKind(e.operand, types);
+    if (k === 'real') return 'real';
+    if (k === 'nat' || k === 'int') return 'int';
+    return undefined;
+  }
+  if (e.kind !== 'binary') return undefined;
+  const left = valueKind(e.left, types);
+  const right = valueKind(e.right, types);
+  if (!left || !right) return undefined;
+  if (COMPARE_OPS.has(e.op)) {
+    const ls = literalSide(e.left, types);
+    const rs = literalSide(e.right, types);
+    if (ls && rs && kindsClash(ls, rs)) return undefined;
+    if ((left === 'bool') !== (right === 'bool')) return undefined;
+    if ((left === 'string') !== (right === 'string')) return undefined;
+    if ((numericKind(left) && !numericKind(right)) || (!numericKind(left) && numericKind(right))) return undefined;
+    return 'bool';
+  }
+  if (e.op === 'and' || e.op === 'or' || e.op === 'implies') {
+    return left === 'bool' && right === 'bool' ? 'bool' : undefined;
+  }
+  if (e.op === 'add' && left === 'string' && right === 'string') return 'string';
+  if ((e.op === 'add' || e.op === 'sub' || e.op === 'mul' || e.op === 'div' || e.op === 'mod') && numericKind(left) && numericKind(right)) {
+    if (left === 'real' || right === 'real') return 'real';
+    if (left === 'int' || right === 'int') return 'int';
+    return 'nat';
+  }
+  return undefined;
+}
+
+function checkExpr(e: Expr | undefined, env: ExprEnv): void {
+  if (!e) return;
+  switch (e.kind) {
+    case 'literal':
+      return;
+    case 'unparsed':
+      reportUnexpected(env, e);
+      return;
+    case 'ident':
+      if (!env.scope.has(e.name) && !EXPR_BUILTINS.has(e.name)) reportUndeclared(env, e.name, env.line);
+      return;
+    case 'unary':
+      checkExpr(e.operand, env);
+      if (e.op === 'not') {
+        const kind = valueKind(e.operand, env.types);
+        if (kind && kind !== 'bool') {
+          pushTypeError(env, `type mismatch: not expects a Bool, got ${describeKind(kind, e.operand)}`, env.line, describeFocus(e.operand));
+        }
+      }
+      return;
+    case 'binary': {
+      checkExpr(e.left, env);
+      checkExpr(e.right, env);
+      const leftKind = valueKind(e.left, env.types);
+      const rightKind = valueKind(e.right, env.types);
+      if (COMPARE_OPS.has(e.op)) {
+        const left = literalSide(e.left, env.types);
+        const right = literalSide(e.right, env.types);
+        if (!left || !right || !kindsClash(left, right)) return;
+        const focus = left.name ?? right.name;
+        pushTypeError(env, `type mismatch: cannot compare ${describeSide(left)} with ${describeSide(right)}`, env.line, focus);
+        return;
+      }
+      if ((e.op === 'and' || e.op === 'or' || e.op === 'implies') && leftKind && rightKind) {
+        if (leftKind !== 'bool') pushTypeError(env, `type mismatch: ${e.op} expects a Bool, got ${describeKind(leftKind, e.left)}`, env.line, describeFocus(e.left));
+        if (rightKind !== 'bool') pushTypeError(env, `type mismatch: ${e.op} expects a Bool, got ${describeKind(rightKind, e.right)}`, env.line, describeFocus(e.right));
+        return;
+      }
+      if ((e.op === 'add' || e.op === 'sub' || e.op === 'mul' || e.op === 'div' || e.op === 'mod') && leftKind && rightKind) {
+        const concat = e.op === 'add' && leftKind === 'string' && rightKind === 'string';
+        const numeric = numericKind(leftKind) && numericKind(rightKind);
+        if (!concat && !numeric) {
+          pushTypeError(
+            env,
+            `type mismatch: arithmetic only applies to numbers (got ${describeKind(leftKind, e.left)} and ${describeKind(rightKind, e.right)})`,
+            env.line,
+            describeFocus(e.left) ?? describeFocus(e.right),
+          );
+        }
+      }
+      return;
+    }
+    case 'call':
+      if (e.token?.value !== '.' && !env.scope.has(e.callee) && !EXPR_BUILTINS.has(e.callee)) {
+        reportUndeclared(env, e.callee, env.line);
+      }
+      for (const arg of e.args) checkExpr(arg, env);
+      return;
+    case 'member':
+      checkExpr(e.object, env);
+      return;
+    case 'index':
+      checkExpr(e.object, env);
+      checkExpr(e.index, env);
+      return;
+    case 'parens':
+      checkExpr(e.expr, env);
+      return;
+    case 'if':
+      checkExpr(e.condition, env);
+      checkExpr(e.thenBranch, env);
+      checkExpr(e.elseBranch ?? undefined, env);
+      return;
+    case 'object':
+      if (e.spread) checkExpr(e.spread, env);
+      for (const field of e.fields) checkExpr(field.value, env);
+      return;
+    case 'set':
+      for (const el of e.elements) checkExpr(el, env);
+      return;
+    case 'map':
+      for (const entry of e.entries) {
+        checkExpr(entry.key, env);
+        checkExpr(entry.value, env);
+      }
+      return;
+    case 'range':
+      checkExpr(e.end, env);
+      return;
+    default:
+      return;
+  }
+}
+
+const BUILTIN_TYPES = ['Nat', 'Int', 'Real', 'Bool', 'String', 'Bytes', 'Void'];
+const GENERIC_WRAPPER = /^(Option|Maybe|Result)\(([\s\S]*)\)$/;
+
+function declaredTypeNames(ast: AST, source: string): Set<string> {
+  const names = new Set<string>(BUILTIN_TYPES);
+  for (const speck of ast.specks) {
+    for (const m of speck.members) {
+      if (m.type === 'interface' || m.type === 'event' || m.type === 'oneof' || m.type === 'service') {
+        const name = (m as { name?: string }).name;
+        if (name) names.add(name);
+      }
+    }
+  }
+  for (const match of source.matchAll(/^\s*(?:type|interface|event|oneof|service)\s+([A-Za-z_]\w*)/gm)) {
+    names.add(match[1]);
+  }
+  return names;
+}
+
+function reportUnknownTypes(
+  speck: SpeckNode,
+  source: string,
+  known: Set<string>,
+  diagnostics: IRDiagnostic[],
+): void {
+  const seen = new Set<string>();
+  const report = (typeName: string, field?: string, suggestion?: string) => {
+    const line = field ? lineOfFieldType(source, field, typeName) : lineOfType(source, typeName);
+    const key = `${typeName}|${line ?? ''}|${field ?? ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const hint = suggestion ? ` Did you mean \`${suggestion}\`?` : '';
+    const column = line ? columnOfType(source, line, typeName) : undefined;
+    diagnostics.push({
+      level: 'error',
+      message: `unknown type "${typeName}".${hint}`,
+      line,
+      column,
+      speck: speck.name,
+    });
+  };
+  const walk = (t: TypeExpr | undefined, field?: string) => {
+    if (!t) return;
+    if ((t.type === 'ident' || t.type === 'primitive') && t.name) {
+      checkTypeName(t.name, known, (n, suggestion) => report(n, field, suggestion));
+    }
+    if (t.type === 'list' || t.type === 'set') walk(t.elementType, field);
+    if (t.type === 'map') {
+      walk(t.keyType, field);
+      walk(t.valueType, field);
+    }
+    if (t.type === 'record') {
+      for (const f of t.fields ?? []) walk(f.type, f.name);
+    }
+  };
+
+  for (const m of speck.members) {
+    if (m.type === 'state') {
+      for (const v of (m as StateNode).variables) walk(v.typeExpr, v.name);
+    } else if (m.type === 'action') {
+      for (const p of (m as ActionNode).params) walk(p.type, p.name);
+    } else if (m.type === 'event') {
+      for (const f of (m as EventNode).fields) walk(f.type, f.name);
+    } else if (m.type === 'interface') {
+      const iface = m as InterfaceNode;
+      for (const f of iface.fields ?? []) walk(f.type, f.name);
+      for (const method of iface.methods ?? []) {
+        walk(method.returnType, method.name);
+        for (const p of method.params ?? []) walk(p.type, p.name);
+      }
+    } else if (m.type === 'oneof') {
+      for (const v of (m as OneofNode).variants) {
+        if (v.typeName) checkTypeName(v.typeName, known, (n, suggestion) => report(n, v.fieldName, suggestion));
+      }
+    } else if (m.type === 'transition') {
+      for (const f of (m as TransitionNode).fields) walk(f.type, f.name);
+    }
+  }
+}
+
+function checkTypeName(name: string, known: Set<string>, report: (name: string, suggestion?: string) => void): void {
+  const generic = GENERIC_WRAPPER.exec(name);
+  if (generic) {
+    for (const part of splitTypeArgs(generic[2])) checkTypeName(part, known, report);
+    return;
+  }
+  if (known.has(name)) return;
+  // A type is a builtin, or a name introduced by `type`, `interface`, `event`,
+  // `oneof`, or `service`. `Boolean` is the usual misspelling of `Bool`.
+  if (!/^[A-Za-z_]\w*$/.test(name)) return;
+  const alias = name === 'Boolean' || name === 'boolean' ? 'Bool' : undefined;
+  if (alias && known.has(alias)) {
+    report(name, alias);
+    return;
+  }
+  report(name, suggestKnownType(name, known));
+}
+
+function suggestKnownType(name: string, known: Set<string>): string | undefined {
+  let best: { n: string; d: number } | undefined;
+  for (const candidate of known) {
+    if (!/^[A-Za-z_]\w*$/.test(candidate)) continue;
+    const d = typeEditDistance(name, candidate);
+    if (d === 0) continue;
+    const limit = Math.max(name.length, candidate.length) >= 6 ? 2 : 1;
+    if (d <= limit && (!best || d < best.d)) best = { n: candidate, d };
+  }
+  return best?.n;
+}
+
+function typeEditDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  const prev = new Array<number>(b.length + 1);
+  const next = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    next[0] = i;
+    let rowMin = next[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      next[j] = Math.min(prev[j] + 1, next[j - 1] + 1, prev[j - 1] + cost);
+      if (next[j] < rowMin) rowMin = next[j];
+    }
+    if (rowMin > 2) return 3;
+    for (let j = 0; j <= b.length; j++) prev[j] = next[j];
+  }
+  return prev[b.length];
+}
+
+function splitTypeArgs(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '(' || c === '<' || c === '{') depth++;
+    else if (c === ')' || c === '>' || c === '}') depth--;
+    else if (c === ',' && depth === 0) {
+      parts.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const last = text.slice(start).trim();
+  if (last) parts.push(last);
+  return parts;
+}
+
+function lineOfFieldType(source: string, field: string, typeName: string): number | undefined {
+  const lines = source.split('\n');
+  const re = new RegExp(`\\b${escapeRegExp(field)}\\b[^\\n]*\\b${escapeRegExp(typeName)}\\b`);
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) return i + 1;
+  }
+  return lineOfType(source, typeName);
+}
+
+function columnOfType(source: string, line: number, typeName: string): number | undefined {
+  const text = source.split('\n')[line - 1] ?? '';
+  const at = text.indexOf(typeName);
+  return at >= 0 ? at + 1 : undefined;
+}
+
+function reportUnexpected(env: ExprEnv, expr: Expr): void {
+  const hex = /Unexpected character U\+([0-9A-F]+)/i.exec(expr.kind === 'unparsed' ? (expr.error ?? '') : '');
+  if (!hex) return;
+  const glyph = String.fromCodePoint(parseInt(hex[1], 16));
+  const line = env.line;
+  let column: number | undefined;
+  if (line) {
+    const at = (env.lines[line - 1] ?? '').indexOf(glyph);
+    if (at >= 0) column = at + 1;
+  }
+  const message = `unexpected character U+${hex[1].toUpperCase()}`;
+  const key = `${message}|${line ?? ''}|${column ?? ''}`;
+  if (env.seen.has(key)) return;
+  env.seen.add(key);
+  env.diagnostics.push({ level: 'error', message, line, column, speck: env.speckName });
+}
+
+function lineOfType(source: string, typeName: string): number | undefined {
+  const lines = source.split('\n');
+  const re = new RegExp(`\\b${escapeRegExp(typeName)}\\b`);
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) return i + 1;
+  }
+  return undefined;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -941,7 +1712,9 @@ function lowerExpr(
   e: Expr | undefined,
   diagnostics: IRDiagnostic[],
   speckName: string,
+  constants?: ReadonlyMap<string, number>,
 ): IRExpr {
+  const go = (inner: Expr | undefined) => lowerExpr(inner, diagnostics, speckName, constants);
   if (!e) {
     return { kind: 'bool_lit', value: false, parseFailed: true };
   }
@@ -957,13 +1730,16 @@ function lowerExpr(
       // `null` has no IR literal.
       return { kind: 'bool_lit', value: false, parseFailed: true, source: e.value || 'null' };
     }
-    case 'ident':
+    case 'ident': {
+      const value = constants?.get(e.name);
+      if (value !== undefined) return { kind: 'int_lit', value };
       return { kind: 'ident', name: e.name };
+    }
     case 'unary':
       return {
         kind: 'unop',
         op: e.op === 'not' ? '!' : '-',
-        operand: lowerExpr(e.operand, diagnostics, speckName),
+        operand: go(e.operand),
       };
     case 'binary':
       // Infix `a implies b` lowers to the same node as the call form
@@ -972,42 +1748,44 @@ function lowerExpr(
         return {
           kind: 'call',
           fn: 'implies',
-          args: [lowerExpr(e.left, diagnostics, speckName), lowerExpr(e.right, diagnostics, speckName)],
+          args: [go(e.left), go(e.right)],
         };
       }
       return {
         kind: 'binop',
         op: lowerBinOp(e.op),
-        left: lowerExpr(e.left, diagnostics, speckName),
-        right: lowerExpr(e.right, diagnostics, speckName),
+        left: go(e.left),
+        right: go(e.right),
       };
     case 'call':
       return {
         kind: 'call',
         fn: e.callee,
-        args: e.args.map(a => lowerExpr(a, diagnostics, speckName)),
+        args: e.args.map(a => go(a)),
       };
     case 'member':
       return {
         kind: 'field',
-        target: lowerExpr(e.object, diagnostics, speckName),
+        target: go(e.object),
         field: e.property,
       };
     case 'index':
       return {
         kind: 'index',
-        target: lowerExpr(e.object, diagnostics, speckName),
-        index: lowerExpr(e.index, diagnostics, speckName),
+        target: go(e.object),
+        index: go(e.index),
       };
     case 'parens':
       // Parenthesized grouping - transparent in the IR.
-      return lowerExpr(e.expr, diagnostics, speckName);
+      return go(e.expr);
     case 'unparsed':
-      diagnostics.push({
-        level: 'warning',
-        message: `expression not parsed in full (${e.error}); carried as an untranslated placeholder: ${e.source}`,
-        speck: speckName,
-      });
+      if (!/Unexpected character U\+/.test(e.error ?? '')) {
+        diagnostics.push({
+          level: 'warning',
+          message: `expression not parsed in full (${e.error}); carried as an untranslated placeholder: ${e.source}`,
+          speck: speckName,
+        });
+      }
       return { kind: 'bool_lit', value: false, parseFailed: true, source: e.source };
     default:
       diagnostics.push({
@@ -1050,12 +1828,13 @@ function parseExprSafe(
   src: string,
   diagnostics: IRDiagnostic[],
   speckName: string,
+  constants?: ReadonlyMap<string, number>,
 ): IRExpr {
   // The whole string must parse; a prefix parse used to drop the tail
   // silently (`P implies Q` read as `P`, `forall x in c: body` as `forall`).
   try {
     const parsed = parseExpressionComplete(src);
-    return lowerExpr(parsed, diagnostics, speckName);
+    return lowerExpr(parsed, diagnostics, speckName, constants);
   } catch (e) {
     diagnostics.push({
       level: 'warning',

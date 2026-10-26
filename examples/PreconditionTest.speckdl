@@ -1,8 +1,9 @@
 speck PreconditionTest {
+type Integer
 
 state: {
   balance: Integer
-  active: Boolean
+  active: Bool
 }
 
 action SetBalance(newBalance: Integer) {
