@@ -22,6 +22,9 @@ export function printAST(ast: AST): string {
 function printDomain(domain: DomainNode): string {
   const lines = [`domain ${domain.name} {`, `    members: ${domain.members.join(', ')};`];
   if (domain.language !== undefined) lines.push(`    language: ${JSON.stringify(domain.language)};`);
+  for (const name of domain.consumes ?? []) lines.push(`    consumes ${name};`);
+  for (const name of domain.produces ?? []) lines.push(`    produces ${name};`);
+  if (domain.budgetPerTick !== undefined) lines.push(`    budget ${domain.budgetPerTick} per tick;`);
   lines.push('}');
   return lines.join('\n');
 }
@@ -86,7 +89,7 @@ function printMember(member: MemberNode): string[] {
     case 'agent':
       return printAgent(member);
     case 'event': {
-      const lines = [`event ${member.name} {`];
+      const lines = [`event ${member.name}${member.external ? ' external' : ''} {`];
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
       lines.push('}');
       return lines;
@@ -241,6 +244,9 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
         lines.push(`    emit ${stmt.event} { ${fieldText} }`);
         break;
       }
+      case 'cost':
+        lines.push(`    cost ${stmt.amount}`);
+        break;
       case 'return':
         lines.push(`    return ${stmt.expr}`);
         break;

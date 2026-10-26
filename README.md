@@ -165,6 +165,9 @@ import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
 domain Billing {
     members: Invoice, Ledger;
     language: "An invoice is issued before a ledger posts it";
+    consumes PaymentReceived;
+    produces InvoiceIssued;
+    budget 10 per tick;
 }
 ```
 
@@ -173,14 +176,36 @@ speck (and at most one agent). The IR records an `IRDomain`. Provenance
 adds a `prov:Collection` whose `prov:hadMember` links those specks. A
 duplicate member, or a speck in two domains, is a compile error.
 
+`consumes` and `produces` name events that are already declared with
+`event`. `event Name external` is an event that arrives from outside the
+compilation. Every consumed event must be produced by some domain or
+declared external, and a member may not emit an event its domain does not
+produce. Those failures are compile errors, raised before any output is
+written. `cost <n>` on an action and `budget <n> per tick` on the domain
+are checked with Z3: the worst-case sum of costs reachable in one tick is
+at most the budget. `unsat` proves that only inside the BMC depth, with
+each member stuttering or taking exactly one `next` action, members
+independent, and a fresh parameter value per firing. No runtime scheduler
+enforces the model. When that check cannot be lowered it is UNCHECKED, and
+UNCHECKED is not a pass. Over budget fails with a counterexample trace.
+An event in `produces` need not be emitted by any member.
+
+The Camel target writes each contract as a comment block and a typed event
+class. It does not throttle at runtime. Apache Camel's Throttle and Circuit
+Breaker patterns limit traffic while a route runs; this bound is checked
+before deploy, under the model above. The two are complementary. Speckl is
+not part of Apache Camel and is not affiliated with the Apache Software
+Foundation.
+
 `speckl doctor <file>` fails when a domain member declares an `act` tool
-that its harness blocks do not map. That is separate from the adapter
-`doctor` probe, which runs an installed hook.
+that its harness blocks do not map, and when a consumes/produces contract
+cannot be wired. That is separate from the adapter `doctor` probe, which
+runs an installed hook.
 
 **Not yet implemented:** a package registry for `version` pins (the pin is
 stored, and `hash` is checked); rewriting expressions that name an imported
-speck; `consumes` / `produces` contracts, per-action cost, and a domain
-budget; runtime routing between domains.
+speck; a tick scheduler, queues, and runtime routing between domains;
+completion signals and trace IDs.
 
 ## Documentation
 
@@ -193,7 +218,7 @@ budget; runtime routing between domains.
 
 - About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
 - Compile tests run against every example (see [Compile tests](#compile-tests)). Camel, Rust and Kubernetes CRDs pass for all 16 examples. The other targets have known failures recorded in `examples/.speckl-compile-baseline.json`.
-- `npm run verify` compiles every example and checks it with Z3. Today: 48 of 79 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
+- `npm run verify` compiles every example and checks it with Z3. Today: 51 of 82 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
 - CI (`.github/workflows/ci.yml`) runs on GitHub-hosted `ubuntu-latest` and has two jobs:
   - **build-and-test:** build, `tsc --noEmit`, `npm test`, `npm run verify` against a pinned z3 release, and coverage with the floors above.
   - **compile-targets:** installs JDK 21, Go 1.23, stable Rust, protoc and Elm 0.19.1, then runs `npm run test:compile`.

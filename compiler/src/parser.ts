@@ -54,6 +54,12 @@ export interface DomainNode {
   members: string[];
   /** Text of `language:`, quotes removed. Absent when the clause is omitted. */
   language?: string;
+  /** Events this domain receives. Names of existing `event` declarations. */
+  consumes?: string[];
+  /** Events this domain's members may emit. Names of existing `event` declarations. */
+  produces?: string[];
+  /** `budget <n> per tick`. Absent when the clause is omitted. Zero is a real budget. */
+  budgetPerTick?: number;
   startLine?: number;
   endLine?: number;
 }
@@ -124,6 +130,12 @@ export interface EventNode {
   type: 'event';
   name: string;
   fields: { name: string; type: TypeExpr }[];
+  /**
+   * `event Name external`. The event enters from outside the compilation.
+   * A domain may consume it without any domain producing it. Absent means
+   * the event is internal.
+   */
+  external?: boolean;
 }
 
 // oneof: discriminated-union variant for proto wire-format compatibility.
@@ -253,7 +265,8 @@ export type ActionStatement =
   | { type: 'postcondition'; expr: string }
   | { type: 'emit'; event: string; fields: { name: string; value: string }[] }
   | { type: 'return'; expr: string }
-  | { type: 'ifblock'; raw: string };
+  | { type: 'ifblock'; raw: string }
+  | { type: 'cost'; amount: number };
 
 /** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
 export interface LineSpan {
@@ -491,9 +504,8 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
 }
 
 function braceDelta(rawLine: string): number {
-  const opens = (rawLine.match(/{/g) || []).length;
-  const closes = (rawLine.match(/}/g) || []).length;
-  return opens - closes;
+  const counted = braceCounts(rawLine);
+  return counted.open - counted.close;
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
@@ -600,8 +612,9 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     }
 
     // Count braces on this line first
-    const openCount = (rawLine.match(/{/g) || []).length;
-    const closeCount = (rawLine.match(/}/g) || []).length;
+    const counted = braceCounts(rawLine);
+    const openCount = counted.open;
+    const closeCount = counted.close;
 
     // Check for block-opening members (those that open braces on the same line)
     const blockStarters = ['state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -728,20 +741,70 @@ function unsupportedVerify(line: string, index: number): Error {
     + '(use verify Always(InvariantName) { depth N }, verify "name" { expr } or verify: expr)');
 }
 
+/**
+ * Body of a `{ ... }` whose braces balance on this line, or null when the
+ * block stays open. A single-line `state { n: Nat }` / `init { n := 0 }` /
+ * `action Go { cost 1 }` used to be treated as an unclosed block, so the
+ * field or statement on the line was dropped and later members (`next:`)
+ * were read as if they belonged to it.
+ */
+/**
+ * Visit `{` and `}` that are not inside a double-quoted string.
+ * A brace in `require n > "}"` is text, not the end of the block.
+ * Returns true from `visit` to stop.
+ */
+function forEachCodeBrace(text: string, visit: (ch: '{' | '}', index: number) => boolean | void): void {
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\' && inStr) { i++; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === '{' || c === '}') {
+      if (visit(c, i) === true) return;
+    }
+  }
+}
+
+function braceCounts(text: string): { open: number; close: number } {
+  let open = 0;
+  let close = 0;
+  forEachCodeBrace(text, (ch) => { if (ch === '{') open++; else close++; });
+  return { open, close };
+}
+
+function closedInlineBody(line: string): string | null {
+  const open = line.indexOf('{');
+  if (open < 0) return null;
+  let depth = 0;
+  let end = -1;
+  forEachCodeBrace(line, (ch, index) => {
+    if (index < open) return;
+    if (ch === '{') depth++;
+    else {
+      depth--;
+      if (depth === 0) { end = index; return true; }
+    }
+  });
+  if (end < 0) return null;
+  const rest = line.slice(end + 1).trim();
+  if (rest !== '' && !rest.startsWith('//')) return null;
+  return line.slice(open + 1, end).trim();
+}
+
 function findBlockEnd(lines: string[], startIndex: number, startBraceCount: number): number {
   let braceCount = startBraceCount;
   let i = startIndex;
   while (i < lines.length) {
-    const line = lines[i];
-    for (const ch of line) {
+    let closed = false;
+    forEachCodeBrace(lines[i], (ch) => {
       if (ch === '{') braceCount++;
-      if (ch === '}') {
+      else {
         braceCount--;
-        if (braceCount < startBraceCount) {
-          return i;
-        }
+        if (braceCount < startBraceCount) closed = true;
       }
-    }
+    });
+    if (closed) return i;
     i++;
   }
   return i;
@@ -763,7 +826,7 @@ function isExpressionComplete(expr: string): boolean {
 
 function parseMemberBlock(lines: string[], startIndex: number): MemberNode | null {
   const firstLine = lines[startIndex].trim();
-  const startBraceCount = (firstLine.match(/{/g) || []).length;
+  const startBraceCount = braceCounts(firstLine).open;
   
   if (firstLine.startsWith('state:')) {
     return parseStateBlockMultiline(lines, startIndex, startBraceCount);
@@ -1101,11 +1164,50 @@ function parseMember(line: string): MemberNode | null {
   return null;
 }
 
+/**
+ * Split a state/init declaration list on commas, semicolons, and newlines
+ * that are not inside brackets or strings. `n: Nat, ok: Bool` is two
+ * fields. `signals: Map<Nat, Bool>` is one.
+ */
+function splitDeclarations(inner: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let angle = 0, paren = 0, brace = 0, bracket = 0;
+  let inStr = false;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '\\' && inStr) {
+      cur += c;
+      if (i + 1 < inner.length) cur += inner[++i];
+      continue;
+    }
+    if (c === '"') { inStr = !inStr; cur += c; continue; }
+    if (!inStr) {
+      if (c === '<') angle++;
+      else if (c === '>' && angle > 0) angle--;
+      else if (c === '(') paren++;
+      else if (c === ')' && paren > 0) paren--;
+      else if (c === '{') brace++;
+      else if (c === '}' && brace > 0) brace--;
+      else if (c === '[') bracket++;
+      else if (c === ']' && bracket > 0) bracket--;
+      else if ((c === ',' || c === ';' || c === '\n') && angle + paren + brace + bracket === 0) {
+        if (cur.trim()) parts.push(cur.trim());
+        cur = '';
+        continue;
+      }
+    }
+    cur += c;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
 function parseStateBlock(inner: string): StateNode {
   const variables: StateVar[] = [];
   if (!inner.trim()) return { type: 'state', variables };
 
-  const varStrs = inner.split(/;|\n/).map(s => s.trim()).filter(Boolean);
+  const varStrs = splitDeclarations(inner);
 
   for (const vStr of varStrs) {
     const withDefault = vStr.match(/^(\w+)\s*:\s*(.+?)\s*:=\s*(.+)$/);
@@ -1224,6 +1326,11 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
   const stmts = splitOnSemicolons(body);
   let members: string[] | undefined;
   let language: string | undefined;
+  const consumes: string[] = [];
+  const produces: string[] = [];
+  let budgetPerTick: number | undefined;
+  const seenConsumes = new Set<string>();
+  const seenProduces = new Set<string>();
   for (const raw of stmts) {
     const stmt = raw.trim();
     if (!stmt) continue;
@@ -1252,6 +1359,39 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
       language = parseLanguageValue(lang[1].trim(), name, startIndex);
       continue;
     }
+    const flow = stmt.match(/^(consumes|produces)(?:\s+([\s\S]*))?$/);
+    if (flow) {
+      const kind = flow[1] as 'consumes' | 'produces';
+      const seen = kind === 'consumes' ? seenConsumes : seenProduces;
+      const into = kind === 'consumes' ? consumes : produces;
+      const ids = (flow[2] ?? '').split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length === 0) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} ${kind} has no event`);
+      }
+      for (const id of ids) {
+        if (!/^[A-Za-z_]\w*$/.test(id)) {
+          throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} ${kind} ${JSON.stringify(id)} is not an event name`);
+        }
+        if (seen.has(id)) {
+          throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} ${kind} ${id} more than once`);
+        }
+        seen.add(id);
+        into.push(id);
+      }
+      continue;
+    }
+    if (stmt.startsWith('budget')) {
+      const bud = stmt.match(/^budget\s+(\d+)\s+per\s+tick$/);
+      const n = bud ? Number(bud[1]) : NaN;
+      if (!bud || !Number.isSafeInteger(n)) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} budget must be a non-negative integer per tick`);
+      }
+      if (budgetPerTick !== undefined) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} declares budget twice`);
+      }
+      budgetPerTick = n;
+      continue;
+    }
     throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} has unexpected clause ${JSON.stringify(stmt)}`);
   }
   if (!members) {
@@ -1262,6 +1402,9 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
     name,
     members,
     ...(language !== undefined ? { language } : {}),
+    ...(consumes.length > 0 ? { consumes } : {}),
+    ...(produces.length > 0 ? { produces } : {}),
+    ...(budgetPerTick !== undefined ? { budgetPerTick } : {}),
     startLine: startIndex + 1,
     endLine: extracted.endLine,
   };
@@ -1597,18 +1740,20 @@ function parseInterface(line: string): InterfaceNode {
 }
 
 function parseEvent(line: string): EventNode {
-  // event Name {
-  const match = line.match(/^event\s+(\w+)\s*{/);
+  // event Name {   or   event Name external {
+  const match = line.match(/^event\s+(\w+)(?:\s+external)?\s*\{/);
   if (!match) {
     throw new Error(`Failed to parse event: ${line}`);
   }
 
   const name = match[1];
+  const external = /^event\s+\w+\s+external\b/.test(line.trim());
 
   return {
     type: 'event',
     name,
     fields: [],
+    ...(external ? { external: true } : {}),
   };
 }
 
@@ -1737,6 +1882,12 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   const headerLine = lines[startIndex].trim();
   const asMatch = headerLine.match(/^state\s+as\s+(\w+)\s*{/);
   const messageName = asMatch ? asMatch[1] : undefined;
+  const inline = closedInlineBody(headerLine);
+  if (inline !== null) {
+    const result = parseStateBlock(inline);
+    if (messageName !== undefined) result.messageName = messageName;
+    return result;
+  }
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
@@ -1800,6 +1951,8 @@ function exprIncomplete(text: string): boolean {
 }
 
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
+  const inline = closedInlineBody(lines[startIndex].trim());
+  if (inline !== null) return parseInitBlock(inline);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
   // Group lines into statements: a `name := ...` line starts a new
@@ -1837,8 +1990,25 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   return { type: 'invariant', name, expr: body.trim() };
 }
 
+/** Drop a trailing `//` comment. Cost lines are `cost <n>`, not `cost <n> // note`. */
+function withoutTrailingComment(stmt: string): string {
+  const cut = stmt.indexOf('//');
+  return (cut >= 0 ? stmt.slice(0, cut) : stmt).trim();
+}
+
+/** A `cost <n>` statement, not an assignment whose name starts with "cost". */
+function isCostStatement(stmt: string): boolean {
+  const text = withoutTrailingComment(stmt);
+  return /^cost\s+\S/.test(text) && !/^cost\s*:=/.test(text);
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
+  const inlineBody = closedInlineBody(firstLine);
+  if (inlineBody !== null) {
+    const headerOnly = firstLine.slice(0, firstLine.indexOf('{') + 1);
+    return parseActionBlockMultiline([headerOnly, inlineBody, '}'], 0, 1);
+  }
   const header = parseActionHeader(firstLine);
   if (!header) return null;
 
@@ -1851,6 +2021,23 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
     return { text: trimmed, indent: l.length - l.trimStart().length };
   });
+  // A statement sharing the opening or closing line is still a statement:
+  // `action Go { cost 1` / `cost 2 }` must not disappear between the braces.
+  const headerTail = firstLine.slice(firstLine.indexOf('{') + 1).trim();
+  if (headerTail) bodyEntries.unshift({ text: headerTail, indent: 0 });
+  if (endIndex < lines.length) {
+    const closeLine = lines[endIndex];
+    let closeAt = -1;
+    forEachCodeBrace(closeLine, (ch, index) => {
+      if (ch === '}') { closeAt = index; return true; }
+    });
+    if (closeAt >= 0) {
+      const before = closeLine.slice(0, closeAt).trim();
+      if (before && !before.startsWith('//')) {
+        bodyEntries.push({ text: before, indent: closeLine.length - closeLine.trimStart().length });
+      }
+    }
+  }
 
   // Pre-pass: lower colon-form if/else regions (`if cond:` / `else:`) into
   // brace form so the brace scanner below captures the whole region as one
@@ -1913,6 +2100,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const bodyLines = collapsed;
 
   const statements: ActionStatement[] = [];
+  let cost: number | undefined;
   for (let i = 0; i < bodyLines.length; i++) {
     const stmtOrNull = bodyLines[i];
     // Skip blank line separators
@@ -1955,7 +2143,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (nextLine.startsWith('precondition:') || nextLine.startsWith('postcondition:') ||
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
-            nextLine.startsWith('if ') ||
+            nextLine.startsWith('if ') || isCostStatement(nextLine) ||
             nextLine.includes(':=')) {
           break;
         }
@@ -1989,6 +2177,21 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         }
       }
       statements.push({ type: 'emit', event: eventName, fields });
+      continue;
+    }
+    // cost <n> — non-negative integer literal. One per action.
+    // A trailing `//` comment is not part of the literal (`cost 3 // per call`).
+    if (isCostStatement(stmt)) {
+      const costMatch = withoutTrailingComment(stmt).match(/^cost\s+(\d+)\s*$/);
+      const amount = costMatch ? Number(costMatch[1]) : NaN;
+      if (!costMatch || !Number.isSafeInteger(amount)) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} cost must be a non-negative integer`);
+      }
+      if (cost !== undefined) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} declares cost more than once`);
+      }
+      cost = amount;
+      statements.push({ type: 'cost', amount });
       continue;
     }
     // for v in coll { ... } - range loop captured as a forblock statement
@@ -2048,6 +2251,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (!nt || nt.startsWith('//')) break;
         if (nt.startsWith('require ') || nt.startsWith('return ') ||
             nt.startsWith('emit ') || nt.startsWith('let ') ||
+            isCostStatement(nt) ||
             /\w+\s*:=/.test(nt)) {
           break;
         }
@@ -2081,7 +2285,7 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
 
   // Handle single-line events: event Foo { a: Type, b: Type }
   // extract fields from the first line itself
-  const inlineMatch = firstLine.match(/^event\s+(\w+)\s*\{(.*)\}\s*$/);
+  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?\s*\{(.*)\}\s*$/);
   const inlineFields: { name: string; type: TypeExpr }[] = [];
   if (inlineMatch && inlineMatch[2].trim()) {
     const fieldStr = inlineMatch[2].trim();

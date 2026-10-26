@@ -8,6 +8,7 @@ import { generateProtobuf } from './generators/protobuf.js';
 import { generateZ3, Z3Options } from './generators/z3.js';
 import type { InvariantMemberNode } from './parser.js';
 import { generateZ3FromIR } from './generators/z3-from-ir.js';
+import { generateDomainBudgets } from './generators/z3-budget.js';
 import { generateRust } from './generators/rust.js';
 import { generateGo } from './generators/go.js';
 import { generateElm } from './generators/elm.js';
@@ -125,6 +126,9 @@ export function compileSpec(file: string, options: CompileOptions): void {
     }
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
     generateZ3(astForProof, options.outputDir, z3Options);
+    // Domain budgets are a separate obligation. Specs with no budget get no
+    // extra file, so existing Z3 output stays byte-identical.
+    generateDomainBudgets(astForProof, irAst.domains, options.outputDir, options.verifyDepth);
   }
 
   // IR-driven Z3 for the all-ir target (formal_spec facet only)

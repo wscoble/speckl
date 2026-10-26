@@ -1,0 +1,25 @@
+domain Trading {
+    members: Book;
+    language: "A book fills an order";
+    consumes MarketTick;
+    produces Filled;
+    budget 5 per tick;
+}
+
+speck Book {
+    state { n: Nat }
+    init { n := 0 }
+    event MarketTick external {
+        price: Nat
+    }
+    event Filled {
+        qty: Nat
+    }
+    action Fill {
+        cost 2
+        require n < 3
+        n := n + 1
+        emit Filled { qty: n }
+    }
+    next: Fill
+}

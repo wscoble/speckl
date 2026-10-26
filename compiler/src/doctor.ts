@@ -2,8 +2,9 @@
 // member whose `act` tool is not mapped in every harness block.
 //
 // This is a spec check. It is not the generated adapter's `doctor` probe
-// (that one runs an installed hook). Contracts and runtime routing are not
-// checked here; they are not yet implemented.
+// (that one runs an installed hook). consumes/produces errors are domain
+// diagnostics from the lower pass, so they fail here too. A tick scheduler,
+// queues, and runtime routing are not checked; they are not implemented.
 
 import fs from 'fs';
 import path from 'path';
@@ -95,7 +96,8 @@ function doctorUsage(): string {
     '',
     'Resolve imports and domains, then fail if a domain member declares an',
     'act tool that is not mapped in every harness block.',
-    'A missing import, a cycle, a duplicate member, or a member of two',
-    'domains fails here as well.',
+    'A missing import, a cycle, a duplicate member, a member of two',
+    'domains, or a consumes/produces contract that cannot be wired fails',
+    'here as well.',
   ].join('\n');
 }

@@ -12,7 +12,8 @@
 //      didn't declare one (provenance is non-optional in the IR).
 //   4. Resolves `import` (when asked) by reading, lowering, and merging the
 //      imported compilation, with cycle detection.
-//   5. Lowers file-level `domain` blocks into IRDomain values.
+//   5. Lowers file-level `domain` blocks into IRDomain values and checks
+//      consumes/produces contracts against event declarations.
 //   6. Returns a fully-resolved IR ready for generator consumption.
 //
 // Generators should consume the IR, not the AST. The IR's contract:
@@ -51,6 +52,7 @@ import {
   canonical, crossCheckDomains, dedupeDiagnostics, localDomains, mergeUnit, resolveImportNodes,
   type LowerFile,
 } from './resolve-imports.js';
+import { checkEventContracts } from './event-contracts.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -83,6 +85,7 @@ const lowerFile: LowerFile = (ast, options, ctx) => {
   if (!options.resolveImports) {
     const domains = localDomains(ast, specks, diagnostics, options.filePath);
     crossCheckDomains(domains, diagnostics);
+    checkEventContracts(specks, domains, diagnostics);
     dedupeDiagnostics(diagnostics);
     return { specks, imports: [], domains, fileMetadata, diagnostics };
   }
@@ -104,6 +107,11 @@ const lowerFile: LowerFile = (ast, options, ctx) => {
       ...importedDomains,
     ];
     crossCheckDomains(domains, diagnostics);
+    // Contracts are a property of the whole compilation. An imported file
+    // may consume an event this file produces; checking it alone would
+    // reject a cycle that is wired once the files are merged. The entry
+    // file (the only one with an empty import stack above it) is the check.
+    if (ctx.stack.length === 1) checkEventContracts(merged, domains, diagnostics);
     dedupeDiagnostics(diagnostics);
     const ir: IR = { specks: merged, imports: fileLevel.imports, domains, fileMetadata, diagnostics };
     ctx.cache.set(fileId, ir);
@@ -333,11 +341,21 @@ function lowerBehavior(
       const rawStmts = rawStatementsByAction.get(a.name) || [];
       // No caller lowers a signal-injected AST: the agent block's synthetic
       // __signal_* actions are added to the IR below, from the agent block.
-      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
+      // `cost` is action metadata, not a transition statement.
+      const stmts: IRStmt[] = [];
+      let cost: number | undefined;
+      for (const s of rawStmts) {
+        if (s.type === 'cost') {
+          cost = s.amount;
+          continue;
+        }
+        stmts.push(lowerStatement(s, diagnostics, speck.name));
+      }
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
         statements: stmts,
+        ...(cost !== undefined ? { cost } : {}),
       });
     } else if (m.type === 'event') {
       const e = m as EventNode;
@@ -348,6 +366,7 @@ function lowerBehavior(
           type: lowerTypeExpr(f.type),
           optional: false,
         })),
+        ...(e.external ? { external: true } : {}),
       });
     }
   }
@@ -914,7 +933,7 @@ function lowerTypeExpr(t: TypeExpr): IRTypeRef {
 
 
 function lowerStatement(
-  s: ActionStatement,
+  s: Exclude<ActionStatement, { type: 'cost' }>,
   diagnostics: IRDiagnostic[],
   speckName: string,
 ): IRStmt {
