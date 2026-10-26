@@ -14,6 +14,14 @@ alias.
 
 ### Added
 
+- **`import` resolution and `domain`.** `import "file.speckdl"` is read,
+  lowered, and merged, with cycle detection, hash checks, and errors that
+  name the file. `domain Name { members: ...; language: ... }` groups
+  specks into a bounded context (`IRDomain`) and a PROV-O collection linked
+  to those specks. A duplicate member or a speck in two domains is a
+  compile error. `speckl doctor` fails when a domain member's `act` tool
+  is not mapped in its harness block. Contracts, cost, budgets, and
+  runtime routing are not yet implemented.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

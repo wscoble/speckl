@@ -1,0 +1,5 @@
+speck Ledger {
+    state { posted: Bool }
+    init { posted := false }
+    action Post { posted := true }
+}

@@ -10,7 +10,10 @@
 //   2. Re-parses constraint/verify expressions via parseExpression.
 //   3. Synthesizes a ProvenanceFacet from file metadata if the source
 //      didn't declare one (provenance is non-optional in the IR).
-//   4. Returns a fully-resolved IR ready for generator consumption.
+//   4. Resolves `import` (when asked) by reading, lowering, and merging the
+//      imported compilation, with cycle detection.
+//   5. Lowers file-level `domain` blocks into IRDomain values.
+//   6. Returns a fully-resolved IR ready for generator consumption.
 //
 // Generators should consume the IR, not the AST. The IR's contract:
 //   - Every fact in the source is in the IR.
@@ -25,10 +28,10 @@ import {
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
   ProvenanceNode, ReviewNode, AuthorNode, SourceNode, DerivesNode,
   SatisfiesNode, BOMNode, TypeExpr, OneofNode, TransitionNode,
-  InputNode, OutputNode, AgentMemberNode,
+  InputNode, OutputNode, AgentMemberNode, ImportNode,
 } from '../parser.js';
 import {
-  IR, IRSpeck, IRFacets, IRImport,
+  IR, IRSpeck, IRFacets, IRImport, IRDomain,
   TypedSchemaFacet, IRType, IRRecordType, IREnumType, IRAliasType,
   IRFieldDef, IRTypeRef, IRService, IRServiceMethod,
   BehaviorFacet, IRStateVar, IRAssign, IRAction, IRParam, IRStmt, IREvent,
@@ -44,6 +47,10 @@ import {
 } from './types.js';
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
+import {
+  canonical, crossCheckDomains, dedupeDiagnostics, localDomains, mergeUnit, resolveImportNodes,
+  type LowerFile,
+} from './resolve-imports.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -59,19 +66,52 @@ export interface LowerOptions {
 }
 
 export function lower(ast: AST, options: LowerOptions): IR {
+  return lowerFile(ast, options, { stack: [], cache: new Map() });
+}
+
+const lowerFile: LowerFile = (ast, options, ctx) => {
+  const fileId = canonical(options.filePath);
+  if (options.resolveImports) {
+    const hit = ctx.cache.get(fileId);
+    if (hit) return hit;
+  }
+
   const fileMetadata = extractFileMetadata(ast, options);
   const diagnostics: IRDiagnostic[] = [];
+  const specks = ast.specks.map((speck) => lowerSpeck(speck, ast, options, diagnostics, []));
 
-  const specks: IRSpeck[] = ast.specks.map((speck) =>
-    lowerSpeck(speck, ast, options, diagnostics)
-  );
+  if (!options.resolveImports) {
+    const domains = localDomains(ast, specks, diagnostics, options.filePath);
+    crossCheckDomains(domains, diagnostics);
+    dedupeDiagnostics(diagnostics);
+    return { specks, imports: [], domains, fileMetadata, diagnostics };
+  }
 
-  return {
-    specks,
-    fileMetadata,
-    diagnostics,
-  };
-}
+  ctx.stack.push(fileId);
+  try {
+    const merged = [...specks];
+    const importedDomains: IRDomain[] = [];
+    const fileLevel = resolveImportNodes(ast.imports ?? [], undefined, options, ctx, diagnostics, lowerFile);
+    for (const unit of fileLevel.units) mergeUnit(unit, merged, importedDomains, diagnostics);
+    for (let i = 0; i < specks.length; i++) {
+      const memberImports = ast.specks[i].members.filter((m): m is ImportNode => m.type === 'import');
+      const own = resolveImportNodes(memberImports, specks[i].name, options, ctx, diagnostics, lowerFile);
+      for (const unit of own.units) mergeUnit(unit, merged, importedDomains, diagnostics);
+      specks[i].imports = [...fileLevel.imports, ...own.imports];
+    }
+    const domains = [
+      ...localDomains(ast, merged, diagnostics, options.filePath),
+      ...importedDomains,
+    ];
+    crossCheckDomains(domains, diagnostics);
+    dedupeDiagnostics(diagnostics);
+    const ir: IR = { specks: merged, imports: fileLevel.imports, domains, fileMetadata, diagnostics };
+    ctx.cache.set(fileId, ir);
+    return ir;
+  } finally {
+    ctx.stack.pop();
+  }
+};
 
 // ─────────────────────────────────────────────────────────────────────
 // Per-speck lower
@@ -82,26 +122,12 @@ function lowerSpeck(
   ast: AST,
   options: LowerOptions,
   diagnostics: IRDiagnostic[],
+  imports: IRImport[],
 ): IRSpeck {
   // Read the raw source for expression re-parsing.
   // The main AST has string expressions; the IR needs typed trees.
   const rawSource = readFileSync(options.filePath, 'utf-8');
   const rawStatementsByAction = extractActionStatements(rawSource, speck);
-
-  // Resolve imports. (For now: no-op if resolveImports is false. Future:
-  // a real resolver that reads the imported file, lowers it, and merges.)
-  const imports: IRImport[] = [];
-  if (options.resolveImports) {
-    for (const m of speck.members) {
-      if (m.type === 'import') {
-        diagnostics.push({
-          level: 'warning',
-          message: 'import resolution not yet implemented in lower pass',
-          speck: speck.name,
-        });
-      }
-    }
-  }
 
   // Build the eight facets.
   const typed_schema = lowerTypedSchema(speck, ast, diagnostics);
@@ -564,6 +590,20 @@ function lowerAgent(
     tools,
     awaits,
     ...(agent.pendingTimeout ? { pendingTimeout: { ...agent.pendingTimeout } } : {}),
+    ...(agent.harnesses && agent.harnesses.length > 0
+      ? {
+          harnesses: agent.harnesses.map(h => ({
+            name: h.name,
+            rules: h.rules.map(r => ({
+              tools: [...r.tools],
+              ...(r.field !== undefined ? { field: r.field } : {}),
+              ...(r.pattern !== undefined ? { pattern: r.pattern } : {}),
+              target: r.target,
+              params: r.params.map(p => ({ param: p.param, field: p.field })),
+            })),
+          })),
+        }
+      : {}),
   };
 }
 

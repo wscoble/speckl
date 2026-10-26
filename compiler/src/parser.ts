@@ -40,6 +40,22 @@ export interface ImportNode {
   alias?: string;
   version?: string;
   hash?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/**
+ * File-level bounded context. Members are speck names. The block is not a
+ * speck member: it groups specks, each of which is still one agent.
+ */
+export interface DomainNode {
+  type: 'domain';
+  name: string;
+  members: string[];
+  /** Text of `language:`, quotes removed. Absent when the clause is omitted. */
+  language?: string;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface InputNode {
@@ -405,6 +421,10 @@ export interface TypeExpr {
 
 export interface AST {
   specks: SpeckNode[];
+  /** File-level `import` statements, in source order. Empty when there are none. */
+  imports: ImportNode[];
+  /** File-level `domain` blocks, in source order. Empty when there are none. */
+  domains: DomainNode[];
 }
 
 /**
@@ -420,44 +440,60 @@ export function parseSpeckFile(filePath: string): AST {
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
   const specks: SpeckNode[] = [];
+  const imports: ImportNode[] = [];
+  const domains: DomainNode[] = [];
   const lines = content.split('\n');
-  
+
+  // Brace depth so a file-level import or domain is not also read from inside
+  // a speck. Speck headers themselves are still recognized the same way: the
+  // first line of a speck is parsed, then the body is walked line by line.
   let i = 0;
+  let depth = 0;
   while (i < lines.length) {
-    const line = lines[i].trim();
-    
-    // Skip empty lines and comments
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
     if (!line || line.startsWith('//') || line.startsWith('/*')) {
       i++;
       continue;
     }
-    
-    // Handle import statements
-    if (line.startsWith('import ')) {
-      const importNode = parseImportStatement(line);
-      // Import is a special case - it's not part of a speck
-      // We'll handle it separately in a future update
+
+    if (depth === 0 && line.startsWith('import ')) {
+      const node = parseImportStatement(line);
+      imports.push({ ...node, startLine: i + 1, endLine: i + 1 });
       i++;
       continue;
     }
-    
-    // Handle speck definitions
-    if (line.startsWith('speck ')) {
-      const speck = parseSpeck(lines, i);
-      if (speck) {
-        specks.push(speck);
-        // Move index past the speck we just parsed
-        i++; // Increment by 1, the loop will continue from next line
-      } else {
-        i++;
-      }
+
+    if (depth === 0 && line.startsWith('domain ')) {
+      const domain = parseDomain(lines, i);
+      domains.push(domain);
+      // endLine is the 1-based closing line, so it is also the next 0-based index.
+      i = domain.endLine ?? (i + 1);
       continue;
     }
-    
+
+    if (depth === 0 && line.startsWith('speck ')) {
+      const speck = parseSpeck(lines, i);
+      if (speck) specks.push(speck);
+      depth += braceDelta(rawLine);
+      if (depth < 0) depth = 0;
+      i++;
+      continue;
+    }
+
+    depth += braceDelta(rawLine);
+    if (depth < 0) depth = 0;
     i++;
   }
-  
-  return { specks };
+
+  return { specks, imports, domains };
+}
+
+function braceDelta(rawLine: string): number {
+  const opens = (rawLine.match(/{/g) || []).length;
+  const closes = (rawLine.match(/}/g) || []).length;
+  return opens - closes;
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
@@ -495,6 +531,10 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     if (!line || line.startsWith('//') || line.startsWith('/*')) {
       i++;
       continue;
+    }
+
+    if (line.startsWith('domain ')) {
+      throw new Error(`Parse error at line ${i + 1}: domain blocks are file-level, not members of speck ${name}`);
     }
 
     if (line.startsWith('next:')) {
@@ -929,6 +969,10 @@ function parseInputOutputBlock(
 }
 
 function parseMember(line: string): MemberNode | null {
+  if (line.startsWith('import ')) {
+    return parseImportStatement(line);
+  }
+
   // input:
   if (line.startsWith('input:')) {
     const typeExpr = parseTypeExpr(line.substring(6).trim());
@@ -1151,20 +1195,207 @@ function parseActionHeader(line: string): ActionNode | null {
 }
 
 function parseImportStatement(line: string): ImportNode {
-  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?/);
+  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?\s*(?:\/\/.*)?$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
   }
-  
-  const [, , path, , alias, , version, , hash] = match;
-  
   return {
     type: 'import',
-    path,
-    alias,
-    version: version || undefined,
-    hash: hash || undefined,
+    path: match[2],
+    alias: match[3] || undefined,
+    version: match[5] || undefined,
+    hash: match[7] || undefined,
   };
+}
+
+/**
+ * `domain Name { members: A, B; language: "..."; }`.
+ * The body may span lines. `language` is optional. `members` is required.
+ */
+function parseDomain(lines: string[], startIndex: number): DomainNode {
+  const header = lines[startIndex].trim();
+  const hm = header.match(/^domain\s+([\w-]+)\s*\{(.*)$/);
+  if (!hm) {
+    throw new Error(`Parse error at line ${startIndex + 1}: expected "domain <Name> {", got ${JSON.stringify(header)}`);
+  }
+  const name = hm[1];
+  const extracted = extractDomainBody(hm[2] ?? '', lines, startIndex);
+  const body = stripCommentsOutsideStrings(extracted.body);
+  const stmts = splitOnSemicolons(body);
+  let members: string[] | undefined;
+  let language: string | undefined;
+  for (const raw of stmts) {
+    const stmt = raw.trim();
+    if (!stmt) continue;
+    const mem = stmt.match(/^members\s*:\s*([\s\S]*)$/);
+    if (mem) {
+      if (members) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} declares members twice`);
+      }
+      const ids = mem[1].split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length === 0) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} has no members`);
+      }
+      for (const id of ids) {
+        if (!/^[\w-]+$/.test(id)) {
+          throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} member ${JSON.stringify(id)} is not a speck name`);
+        }
+      }
+      members = ids;
+      continue;
+    }
+    const lang = stmt.match(/^language\s*:\s*([\s\S]*)$/);
+    if (lang) {
+      if (language !== undefined) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} declares language twice`);
+      }
+      language = parseLanguageValue(lang[1].trim(), name, startIndex);
+      continue;
+    }
+    throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} has unexpected clause ${JSON.stringify(stmt)}`);
+  }
+  if (!members) {
+    throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} must declare members`);
+  }
+  return {
+    type: 'domain',
+    name,
+    members,
+    ...(language !== undefined ? { language } : {}),
+    startLine: startIndex + 1,
+    endLine: extracted.endLine,
+  };
+}
+
+function extractDomainBody(
+  firstRemainder: string,
+  lines: string[],
+  startIndex: number,
+): { body: string; endLine: number } {
+  let body = '';
+  let depth = 1;
+  let inStr: '"' | "'" | null = null;
+  const consume = (s: string): boolean => {
+    for (let k = 0; k < s.length; k++) {
+      const ch = s[k];
+      if (inStr) {
+        body += ch;
+        if (ch === '\\' && k + 1 < s.length) {
+          body += s[++k];
+          continue;
+        }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inStr = ch;
+        body += ch;
+        continue;
+      }
+      if (ch === '{') {
+        depth++;
+        body += ch;
+        continue;
+      }
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) return true;
+        body += ch;
+        continue;
+      }
+      body += ch;
+    }
+    return false;
+  };
+  if (consume(firstRemainder)) return { body, endLine: startIndex + 1 };
+  let i = startIndex;
+  while (depth > 0) {
+    i++;
+    if (i >= lines.length) {
+      throw new Error(`Parse error at line ${startIndex + 1}: unclosed domain`);
+    }
+    body += '\n';
+    if (consume(lines[i])) return { body, endLine: i + 1 };
+  }
+  return { body, endLine: i + 1 };
+}
+
+function stripCommentsOutsideStrings(s: string): string {
+  let out = '';
+  let inStr: '"' | "'" | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      out += ch;
+      if (ch === '\\' && i + 1 < s.length) {
+        out += s[++i];
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inStr = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && s[i + 1] === '/') {
+      while (i < s.length && s[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function splitOnSemicolons(s: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inStr: '"' | "'" | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      cur += ch;
+      if (ch === '\\' && i + 1 < s.length) {
+        cur += s[++i];
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inStr = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === ';') {
+      out.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
+function parseLanguageValue(v: string, name: string, startIndex: number): string {
+  if (!v) {
+    throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} language is empty`);
+  }
+  if (v.startsWith('"')) {
+    try {
+      // A JSON text that starts with `"` parses as a string, or throws.
+      return JSON.parse(v) as string;
+    } catch {
+      throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} language string is invalid`);
+    }
+  }
+  if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) {
+    return v.slice(1, -1);
+  }
+  return v;
 }
 
 /**

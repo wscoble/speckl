@@ -317,6 +317,35 @@ TLA+ proved that formal methods work at scale. SpeckDL makes them deployable.
 
 ---
 
+## Imports and domains
+
+Specs can name each other, and a bounded context can group them. Neither
+changes the rule that one speck is one agent.
+
+```speck
+import "ledger.speckdl" as ledger
+
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+```
+
+The import is a file path. The compiler reads it, lowers it, and merges
+its specks. A missing file, a cycle, a bad `hash`, or two specks with the
+same name fails the compile, and the error names the file. `version` is
+recorded. A registry lookup for that pin is **not yet implemented**.
+
+`domain` lists member specks and an optional language note. A member listed
+twice, or a speck that sits in two domains, is a compile error. Provenance
+for each member gains a domain entity linked with `prov:hadMember`.
+
+`speckl doctor <file>` fails when one of those members declares an `act`
+tool that is not mapped in its harness block.
+
+**Not yet implemented:** `consumes` / `produces` on a domain, a cost per
+action, a budget per tick, and runtime routing from one domain to another.
+
 ## Next Steps
 
 1. **Read the spec:** `SPEC.md` — full language reference

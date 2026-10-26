@@ -64,23 +64,50 @@ export interface IRFacets {
   metadata: MetadataFacet;
 }
 
-/** Resolved import. The IR pass has already loaded and merged the imported spec. */
+/**
+ * Resolved import. The lower pass has read the file, lowered it, and merged
+ * its specks into the compilation unit. `resolved` is one speck declared in
+ * that file (a file with several specks produces one IRImport each).
+ */
 export interface IRImport {
   /** Original path in the source (e.g. "../common.speckdl"). */
   path: string;
-  /** Alias used in the source (e.g. "common"). */
+  /** Alias used in the source (e.g. "common"). Defaults to the speck name. */
   alias: string;
-  /** Version pin from the import statement, if any. */
+  /** Version pin from the import statement, if any. Recorded, not looked up. */
   version?: string;
-  /** Content hash, if pinned. */
+  /** Content hash, if pinned. Checked against the file bytes at lower time. */
   hash?: string;
   /** The resolved imported speck. */
   resolved: IRSpeck;
 }
 
-/** The top-level IR: a file may declare multiple specks. */
+/**
+ * A bounded context: a named group of specks. Each member is still one speck
+ * (and at most one agent). Domains do not merge member state or actions.
+ */
+export interface IRDomain {
+  name: string;
+  /** Speck names in source order. Duplicates are preserved and are an error. */
+  members: string[];
+  /** Ubiquitous-language note from `language:`, when declared. */
+  language?: string;
+  /** File that declared the domain (the path the lower pass was given). */
+  sourcePath: string;
+}
+
+/** The top-level IR: a file may declare multiple specks and domains. */
 export interface IR {
+  /**
+   * Local specks first, in source order, then specks merged from imports
+   * (depth-first, import order). A name declared in two files is an error
+   * and the later speck is not added.
+   */
   specks: IRSpeck[];
+  /** File-level imports on this compilation unit. Empty when there are none. */
+  imports: IRImport[];
+  /** Local domains, then domains merged from imports. Empty when there are none. */
+  domains: IRDomain[];
   /** Global file-level metadata, shared across all specks in the file. */
   fileMetadata: FileMetadata;
   /** Diagnostics from the lower pass (errors, warnings, info). */
@@ -221,12 +248,30 @@ export interface BehaviorFacet {
   agent?: IRAgentConfig;
 }
 
+export interface IRAgentHarnessRule {
+  tools: string[];
+  field?: string;
+  pattern?: string;
+  target: string;
+  params: { param: string; field: string }[];
+}
+
+export interface IRAgentHarness {
+  name: string;
+  rules: IRAgentHarnessRule[];
+}
+
 export interface IRAgentConfig {
   stages?: { variable: string; labels: { name: string; value: number }[] };
   tools: IRAgentTool[];
   awaits: IRAgentAwait[];
   /** `pending timeout <dur>` if declared (runtime default applies otherwise). */
   pendingTimeout?: { durationMs: number; durationText: string };
+  /**
+   * `harness` blocks, when the source declared any. Absent otherwise, so a
+   * spec with no harness block keeps the same agent object shape as before.
+   */
+  harnesses?: IRAgentHarness[];
 }
 
 export interface IRAgentTool {
