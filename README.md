@@ -172,6 +172,8 @@ Browse all in [examples/](examples/).
 - Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed. Today 3 of 34 example verify blocks are proven (AgentPolicy ×2, ReviewGate); the other 31 are listed in `examples/.speckl-unchecked.json`
 - TLA+ models: Two-Phase Commit, Paxos, and Raft are ported as `.speckdl` specs (inspired by the original TLA+ models, not TLA+ output)
 
+Operating principles: [OPERATING_PRINCIPLES.md](OPERATING_PRINCIPLES.md).
+
 ## License
 
 MIT
