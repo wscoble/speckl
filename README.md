@@ -157,6 +157,7 @@ Browse all in [examples/](examples/).
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
 - [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
+- [Playground](compiler/playground/README.md) — edit a spec in the browser and see diagnostics and compiled output (`npm run playground` from `compiler/`)
 
 ## Status
 

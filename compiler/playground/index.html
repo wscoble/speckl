@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Speckl playground</title>
+  <meta name="description" content="Edit a Speckl spec in the browser. Diagnostics and compiled output update as you type. Nothing is uploaded.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%2323232b'/%3E%3Cg stroke-linecap='round' fill='none' stroke-width='9'%3E%3Cline x1='16' y1='32' x2='16' y2='50' stroke='%23f6f1e7'/%3E%3Cline x1='33' y1='32' x2='33' y2='68' stroke='%23f6f1e7'/%3E%3Cline x1='50' y1='32' x2='50' y2='86' stroke='%23c87941'/%3E%3Cline x1='67' y1='32' x2='67' y2='68' stroke='%23f6f1e7'/%3E%3Cline x1='84' y1='32' x2='84' y2='52' stroke='%23f6f1e7'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./src/style.css">
+  <script>
+    try {
+      var theme = localStorage.getItem('speckl.playground.theme');
+      if (theme === 'light' || theme === 'dark') document.documentElement.setAttribute('data-theme', theme);
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <a class="skip" href="#spec">Skip to the spec</a>
+  <noscript>
+    <p class="noscript">The Speckl playground compiles in your browser and needs JavaScript. Enable JavaScript, then reload this page. Nothing is uploaded either way.</p>
+  </noscript>
+  <p id="boot" class="boot">Loading the Speckl compiler… If this stays here, JavaScript did not start.</p>
+
+  <div id="app" hidden>
+    <header class="mast">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 100 100" width="28" height="28" aria-hidden="true">
+          <g stroke-linecap="round" fill="none" stroke-width="9">
+            <line x1="14" y1="30" x2="14" y2="48" stroke="currentColor"/>
+            <line x1="32" y1="30" x2="32" y2="66" stroke="currentColor"/>
+            <line x1="50" y1="30" x2="50" y2="84" stroke="#c87941"/>
+            <line x1="68" y1="30" x2="68" y2="66" stroke="currentColor"/>
+            <line x1="86" y1="30" x2="86" y2="48" stroke="currentColor"/>
+          </g>
+        </svg>
+        <div>
+          <p class="eyebrow">Speckl</p>
+          <h1>Playground</h1>
+        </div>
+      </div>
+      <p class="lede">Edit a spec. Diagnostics and the compiled files update as you type. The compiler runs in this browser. Nothing is uploaded.</p>
+      <div class="mast-actions">
+        <a class="ghost" href="https://github.com/wscoble/speckl">Source</a>
+        <a class="ghost" href="https://speckl.scoble.me">speckl.scoble.me</a>
+        <button type="button" id="theme" class="ghost">Theme: match system</button>
+      </div>
+    </header>
+
+    <p id="banner" class="banner" role="alert" hidden></p>
+
+    <div class="toolbar">
+      <div id="examples" role="toolbar" aria-label="Example specs"></div>
+      <div class="toolbar-controls">
+        <label for="target">Target
+          <select id="target">
+            <option value="all">All targets</option>
+            <option value="agent">Agent rails</option>
+            <option value="typescript">TypeScript</option>
+            <option value="z3">Z3 SMT</option>
+            <option value="openapi">OpenAPI</option>
+            <option value="protobuf">Protobuf</option>
+            <option value="k8s">Kubernetes</option>
+            <option value="rust">Rust</option>
+            <option value="go">Go</option>
+            <option value="elm">Elm</option>
+            <option value="camel">Camel</option>
+            <option value="all-ir">IR targets</option>
+          </select>
+        </label>
+        <button type="button" id="share" class="solid">Copy share link</button>
+      </div>
+    </div>
+
+    <main class="workspace">
+      <section class="pane" aria-labelledby="editor-heading">
+        <div class="pane-bar">
+          <h2 id="editor-heading">Spec</h2>
+          <p id="cursor">Line 1, column 1</p>
+        </div>
+        <label class="sr" for="spec">Speckl spec</label>
+        <textarea id="spec" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+      </section>
+
+      <section class="pane" aria-labelledby="out-heading">
+        <div class="pane-bar">
+          <h2 id="out-heading">Output</h2>
+          <p id="status" role="status" data-state="idle">Waiting to compile.</p>
+        </div>
+        <h3 class="subhead">Diagnostics</h3>
+        <ul id="diagnostics"></ul>
+        <div class="pane-bar file-bar">
+          <div id="quick" class="quick" aria-label="Common outputs"></div>
+          <label for="file">File
+            <select id="file"></select>
+          </label>
+          <button type="button" id="copy-file" class="ghost" disabled>Copy file</button>
+        </div>
+        <p id="trunc" class="trunc" hidden></p>
+        <pre id="output" tabindex="0"></pre>
+      </section>
+    </main>
+
+    <footer>
+      <p>Ctrl+Enter compiles now. Specs over 2 MB are refused. Share links hold about 60,000 characters. Z3 does not run here; unchecked obligations are still reported. Output is shown as text, not rendered HTML.</p>
+    </footer>
+
+    <dialog id="dialog" aria-labelledby="dialog-title">
+      <h2 id="dialog-title">Discard your edits?</h2>
+      <p id="dialog-body"></p>
+      <div class="dialog-actions">
+        <button type="button" id="dialog-keep" class="solid">Keep editing</button>
+        <button type="button" id="dialog-discard" class="ghost">Discard and load</button>
+      </div>
+    </dialog>
+  </div>
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>

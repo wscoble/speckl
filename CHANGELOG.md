@@ -14,6 +14,12 @@ alias.
 
 ### Added
 
+- **Browser playground.** `compiler/playground` compiles a spec in the browser
+  as you type, using this compiler (not a reimplementation): diagnostics with
+  line numbers, `AGENTS.md`, the hook, and the other targets. Nothing is
+  uploaded. `npm run playground` from `compiler/` serves it; `npm run playground:build`
+  writes static files to `compiler/playground/dist`. The Z3 solver is not in
+  the page; unchecked obligations are still reported.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
