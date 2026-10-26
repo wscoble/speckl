@@ -665,6 +665,27 @@ test('round 6: a bad share link stays on screen and examples do not steal focus'
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+test('round 7: a hyphenated speck name is a positioned error', async ({ page }) => {
+  await page.goto('/');
+  await settled(page);
+  await page.locator('#spec').fill(`speck Agent-Policy {
+  state { stage: Nat }
+  init { stage := 0 }
+  action Go { stage := 1 }
+  agent {
+    stages stage { Idle = 0 }
+    tool go -> Go effect act
+  }
+}
+`);
+  await settled(page);
+  await expect(page.locator('#diagnostics')).toContainText('Line 1, column 7: speck name "Agent-Policy" is invalid (letters, digits, underscore only)');
+  await expect(page.locator('#diagnostics')).not.toContainText(/not valid JavaScript|\/tmp\//);
+  await expect(page.locator('#status')).toHaveAttribute('data-state', 'error');
+  await expect(page.locator('#error-chip')).toContainText(/1 error, line 1/);
+  await expect(page.locator('#file')).not.toContainText('AGENTS.md');
+});
+
 test('records first compiled output and gzipped bundle size', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#output')).toContainText('Call-bound');

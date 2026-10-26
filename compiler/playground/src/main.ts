@@ -86,7 +86,9 @@ let markedOutput = false;
 const gate = new RequestGate();
 
 function speckNameOf(source: string): string | null {
-  const match = source.match(/(?:^|\n)\s*speck\s+([A-Za-z][\w-]*)\b/);
+  // Same rule as the parser: a letter, then letters, digits, or underscore.
+  // A hyphen stops the name, so `Agent-Policy` is not treated as one speck.
+  const match = source.match(/(?:^|\n)\s*speck\s+([A-Za-z][A-Za-z0-9_]*)\b/);
   return match ? match[1] : null;
 }
 

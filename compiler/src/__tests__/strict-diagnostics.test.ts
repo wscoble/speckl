@@ -217,8 +217,8 @@ describe('unclosed blocks and structural duplicates', () => {
 
   it('says when a speck name is missing or invalid', () => {
     expect(() => parseSpeckContent('speck\n')).toThrow(/Parse error at line 1, column \d+: speck name is missing/);
-    expect(() => parseSpeckContent('speck ../../etc/passwd {\n  state { x: Nat }\n}\n')).toThrow(/Parse error at line 1, column \d+: speck name "\.\.\/\.\.\/etc\/passwd" is invalid/);
-    expect(() => parseSpeckContent('speck Dëplöy日本 {\n  state { x: Nat }\n}\n')).toThrow(/Parse error at line 1, column \d+: speck name "Dëplöy日本" is invalid/);
+    expect(() => parseSpeckContent('speck ../../etc/passwd {\n  state { x: Nat }\n}\n')).toThrow(/Parse error at line 1, column \d+: speck name "\.\.\/\.\.\/etc\/passwd" is invalid \(letters, digits, underscore only\)/);
+    expect(() => parseSpeckContent('speck Dëplöy日本 {\n  state { x: Nat }\n}\n')).toThrow(/Parse error at line 1, column \d+: speck name "Dëplöy日本" is invalid \(letters, digits, underscore only\)/);
     expect(() => parseSpeckContent('speck 2fast {\n  state { x: Nat }\n}\n')).toThrow(/speck name "2fast" is invalid \(names must start with a letter\)/);
     expect(() => parseSpeckContent('speck My Spec {\n  state { x: Nat }\n}\n')).toThrow(/spec names can't contain spaces/);
   });
@@ -833,5 +833,101 @@ ${AGENT}}
 `;
     const diag = lowerSrc(src).diagnostics.find((d) => /unknown target stage/.test(d.message));
     expect(diag?.message).not.toMatch(/Did you mean/);
+  });
+});
+
+describe('round 7: speck names and duplicate tool actions', () => {
+  const agentSpec = `speck Agent-Policy {
+  state { stage: Nat }
+  init { stage := 0 }
+  action Go { stage := 1 }
+  agent {
+    stages stage { Idle = 0 }
+    tool go -> Go effect act
+  }
+}
+`;
+
+  it('rejects a hyphen before any target emits JavaScript', () => {
+    const header = agentSpec.split('\n')[0];
+    const column = header.indexOf('Agent-Policy') + 1;
+    expect(() => parseSpeckContent(agentSpec)).toThrow(
+      new RegExp(`Parse error at line 1, column ${column}: speck name "Agent-Policy" is invalid \\(letters, digits, underscore only\\)`),
+    );
+    expect(() => parseSpeckContent('speck A-B {\n  state { x: Nat }\n}\n')).toThrow(
+      /speck name "A-B" is invalid \(letters, digits, underscore only\)/,
+    );
+    expect(() => parseSpeckContent('speck A.B {\n  state { x: Nat }\n}\n')).toThrow(
+      /speck name "A\.B" is invalid \(letters, digits, underscore only\)/,
+    );
+    const shown = presentDiagnostic({
+      level: 'error',
+      message: 'Parse error at line 1, column 7: speck name "Agent-Policy" is invalid (letters, digits, underscore only)',
+      line: 1,
+      column: 7,
+      speck: 'Agent-Policy',
+    });
+    expect(shown).toBe('Line 1, column 7: speck name "Agent-Policy" is invalid (letters, digits, underscore only)');
+    expect(shown).not.toMatch(/Agent-Policy:/);
+
+    for (const target of ['agent', 'typescript', 'go', 'all'] as const) {
+      const result = compileSource(agentSpec, { target });
+      const errors = result.diagnostics.filter((d) => d.level === 'error');
+      expect(errors, target).toHaveLength(1);
+      expect(errors[0].line).toBe(1);
+      expect(errors[0].column).toBe(column);
+      expect(errors[0].message).toContain('speck name "Agent-Policy" is invalid (letters, digits, underscore only)');
+      expect(errors[0].message).not.toMatch(/not valid JavaScript|\/tmp\/|Unexpected character/);
+      expect(result.files).toEqual([]);
+      expect(result.ok).toBe(false);
+    }
+
+    const underscored = compileSource('speck A_B {\n  state { x: Nat }\n}\n', { target: 'typescript' });
+    expect(underscored.diagnostics.filter((d) => d.level === 'error')).toEqual([]);
+    expect(underscored.ok).toBe(true);
+  });
+
+  it('warns when two tools bind the same action and still compiles', () => {
+    const src = `speck S {
+  state { stage: Nat }
+  init { stage := 0 }
+  action RunTests { stage := 0 }
+  action Other { stage := 0 }
+  agent {
+    stages stage { Idle = 0 }
+    tool foo -> RunTests effect act
+    tool bar -> RunTests effect observe
+    tool baz -> Other effect act
+  }
+}
+`;
+    const ir = lowerSrc(src);
+    expect(ir.diagnostics.filter((d) => d.level === 'error')).toEqual([]);
+    const warnings = ir.diagnostics.filter((d) => /both bind action/.test(d.message));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].level).toBe('warning');
+    expect(warnings[0].message).toBe('agent: tools "foo" and "bar" both bind action "RunTests"');
+    const lineNo = src.split('\n').findIndex((l) => l.includes('tool bar')) + 1;
+    expect(warnings[0].line).toBe(lineNo);
+    expect(warnings[0].column).toBe(src.split('\n')[lineNo - 1].indexOf('bar') + 1);
+
+    const result = compileSource(src, { target: 'agent' });
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics.filter((d) => /both bind action "RunTests"/.test(d.message))).toHaveLength(1);
+    expect(result.files.some((f) => f.path.endsWith('AGENTS.md'))).toBe(true);
+
+    const repeated = `speck S {
+  state { stage: Nat }
+  action Go { stage := 1 }
+  agent {
+    stages stage { Idle = 0 }
+    tool go -> Go effect act
+    tool go -> Go effect act
+  }
+}
+`;
+    const dup = lowerSrc(repeated).diagnostics;
+    expect(dup.some((d) => /duplicate tool "go"/.test(d.message) && d.level === 'error')).toBe(true);
+    expect(dup.some((d) => /both bind action/.test(d.message))).toBe(false);
   });
 });

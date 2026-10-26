@@ -55,14 +55,20 @@ speck Second {
       expect(ast.specks[0].members).toHaveLength(2);
     });
 
-    it('should parse speck name with hyphenated names', () => {
+    it('rejects a hyphenated speck name', () => {
       const content = `speck My-Service-Handler {
   input: Nat
   output: Bool
 }`;
-      const ast = parseSpeckContent(content);
+      expect(() => parseSpeckContent(content)).toThrow(
+        /Parse error at line 1, column \d+: speck name "My-Service-Handler" is invalid \(letters, digits, underscore only\)/,
+      );
+    });
+
+    it('parses a speck name that uses an underscore', () => {
+      const ast = parseSpeckContent('speck My_Service {\n  input: Nat\n}\n');
       expect(ast.specks).toHaveLength(1);
-      expect(ast.specks[0].name).toBe('My-Service-Handler');
+      expect(ast.specks[0].name).toBe('My_Service');
     });
   });
 

@@ -239,8 +239,9 @@ alias.
   open. An unclosed block is an error: missing closing brace, block opened at
   line N is never closed. A repeated speck name, a repeated state variable,
   and a repeated stage number are errors on that line. An action with no name
-  is an error on that line. A speck name that is missing, or not letters,
-  digits, underscore, or hyphen, is an error on that line. A name that
+  is an error on that line. A speck name that is missing, or not a letter
+  followed by letters, digits, or underscore, is an error on that line.
+  A hyphen is not allowed. A name that
   does not start with a letter (`2fast`) is invalid. A name with a space
   says spec names can't contain spaces. Block comments do not nest: the
   first `*/` closes the comment, and a later `c */` is an error. Braces inside
@@ -266,6 +267,17 @@ alias.
   is `Nat` names that expression. A bare `type Name` is an opaque name,
   not a distinct record: two such names are not checked against each
   other.
+- A speck name may not contain a hyphen or any other character that is
+  not a letter, digit, or underscore. `speck Agent-Policy` and `speck A-B`
+  are a parse error on that line and column, `speck name "…" is invalid
+  (letters, digits, underscore only)`, for every target. `speck A.B` uses
+  the same message. `speck A_B` still compiles. Two tools that bind one
+  action warn `agent: tools "foo" and "bar" both bind action "RunTests"`.
+  The compile still exits 0. A repeated tool name stays an error and does
+  not add that warning. A `Nat` subtraction is not checked for underflow
+  (`n := n - 1` is accepted), and pasting about 2,000 lines can lag on
+  the page. Both are known. The page still refuses pastes over 1.5 MB or
+  12,000 lines.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as

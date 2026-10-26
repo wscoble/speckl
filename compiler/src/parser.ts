@@ -657,9 +657,11 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
 }
 
 /**
- * A speck name is an identifier: a letter, then letters, digits, `_`, or `-`.
- * Spaces get their own message. Returns a parse-error string, or null when
- * the header is `speck Name {`.
+ * A speck name is an identifier: a letter, then letters, digits, or `_`.
+ * A hyphen is not an identifier character. `speck Agent-Policy` used to
+ * parse and then fail the agent target's JavaScript syntax check, while
+ * `speck A-B` with no agent block compiled. Spaces get their own message.
+ * Returns a parse-error string, or null when the header is `speck Name {`.
  */
 function speckHeaderProblem(rawLine: string, lineNo: number): string | null {
   const line = rawLine.trim();
@@ -674,8 +676,10 @@ function speckHeaderProblem(rawLine: string, lineNo: number): string | null {
     const spaceAt = raw.search(/\s/);
     return `Parse error at line ${lineNo}, column ${nameCol + spaceAt}: spec names can't contain spaces`;
   }
-  if (!/^[A-Za-z][\w-]*$/.test(raw)) {
-    const letter = /^[\w-]+$/.test(raw) ? ' (names must start with a letter)' : '';
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(raw)) {
+    // Digits and underscores are legal after a letter. Anything else, including
+    // a hyphen or a leading digit that also contains one, is not an identifier.
+    const letter = /^[A-Za-z0-9_]+$/.test(raw) ? ' (names must start with a letter)' : ' (letters, digits, underscore only)';
     return `Parse error at line ${lineNo}, column ${nameCol}: speck name ${JSON.stringify(raw)} is invalid${letter}`;
   }
   if (RESERVED_ACTION_NAMES.has(raw)) {
@@ -690,7 +694,7 @@ function speckHeaderProblem(rawLine: string, lineNo: number): string | null {
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
-  const headerMatch = lines[startIndex].match(/^speck\s+([A-Za-z][\w-]*)\s*{/);
+  const headerMatch = lines[startIndex].match(/^speck\s+([A-Za-z][A-Za-z0-9_]*)\s*{/);
   if (!headerMatch) return null;
 
   const name = headerMatch[1];

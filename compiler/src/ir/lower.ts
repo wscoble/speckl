@@ -450,11 +450,18 @@ function lowerAgent(
 
   const tools = [];
   const seenToolNames = new Set<string>();
+  const seenToolActions = new Map<string, string>();
   for (const t of agent.tools) {
     if (seenToolNames.has(t.name)) {
       note('error', `agent: duplicate tool "${t.name}"`, t.name);
     }
     seenToolNames.add(t.name);
+    const priorTool = seenToolActions.get(t.action);
+    if (priorTool && priorTool !== t.name) {
+      note('warning', `agent: tools "${priorTool}" and "${t.name}" both bind action "${t.action}"`, t.name);
+    } else if (!priorTool) {
+      seenToolActions.set(t.action, t.name);
+    }
     if (!actionNames.has(t.action)) {
       note('error', `agent tool ${t.name}: unknown action "${t.action}"`, t.action);
     }
