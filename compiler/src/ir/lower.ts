@@ -44,6 +44,7 @@ import {
 } from './types.js';
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
+import { blockSpan, indexOfCode, lastIndexOfCode } from '../lex-scan.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -181,20 +182,25 @@ function extractActionStatements(
  */
 function actionBodyLines(lines: string[], startLine: number, endLine: number): string[] {
   let open = startLine - 1;
-  while (open < endLine - 1 && !lines[open].includes('{')) open++;
+  while (open < endLine - 1 && indexOfCode(lines[open] ?? '', '{') < 0) open++;
   const close = endLine - 1;
   if (open >= close) {
-    // Single-line action: `action Name { stmt }`.
+    // Single-line action: `action Name { stmt }`. The closing brace is the
+    // one that balances the header, not a `}` inside a trailing comment.
     const l = lines[open] ?? '';
-    const body = l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
+    const span = blockSpan(l);
+    if (!span.balanced) return [];
+    const body = l.slice(span.openAt + 1, span.closeAt);
     return body.trim() ? [body] : [];
   }
   const body = lines.slice(open + 1, close);
   // Text after `{` on the header line, or before `}` on the closing line.
-  const head = lines[open].slice(lines[open].indexOf('{') + 1);
+  const openAt = indexOfCode(lines[open] ?? '', '{');
+  const head = openAt >= 0 ? lines[open].slice(openAt + 1) : '';
   if (head.trim()) body.unshift(head);
-  const closeLine = lines[close];
-  const tail = closeLine.slice(0, closeLine.lastIndexOf('}'));
+  const closeLine = lines[close] ?? '';
+  const closeAt = lastIndexOfCode(closeLine, '}');
+  const tail = closeAt >= 0 ? closeLine.slice(0, closeAt) : '';
   if (tail.trim()) body.push(tail);
   return body;
 }

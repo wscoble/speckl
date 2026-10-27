@@ -869,7 +869,8 @@ function emitSpeck(speck: SpeckNode): string {
   const ctxExprs: { text: string; ctx: 'guard' | 'value' | 'emit' | 'return' }[] = [];
   const letVarFn = new Map<string, string>();
   for (const a of actions) {
-    for (const st of a.statements) {
+    for (const st0 of a.statements) {
+      const st = { ...st0, expr: (st0 as any).source ?? (st0 as any).expr };
       const ctx = (st.type === 'require' || st.type === 'precondition') ? 'guard'
         : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
       ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
@@ -1478,7 +1479,8 @@ function emitAction(
   currentLetStringVars = new Set<string>();
   currentNullableVars = new Set(nullableParams);
   const bodyLines: string[] = [];
-  for (const s of action.statements as any[]) {
+  for (const s0 of action.statements as any[]) {
+    const s = { ...s0, expr: s0.source ?? s0.expr };
     if (s.type === 'require' || s.type === 'precondition') {
       const expr = goImplications(rewriteGoExpr(s.expr, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords));
       bodyLines.push(`\tif !(${expr}) {\n\t\terr = fmt.Errorf("guard failed: ${String(s.expr).replace(/"/g, "'")}")\n\t\treturn\n\t}`);

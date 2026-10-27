@@ -6,6 +6,7 @@ import { TokenType, Tokenizer, tokenize, Token as TokenT } from './tokenizer.js'
 import { ExpressionParser } from './parser.js';
 import { Expr } from "./ast";
 import { ActionStatement } from './stmt-ast.js';
+import { braceCounts, scanLine, stripTrailingLineComment } from '../lex-scan.js';
 
 /**
  * Parse a single action's body lines into typed statement nodes.
@@ -108,6 +109,7 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
     if (trimmed.startsWith('if ')) {
       // Collect the full if/else block as raw text
       let braceDepth = 0;
+      let inBlock = false;
       let j = i;
       const blockLines: string[] = [];
       while (j < lines.length) {
@@ -116,10 +118,9 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
         const bt = bl.trim();
         if (bt.startsWith('//')) { j++; continue; }
         blockLines.push(bt);
-        for (const ch of bt) {
-          if (ch === '{') braceDepth++;
-          else if (ch === '}') braceDepth--;
-        }
+        const counted = braceCounts(bt, inBlock);
+        inBlock = counted.inBlock;
+        braceDepth += counted.open - counted.close;
         j++;
         if (braceDepth === 0) break;
       }
@@ -216,13 +217,10 @@ interface CollectResult {
 /** True when an expression text is syntactically incomplete (dangling operator or unbalanced brackets). */
 function exprLooksIncomplete(text: string): boolean {
   let depth = 0;
-  let inStr = false;
-  for (const c of text) {
-    if (c === '"') inStr = !inStr;
-    if (inStr) continue;
+  scanLine(text, (c) => {
     if (c === '(' || c === '[' || c === '{') depth++;
     else if (c === ')' || c === ']' || c === '}') depth--;
-  }
+  });
   if (depth > 0) return true;
   // Ends with a binary operator → the expression continues on the next line.
   const t = text.trim();
@@ -247,13 +245,7 @@ function continues(text: string, next: string): boolean {
 
 /** Drop a trailing `// comment` (outside string literals) before lines are joined. */
 function stripLineComment(text: string): string {
-  let inStr = false;
-  for (let k = 0; k < text.length - 1; k++) {
-    const c = text[k];
-    if (c === '"') inStr = !inStr;
-    if (!inStr && c === '/' && text[k + 1] === '/') return text.slice(0, k).trim();
-  }
-  return text;
+  return stripTrailingLineComment(text);
 }
 
 /** Split on commas that are not nested inside brackets or strings. */
