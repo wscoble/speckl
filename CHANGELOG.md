@@ -20,8 +20,11 @@ alias.
   specks into a bounded context (`IRDomain`) and a PROV-O collection linked
   to those specks. A duplicate member or a speck in two domains is a
   compile error. `speckl doctor` fails when a domain member's `act` tool
-  is not mapped in its harness block. Contracts, cost, budgets, and
-  runtime routing are not yet implemented.
+  is not mapped in its harness block. Brace counting ignores strings and
+  comments, so a `{` there cannot hide a later speck or a property. An
+  import that declares no specks and no domains is an error. `sha256:`
+  is case-insensitive; an empty hash is a parse error. Contracts, cost,
+  budgets, and runtime routing are not yet implemented.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

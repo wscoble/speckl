@@ -4,10 +4,13 @@
 // fail on that compiler and pass once imports merge and domains are checked.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// @ts-ignore plain ESM helper shared with scripts/verify-z3.mjs
+import { judge } from '../../scripts/lib/obligations.mjs';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
 import { lower } from '../ir/lower.js';
@@ -94,6 +97,8 @@ describe('import resolution edges', () => {
     expect(errors(load(join(root, 'pinned.speckdl')))).toEqual([]);
     writeFileSync(join(root, 'bare.speckdl'), `import "lib.speckdl" hash "${hex}"\nspeck Root {\n    state { y: Nat }\n    init { y := 0 }\n}\n`);
     expect(errors(load(join(root, 'bare.speckdl')))).toEqual([]);
+    writeFileSync(join(root, 'upper.speckdl'), `import "lib.speckdl" hash "SHA256:${hex}"\nspeck Root {\n    state { y: Nat }\n    init { y := 0 }\n}\n`);
+    expect(errors(load(join(root, 'upper.speckdl')))).toEqual([]);
     writeFileSync(join(root, 'bad.speckdl'), `import "lib.speckdl" hash "sha256:${'ab'.repeat(32)}"\nspeck Root {\n    state { y: Nat }\n    init { y := 0 }\n}\n`);
     expect(errors(load(join(root, 'bad.speckdl'))).join('\n')).toMatch(/import: hash mismatch for "lib\.speckdl"/);
   });
@@ -259,8 +264,120 @@ describe('domain', () => {
     expect(() => parseSpeckContent('domain D {\n    members: A;\n    language: ;\n}\n')).toThrow(/language is empty/);
     expect(() => parseSpeckContent('domain D {\n    members: A;\n    language: "hi" trailing;\n}\n')).toThrow(/language string is invalid/);
     expect(() => parseSpeckContent('domain D {\n    members: A;\n    owner: A;\n}\n')).toThrow(/unexpected clause/);
-    expect(() => parseSpeckContent('import nope\n')).toThrow(/Failed to parse import statement/);
+    expect(() => parseSpeckContent('import nope\n')).toThrow(/mistyped import clause/);
+    expect(() => parseSpeckContent('import "lib.speckdl" verison "1"\n')).toThrow(/mistyped import clause/);
+    expect(() => parseSpeckContent('import "lib.speckdl" hash ""\n')).toThrow(/import hash is empty/);
+    expect(() => parseSpeckContent('import "lib.speckdl" hash "sha256:"\n')).toThrow(/import hash is empty/);
+    expect(() => parseSpeckContent('import "lib.speckdl" hash "SHA256:"\n')).toThrow(/import hash is empty/);
     expect(() => parseSpeckContent('speck S {\n    domain Inner {\n        members: S;\n    }\n}\n')).toThrow(/domain blocks are file-level/);
+  });
+});
+
+describe('braces in comments and strings', () => {
+  const second = `speck PreconditionTest {
+    state { balance: Integer active: Boolean }
+    init { balance := 0 active := true }
+    action SetBalance(newBalance: Integer) {
+        require newBalance >= 0
+        balance := newBalance
+    }
+    action Deactivate() {
+        require balance == 0
+        active := false
+    }
+}
+`;
+
+  it('keeps the next speck when a comment or a string contains a brace', () => {
+    const cases = [
+      `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n// note: {\n${second}`,
+      `speck A {\n    state { x: Nat }\n    // Pending transfers: transfer ID → { from, to, amount }\n    init { x := 0 }\n    // {status: "completed", exitCode: 0}.\n}\n${second}`,
+      `speck A {\n    state { s: String }\n    init { s := "{" }\n}\n${second}`,
+      `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n/* note: {\n   still open\n*/\n${second}`,
+      `speck A {\n    state { x: Nat } // note: {\n    init { x := 0 }\n}\n${second}`,
+      // `'` is post-state prime, not a string quote. `n'` must not swallow the next speck.
+      `speck A {\n    state { n: Nat }\n    invariant Grow {\n        n' >= n\n    }\n}\n${second}`,
+    ];
+    for (const src of cases) {
+      const ast = parseSpeckContent(src);
+      expect(ast.specks.map(s => s.name), src).toEqual(['A', 'PreconditionTest']);
+      const pre = ast.specks[1];
+      expect(pre.members.filter(m => m.type === 'action').map(m => (m as { name: string }).name)).toEqual(['SetBalance', 'Deactivate']);
+    }
+  });
+
+  it('keeps a require when a trailing comment contains a closing brace', () => {
+    const ast = parseSpeckContent(`speck Gate {
+    state { n: Nat }
+    init { n := 0 }
+    action Inc() {
+        require n < 3 // a } b
+        n := n + 1
+    }
+    next: Inc
+}
+`);
+    const action = ast.specks[0].members.find(m => m.type === 'action') as { statements?: { type: string; expr?: string }[] };
+    const stmts = action.statements ?? [];
+    expect(stmts.map(s => s.type)).toEqual(['require', 'assign']);
+    expect(stmts[0].expr).toContain('n < 3');
+  });
+
+  it('a false property with a brace in a comment is still a counterexample', () => {
+    const hasZ3 = spawnSync('z3', ['--version']).status === 0;
+    if (!hasZ3) return;
+    const src = `speck Gate {
+    state {
+        n: Nat
+    }
+    init {
+        n := 0
+    }
+    action Inc() {
+        require n < 1 // a } b
+        n := n + 1
+    }
+    invariant Bounded {
+        n < 1
+    }
+    next: Inc
+    verify Always(Bounded) {
+        depth 3 // a } b
+    }
+}
+`;
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-brace-z3-'));
+    const file = join(dir, 'Gate.speckdl');
+    writeFileSync(file, src);
+    const out = join(dir, 'out');
+    compileSpec(file, { outputDir: out, target: 'z3', bomFormat: 'cdx', verifyDepth: 3 });
+    const smt = readFileSync(join(out, 'Gate.smt2'), 'utf-8');
+    const r = spawnSync('z3', ['-smt2', '-in', '-T:60'], { input: smt, encoding: 'utf-8' });
+    const v = judge(smt, r.stdout ?? '', r.stderr ?? '');
+    expect(v.status, smt + '\n' + (r.stdout ?? '')).toBe('VIOLATED');
+    expect(v.obligations.some((o: { key?: string; ok?: boolean }) => o.key === 'Bounded' && o.ok === false)).toBe(true);
+  }, 60_000);
+});
+
+describe('import contributes nothing', () => {
+  it('rejects a file with no specks and no domains, and ignores rootDir', () => {
+    const root = mkdtempSync(join(tmpdir(), 'speckl-empty-import-'));
+    writeFileSync(join(root, 'hostname'), 'localhost\n');
+    writeFileSync(join(root, 'note.speckdl'), '// note: {\n');
+    const file = join(root, 'root.speckdl');
+    writeFileSync(file, 'import "hostname"\nspeck Root {\n    state { x: Nat }\n    init { x := 0 }\n}\n');
+    expect(errors(load(file)).join('\n')).toMatch(/declares no specks or domains/);
+    writeFileSync(file, 'import "note.speckdl"\nspeck Root {\n    state { x: Nat }\n    init { x := 0 }\n}\n');
+    expect(errors(load(file)).join('\n')).toMatch(/note\.speckdl/);
+    writeFileSync(join(root, 'lib.speckdl'), 'speck Lib {\n    state { x: Nat }\n    init { x := 0 }\n}\n');
+    writeFileSync(file, 'import "lib.speckdl"\nspeck Root {\n    state { y: Nat }\n    init { y := 0 }\n}\n');
+    const ir = lower(parseSpeckFile(file), {
+      filePath: file,
+      resolveImports: true,
+      rootDir: join(root, 'does-not-exist'),
+    });
+    expect(errors(ir)).toEqual([]);
+    expect(ir.specks.map(s => s.name)).toEqual(['Root', 'Lib']);
   });
 });
 

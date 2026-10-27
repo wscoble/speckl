@@ -154,10 +154,13 @@ Browse all in [examples/](examples/).
 
 ## Imports and domains
 
-A file can `import` another SpeckDL file. The compiler reads it, lowers it,
-and merges its specks into the compilation. A missing file, an import cycle,
-a hash mismatch, or the same speck name in two files is a compile error, and
-the message names the file.
+A file can `import` another SpeckDL file. The path is resolved from the
+directory of the file that writes the import, including imports inside a
+file that was itself imported. The compiler reads it, lowers it, and merges
+its specks into the compilation. A missing file, an import cycle, a hash
+mismatch, an empty hash, a file that declares no specks and no domains, or
+the same speck name in two files is a compile error, and the message names
+the file. `hash "SHA256:..."` and `hash "sha256:..."` are the same check.
 
 ```
 import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
@@ -171,7 +174,9 @@ domain Billing {
 A `domain` groups specks into a bounded context. Each member is still one
 speck (and at most one agent). The IR records an `IRDomain`. Provenance
 adds a `prov:Collection` whose `prov:hadMember` links those specks. A
-duplicate member, or a speck in two domains, is a compile error.
+duplicate member, or a speck in two domains, is a compile error. A domain
+declared in an imported file comes in with that file, and its members
+cannot be claimed again by a domain in the importer.
 
 `speckl doctor <file>` fails when a domain member declares an `act` tool
 that its harness blocks do not map. That is separate from the adapter

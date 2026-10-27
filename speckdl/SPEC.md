@@ -190,19 +190,29 @@ import "common.speckdl" as common
 import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 ```
 
-An import is a file path, resolved relative to the file that contains it
-(absolute paths are taken as written). The lower pass reads that file,
-lowers it, and merges its specks into the compilation unit. A file-level
-import is attached to every speck in the importing file; an import written
-inside one speck is attached to that speck. `as` names the import: one
-speck uses the alias, several specks use `alias.SpeckName`. With no alias
-the speck's own name is used.
+An import is a file path, resolved relative to the directory of the file
+that contains it (absolute paths are taken as written). A nested import
+is resolved from the imported file's own directory, not from a project
+root and not from the file that imported it. The lower pass reads that
+file, lowers it, and merges its specks into the compilation unit. A
+file-level import is attached to every speck in the importing file; an
+import written inside one speck is attached to that speck. `as` names the
+import: one speck uses the alias, several specks use `alias.SpeckName`.
+With no alias the speck's own name is used.
+
+The clause order is `import "<path>" [as <Name>] [version "<ver>"] [hash "<digest>"]`.
+Anything else is a parse error that names the mistyped clause (`import nope`,
+`import "x" verison "1"`). `hash` is `sha256:` plus hex, or bare hex. The
+`sha256:` prefix is case-insensitive (`SHA256:` and `sha256:`). An empty
+hash (`hash ""` or `hash "sha256:"`) is a parse error, not a mismatch.
 
 Failures name the file and stop the compile:
 
 - the path cannot be read (missing file, or a directory);
+- the imported file declares no specks and no domains (a comment, or a
+  file that is not SpeckDL);
 - the import graph cycles (`a.speckdl -> b.speckdl -> a.speckdl`);
-- `hash "sha256:..."` (or a bare hex digest) does not match the file bytes;
+- `hash` does not match the sha256 of the file bytes;
 - the same speck name is declared in two files.
 
 `version` is stored on the resolved import. Looking that pin up in a
@@ -236,6 +246,12 @@ is still one speck.
 
 `members` is required and lists speck names (local, or merged in from
 imports). `language` is a quoted string or bare text up to the semicolon.
+A domain may be declared in a file that other specs import (a library).
+Importing that file imports the domain along with its specks. A speck
+belongs to at most one domain in the whole compilation, so a domain in
+the importing file cannot list a member that a domain in the library
+already lists.
+
 The same failures are compile errors:
 
 - a member listed twice in one domain;
