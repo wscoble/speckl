@@ -1,0 +1,27 @@
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+
+domain Fulfillment {
+    members: Shipment;
+    language: "A shipment leaves the warehouse";
+}
+
+speck Invoice {
+    state { issued: Bool }
+    init { issued := false }
+    action Issue { issued := true }
+}
+
+speck Ledger {
+    state { posted: Bool }
+    init { posted := false }
+    action Post { posted := true }
+}
+
+speck Shipment {
+    state { sent: Bool }
+    init { sent := false }
+    action Send { sent := true }
+}

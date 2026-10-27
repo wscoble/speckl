@@ -12,8 +12,8 @@
 //      didn't declare one (provenance is non-optional in the IR).
 //   4. Resolves `import` (when asked) by reading, lowering, and merging the
 //      imported compilation, with cycle detection.
-//   5. Returns a fully-resolved IR ready for generator consumption.
-//      `domains` is always empty here. Domain blocks are not parsed.
+//   5. Lowers file-level `domain` blocks into IRDomain values.
+//   6. Returns a fully-resolved IR ready for generator consumption.
 //
 // Generators should consume the IR, not the AST. The IR's contract:
 //   - Every fact in the source is in the IR.
@@ -31,7 +31,7 @@ import {
   InputNode, OutputNode, AgentMemberNode, ImportNode,
 } from '../parser.js';
 import {
-  IR, IRSpeck, IRFacets, IRImport,
+  IR, IRSpeck, IRFacets, IRImport, IRDomain,
   TypedSchemaFacet, IRType, IRRecordType, IREnumType, IRAliasType,
   IRFieldDef, IRTypeRef, IRService, IRServiceMethod,
   BehaviorFacet, IRStateVar, IRAssign, IRAction, IRParam, IRStmt, IREvent,
@@ -48,7 +48,7 @@ import {
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
 import {
-  canonical, dedupeDiagnostics, mergeUnit, resolveImportNodes,
+  canonical, crossCheckDomains, dedupeDiagnostics, localDomains, mergeUnit, resolveImportNodes,
   type LowerFile,
 } from './resolve-imports.js';
 
@@ -81,23 +81,31 @@ const lowerFile: LowerFile = (ast, options, ctx) => {
   const specks = ast.specks.map((speck) => lowerSpeck(speck, ast, options, diagnostics, []));
 
   if (!options.resolveImports) {
+    const domains = localDomains(ast, specks, diagnostics, options.filePath);
+    crossCheckDomains(domains, diagnostics);
     dedupeDiagnostics(diagnostics);
-    return { specks, imports: [], domains: [], fileMetadata, diagnostics };
+    return { specks, imports: [], domains, fileMetadata, diagnostics };
   }
 
   ctx.stack.push(fileId);
   try {
     const merged = [...specks];
+    const importedDomains: IRDomain[] = [];
     const fileLevel = resolveImportNodes(ast.imports ?? [], undefined, options, ctx, diagnostics, lowerFile);
-    for (const unit of fileLevel.units) mergeUnit(unit, merged, diagnostics);
+    for (const unit of fileLevel.units) mergeUnit(unit, merged, importedDomains, diagnostics);
     for (let i = 0; i < specks.length; i++) {
       const memberImports = ast.specks[i].members.filter((m): m is ImportNode => m.type === 'import');
       const own = resolveImportNodes(memberImports, specks[i].name, options, ctx, diagnostics, lowerFile);
-      for (const unit of own.units) mergeUnit(unit, merged, diagnostics);
+      for (const unit of own.units) mergeUnit(unit, merged, importedDomains, diagnostics);
       specks[i].imports = [...fileLevel.imports, ...own.imports];
     }
+    const domains = [
+      ...localDomains(ast, merged, diagnostics, options.filePath),
+      ...importedDomains,
+    ];
+    crossCheckDomains(domains, diagnostics);
     dedupeDiagnostics(diagnostics);
-    const ir: IR = { specks: merged, imports: fileLevel.imports, domains: [], fileMetadata, diagnostics };
+    const ir: IR = { specks: merged, imports: fileLevel.imports, domains, fileMetadata, diagnostics };
     ctx.cache.set(fileId, ir);
     return ir;
   } finally {

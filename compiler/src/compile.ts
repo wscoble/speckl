@@ -41,7 +41,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   
   const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: path.dirname(path.resolve(file)) });
   const fatal = irAst.diagnostics.filter(d =>
-    d.level === 'error' && d.message.startsWith('import:'));
+    d.level === 'error' && (d.message.startsWith('import:') || d.message.startsWith('domain:')));
   if (fatal.length > 0) {
     throw new Error(fatal.map(d => d.message).join('\n'));
   }

@@ -106,7 +106,7 @@ export interface IR {
   specks: IRSpeck[];
   /** File-level imports on this compilation unit. Empty when there are none. */
   imports: IRImport[];
-  /** Always empty. Domain blocks are not parsed. */
+  /** Local domains, then domains merged from imports. Empty when there are none. */
   domains: IRDomain[];
   /** Global file-level metadata, shared across all specks in the file. */
   fileMetadata: FileMetadata;
