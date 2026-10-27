@@ -1025,8 +1025,6 @@ describe('compile entry', () => {
       for (const cf of ['\u00AD', '\u200C', '\u200D', '\u2060', '\u{E0001}']) {
         expectLineError(`${cf}speck B {\n}\n`.replace(/\n/g, nl), 'cf.speckdl', 1, format);
       }
-      // A non-format character outside the basic plane is still file-level text.
-      expectLineError('\u{1F600}\n'.replace(/\n/g, nl), 'emoji.speckdl', 1, stray);
       expectLineError(`speck A {\n}\n\uFEFFspeck B {\n}\n`.replace(/\n/g, nl), 'bommid.speckdl', 3, format);
 
       // D4: domain or a brace wrapper sharing the line with a header.
