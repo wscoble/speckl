@@ -88,9 +88,16 @@ function resolveOne(
   }
 
   const id = canonical(target);
-  if (node.hash && !hashMatches(node.hash, bytes)) {
-    pushError(diagnostics, `import: hash mismatch for "${node.path}" from ${fromFile} (file ${id})`, owner, node.startLine);
-    return { imports: [], unit: null };
+  if (node.hash) {
+    const hex = node.hash.trim().replace(/^sha256:/i, '');
+    if (hex.length === 0) {
+      pushError(diagnostics, `import: hash for "${node.path}" is empty (from ${fromFile})`, owner, node.startLine);
+      return { imports: [], unit: null };
+    }
+    if (!hashMatches(node.hash, bytes)) {
+      pushError(diagnostics, `import: hash mismatch for "${node.path}" from ${fromFile} (file ${id})`, owner, node.startLine);
+      return { imports: [], unit: null };
+    }
   }
   if (ctx.stack.includes(id)) {
     pushError(diagnostics, `import: cycle involving ${[...ctx.stack, id].join(' -> ')}`, owner, node.startLine);
@@ -106,6 +113,10 @@ function resolveOne(
   }
 
   const unit = lowerFile(importedAst, { ...options, filePath: id, resolveImports: true }, ctx);
+  if (unit.specks.length === 0 && unit.domains.length === 0) {
+    pushError(diagnostics, `import: "${node.path}" from ${fromFile} (resolved to ${id}) declares no specks or domains`, owner, node.startLine);
+    return { imports: [], unit: null };
+  }
   const direct = unit.specks.filter(s => canonical(s.sourcePath) === id);
   const imports: IRImport[] = direct.map(s => ({
     path: node.path,
@@ -124,7 +135,9 @@ function aliasFor(node: ImportNode, speckName: string, count: number): string {
 }
 
 function hashMatches(declared: string, bytes: Buffer): boolean {
-  const want = (declared.startsWith('sha256:') ? declared.slice('sha256:'.length) : declared).toLowerCase();
+  // `sha256:` is optional. The prefix is case-insensitive; the hex is too.
+  const want = declared.trim().replace(/^sha256:/i, '').toLowerCase();
+  if (!/^[0-9a-f]+$/.test(want)) return false;
   const got = createHash('sha256').update(bytes).digest('hex');
   return want === got;
 }

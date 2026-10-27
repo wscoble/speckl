@@ -337,8 +337,12 @@ same name fails the compile, and the error names the file. `version` is
 recorded. A registry lookup for that pin is **not yet implemented**.
 
 `domain` lists member specks and an optional language note. A member listed
-twice, or a speck that sits in two domains, is a compile error. Provenance
-for each member gains a domain entity linked with `prov:hadMember`.
+twice, or a speck that sits in two domains, is a compile error. A domain
+in an imported file is part of that import: the importer cannot put the
+same speck in a second domain. Provenance for each member gains a domain
+entity linked with `prov:hadMember`. The `sha256:` hash prefix is
+case-insensitive. An import that resolves but declares no specks and no
+domains is a compile error.
 
 `speckl doctor <file>` fails when one of those members declares an `act`
 tool that is not mapped in its harness block.
