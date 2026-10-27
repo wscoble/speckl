@@ -61,7 +61,11 @@ export interface LowerOptions {
   filePath: string;
   /** If true, the lower pass will resolve imports by reading other files. */
   resolveImports: boolean;
-  /** Root directory for resolving relative import paths. */
+  /**
+   * Unused. An import path is resolved against the directory of the file
+   * that writes the import (absolute paths are used as given). Nested
+   * imports use that imported file's directory, not a project root.
+   */
   rootDir?: string;
 }
 
