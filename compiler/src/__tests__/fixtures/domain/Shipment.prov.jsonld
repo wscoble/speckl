@@ -1,0 +1,39 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "speckl": "https://speckl.scoble.me/ns/v0.3#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "foaf": "http://xmlns.com/foaf/0.1/",
+    "dct": "http://purl.org/dc/terms/",
+    "spdx": "http://spdx.org/rdf/terms#"
+  },
+  "@graph": [
+    {
+      "@type": "prov:Entity",
+      "@id": "speck:Shipment",
+      "rdfs:label": "Shipment",
+      "rdfs:comment": "Shipment",
+      "prov:wasGeneratedBy": {
+        "@type": "prov:Activity",
+        "@id": "speck:Shipment:compile",
+        "prov:startTime": "TIMESTAMP",
+        "prov:used": "speck:Shipment:source"
+      },
+      "speckl:synthesized": true,
+      "speckl:review": "manual"
+    },
+    {
+      "@type": [
+        "prov:Entity",
+        "prov:Collection"
+      ],
+      "@id": "domain:Fulfillment",
+      "rdfs:label": "Fulfillment",
+      "speckl:kind": "domain",
+      "speckl:language": "A shipment leaves the warehouse",
+      "prov:hadMember": [
+        "speck:Shipment"
+      ]
+    }
+  ]
+}

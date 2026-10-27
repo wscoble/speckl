@@ -1,6 +1,6 @@
 // The compile pipeline behind `speckl <file> -t <target>`. Kept apart from
 // the CLI entry (index.ts) so tests can run it in-process.
-import { parseSpeckFile } from './parser.js';
+import { parseSpeckFile, type AST } from './parser.js';
 import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
 import { generateTypeScriptStateMachine } from './generators/typescript-state-machine.js';
@@ -20,6 +20,7 @@ import { generateAgent } from './generators/agent/index.js';
 import { injectSignalActions } from './generators/agent/inject-signals.js';
 import fs from 'fs';
 import path from 'path';
+import type { IR } from './ir/types.js';
 
 export interface CompileOptions {
   outputDir: string;
@@ -33,19 +34,29 @@ export function compileSpec(file: string, options: CompileOptions): void {
   console.log(`Compiling ${file}...`);
   
   const ast = parseSpeckFile(file);
-  // Synthetic __signal_* actions are injected only for Z3 BMC (and again
-  // inside the agent target). Other backends keep the source AST clean.
-  const astForProof = injectSignalActions(ast);
 
   const speckCount = ast.specks.length;
   const memberCount = ast.specks.reduce((sum, s) => sum + s.members.length, 0);
   console.log(`AST parsed successfully: ${speckCount} speck(s), ${memberCount} member(s)`);
   
+  const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: path.dirname(path.resolve(file)) });
+  const fatal = irAst.diagnostics.filter(d =>
+    d.level === 'error' && (d.message.startsWith('import:') || d.message.startsWith('domain:')));
+  if (fatal.length > 0) {
+    throw new Error(fatal.map(d => d.message).join('\n'));
+  }
+
+  // AST-driven generators only see the file that was parsed. Append specks
+  // merged in from imports so those backends emit them too. A file with no
+  // imports keeps the same speck list.
+  const mergedAst = withImportedSpecks(ast, irAst);
+  // Synthetic __signal_* actions are injected only for Z3 BMC (and again
+  // inside the agent target). Other backends keep the source AST clean.
+  const astForProof = injectSignalActions(mergedAst);
+
   if (!fs.existsSync(options.outputDir)) {
     fs.mkdirSync(options.outputDir, { recursive: true });
   }
-  
-  const irAst = lower(ast, { filePath: file, resolveImports: false });
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
 
@@ -70,7 +81,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   // Rust
   if (options.target === 'go' || options.target === 'all') {
     // go backend
-    generateGo(ast, options.outputDir);
+    generateGo(mergedAst, options.outputDir);
   }
   if (options.target === 'rust' || options.target === 'all') {
     console.log('\nGenerating Rust state machine...');
@@ -79,13 +90,13 @@ export function compileSpec(file: string, options: CompileOptions): void {
 
   // Elm
   if (options.target === 'elm' || options.target === 'all') {
-    generateElm(ast, options.outputDir);
+    generateElm(mergedAst, options.outputDir);
   }
 
   // Protobuf
   if (options.target === 'protobuf' || options.target === 'all') {
     console.log('\nGenerating protobuf schema (.proto)...');
-    generateProtobuf(ast, options.outputDir);
+    generateProtobuf(mergedAst, options.outputDir);
   }
 
   // Provenance (core output)
@@ -125,16 +136,16 @@ export function compileSpec(file: string, options: CompileOptions): void {
   // TypeScript state machine + BOMs
   if (options.target !== 'z3' && options.target !== 'rust') {
     console.log('\nGenerating TypeScript state machine...');
-    generateTypeScriptStateMachine(ast, options.outputDir);
+    generateTypeScriptStateMachine(mergedAst, options.outputDir);
 
     if (options.bomFormat === 'cdx' || options.bomFormat === 'both') {
       console.log('\nGenerating CycloneDX BOM...');
-      generateCycloneDX(ast, options.outputDir);
+      generateCycloneDX(mergedAst, options.outputDir);
     }
 
     if (options.bomFormat === 'spdx' || options.bomFormat === 'both') {
       console.log('\nGenerating SPDX BOM...');
-      generateSPDX(ast, options.outputDir);
+      generateSPDX(mergedAst, options.outputDir);
     }
   }
   
@@ -147,8 +158,32 @@ export function compileSpec(file: string, options: CompileOptions): void {
     if (agentErrors.length > 0) {
       throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
     }
-    generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
+    generateAgent(mergedAst, { outputDir: options.outputDir, sourcePath: file });
   }
 
   console.log(`\nCompilation complete. Output: ${options.outputDir}/`);
+}
+
+/**
+ * Root AST plus specks that import resolution merged into the IR.
+ * Returns `root` itself when every IR speck is already in the file, so
+ * generators see the same AST they did before imports existed.
+ */
+function withImportedSpecks(root: AST, ir: IR): AST {
+  const specks = [...root.specks];
+  const names = new Set(specks.map(s => s.name));
+  const files: string[] = [];
+  for (const s of ir.specks) {
+    if (names.has(s.name)) continue;
+    if (!files.includes(s.sourcePath) && fs.existsSync(s.sourcePath)) files.push(s.sourcePath);
+  }
+  for (const file of files) {
+    for (const s of parseSpeckFile(file).specks) {
+      if (names.has(s.name)) continue;
+      names.add(s.name);
+      specks.push(s);
+    }
+  }
+  if (specks.length === root.specks.length) return root;
+  return { specks, imports: root.imports ?? [], domains: root.domains ?? [] };
 }

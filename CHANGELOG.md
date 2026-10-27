@@ -14,6 +14,54 @@ alias.
 
 ### Added
 
+- **`import` resolution and `domain`.** `import "file.speckdl"` is read,
+  lowered, and merged, with cycle detection, hash checks, and errors that
+  name the file. `domain Name { members: ...; language: ... }` groups
+  specks into a bounded context (`IRDomain`) and a PROV-O collection linked
+  to those specks. A duplicate member or a speck in two domains is a
+  compile error. `speckl doctor` fails when a domain member's `act` tool
+  is not mapped in its harness block. One scanner handles `"` strings,
+  `//` comments, and `/* */` block comments, and that state carries across
+  lines, so a `}` inside a comment does not end a block. `'` is post-state
+  notation, not a string quote. An unterminated block comment or string, or
+  a stray `*/`, is a parse error naming the file and line. Code after
+  `/* ... */` on the same line is kept. A trailing `//` comment is not part
+  of a `require`, `let`, or invariant expression. Code between `{` and that
+  comment is kept when the closing `}` is on the next line. Code before the
+  closing `}` is part of the body for an invariant, verify, constraint,
+  action, event, and agent block, on one line or across lines, including a
+  trailing `//` comment after a one-line `}` (`action X { n := n + 2 }`,
+  `event E { x: Nat } // c`). The `}` that closes a block is the last code
+  on that line. A `//` comment or a `/* */` comment may follow it, and the
+  block comment may continue on later lines. A `}` inside a string or a
+  comment does not close the block. The file is tokenized once, and each `{`
+  is classified from the tokens in front of it: a block header, an `if` or
+  `else if` body, or a set, record, or other expression. A `{` inside `()`
+  or `[]` is an expression, so `action Two(p: {a: Nat}) {` keeps the action
+  body. `else` is legal when the token before it, skipping comments and
+  newlines, closes an `if` or `else if` body. That includes `} } else` when
+  the last `}` closes an `if`, and `else` on the next line. A colon-if
+  (`if n > 0: {a: 1} else {a: 2}`) is an expression. `else` after any other
+  closer is a parse error naming the file and line, on the same line or the
+  next, and a `//` or `/* */` comment between them does not change that
+  (`invariant`, `action`, `event`, and `for`). A declaration on the same
+  line as a closing `}` is the same kind of error, including after a set, a
+  record, or a `map` (`invariant A0 { true } invariant Mono {`,
+  `action Two { n := 1 } invariant Mono {`, `event E { x: Nat } invariant Mono {`,
+  `status: { phase: n } invariant Mono {`, `emit Log { ... } invariant Mono {`,
+  `map M { a -> b } invariant Mono {`, `false } }`, `} speck D {`). A `{`
+  still open at the end of the file is an error. A member header whose `{`
+  is on the next line is an error (`invariant Mono` then `{`). An `if` or
+  `for` condition may break before its body `{`. A member header with no
+  `{` on any line is not that error. A `;` in an
+  action is a parse error; a `;` inside a string or a comment is not. An
+  invariant, `verify "…"`, or constraint body that is empty or only a
+  comment is a parse error naming the file and line, and is not treated as
+  true. A body such as `{ false }` is not an empty body.
+  If a block comment closes inside a string, the unterminated-string error
+  says so. An import that declares no specks and no domains is an error. `sha256:`
+  is case-insensitive; an empty hash is a parse error. Contracts, cost,
+  budgets, and runtime routing are not yet implemented.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
@@ -170,6 +218,25 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Trailing comments are not part of the expression.** A `//` comment after
+  a `require`, a `let`, or an invariant is dropped before generators run.
+  Go guard errors no longer repeat that comment. Five bundled outputs differ
+  from the previous compiler. The maintainer approved that exception to the
+  byte-identical rule on October 26, 2026:
+  - SQLiteWAL Go: 14 `guard failed:` strings lose the `//` comment. The
+    conditions are unchanged.
+  - SQLiteWAL AST SMT: one `; skipped:` comment drops the comment's words
+    (`frame`, `is`, `within`, `reader_posts`, `snapshot`). No assertion changes.
+  - SQLiteWAL Elm: 10 guards that were `-- guard checked server-side` comments
+    are now enforced client-side (`|> guard`). Four untranslatable guards stay
+    server-side, without the comment text. The client now rejects inputs it
+    used to let through.
+  - OAuth Rust: two invariant doc strings lose `// 90 days max` and
+    `// This is enforced…`.
+  - OAuth Elm: one server-side comment loses `// 1 hour`
+    (`let expiresAt := currentTime + 3600`).
+  Other bundled examples are unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as

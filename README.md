@@ -37,6 +37,7 @@ Run it from `compiler/`:
 node dist/index.js --help
 node dist/index.js ../examples/ToggleSwitch.speckdl -t all -o out
 node dist/index.js verify ../examples/ToggleSwitch.speckdl   # Z3 check of every verify block (needs the z3 binary)
+node dist/index.js doctor ../examples/ToggleSwitch.speckdl   # imports, domains, act-tool harness maps
 ```
 
 `speckl` and `speckl-compile` are that same program (`speckl-compile` is the older name). To put both on your `PATH`, pack the checkout and install the tarball into a user prefix. The tarball stays on your machine:
@@ -151,12 +152,47 @@ Formal methods specs from a toggle switch through Raft consensus:
 
 Browse all in [examples/](examples/).
 
+## Imports and domains
+
+A file can `import` another SpeckDL file. The path is resolved from the
+directory of the file that writes the import, including imports inside a
+file that was itself imported. The compiler reads it, lowers it, and merges
+its specks into the compilation. A missing file, an import cycle, a hash
+mismatch, an empty hash, a file that declares no specks and no domains, or
+the same speck name in two files is a compile error, and the message names
+the file. `hash "SHA256:..."` and `hash "sha256:..."` are the same check.
+
+```
+import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
+
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+```
+
+A `domain` groups specks into a bounded context. Each member is still one
+speck (and at most one agent). The IR records an `IRDomain`. Provenance
+adds a `prov:Collection` whose `prov:hadMember` links those specks. A
+duplicate member, or a speck in two domains, is a compile error. A domain
+declared in an imported file comes in with that file, and its members
+cannot be claimed again by a domain in the importer.
+
+`speckl doctor <file>` fails when a domain member declares an `act` tool
+that its harness blocks do not map. That is separate from the adapter
+`doctor` probe, which runs an installed hook.
+
+**Not yet implemented:** a package registry for `version` pins (the pin is
+stored, and `hash` is checked); rewriting expressions that name an imported
+speck; `consumes` / `produces` contracts, per-action cost, and a domain
+budget; runtime routing between domains.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
-- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
+- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics, including `import` and `domain`
 
 ## Status
 

@@ -62,6 +62,8 @@ speck ToggleSwitch {
 - `require` is a guard — the action fails if the condition isn't met
 - `:=` is assignment
 - `return` makes the result observable
+- statements are separated by newlines, not `;`
+- the `}` that closes a block is the last code on that line; a `//` comment or a `/* */` comment may follow it. `else` may follow the `}` that closes an `if` or an `else if`, including when `else` is on the next line or the last of several `}` closes that `if`. A set or a record (`n in {true, false}`, `{a: 1}`, `if n > 0: {a: 1} else {a: 2}`) is an expression. `else` after any other closer is a parse error
 
 **Next** defines which actions can fire. `TurnOn | TurnOff` means either can happen at any time — it's nondeterministic. The model checker explores all interleavings.
 
@@ -316,6 +318,39 @@ Every speck goes through the same pipeline:
 TLA+ proved that formal methods work at scale. SpeckDL makes them deployable.
 
 ---
+
+## Imports and domains
+
+Specs can name each other, and a bounded context can group them. Neither
+changes the rule that one speck is one agent.
+
+```speck
+import "ledger.speckdl" as ledger
+
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+```
+
+The import is a file path. The compiler reads it, lowers it, and merges
+its specks. A missing file, a cycle, a bad `hash`, or two specks with the
+same name fails the compile, and the error names the file. `version` is
+recorded. A registry lookup for that pin is **not yet implemented**.
+
+`domain` lists member specks and an optional language note. A member listed
+twice, or a speck that sits in two domains, is a compile error. A domain
+in an imported file is part of that import: the importer cannot put the
+same speck in a second domain. Provenance for each member gains a domain
+entity linked with `prov:hadMember`. The `sha256:` hash prefix is
+case-insensitive. An import that resolves but declares no specks and no
+domains is a compile error.
+
+`speckl doctor <file>` fails when one of those members declares an `act`
+tool that is not mapped in its harness block.
+
+**Not yet implemented:** `consumes` / `produces` on a domain, a cost per
+action, a budget per tick, and runtime routing from one domain to another.
 
 ## Next Steps
 

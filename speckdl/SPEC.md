@@ -100,7 +100,35 @@ speck ToggleSwitch {
 `var.values`, or a range. This sugar is recognized by the language but not
 yet lowered to Z3 (see §3.5).
 
-**Comments** — `//` line comments and `/* ... */` block comments.
+**Comments** — `//` line comments and `/* ... */` block comments. A finished
+comment is not structure: a `}` inside one does not close a block, including
+when the comment spans lines. `'` is post-state notation, not a string quote.
+An unterminated block comment or string, or a `*/` that does not close one,
+is a parse error naming the file and line. A trailing `//` comment is not
+part of a `require`, `let`, or invariant expression. The `}` that closes a
+block is the last code on that line. A `//` comment or a `/* */` comment may
+follow it, and the block comment may continue on later lines. A `}` inside a
+string or a comment does not close the block. The file is tokenized once.
+Each `{` is classified from the tokens in front of it: a block header, an
+`if` or `else if` body, or a set, record, or other expression. A `{` inside
+`()` or `[]` is an expression, so a record parameter
+(`action Two(p: {a: Nat}) {`) is not the action body. `else` is legal when
+the token before it, skipping comments and newlines, closes an `if` or
+`else if` body. That includes `} } else` when the last `}` closes an `if`,
+and `else` on the next line. A colon-if (`if n > 0: {a: 1} else {a: 2}`) is
+an expression. `else` after any other closer is a parse error naming the
+file and line, whether or not a comment or a newline is in between
+(`invariant`, `action`, `event`, and `for`). A declaration on the same line
+as a closing `}` is the same kind of error (`invariant A0 { true } invariant Mono {`,
+`action Two { n := 1 } invariant Mono {`, `event E { x: Nat } invariant Mono {`,
+`false } }`, `} speck D {`, and a set, record, or `map` followed by a block:
+`status: { phase: n } invariant Mono {`, `emit Log { ... } invariant Mono {`,
+`map M { a -> b } invariant Mono {`). A `{` still open at the end of the
+file is an error. A member header whose `{` is on the next line is an error
+(`invariant Mono` then `{`). An `if` or `for` condition may break before its
+body `{`. A member header with no `{` on any line is not that error.
+Actions have no `;`. A semicolon in an action is a parse error;
+one inside a string or a comment is not.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
@@ -190,10 +218,93 @@ import "common.speckdl" as common
 import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 ```
 
-Version pinning is optional for local development and required for Specks
-with `review: manual` or `review: hybrid`.
+An import is a file path, resolved relative to the directory of the file
+that contains it (absolute paths are taken as written). A nested import
+is resolved from the imported file's own directory, not from a project
+root and not from the file that imported it. The lower pass reads that
+file, lowers it, and merges its specks into the compilation unit. A
+file-level import is attached to every speck in the importing file; an
+import written inside one speck is attached to that speck. `as` names the
+import: one speck uses the alias, several specks use `alias.SpeckName`.
+With no alias the speck's own name is used.
 
-### 2.9 Expression Operators
+The clause order is `import "<path>" [as <Name>] [version "<ver>"] [hash "<digest>"]`.
+Anything else is a parse error that names the mistyped clause (`import nope`,
+`import "x" verison "1"`). `hash` is `sha256:` plus hex, or bare hex. The
+`sha256:` prefix is case-insensitive (`SHA256:` and `sha256:`). An empty
+hash (`hash ""` or `hash "sha256:"`) is a parse error, not a mismatch.
+
+Failures name the file and stop the compile:
+
+- the path cannot be read (missing file, or a directory);
+- the imported file declares no specks and no domains (a comment, or a
+  file that is not SpeckDL);
+- the import graph cycles (`a.speckdl -> b.speckdl -> a.speckdl`);
+- `hash` does not match the sha256 of the file bytes;
+- the same speck name is declared in two files.
+
+`version` is stored on the resolved import. Looking that pin up in a
+package registry is **not yet implemented**. Requiring a version when
+`review` is `manual` or `hybrid` is **not yet implemented** — a missing
+version is not an error today.
+
+Merging does not inline the imported speck's members into the importer,
+and it does not rewrite expressions that mention an imported name. That
+name resolution is **not yet implemented**. Each merged speck stays one
+speck.
+
+### 2.9 Domains
+
+```
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+
+domain Fulfillment {
+    members: Shipment;
+    language: "A shipment leaves the warehouse";
+}
+```
+
+A `domain` is a bounded context: a name, the specks that belong to it, and
+an optional ubiquitous-language note. It is file-level. It is not a member
+of a speck, and it does not fuse those specks into one agent. Each member
+is still one speck.
+
+`members` is required and lists speck names (local, or merged in from
+imports). `language` is a quoted string or bare text up to the semicolon.
+A domain may be declared in a file that other specs import (a library).
+Importing that file imports the domain along with its specks. A speck
+belongs to at most one domain in the whole compilation, so a domain in
+the importing file cannot list a member that a domain in the library
+already lists.
+
+The same failures are compile errors:
+
+- a member listed twice in one domain;
+- a speck that is a member of two domains;
+- a member that is not a speck in this compilation;
+- the same domain name declared twice.
+
+The IR records each one as an `IRDomain`. Provenance appends a domain
+entity to each member's PROV-O graph: a `prov:Collection` whose
+`prov:hadMember` links the member specks. Specks that are not in a domain
+keep the same provenance graph as before.
+
+`speckl doctor <file>` resolves imports and domains, then fails when a
+domain member declares an `effect act` tool that is not the target of a
+`map` rule in every `harness` block on that member (no harness block
+counts as not mapped). Observe tools are not checked. An act tool on a
+speck that is not in a domain is not checked. This is a spec check. It is
+not the generated adapter's `doctor` probe, which runs an installed hook.
+
+**Not yet implemented** on a domain: `consumes` / `produces` contracts,
+per-action `cost`, a domain `budget`, and runtime routing of events
+between domains. A domain does not change how a speck compiles to a state
+machine.
+
+### 2.10 Expression Operators
 
 Binary operators, from loosest to tightest binding:
 
@@ -299,8 +410,10 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
 
 Generators consume the IR, not the AST. The IR is complete (every fact in
 the spec is in a named facet), lossless (expressions are typed trees, not
-strings), resolved (cross-spec references resolved at lower time), and
-provenanced (missing provenance is synthesized from file metadata).
+strings), resolved (`import` paths are read and merged at lower time; using
+an imported name inside an expression is not yet implemented), and
+provenanced (missing provenance is synthesized from file metadata). A
+`domain` is an `IRDomain` on that IR, not a ninth facet of one speck.
 
 ### 4.1 Planned Stages (not implemented)
 
@@ -419,6 +532,7 @@ Exit codes: `0` all verified, `1` failure, `2` z3 not available.
 | Tool | Purpose | Status |
 |------|---------|--------|
 | `speckl-compile` | Reference compiler | Working |
+| `speckl doctor` | Import, domain, and act-tool harness check | Working |
 | Z3 verification script | Real-solver verification of example suite | Done |
 | `speckl-lsp` | Language Server Protocol (IDE support) | Planned |
 | `speckl-playground` | Browser-based spec editor + live verification | Planned |

@@ -8,11 +8,45 @@
 // does not contain them), as are `next:` relations (parsed separately from
 // raw source) and `type` aliases (not captured as members).
 
-import { AST, SpeckNode, MemberNode, TypeExpr } from './parser.js';
+import { AST, SpeckNode, MemberNode, TypeExpr, DomainNode } from './parser.js';
 
 /** Render a parsed AST back to SpeckDL source. */
 export function printAST(ast: AST): string {
-  return ast.specks.map(printSpeck).join('\n') + '\n';
+  const chunks: string[] = [];
+  for (const imp of ast.imports ?? []) chunks.push(printMember(imp).join('\n'));
+  for (const domain of ast.domains ?? []) chunks.push(printDomain(domain));
+  for (const speck of ast.specks) chunks.push(printSpeck(speck));
+  return chunks.join('\n') + '\n';
+}
+
+function breakCommentBeforeBrace(raw: string): string {
+  let quote = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (quote) {
+      if (ch === '\\' && i + 1 < raw.length) { i++; continue; }
+      if (ch === '"') quote = false;
+      continue;
+    }
+    // `'` is post-state prime (`log'`), not a string quote.
+    if (ch === '"') { quote = true; continue; }
+    if (ch === '/' && raw[i + 1] === '/') {
+      for (let j = i + 2; j < raw.length; j++) {
+        if ((raw[j] === '{' || raw[j] === '}') && raw[j - 1] === ' ') {
+          return raw.slice(0, j - 1) + '\n' + raw.slice(j);
+        }
+      }
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function printDomain(domain: DomainNode): string {
+  const lines = [`domain ${domain.name} {`, `    members: ${domain.members.join(', ')};`];
+  if (domain.language !== undefined) lines.push(`    language: ${JSON.stringify(domain.language)};`);
+  lines.push('}');
+  return lines.join('\n');
 }
 
 function printSpeck(speck: SpeckNode): string {
@@ -234,10 +268,12 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
         lines.push(`    return ${stmt.expr}`);
         break;
       case 'ifblock':
-        lines.push(String(stmt.raw));
-        break;
       case 'forblock':
-        lines.push(String(stmt.raw));
+        // `raw` glues a trailing `//` comment onto the following lines.
+        // Break before the first brace after that comment so a reparse does
+        // not treat the rest of the block as a comment. Joining those lines
+        // with a space restores `raw`.
+        lines.push(breakCommentBeforeBrace(String(stmt.raw)));
         break;
       default:
         lines.push(`    // unprinted statement: ${stmt.type}`);
