@@ -204,6 +204,52 @@ function printInit(node: { assignments: { name: string; expr: string }[] }): str
   return lines;
 }
 
+/**
+ * A joined if/for raw can contain a `//` comment with a later `{` or `}`.
+ * Replace one space inside that comment with a newline so the brace is not
+ * commented out. The parser joins body lines with a single space, which
+ * puts the space back.
+ */
+function exposeBracesHiddenByComments(raw: string): string {
+  let text = raw;
+  for (let n = 0; n < 32; n++) {
+    const cut = commentBraceSplit(text);
+    if (cut < 0) break;
+    text = text.slice(0, cut) + '\n' + text.slice(cut + 1);
+  }
+  return text;
+}
+
+function commentBraceSplit(text: string): number {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '/' && text[i + 1] === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '/') {
+      let firstBrace = -1;
+      let lastSpace = -1;
+      for (let j = i + 2; j < text.length && text[j] !== '\n'; j++) {
+        if (text[j] === '{' || text[j] === '}') { firstBrace = j; break; }
+        if (text[j] === ' ') lastSpace = j;
+      }
+      if (firstBrace >= 0 && lastSpace > i) return lastSpace;
+      return -1;
+    }
+  }
+  return -1;
+}
+
 function printAction(action: { name: string; params: { name: string; type: TypeExpr }[]; statements: { type: string; [k: string]: unknown }[] }): string[] {
   const params = action.params.map(p => `${p.name}: ${printType(p.type)}`).join(', ');
   const lines = [`action ${action.name}(${params}) {`];
@@ -234,10 +280,13 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
         lines.push(`    return ${stmt.expr}`);
         break;
       case 'ifblock':
-        lines.push(String(stmt.raw));
-        break;
       case 'forblock':
-        lines.push(String(stmt.raw));
+        // The raw text was joined from several source lines, so a `//`
+        // comment can sit in the middle of it. Printed as one line, that
+        // comment would hide the block's closing brace. Break at a space
+        // inside the comment so the brace is code again; joining the lines
+        // with a space restores the raw text.
+        lines.push(exposeBracesHiddenByComments(String(stmt.raw)));
         break;
       default:
         lines.push(`    // unprinted statement: ${stmt.type}`);

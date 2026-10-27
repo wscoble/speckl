@@ -368,7 +368,8 @@ interface TranslatedAction {
 function translateAction(action: ActionNode, ctx: ExprCtx, recordTypes: Map<string, any[]>, natParams: Set<string>): TranslatedAction {
   const out: TranslatedAction = { guardElm: [], unhandledGuards: [], bodyElm: [], unhandledBody: [] };
 
-  for (const stmt of action.statements) {
+  for (const stmt0 of action.statements) {
+    const stmt = { ...stmt0, expr: (stmt0 as any).source ?? (stmt0 as any).expr } as typeof stmt0;
     if (stmt.type === 'require' || (stmt as any).type === 'precondition') {
       const expr = (stmt as any).expr as string;
       const t = translateExpr(expr, ctx);

@@ -30,7 +30,9 @@ describe('printer round-trip', () => {
       // Structural identity between the original and reparsed AST.
       // startLine/endLine are editor-tooling metadata: they describe the
       // source layout, not the semantics, and legitimately differ between
-      // the original and the printer's reformatted output.
+      // the original and the printer's reformatted output. `source` is the
+      // pre-strip text of an assignment or require whose trailing `//`
+      // comment was removed from `expr`; the printer emits `expr`.
       expect(stableStringify(stripLineSpans(ast2))).toEqual(stableStringify(stripLineSpans(ast1)));
 
       // Fixed point: printing the reparsed AST is stable.
@@ -49,7 +51,7 @@ function stripLineSpans(value: unknown): unknown {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k === 'startLine' || k === 'endLine') continue;
+      if (k === 'startLine' || k === 'endLine' || k === 'source') continue;
       out[k] = stripLineSpans(v);
     }
     return out;

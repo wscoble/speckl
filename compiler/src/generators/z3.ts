@@ -1044,7 +1044,9 @@ function emitActionTransition(lines: string[], action: ActionNode, stateVars: St
   const guards: string[] = [];
   const assigns: { target: string; expr: string }[] = [];
 
-  for (const s of action.statements) {
+  for (const s0 of action.statements) {
+    const prior = s0 as { expr?: string; source?: string };
+    const s = { ...s0, expr: prior.source ?? prior.expr ?? '' };
     if (s.type === 'precondition' || s.type === 'require') {
       guards.push(s.expr);
     } else if (s.type === 'assign') {
@@ -1243,7 +1245,9 @@ function emitBMC(
       const guards: string[] = [];
       const stepAssigns: string[] = [];
 
-      for (const s of action.statements) {
+      for (const s0 of action.statements) {
+        const prior = s0 as { expr?: string; source?: string };
+        const s = { ...s0, expr: prior.source ?? prior.expr ?? '' };
         if (s.type === 'precondition' || s.type === 'require') {
           guards.push(s.expr);
         } else if (s.type === 'assign') {
