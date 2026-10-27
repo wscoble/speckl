@@ -3,6 +3,7 @@ import path from 'path';
 import {
   assertLexClosed,
   inlineBlockInner,
+  lexProblem,
   lexStart,
   scanLine,
   setParseFile,
@@ -1968,6 +1969,35 @@ function parseInitBlockMultiline(lines: string[], startIndex: number, startBrace
   return parseInitBlock(stmts.join('\n'));
 }
 
+/** Code after the first `{` on a header. Comments on that line are already gone. */
+function headerAfterBrace(line: string, lineNo: number): { code: string; state: LexState } {
+  const scanned = maskCode(line, lexStart(), lineNo);
+  const openAt = scanned.text.indexOf('{');
+  return { code: scanned.code.slice(openAt + 1).trim(), state: scanned.state };
+}
+
+/**
+ * Comment-stripped text of a `{ ... }` block. Text on the header after `{`
+ * counts when the closing `}` is on a later line, so
+ * `invariant Mono { false // note` + `}` keeps `false`.
+ */
+function braceBlockBody(lines: string[], startIndex: number, startBraceCount: number): string {
+  const first = lines[startIndex].trim();
+  const inline = inlineBlockInner(first);
+  if (inline !== null) return inline;
+  const head = headerAfterBrace(first, startIndex + 1);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, head.state);
+  const parts = codeLines(lines, startIndex + 1, endIndex, head.state);
+  if (head.code) parts.unshift(head.code);
+  return parts.join(' ');
+}
+
+/** An empty invariant, verify, or constraint body must not become `true`. */
+function rejectEmptyBody(kind: string, expr: string, lineNo: number): string {
+  if (!expr.trim()) throw lexProblem(lineNo, `empty ${kind} body`);
+  return expr;
+}
+
 /**
  * Parse an `invariant Name { expr }` block into a first-class member.
  */
@@ -1977,20 +2007,10 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
   // `invariant Mono { n' >= n }` closes on this line. A prime is not a
   // string, so the `}` is structural. Scanning only the following lines
-  // would swallow the rest of the speck.
-  const inline = inlineBlockInner(firstLine);
-  if (inline !== null) return { type: 'invariant', name, expr: inline };
-  const carried = lexAfterLine(lines, startIndex);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const parts: string[] = [];
-  let invLex = carried;
-  for (let k = startIndex + 1; k < endIndex; k++) {
-    const scanned = maskCode(lines[k], invLex, k + 1);
-    invLex = scanned.state;
-    const code = scanned.code.trim();
-    if (code) parts.push(code);
-  }
-  return { type: 'invariant', name, expr: parts.join(' ') };
+  // would drop `false` from `invariant Mono { false // note` when `}` is
+  // on the next line, and the empty expression becomes `(and true)`.
+  const expr = rejectEmptyBody('invariant', braceBlockBody(lines, startIndex, startBraceCount), startIndex + 1);
+  return { type: 'invariant', name, expr };
 }
 
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
@@ -1998,7 +2018,11 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const header = parseActionHeader(firstLine);
   if (!header) return null;
 
-  const carried = lexAfterLine(lines, startIndex);
+  // `action Inc() { require false // note` with `}` on the next line keeps
+  // the statement. A block that already closes on the header is unchanged.
+  const closedOnHeader = inlineBlockInner(firstLine) !== null;
+  const head = headerAfterBrace(firstLine, startIndex + 1);
+  const carried = head.state;
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
   // Keep blank lines as null to separate statements. A line is blank when
   // the shared scanner says it has no code, so a block comment that opened
@@ -2009,6 +2033,14 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   // for/if block's stored text still contains its comments.
   type BodyEntry = { text: string; raw: string; indent: number } | null;
   const bodyEntries: BodyEntry[] = [];
+  if (!closedOnHeader && head.code) {
+    const rawHeader = lines[startIndex];
+    bodyEntries.push({
+      text: head.code,
+      raw: head.code,
+      indent: rawHeader.length - rawHeader.trimStart().length,
+    });
+  }
   {
     let bodyLex = carried;
     const bodyLinesRaw = lines.slice(startIndex + 1, endIndex);
@@ -2290,9 +2322,12 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
   if (inlineMatch && firstLine.endsWith('}')) {
     return { ...header, fields: inlineFields };
   }
-  const carried = lexAfterLine(lines, startIndex);
+  const head = headerAfterBrace(firstLine, startIndex + 1);
+  const carried = head.state;
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const innerLines = codeLines(lines, startIndex + 1, endIndex, carried);
+  const innerLines = head.code
+    ? [head.code, ...codeLines(lines, startIndex + 1, endIndex, carried)]
+    : codeLines(lines, startIndex + 1, endIndex, carried);
 
   const fields: { name: string; type: TypeExpr }[] = [];
   for (const line of innerLines) {
@@ -2865,47 +2900,18 @@ function parseVerifyBlockMultiline(lines: string[], startIndex: number, startBra
   const quotedHeaderMatch = firstLine.match(/^verify\s+"([^"]+)"\s*(?:depth\s+(\d+)\s*)?\{/);
   if (quotedHeaderMatch) {
     const name = quotedHeaderMatch[1];
-    const depth = quotedHeaderMatch[2] ? parseInt(quotedHeaderMatch[2], 10) : undefined;
-    
-    // Check if the brace closes on the same line (single-line form)
-    const bracesOnLine = braceCounts(firstLine);
-    const openBraceCount = bracesOnLine.open;
-    const closeBraceCount = bracesOnLine.close;
-    
-    if (closeBraceCount >= openBraceCount) {
-      // Single-line: body is between first { and last }
-      const openIdx = firstLine.indexOf('{');
-      const closeIdx = firstLine.lastIndexOf('}');
-      let body = firstLine.substring(openIdx + 1, closeIdx).trim();
-      // Body may contain "depth N" at the start if depth was not before the brace
-      // But in our regex we already captured depth before the brace, so body is just the expression.
-      // However, if depth was inside braces like: verify "name" { depth 2, expr }
-      // check for that pattern:
-      const depthInBody = body.match(/^\s*depth\s+(\d+)\s*,?\s*/);
-      let actualDepth = depth;
-      if (!actualDepth && depthInBody) {
-        actualDepth = parseInt(depthInBody[1], 10);
-        body = body.substring(depthInBody[0].length);
-      }
-      return { type: 'verify', name, temporalExpr: body, depth: actualDepth };
-    }
-    
-    // Multi-line: collect body from subsequent lines
-    const carried = lexAfterLine(lines, startIndex);
-    const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-    const afterBrace = firstLine.substring(firstLine.indexOf('{') + 1).trim();
-    const innerLines = codeLines(lines, startIndex + 1, endIdx, carried);
-    let body = (afterBrace + ' ' + innerLines.join(' ')).trim();
-    
-    // Check for "depth N" inside body
+    let depth = quotedHeaderMatch[2] ? parseInt(quotedHeaderMatch[2], 10) : undefined;
+    // Header text after `{` counts, and a trailing `//` is not part of it.
+    let body = braceBlockBody(lines, startIndex, startBraceCount);
+    // Body may contain "depth N" at the start if depth was not before the brace:
+    // verify "name" { depth 2, expr }
     const depthInBody = body.match(/^\s*depth\s+(\d+)\s*,?\s*/);
-    let actualDepth = depth;
-    if (!actualDepth && depthInBody) {
-      actualDepth = parseInt(depthInBody[1], 10);
+    if (!depth && depthInBody) {
+      depth = parseInt(depthInBody[1], 10);
       body = body.substring(depthInBody[0].length);
     }
-    
-    return { type: 'verify', name, temporalExpr: body, depth: actualDepth };
+    body = rejectEmptyBody('verify', body, startIndex + 1);
+    return { type: 'verify', name, temporalExpr: body, depth };
   }
   
   // Form 2: verify Always(Name) { depth N } or verify Always(Name) {
@@ -2914,36 +2920,11 @@ function parseVerifyBlockMultiline(lines: string[], startIndex: number, startBra
   
   const temporalExpr = headerMatch[1].trim();
   const name = headerMatch[2];
-  
-  // Check if the brace closes on the same line (single-line form)
-  const bracesOnLine = braceCounts(firstLine);
-  const openBraceCount = bracesOnLine.open;
-  const closeBraceCount = bracesOnLine.close;
-  
-  if (closeBraceCount >= openBraceCount) {
-    // Single-line: parse depth from same line
-    const afterBrace = firstLine.substring(firstLine.indexOf('{') + 1);
-    const beforeClose = afterBrace.substring(0, afterBrace.lastIndexOf('}')).trim();
-    const depthMatch = beforeClose.match(/\bdepth\s+(\d+)\b/);
-    const depth = depthMatch ? parseInt(depthMatch[1], 10) : undefined;
-    return { type: 'verify', name, temporalExpr, depth };
-  }
-  
-  // Multi-line block
-  let depth: number | undefined;
-  const carried = lexAfterLine(lines, startIndex);
-  const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  
-  const innerLines = codeLines(lines, startIndex + 1, endIdx, carried);
-  const inner = innerLines.join(' ');
-  
-  const afterBrace = firstLine.substring(firstLine.indexOf('{') + 1).trim();
-  
-  const depthMatch = (afterBrace + ' ' + inner).match(/\bdepth\s+(\d+)\b/);
-  if (depthMatch) {
-    depth = parseInt(depthMatch[1], 10);
-  }
-  
+  // `verify Always(Name) { depth 3 // note` with `}` on the next line still
+  // sees the depth. The property is the named invariant, not this interior.
+  const interior = braceBlockBody(lines, startIndex, startBraceCount);
+  const depthMatch = interior.match(/\bdepth\s+(\d+)\b/);
+  const depth = depthMatch ? parseInt(depthMatch[1], 10) : undefined;
   return { type: 'verify', name, temporalExpr, depth };
 }
 
@@ -2963,15 +2944,10 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
     const name = namedMatch[1];
     let expr = namedMatch[2].trim();
     
-    // If the expression opens a brace, collect the block
+    // If the expression opens a brace, collect the block. Text after `{`
+    // on the header counts; a trailing `//` is not part of the expression.
     if (expr.startsWith('{')) {
-      const carried = lexAfterLine(lines, startIndex);
-      const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-      const innerLines = codeLines(lines, startIndex + 1, endIdx, carried);
-      const inner = innerLines.join(' ');
-      // Combine: content after { on first line + content from inner lines
-      const afterBrace = expr.substring(1).trim();
-      expr = (afterBrace + ' ' + inner).trim();
+      expr = rejectEmptyBody('constraint', braceBlockBody(lines, startIndex, startBraceCount), startIndex + 1);
     } else {
       // No braces, but might still be multiline (forall spanning multiple lines)
       // Check if next line(s) continue the expression
@@ -2992,18 +2968,10 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
     const followsBrace = quotedMatch[2] === '{';
     let expr = quotedMatch[3].trim();
     if (followsBrace) {
-      if (expr.startsWith('{')) expr = expr.substring(1).trim();
-      // Single-line form: the braces balance on the header line itself
-      // (`constraint "name" { true }`) - the block walk below would overrun
-      // into later members (their content leaks in as constraint expr).
-      if (firstLine.endsWith('}')) {
-        return { type: 'constraint', name, expr: expr.replace(/}\s*$/, '').trim() };
-      }
-      const carried = lexAfterLine(lines, startIndex);
-      const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-      const innerLines = codeLines(lines, startIndex + 1, endIdx, carried).filter(l => l !== '}');
-      const inner = innerLines.join(' ');
-      expr = (expr + ' ' + inner).trim();
+      // `constraint "name" { true }` closes on this line. A header such as
+      // `constraint "name" { false // note` with `}` on the next line keeps
+      // `false`. An empty body is an error, not `true`.
+      expr = rejectEmptyBody('constraint', braceBlockBody(lines, startIndex, startBraceCount), startIndex + 1);
     }
     return { type: 'constraint', name, expr: expr.trim() };
   }
@@ -3101,9 +3069,16 @@ export function parseNextRelation(lines: string[], startIndex: number): { node: 
  *                   on outcome -> Target; timeout <dur> -> reject }
  */
 function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): AgentMemberNode {
+  const firstLine = lines[startIndex].trim();
   const carried = lexAfterLine(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const bodyLines = lines.slice(startIndex + 1, endIndex);
+  // `agent { tool go -> Go effect act // note` with `}` on the next line
+  // keeps the tool. The header line is already scanned into `carried`, so
+  // this stripped line is not scanned again and does not change that state.
+  const headerCode = inlineBlockInner(firstLine) === null ? headerAfterBrace(firstLine, startIndex + 1).code : '';
+  const bodyLines = headerCode
+    ? [headerCode, ...lines.slice(startIndex + 1, endIndex)]
+    : lines.slice(startIndex + 1, endIndex);
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
   let stages: AgentStagesMap | undefined;
@@ -3111,6 +3086,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   const harnesses: AgentHarnessSpec[] = [];
   let i = 0;
   let agentLex = carried;
+  let headerStmt = headerCode !== '';
   const lineNo = (bodyIndex: number) => startIndex + 2 + bodyIndex;
   const takeSub = (openOnLine: number): { inner: string[]; next: number } => {
     const after = agentLex;
@@ -3124,12 +3100,18 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
 
   while (i < bodyLines.length) {
     const raw = bodyLines[i];
-    const scanned = maskCode(raw, agentLex, lineNo(i));
-    agentLex = scanned.state;
-    const line = scanned.code.trim();
-    if (!line) {
-      i++;
-      continue;
+    let line: string;
+    if (headerStmt) {
+      line = raw.trim();
+      headerStmt = false;
+    } else {
+      const scanned = maskCode(raw, agentLex, lineNo(i));
+      agentLex = scanned.state;
+      line = scanned.code.trim();
+      if (!line) {
+        i++;
+        continue;
+      }
     }
 
     // stages <var> { ... }

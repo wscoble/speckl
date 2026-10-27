@@ -12,10 +12,16 @@ export interface LexState {
   kind: 'code' | 'block' | 'string';
   /** 1-based line where the open block comment or string began. 0 in code. */
   openLine: number;
+  /**
+   * 1-based line where a block comment closed and the next character opened
+   * a string, because a `"` sat immediately against the closer. 0 otherwise.
+   * The string error names that close.
+   */
+  commentClosedInString: number;
 }
 
 export function lexStart(): LexState {
-  return { kind: 'code', openLine: 0 };
+  return { kind: 'code', openLine: 0, commentClosedInString: 0 };
 }
 
 /** File currently being parsed, so errors can name it. Empty outside a parse. */
@@ -35,7 +41,10 @@ export function lexProblem(line: number, detail: string): Error {
 
 export function assertLexClosed(state: LexState): void {
   if (state.kind === 'block') throw lexProblem(state.openLine, 'unterminated block comment');
-  if (state.kind === 'string') throw lexProblem(state.openLine, 'unterminated string');
+  if (state.kind === 'string') {
+    const why = state.commentClosedInString ? ': a block comment closed inside a string' : '';
+    throw lexProblem(state.openLine, `unterminated string${why}`);
+  }
 }
 
 export interface Scan {
@@ -53,6 +62,7 @@ export interface Scan {
 export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1): Scan {
   let kind = state.kind;
   let openLine = state.openLine;
+  let commentClosedInString = state.commentClosedInString;
   let mask = '';
   let code = '';
   const open = (next: 'block' | 'string') => {
@@ -76,15 +86,23 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
       }
       mask += ch === '"' ? ch : ' ';
       code += ch;
-      if (ch === '"') close();
+      if (ch === '"') {
+        commentClosedInString = 0;
+        close();
+      }
       continue;
     }
     if (kind === 'block') {
       if (ch === '*' && next === '/') {
+        // A quote hard against both sides of the closer means the closer
+        // sat inside what the author wrote as a string. The quote after it
+        // then opens a real string. Remember the line for that error.
+        const closedInsideString = input[i - 1] === '"' && input[i + 2] === '"';
         mask += '  ';
         code += '  ';
         i++;
         close();
+        if (closedInsideString) commentClosedInString = lineNo;
         continue;
       }
       mask += ' ';
@@ -115,7 +133,7 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
     mask += ch;
     code += ch;
   }
-  return { mask, code, state: { kind, openLine } };
+  return { mask, code, state: { kind, openLine, commentClosedInString } };
 }
 
 /** Drop comments. String contents, including `""` and `"\\"`, stay. */
