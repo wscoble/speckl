@@ -764,6 +764,35 @@ function unsupportedVerify(line: string, index: number): Error {
  * A brace in `require n > "}"` is text, not the end of the block.
  * Returns true from `visit` to stop.
  */
+/**
+ * Remove a block comment, which may start or end on another line.
+ * A line comment is left in place so a for/if raw keeps the source text.
+ * A single quote is not a string quote.
+ */
+function stripBlockCommentState(text: string, inBlock: boolean): { text: string; inBlock: boolean } {
+  let out = '';
+  let i = 0;
+  let inStr = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inBlock) {
+      if (c === '*' && text[i + 1] === '/') { inBlock = false; i += 2; continue; }
+      i++;
+      continue;
+    }
+    if (inStr && c === '\\') { out += text.slice(i, i + 2); i += 2; continue; }
+    if (c === '"') { inStr = !inStr; out += c; i++; continue; }
+    if (!inStr && c === '/' && text[i + 1] === '/') {
+      out += text.slice(i);
+      break;
+    }
+    if (!inStr && c === '/' && text[i + 1] === '*') { inBlock = true; i += 2; continue; }
+    out += c;
+    i++;
+  }
+  return { text: out, inBlock };
+}
+
 /** Drop a `//` comment that is not inside a double-quoted string. */
 function stripLineCommentOutsideStrings(text: string): string {
   let inStr = false;
@@ -2080,11 +2109,23 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   // Keep blank lines as null to separate statements, filter only comments.
   // Preserve indentation: it bounds colon-form if/else regions.
   type BodyEntry = { text: string; indent: number } | null;
-  const bodyEntries: BodyEntry[] = lines.slice(startIndex + 1, endIndex).map(l => {
-    const trimmed = l.trim();
-    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
-    return { text: trimmed, indent: l.length - l.trimStart().length };
-  });
+  const bodyEntries: BodyEntry[] = [];
+  let inBlockComment = false;
+  for (const l of lines.slice(startIndex + 1, endIndex)) {
+    const stripped = stripBlockCommentState(l, inBlockComment);
+    inBlockComment = stripped.inBlock;
+    const trimmed = stripped.text.trim();
+    // A line that is only a `//` or a `/* */` is not a statement. A `/* */`
+    // that spans lines must not leave the emit inside it as a statement.
+    if (!trimmed || trimmed.startsWith('//')) {
+      bodyEntries.push(null);
+      continue;
+    }
+    bodyEntries.push({ text: trimmed, indent: l.length - l.trimStart().length });
+  }
+  if (inBlockComment) {
+    throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} has an unterminated block comment`);
+  }
   // A statement sharing the opening or closing line is still a statement:
   // `action Go { cost 1` / `cost 2 }` must not disappear between the braces.
   const headerTail = firstLine.slice(firstLine.indexOf('{') + 1).trim();
@@ -2223,9 +2264,69 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       statements.push({ type: 'return', expr: stmt.substring(7).trim() });
       continue;
     }
-    // emit Event { fields }
-    const emitMatch = stmt.match(/^emit\s+(\w+)\s*\{\s*(.*)\s*\}$/);
-    if (emitMatch) {
+    // while / match are not run by the agent machine. A block that contains
+    // emit must be a parse error, not a straight-line emit.
+    if (/^(while|match)\b/.test(stmt)) {
+      const kind = /^while\b/.test(stmt) ? 'while' : 'match';
+      let braceDepth = 0;
+      let j = i;
+      let sawBrace = false;
+      const blockLines: string[] = [];
+      while (j < bodyLines.length) {
+        const line = bodyLines[j];
+        if (line === null) { j++; continue; }
+        blockLines.push(line);
+        // Count braces outside strings and `//` comments so `while n { // }`
+        // still owns the following lines. This is the while/match collector
+        // only; the shared brace scan is unchanged.
+        const codeLine = stripLineCommentOutsideStrings(line);
+        let inStr = false;
+        for (let k = 0; k < codeLine.length; k++) {
+          const ch = codeLine[k];
+          if (inStr && ch === '\\') { k++; continue; }
+          if (ch === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (ch === '{') { braceDepth++; sawBrace = true; }
+          else if (ch === '}') braceDepth--;
+        }
+        j++;
+        if (sawBrace && braceDepth <= 0) break;
+        if (!sawBrace) {
+          let k = j;
+          while (k < bodyLines.length && bodyLines[k] === null) k++;
+          const next = k < bodyLines.length ? stripLineCommentOutsideStrings(bodyLines[k]!).trim() : '';
+          if (!next.startsWith('{')) break;
+        }
+      }
+      const code = blockLines.map(l => stripLineCommentOutsideStrings(l)).join('\n');
+      if (/\bemit\b/.test(code)) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} ${kind} is not supported and must not contain emit`);
+      }
+      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
+      i = j - 1;
+      continue;
+    }
+    // emit Event { fields }. A trailing `//` comment is not part of the
+    // statement (`emit X { } // c`). A bare `emit X` is an error, not a drop.
+    // An unclosed `{` is a multi-line emit. Those are not statements here,
+    // same as before: joining them would change the example machines.
+    const emitCode = stripLineCommentOutsideStrings(stmt).trim();
+    if (/^emit\b/.test(emitCode)) {
+      const emitMatch = emitCode.match(/^emit\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*(.*)\s*\}$/);
+      if (!emitMatch) {
+        let depth = 0;
+        let inStr = false;
+        for (let k = 0; k < emitCode.length; k++) {
+          const ch = emitCode[k];
+          if (inStr && ch === '\\') { k++; continue; }
+          if (ch === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (ch === '{') depth++;
+          else if (ch === '}') depth--;
+        }
+        if (depth > 0) continue;
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} emit must be \`emit Name { ... }\`, got ${JSON.stringify(emitCode)}`);
+      }
       const eventName = emitMatch[1];
       const fieldsStr = emitMatch[2];
       const fields: { name: string; value: string }[] = [];

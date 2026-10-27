@@ -56,8 +56,11 @@ export function emitHookMjs(speckName: string): string {
  * An act post with no matching pre is a deny. That deny is still a
  * completion signal, but it does not keep the caller's ok, kpis, or
  * trace_id: ok is false, kpis is empty, and the trace is a fresh flagged
- * root. Observe tools do not get one. kpis are the straight-line emits
- * only. An emit inside an if, a for, or a comment is not included.
+ * root. Observe tools do not get one. kpis are straight-line
+ * \`emit Name { }\` only. An emit inside an if, a for, a // comment, or a
+ * block comment is not included. while and match that contain emit are
+ * a parse error. A bare \`emit Name\` is a parse error. An emit Name
+ * { whose } is on a later line is not a statement and is not tagged.
  *
  * A call-bound sign-off (await \`bind call\`) allows one later call whose
  * digest matches the signed \`call\` hash, and only once that call's post

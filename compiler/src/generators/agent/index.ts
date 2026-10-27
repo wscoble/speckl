@@ -157,9 +157,12 @@ export interface AgentRuntimeConfig {
 
 /**
  * Events this action emits on the generated agent machine.
- * Only a straight-line `emit` counts. An `emit` inside an `if` or `for`
- * does not: those bodies are not run by the machine. An `emit` in a
- * comment is not an emit. The list stops at `return`.
+ * Only a straight-line `emit Name { }` counts. An `emit` inside an `if`
+ * or `for` does not: those bodies are not run by the machine. An `emit`
+ * in a `//` comment or a block comment is not an emit. `while` and
+ * `match` blocks that contain `emit` are a parse error. An emit whose
+ * closing brace is on a later line is not a statement. The list stops
+ * at `return`.
  */
 function emittedEventNames(action: ActionNode): string[] {
   const names: string[] = [];
@@ -513,11 +516,19 @@ function buildAgentsMd(
   lines.push('  `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` from the action or,');
   lines.push('  when the action has none, from the domain. A supplied `parent_branch_id` that');
   lines.push('  is not an id is flagged; it is not stored as a quiet root. `kpis` are the tags');
-  lines.push('  on straight-line `emit`s only. An `emit` inside an `if`, a `for`, or a comment');
-  lines.push('  is not included. An act `post` with no matching `pre` is a deny. That deny does');
+  lines.push('  on straight-line `emit Name { }` only. An `emit` inside an `if`, a `for`, a');
+  lines.push('  `//` comment, or a block comment is not included. `while` and `match` that');
+  lines.push('  contain `emit` are a parse error, and a bare `emit Name` is a parse error.');
+  lines.push('  An `emit Name {` whose `}` is on a later line is not a statement and is not tagged.');
+  lines.push('  An act `post` with no matching `pre` is a deny. That deny does');
   lines.push('  not keep the caller\'s `ok`, `kpis`, or `trace_id`. `speckl trace report`');
-  lines.push('  reads the log offline. With `--state` it checks the keyed decision head, so a');
-  lines.push('  shortened or deleted log fails. Without `--key` it prints `macs not checked`.');
+  lines.push('  reads the log offline. With `--state`, a shortened or deleted log fails when');
+  lines.push('  `head.json` is still there. If `<state>.decisions/` exists without `head.json`,');
+  lines.push('  the report and `signal.mjs verify` fail. If that directory is absent, there is');
+  lines.push('  no record. The report prints `macs checked` only when `--key` checked at least');
+  lines.push('  one line; otherwise it prints `macs not checked`. An older log and its matching');
+  lines.push('  head from the same run still verify: there is no anchor outside this directory.');
+  lines.push('  A `//` brace is ignored only when that line has not already opened a `{`.');
   lines.push('  It does not run the agent and it does not enforce a queue.');
   lines.push('  The durations it prints are a throughput signal, not a risk signal.');
   lines.push('');

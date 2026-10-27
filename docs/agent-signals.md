@@ -435,8 +435,11 @@ decision line. The line's `signal` is `prime`. The fields are:
   and `priority`. Priority is the action's `priority` label, or the
   domain's when the action has none, or null.
 - `kpis`, the `kpi "<name>"` tags of events that action emits with a
-  straight-line `emit`, in source order, once each. An `emit` inside an
-  `if`, a `for`, or a comment is not included. The generated agent
+  straight-line `emit Name { }`, in source order, once each. An `emit`
+  inside an `if`, a `for`, a `//` comment, or a `/* */` comment is not
+  included. `while` and `match` blocks that contain `emit` are a parse
+  error, and so is a bare `emit Name`. `emit Name { } // comment` and
+  `/* comment */ emit Name { }` are real emits. An `emit Name {` whose `}` is on a later line is not a statement and is not tagged. The generated agent
   machine does not run `if` or `for` bodies, so those emits do not happen
   there. The tag is static. The hook does not read a runtime payload.
 
@@ -463,23 +466,40 @@ when a forged line still carries tags. A priority that was null is printed
 as `(none)`.
 
 The second line of the report is `macs checked` or `macs not checked`.
-Macs are checked only when `--key` is passed. A matching mac still proves
-nothing to an outside auditor. A chain rebuilt without the key can have a
-valid hash; the report then prints `macs not checked` and those numbers
-are not a verified seal.
+`macs checked` is printed only when `--key` was passed and at least one
+line was MAC-verified. An empty log prints `macs not checked` even with
+`--key`. A matching mac still proves nothing to an outside auditor. A
+chain rebuilt without the key can have a valid hash; the report then
+prints `macs not checked` and those numbers are not a verified seal.
 
 The command checks the hash chain of the bytes it read. A line with no
-trailing newline is torn and fails. With `--state`, `head.json` is checked
-when it exists: `seq` and `hash`, and the head mac when `--key` is passed.
+trailing newline is torn and fails. With `--state`, if `head.json` exists
+it is checked: `seq` and `hash`, and the head mac when `--key` is passed.
 A log shorter than that head, or a missing log when the head is not empty,
 fails with `decision record truncated`. A log longer than the head is an
-uncommitted suffix and is accepted. A missing head is accepted. `--log`
-does not read a head, so deleting whole lines from the tail of a file
-passed only as `--log` can still leave a hash-valid prefix. The command
-does not run the agent, does not advance state, and does not enforce a
-queue. A pending call that expired or was cleared is still an open pre in
-this report, because that clear lives in `state.log`, not in a completion
-signal. The durations are a throughput signal, not a risk signal.
+uncommitted suffix and is accepted. If `<state>.decisions/` exists and
+`head.json` does not, the report and `signal.mjs verify` fail with
+`decision head missing`. Deleting the head and shortening the log is that
+case. If the decisions directory is absent, there is no record to check.
+`--log` does not read a head, so deleting whole lines from the tail of a
+file passed only as `--log` can still leave a hash-valid prefix.
+
+An older `log.jsonl` put back with the `head.json` that belonged to it,
+or an older snapshot of `state.json` and `<state>.decisions/` from the
+same run, still passes the report and `signal.mjs verify`. Nothing
+outside that directory anchors the record, so a rollback is not detected.
+
+A `//` brace is ignored only when that line has not already opened a
+`{`. These are not handled: `action Go { // }` (the `}` in the comment
+closes the action), `{ // {` on an event or action line that already
+opened a brace, and `} /* { */` between specks. A single quote is not a
+string quote.
+
+The command does not run the agent, does not advance state, and does not
+enforce a queue. A pending call that expired or was cleared is still an
+open pre in this report, because that clear lives in `state.log`, not in
+a completion signal. The durations are a throughput signal, not a risk
+signal.
 
 ```
 speckl trace report --state ./state.json

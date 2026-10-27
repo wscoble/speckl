@@ -7,10 +7,13 @@
 // signal, not a risk signal.
 //
 // The hash chain of the bytes read is checked. With --state, head.json is
-// checked too (seq and hash, and the head mac when --key is passed), so a
-// shortened or deleted log fails. --log does not know the head. The HMAC
-// is checked only when a key is passed, and the report says so. That HMAC
-// is a shared-key seal. It proves nothing to an outside auditor.
+// required whenever <state>.decisions/ exists. A shortened or deleted log
+// fails when that head is still there. --log does not know the head. The
+// HMAC is checked only when a key is passed and the log has a line, and
+// the report says so. An empty log prints "macs not checked". That HMAC
+// is a shared-key seal. It proves nothing to an outside auditor. An older
+// log and its matching head from the same run still verify: there is no
+// anchor outside this directory.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -391,19 +394,22 @@ export const TRACE_USAGE = [
   '                 when --state is used',
   '',
   'The hash chain of the bytes read is always checked. A line with no',
-  'trailing newline is torn and fails. With --state, a head that exists',
-  'is checked for seq and hash (and its mac with --key). A log shorter',
+  'trailing newline is torn and fails. With --state, if head.json exists',
+  'it is checked for seq and hash (and its mac with --key). A log shorter',
   'than that head, or a missing log when the head is not empty, fails.',
   'A log longer than the head is an uncommitted suffix and is accepted.',
-  'A missing head is accepted. --log cannot see a head, so a shortened',
-  'prefix that still hashes can pass.',
+  'If <state>.decisions/ exists and head.json does not, the report fails.',
+  'If that directory is absent, there is no record. --log cannot see a',
+  'head, so a shortened prefix that still hashes can pass.',
   '',
-  'Without --key the report prints "macs not checked". With --key it',
-  'prints "macs checked" after the macs match. A chain rebuilt without',
-  'the key can have a valid hash. That is not a verified seal. The HMAC',
-  'is a shared-key seal. It proves nothing to an outside auditor:',
-  'anyone who can read the key can forge a line, and someone without the',
-  'key cannot check the mac.',
+  'The report prints "macs checked" only when --key was passed and at',
+  'least one line was MAC-verified. Otherwise it prints "macs not checked",',
+  'including an empty log. A chain rebuilt without the key can have a',
+  'valid hash. That is not a verified seal. Replacing the log and head',
+  'with an older pair from the same run is accepted: there is no anchor',
+  'outside this directory. The HMAC is a shared-key seal.',
+  'It proves nothing to an outside auditor: anyone who can read the key',
+  'can forge a line, and someone without the key cannot check the mac.',
   '',
   'This command does not run the agent and does not enforce a queue.',
   'The durations are a throughput signal, not a risk signal.',
@@ -494,8 +500,15 @@ export function runTrace(argv: string[]): number {
     }
   }
   if (stateObj) {
-    const headPath = statePath + '.decisions/head.json';
-    if (fs.existsSync(headPath)) {
+    const dirPath = statePath + '.decisions';
+    const headPath = dirPath + '/head.json';
+    const dirExists = fs.existsSync(dirPath);
+    const headExists = fs.existsSync(headPath);
+    if (dirExists && !headExists) {
+      console.error('speckl trace report: decision head missing');
+      return 1;
+    }
+    if (headExists) {
       let headRaw: string;
       try { headRaw = fs.readFileSync(headPath, 'utf8'); }
       catch {
@@ -526,6 +539,7 @@ export function runTrace(argv: string[]): number {
       return 1;
     }
   }
-  process.stdout.write(formatTraceReport(read.lines, key !== undefined));
+  const macsChecked = key !== undefined && read.lines.length > 0;
+  process.stdout.write(formatTraceReport(read.lines, macsChecked));
   return 0;
 }

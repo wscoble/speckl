@@ -360,19 +360,12 @@ function loadDecisionHead(paths, state, key) {
   const dirExists = fs.existsSync(paths.dir);
   const headExists = dirExists && fs.existsSync(paths.head);
   const logExists = dirExists && fs.existsSync(paths.log);
-  if (!headExists && !logExists) {
-    // A leftover head tmp from a crashed rename is not a record. Anything else
-    // in the directory without a head or a log is not a chain we can extend.
-    if (dirExists && fs.readdirSync(paths.dir).some(n => !n.includes('.tmp.'))) {
-      throw new Error('decision head missing');
-    }
-    return { head: freshDecisionHead(state), buf: Buffer.alloc(0) };
-  }
   if (!headExists) {
-    // Append landed and the process died before the head was replaced.
-    // The lines are an uncommitted suffix of a fresh chain; the next append
-    // adopts them if they verify, and refuses them if they do not.
-    return { head: freshDecisionHead(state), buf: fs.readFileSync(paths.log) };
+    // A log, or any decisions directory, without head.json is not an empty
+    // record. Treating it as a fresh chain let a deleted head plus a shortened
+    // log verify. No directory at all is an empty record.
+    if (dirExists || logExists) throw new Error('decision head missing');
+    return { head: freshDecisionHead(state), buf: Buffer.alloc(0) };
   }
   let head;
   try { head = JSON.parse(fs.readFileSync(paths.head, 'utf-8')); }

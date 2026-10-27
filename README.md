@@ -213,16 +213,25 @@ reuses it), `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority`. A
 parent that is present but not an id is flagged. An act post with no
 matching pre is a deny. That deny is still the signal, and it does not
 keep the caller's `ok`, `kpis`, or `trace_id`. `kpis` on the tool are
-straight-line `emit`s only. An `emit` inside an `if`, a `for`, or a
-comment is not tagged. `speckl trace report` reads the log offline.
-Drain and the KPI list count only an allow post that matched an allow
-pre, and each KPI line shows the verdict. With `--state` the report
-checks the decision head, so a shortened or deleted log fails. `--log`
-alone does not know the head. A line with no trailing newline is torn
-and fails. Without `--key` the report prints `macs not checked`. It does
-not run the agent or enforce a queue. Those durations are a throughput
-signal, not a risk signal. The decision record stays a shared-key HMAC.
-That seal proves nothing to an outside auditor.
+straight-line `emit Name { }` only. An `emit` inside an `if`, a `for`,
+a `//` comment, or a block comment is not tagged. `while` and `match`
+that contain `emit`, and a bare `emit Name`, are parse errors.
+An `emit Name {` whose `}` is on a later line is not a statement and is not tagged.
+`speckl trace report` reads the log offline. Drain and the KPI list
+count only an allow post that matched an allow pre, and each KPI line
+shows the verdict. With `--state`, a shortened or deleted log fails
+while `head.json` is still there. A decisions directory without
+`head.json` fails the report and `signal.mjs verify`. If that directory
+is absent, there is no record, and the report does not print
+`macs checked`. It prints `macs checked` only when `--key` checked at
+least one line. `--log` alone does not know the head. A line with no
+trailing newline is torn and fails. An older log and its matching head
+from the same run still verify: there is no anchor outside this
+directory. A `//` brace is ignored only when that line has not already
+opened a `{`. The report does not run the agent or enforce a queue.
+Those durations are a throughput signal, not a risk signal. The decision
+record stays a shared-key HMAC. That seal proves nothing to an outside
+auditor.
 
 **Not yet implemented:** a package registry for `version` pins (the pin is
 stored, and `hash` is checked); rewriting expressions that name an imported

@@ -388,18 +388,24 @@ branch id unique in that log, the parent branch, the call, whether it
 was ok, the time, and the priority. A parent that is present but not an
 id is flagged. An act post with no matching pre is denied and still
 logged, without the caller's ok, kpi tags, or trace id. A kpi tag is
-recorded only for a straight-line `emit`. An `emit` in an `if`, a `for`,
-or a comment is not tagged. `speckl trace report` reads that log offline.
-Per priority it prints drain latency, how long the allow completion
-lagged the allow pre, and how deep that allow queue was. Only an allow
-post that matched an allow pre is a drain leaf or a KPI line, and each
-KPI line shows the verdict. With `--state` the report checks the decision
-head, so a shortened or deleted log fails. `--log` alone does not know
-the head. A line with no trailing newline is torn and fails. Without
-`--key` the report prints `macs not checked`. The report does not run the
-agent and does not enforce a queue. Duration here is a throughput signal,
-not a risk signal. The log's seal is a shared-key HMAC. It proves nothing
-to an outside auditor.
+recorded only for a straight-line `emit Name { }`. An `emit` in an `if`,
+a `for`, a `//` comment, or a block comment is not tagged. `while` and
+`match` that contain `emit`, and a bare `emit Name`, are parse errors.
+An `emit Name {` whose `}` is on a later line is not a statement and is not tagged.
+`speckl trace report` reads that log offline. Per priority it prints
+drain latency, how long the allow completion lagged the allow pre, and
+how deep that allow queue was. Only an allow post that matched an allow
+pre is a drain leaf or a KPI line, and each KPI line shows the verdict.
+With `--state`, a shortened or deleted log fails while `head.json` is
+still there. A decisions directory without `head.json` fails. The report
+prints `macs checked` only when `--key` checked at least one line.
+`--log` alone does not know the head. A line with no trailing newline
+is torn and fails. An older log and its matching head from the same run
+still verify: there is no anchor outside this directory. A `//` brace
+is ignored only when that line has not already opened a `{`. The report
+does not run the agent and does not enforce a queue. Duration here is a
+throughput signal, not a risk signal. The log's seal is a shared-key
+HMAC. It proves nothing to an outside auditor.
 
 **Not yet implemented:** a tick scheduler, queues, and runtime routing from
 one domain to another. The budget query does not install a scheduler.

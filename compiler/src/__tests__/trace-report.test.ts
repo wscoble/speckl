@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -176,6 +176,59 @@ speck B {
     const f = ast.specks[1].members.find(m => m.type === 'event');
     expect(e && e.type === 'event' && e.kpi).toBe('a{b');
     expect(f && f.type === 'event' && f.kpi).toBe('a}b');
+  });
+
+  // These three still fail. The per-line brace scan is not being extended:
+  // PR #41 is replacing it with one comment- and string-aware scanner (a
+  // single quote is not a quote). Unskip after that scanner is merged.
+  // Until then a `{` already open on the line still counts braces after `//`,
+  // and `/* */` is not a comment to that scan.
+  it.skip('action Go { // } must not close the action (skipped: per-line scan counts } after // once { is open; waiting for the shared scanner)', () => {
+    const src = `speck A {
+    action Go { // }
+        n := n + 1
+    }
+}
+speck B {
+    event F { }
+}
+`;
+    const ast = parseSpeckContent(src);
+    expect(ast.specks.map(s => s.name)).toEqual(['A', 'B']);
+    const go = ast.specks[0].members.find(m => m.type === 'action' && m.name === 'Go');
+    expect(go && go.type === 'action' && go.statements.some(s => s.type === 'assign' && s.target === 'n')).toBe(true);
+  });
+
+  it.skip('{ // { on an event or action line must not swallow the next speck (skipped: per-line scan counts { after // when a brace is already open; waiting for the shared scanner)', () => {
+    const eventSrc = `speck A {
+    event E kpi "x" { // {
+}
+speck B {
+    event F { }
+}
+`;
+    expect(parseSpeckContent(eventSrc).specks.map(s => s.name)).toEqual(['A', 'B']);
+    const actionSrc = `speck A {
+    action Go { // start {
+        n := n + 1
+    }
+}
+speck B {
+    event F { }
+}
+`;
+    expect(parseSpeckContent(actionSrc).specks.map(s => s.name)).toEqual(['A', 'B']);
+  });
+
+  it.skip('} /* { */ between specks must not drop the next speck (skipped: per-line scan does not treat /* */ as a comment; waiting for the shared scanner)', () => {
+    const src = `speck A {
+    event E { }
+} /* { */
+speck B {
+    event F { }
+}
+`;
+    expect(parseSpeckContent(src).specks.map(s => s.name)).toEqual(['A', 'B']);
   });
 
   it('rejects two kpi tags for one event name', () => {
@@ -500,7 +553,10 @@ describe('speckl trace report', () => {
     const open = run(['report', '--state', state, '--key', join(dir, 'k')]);
     expect(open.code, open.err).toBe(0);
     unlinkSync(state + '.decisions/head.json');
-    expect(run(['report', '--state', state, '--key', join(dir, 'k')]).code).toBe(0);
+    const missingHead = run(['report', '--state', state, '--key', join(dir, 'k')]);
+    expect(missingHead.code).toBe(1);
+    expect(missingHead.err).toMatch(/decision head missing/);
+    expect(missingHead.out).toBe('');
     const other = { ...head, runId: 'nope' };
     expect(checkDecisionHead(parsed.lines, other, stateObj, key)).toMatch(/different state/);
     expect(checkDecisionHead(parsed.lines, { ...head, genesis: 'nope' }, stateObj, key)).toMatch(/genesis mismatch/);
@@ -512,6 +568,68 @@ describe('speckl trace report', () => {
     expect(checkDecisionHead(parsed.lines, { ...head, v: 2 }, stateObj)).toMatch(/version 1/);
     expect(checkDecisionHead(parsed.lines, { ...head, seq: -2 }, stateObj)).toMatch(/truncated/);
     expect(checkDecisionHead(parsed.lines, { ...head, keyId: 'other' }, stateObj)).toMatch(/different state/);
+  });
+
+  it('fails when a log or decisions dir has no head, and does not claim macs on an empty record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-trace-nohead-'));
+    const stateObj = { runId: 'run', specHash: 'spec', keyId: null as string | null };
+    const key = Buffer.alloc(32, 5);
+    const genesis = decisionGenesis(stateObj);
+    const text = chain([
+      baseLine({ verdict: 'allow', reason: null, call_id: 'c1', trace_id: 'tr', branch_id: 'b1', parent_branch_id: null, priority: 'P0', trace_flagged: false }),
+      baseLine({ phase: 'post', signal: 'prime', verdict: 'allow', reason: null, call_id: 'c1', ok: true, ts: '2026-01-01T00:00:01.000Z', trace_id: 'tr', branch_id: 'b1', parent_branch_id: null, priority: 'P0', trace_flagged: false, kpis: ['notes'] }),
+    ], genesis, key);
+    const state = join(dir, 'state.json');
+    writeFileSync(state, JSON.stringify(stateObj));
+    writeFileSync(join(dir, 'k'), key.toString('hex'));
+    const sign = (seq: number, hash: string) => {
+      const row: Record<string, unknown> = {
+        v: 1, runId: stateObj.runId, specHash: stateObj.specHash, keyId: null, genesis, seq, hash,
+      };
+      const rest: Record<string, unknown> = {};
+      for (const k of Object.keys(row)) rest[k] = row[k];
+      row.mac = crypto.createHmac('sha256', key).update(canonical(rest)).digest('hex');
+      return JSON.stringify(row);
+    };
+    mkdirSync(state + '.decisions');
+    const log = state + '.decisions/log.jsonl';
+    writeFileSync(log, text);
+    const parsed = readDecisionLog(text);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const last = parsed.lines[parsed.lines.length - 1];
+    writeFileSync(state + '.decisions/head.json', sign(last.seq, last.hash));
+    const present = run(['report', '--state', state, '--key', join(dir, 'k')]);
+    expect(present.code, present.err).toBe(0);
+    expect(present.out.split('\n')[1]).toBe('macs checked');
+
+    unlinkSync(state + '.decisions/head.json');
+    const noHead = run(['report', '--state', state, '--key', join(dir, 'k')]);
+    expect(noHead.code).toBe(1);
+    expect(noHead.err).toMatch(/decision head missing/);
+    expect(noHead.out).toBe('');
+
+    writeFileSync(log, text.trimEnd().split('\n').slice(0, 1).join('\n') + '\n');
+    const shortened = run(['report', '--state', state, '--key', join(dir, 'k')]);
+    expect(shortened.code).toBe(1);
+    expect(shortened.err).toMatch(/decision head missing/);
+    expect(shortened.out).toBe('');
+
+    unlinkSync(log);
+    const logGone = run(['report', '--state', state, '--key', join(dir, 'k')]);
+    expect(logGone.code).toBe(1);
+    expect(logGone.err).toMatch(/decision head missing/);
+
+    rmSync(state + '.decisions', { recursive: true });
+    const dirGone = run(['report', '--state', state, '--key', join(dir, 'k')]);
+    expect(dirGone.code, dirGone.err).toBe(0);
+    expect(dirGone.out.split('\n')[1]).toBe('macs not checked');
+
+    mkdirSync(state + '.decisions');
+    writeFileSync(state + '.decisions/head.json', sign(-1, genesis));
+    const empty = run(['report', '--state', state, '--key', join(dir, 'k')]);
+    expect(empty.code, empty.err).toBe(0);
+    expect(empty.out.split('\n')[1]).toBe('macs not checked');
   });
 
   it('the CLI entry prints the same report', () => {
@@ -574,6 +692,63 @@ domain D { members: S; produces Ghost, Hidden, Also, Seen; }
     generateAgent(parseSpeckContent(src, srcFile), { outputDir: dir, sourcePath: srcFile });
     const cfg = JSON.parse(readFileSync(join(dir, 'agent', 'agent-config.json'), 'utf8'));
     expect(cfg.tools[0].kpis).toEqual(['seen']);
+  });
+
+  it('does not tag an emit inside a block comment, and parses or rejects a braced emit', () => {
+    const kpiOf = (body: string) => {
+      const src = `speck S {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+${body}
+    }
+    event Ghost kpi "ghost" { }
+    event Hidden kpi "hidden" { }
+    event Noted kpi "noted" { }
+    event Seen kpi "seen" { }
+    agent {
+        tool go -> Go effect act
+    }
+    next: Go
+}
+domain D { members: S; produces Ghost, Hidden, Noted, Seen; }
+`;
+      const dir = mkdtempSync(join(tmpdir(), 'speckl-kpi-emit-'));
+      const srcFile = join(dir, 's.speckdl');
+      writeFileSync(srcFile, src);
+      generateAgent(parseSpeckContent(src, srcFile), { outputDir: dir, sourcePath: srcFile });
+      const cfg = JSON.parse(readFileSync(join(dir, 'agent', 'agent-config.json'), 'utf8'));
+      return cfg.tools[0].kpis as string[] | undefined;
+    };
+    const body = (lines: string[]) => lines.map(l => '        ' + l).join('\n');
+    expect(kpiOf(body([
+      '/*',
+      'emit Ghost { }',
+      '*/',
+      'emit Seen { }',
+    ]))).toEqual(['seen']);
+    expect(kpiOf(body(['/* emit Ghost { } */', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['emit Noted { } // c']))).toEqual(['noted']);
+    expect(kpiOf(body(['/* c */ emit Noted { }']))).toEqual(['noted']);
+    expect(kpiOf(body(['while n > 0 { n := n + 1 }', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['while n > 0', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['while n > 0 {', '', '    n := n + 1', '}', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['while n > 0 { let s := "a{b}" }', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['while n > 0 { let s := "\\"" }', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['let s := "/*"', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['let s := "a \\" /*"', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['n := 1 // /*', 'emit Seen { }']))).toEqual(['seen']);
+    expect(kpiOf(body(['emit Seen { n: "a}b" }']))).toEqual(['seen']);
+    expect(kpiOf(body(['while n > 0 {', '    // emit Hidden { }', '}', 'emit Seen { }']))).toEqual(['seen']);
+    expect(() => kpiOf(body(['while n > 0 { emit Hidden { } }']))).toThrow(/not supported and must not contain emit/);
+    expect(() => kpiOf(body(['while n > 0 {', '    emit Hidden { }', '}']))).toThrow(/not supported and must not contain emit/);
+    expect(() => kpiOf(body(['while n > 0 { // }', '    emit Hidden { }', '}']))).toThrow(/not supported and must not contain emit/);
+    expect(() => kpiOf(body(['while n > 0', '{', '    emit Hidden { }', '}']))).toThrow(/not supported and must not contain emit/);
+    expect(() => kpiOf(body(['match n { emit Hidden { } }']))).toThrow(/not supported and must not contain emit/);
+    expect(() => kpiOf(body(['match n {', '    1 => emit Hidden { }', '}']))).toThrow(/not supported and must not contain emit/);
+    expect(kpiOf(body(['emit Seen {', '    n: n', '}']))).toBeUndefined();
+    expect(() => kpiOf(body(['emit Ghost']))).toThrow(/emit must be/);
+    expect(() => kpiOf(body(['/*', 'emit Ghost { }']))).toThrow(/unterminated block comment/);
   });
 
   it('seals trace fields, keeps branch ids unique, and denies an act post with no pre', async () => {
@@ -738,5 +913,98 @@ domain D { members: S; produces Ghost, Hidden, Also, Seen; }
     expect(broken.reason).toMatch(/hash/);
     const v = spawnSync(process.execPath, [join(agent, 'signal.mjs'), 'verify', '--state', state], { encoding: 'utf-8' });
     expect(v.status).not.toBe(0);
+  }, 120_000);
+
+  it('fails verify when head.json is gone, and still accepts an older pair from this run', () => {
+    const verify = (state: string) => spawnSync(process.execPath, [join(agent, 'signal.mjs'), 'verify', '--state', state], { encoding: 'utf-8' });
+    const report = (state: string) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const w = vi.spyOn(process.stdout, 'write').mockImplementation((c) => { out.push(String(c)); return true; });
+      const e = vi.spyOn(console, 'error').mockImplementation((m) => { err.push(String(m)); });
+      try {
+        const code = runTrace(['report', '--state', state, '--key', process.env.SPECKL_STATE_KEY_FILE!]);
+        return { code, out: out.join(''), err: err.join('\n') };
+      } finally {
+        w.mockRestore();
+        e.mockRestore();
+      }
+    };
+    const boot = (name: string) => {
+      const state = join(root, name);
+      const init = spawnSync(process.execPath, [join(agent, 'signal.mjs'), 'init', '--state', state], { encoding: 'utf-8' });
+      expect(init.status, init.stderr).toBe(0);
+      const hook = (cmd: string, msg: object) => spawnSync(process.execPath, [join(agent, 'hook.mjs'), cmd, '--state', state], {
+        input: JSON.stringify(msg), encoding: 'utf-8',
+      });
+      expect(hook('pre', { tool: 'note', input: {}, call_id: 'c1', trace_id: 't1' }).status).toBe(0);
+      expect(hook('post', { tool: 'note', call_id: 'c1', ok: true }).status).toBe(0);
+      return { state, hook };
+    };
+
+    const missing = boot('missing-head.json');
+    unlinkSync(missing.state + '.decisions/head.json');
+    const vMissing = verify(missing.state);
+    expect(vMissing.status).toBe(2);
+    expect(vMissing.stderr).toMatch(/decision head missing/);
+    const rMissing = report(missing.state);
+    expect(rMissing.code).toBe(1);
+    expect(rMissing.err).toMatch(/decision head missing/);
+    expect(rMissing.out).toBe('');
+
+    const shortened = boot('missing-head-log.json');
+    expect(shortened.hook('pre', { tool: 'note', input: {}, call_id: 'c2', trace_id: 't1' }).status).toBe(0);
+    expect(shortened.hook('post', { tool: 'note', call_id: 'c2', ok: true }).status).toBe(0);
+    const shortLog = shortened.state + '.decisions/log.jsonl';
+    const kept = readFileSync(shortLog, 'utf8').trimEnd().split('\n').slice(0, 1).join('\n') + '\n';
+    unlinkSync(shortened.state + '.decisions/head.json');
+    writeFileSync(shortLog, kept);
+    const vShort = verify(shortened.state);
+    expect(vShort.status).toBe(2);
+    expect(vShort.stderr).toMatch(/decision head missing/);
+    const rShort = report(shortened.state);
+    expect(rShort.code).toBe(1);
+    expect(rShort.err).toMatch(/decision head missing/);
+
+    const gone = boot('no-decisions.json');
+    rmSync(gone.state + '.decisions', { recursive: true });
+    const vGone = verify(gone.state);
+    expect(vGone.status, vGone.stderr).toBe(0);
+    const rGone = report(gone.state);
+    expect(rGone.code, rGone.err).toBe(0);
+    expect(rGone.out.split('\n')[1]).toBe('macs not checked');
+
+    const fresh = join(root, 'empty-record.json');
+    const initOnly = spawnSync(process.execPath, [join(agent, 'signal.mjs'), 'init', '--state', fresh], { encoding: 'utf-8' });
+    expect(initOnly.status, initOnly.stderr).toBe(0);
+    const rEmpty = report(fresh);
+    expect(rEmpty.code, rEmpty.err).toBe(0);
+    expect(rEmpty.out.split('\n')[1]).toBe('macs not checked');
+
+    const rolled = boot('rollback.json');
+    const logPath = rolled.state + '.decisions/log.jsonl';
+    const headPath = rolled.state + '.decisions/head.json';
+    const log1 = readFileSync(logPath);
+    const head1 = readFileSync(headPath);
+    const state1 = readFileSync(rolled.state);
+    expect(rolled.hook('pre', { tool: 'note', input: {}, call_id: 'c2', trace_id: 't2' }).status).toBe(0);
+    expect(rolled.hook('post', { tool: 'note', call_id: 'c2', ok: true }).status).toBe(0);
+    writeFileSync(logPath, log1);
+    writeFileSync(headPath, head1);
+    const vPair = verify(rolled.state);
+    expect(vPair.status, vPair.stderr).toBe(0);
+    const rPair = report(rolled.state);
+    expect(rPair.code, rPair.err).toBe(0);
+    expect(rPair.out.split('\n')[1]).toBe('macs checked');
+    expect(readFileSync(logPath, 'utf8')).not.toContain('"call_id":"c2"');
+
+    writeFileSync(rolled.state, state1);
+    writeFileSync(logPath, log1);
+    writeFileSync(headPath, head1);
+    const vSnap = verify(rolled.state);
+    expect(vSnap.status, vSnap.stderr).toBe(0);
+    const rSnap = report(rolled.state);
+    expect(rSnap.code, rSnap.err).toBe(0);
+    expect(rSnap.out.split('\n')[1]).toBe('macs checked');
   }, 120_000);
 });
