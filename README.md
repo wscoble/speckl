@@ -166,6 +166,10 @@ import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
 stored, and `hash` is checked); rewriting expressions that name an imported
 speck.
 
+A brace inside a string or a comment does not hide the next speck. An
+unclosed comment or string, a nested `/*`, and a stray `*/` are parse
+errors naming the file and line.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft

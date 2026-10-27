@@ -18,7 +18,11 @@ alias.
   merged, with cycle detection, hash checks, and errors that name the file.
   `version` is stored and not looked up. A package registry, rewriting
   expressions that name an imported speck, contracts, cost, budgets, and
-  runtime routing are not yet implemented.
+  runtime routing are not yet implemented. File-level `{` `}` depth ignores
+  `"` strings, `//` comments, and `/* */` comments, so a brace there does
+  not hide the next speck. An unclosed block comment or string, a nested
+  `/*`, and a stray `*/` are parse errors naming the file and line. `'` is
+  not a string quote.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

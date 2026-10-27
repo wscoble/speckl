@@ -259,6 +259,171 @@ describe('compile entry', () => {
     exit.mockRestore();
   });
 
+  it('b8 and b9: a brace in a comment or a string does not drop the next false invariant', () => {
+    const bad = (nl: string) => [
+      'speck B {',
+      '    state { y: Nat }',
+      '    init { y := 0 }',
+      '    invariant Bad {',
+      '        false',
+      '    }',
+      '}',
+      '',
+    ].join(nl);
+    const sources = (nl: string) => [
+      [
+        'speck A {',
+        '    state { x: Nat } // {',
+        '    init { x := 0 }',
+        '}',
+        bad(nl),
+      ].join(nl),
+      [
+        'speck A {',
+        '    state { s: String }',
+        '    init { s := "{" }',
+        '}',
+        bad(nl),
+      ].join(nl),
+      [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 } // " } "',
+        '}',
+        bad(nl),
+      ].join(nl),
+      [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        '/* " } " */',
+        bad(nl),
+      ].join(nl),
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      for (const src of sources(nl)) {
+        const ast = parseSpeckContent(src, 'b.speckdl');
+        expect(ast.specks.map(s => s.name), src).toEqual(['A', 'B']);
+        const inv = ast.specks[1].members.find(m => m.type === 'invariant') as { name: string; expr: string };
+        expect(inv.name, src).toBe('Bad');
+        expect(inv.expr, src).toBe('false');
+      }
+    }
+  });
+
+  it('unclosed comments and strings are parse errors, on LF and CRLF', () => {
+    const join = (lines: string[], nl: string) => lines.join(nl);
+    for (const nl of ['\n', '\r\n'] as const) {
+      const open = join([
+        'speck A {',
+        '    state { x: Nat }',
+        '    /*',
+        '}',
+        'speck B {',
+        '    invariant Bad {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(open, 'n3.speckdl')).toThrow(/Parse error at n3\.speckdl:3: unterminated block comment/);
+      expect(() => parseSpeckContent(open)).toThrow(/Parse error at line 3: unterminated block comment/);
+
+      const nested = join([
+        'speck A {',
+        '    /*',
+        '    /*',
+        '    */',
+        '}',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(nested, 'nest.speckdl')).toThrow(/Parse error at nest\.speckdl:3: nested block comment/);
+
+      const stray = join([
+        'speck A {',
+        '    state { x: Nat }',
+        '    */',
+        '}',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(stray, 'n13.speckdl')).toThrow(/Parse error at n13\.speckdl:3: stray \*\//);
+
+      const unclosed = join([
+        'speck A {',
+        '    state { s: String }',
+        '    init { s := "unterminated }',
+        '}',
+        'speck B {',
+        '    invariant Bad {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(unclosed, 'n10.speckdl')).toThrow(/Parse error at n10\.speckdl:3: unterminated string/);
+
+      const commentClosesInString = join([
+        'speck A {',
+        '    state { x: Nat }',
+        '    /* "*/" { */',
+        '}',
+        'speck B {',
+        '    invariant Bad {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(commentClosesInString, 'n18.speckdl')).toThrow(/Parse error at n18\.speckdl:3: unterminated string/);
+
+      const escaped = join([
+        'speck A {',
+        '    state { s: String }',
+        '    init { s := "a\\" {" }',
+        '}',
+        'speck B {',
+        '    invariant Bad {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ], nl);
+      const kept = parseSpeckContent(escaped, 'esc.speckdl');
+      expect(kept.specks.map(s => s.name)).toEqual(['A', 'B']);
+      const inv = kept.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
+      expect(inv.expr).toBe('false');
+
+      // `\\` is one escaped backslash, so the following `"` closes and `{` stays inside.
+      const doubled = join([
+        'speck A {',
+        '    state { s: String }',
+        '    init { s := "a\\\\{" }',
+        '}',
+        'speck B {',
+        '    invariant Bad {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ], nl);
+      const doubledAst = parseSpeckContent(doubled, 'esc2.speckdl');
+      expect(doubledAst.specks.map(s => s.name)).toEqual(['A', 'B']);
+      const doubledInv = doubledAst.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
+      expect(doubledInv.expr).toBe('false');
+
+      // A backslash at the end of the line does not close the string.
+      const trailing = join([
+        'speck A {',
+        '    state { s: String }',
+        '    init { s := "unterminated\\',
+        '}',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(trailing, 'n10b.speckdl')).toThrow(/Parse error at n10b\.speckdl:3: unterminated string/);
+    }
+  });
+
   it('main compiles a file', async () => {
     const root = mkdtempSync(join(tmpdir(), 'speckl-main-'));
     const file = join(root, 'Tiny.speckdl');

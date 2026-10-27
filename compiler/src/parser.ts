@@ -444,39 +444,37 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   const domains: DomainNode[] = [];
   const lines = content.split('\n');
 
-  // Brace depth so a file-level import is not also read from inside a speck.
-  // A `domain` line is not a construct in this parser: it is skipped, the
-  // same as any other line that is not `import` or `speck`. Speck headers
-  // themselves are still recognized the same way: the first line of a speck
-  // is parsed, then the body is walked line by line.
+  // File-level brace depth decides where the next speck starts. A `{` or `}`
+  // inside a `"` string, a `//` comment, or a `/* */` comment is not structure,
+  // so it cannot hide the next speck. `'` is prime notation, not a string quote.
+  // A `domain` line is not a construct here: it is skipped, the same as any
+  // other line that is not `import` or `speck`. The speck header is parsed,
+  // then the body is walked line by line.
+  const masks: string[] = [];
+  let lex = fileLexStart();
+  for (let n = 0; n < lines.length; n++) {
+    const scanned = scanFileLine(lines[n], lex, n + 1, filePath);
+    lex = scanned.state;
+    masks.push(scanned.mask);
+  }
+  if (lex.kind === 'block') throw parseProblem(filePath, lex.openLine, 'unterminated block comment');
+  if (lex.kind === 'string') throw parseProblem(filePath, lex.openLine, 'unterminated string');
+
   let i = 0;
   let depth = 0;
   while (i < lines.length) {
-    const rawLine = lines[i];
-    const line = rawLine.trim();
+    const line = lines[i].trim();
+    const code = masks[i].trim();
 
-    if (!line || line.startsWith('//') || line.startsWith('/*')) {
-      i++;
-      continue;
-    }
-
-    if (depth === 0 && line.startsWith('import ')) {
+    if (depth === 0 && code.startsWith('import ')) {
       const node = parseImportStatement(line);
       imports.push({ ...node, startLine: i + 1, endLine: i + 1 });
-      i++;
-      continue;
-    }
-
-    if (depth === 0 && line.startsWith('speck ')) {
+    } else if (depth === 0 && code.startsWith('speck ')) {
       const speck = parseSpeck(lines, i);
       if (speck) specks.push(speck);
-      depth += braceDelta(rawLine);
-      if (depth < 0) depth = 0;
-      i++;
-      continue;
     }
 
-    depth += braceDelta(rawLine);
+    depth += maskDelta(masks[i]);
     if (depth < 0) depth = 0;
     i++;
   }
@@ -484,10 +482,97 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   return { specks, imports, domains };
 }
 
-function braceDelta(rawLine: string): number {
-  const opens = (rawLine.match(/{/g) || []).length;
-  const closes = (rawLine.match(/}/g) || []).length;
-  return opens - closes;
+/** Comment/string state for the file-level brace walk. */
+interface FileLex {
+  kind: 'code' | 'block' | 'string';
+  /** 1-based line where the open block comment or string began. 0 in code. */
+  openLine: number;
+}
+
+function fileLexStart(): FileLex {
+  return { kind: 'code', openLine: 0 };
+}
+
+function parseProblem(file: string | undefined, line: number, detail: string): Error {
+  const where = file ? `${file}:${line}` : `line ${line}`;
+  return new Error(`Parse error at ${where}: ${detail}`);
+}
+
+/**
+ * Mask one line. Comments and string interiors become spaces, so `{` and `}`
+ * in the mask are structural. A block comment or string may continue onto
+ * the next line. `/*` inside a block comment, and `*` `/` outside one, are
+ * parse errors.
+ */
+function scanFileLine(
+  input: string,
+  state: FileLex,
+  lineNo: number,
+  file: string | undefined,
+): { mask: string; state: FileLex } {
+  let kind = state.kind;
+  let openLine = state.openLine;
+  let mask = '';
+  const close = () => {
+    kind = 'code';
+    openLine = 0;
+  };
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (kind === 'string') {
+      if (ch === '\\' && next !== undefined) {
+        // `\\` is an escaped backslash, so a following `"` closes the string.
+        // `\"` is consumed here and does not close it.
+        mask += '  ';
+        i++;
+        continue;
+      }
+      mask += ch === '"' ? ch : ' ';
+      if (ch === '"') close();
+      continue;
+    }
+    if (kind === 'block') {
+      if (ch === '/' && next === '*') throw parseProblem(file, lineNo, 'nested block comment');
+      if (ch === '*' && next === '/') {
+        mask += '  ';
+        i++;
+        close();
+        continue;
+      }
+      mask += ' ';
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      mask += ' '.repeat(input.length - i);
+      break;
+    }
+    if (ch === '/' && next === '*') {
+      mask += '  ';
+      i++;
+      kind = 'block';
+      openLine = lineNo;
+      continue;
+    }
+    if (ch === '*' && next === '/') throw parseProblem(file, lineNo, 'stray */');
+    if (ch === '"') {
+      mask += ch;
+      kind = 'string';
+      openLine = lineNo;
+      continue;
+    }
+    mask += ch;
+  }
+  return { mask, state: { kind, openLine } };
+}
+
+function maskDelta(mask: string): number {
+  let delta = 0;
+  for (const ch of mask) {
+    if (ch === '{') delta++;
+    else if (ch === '}') delta--;
+  }
+  return delta;
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {

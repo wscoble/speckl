@@ -215,6 +215,12 @@ and it does not rewrite expressions that mention an imported name. That
 name resolution is **not yet implemented**. Each merged speck stays one
 speck.
 
+A `{` or `}` inside a `"` string, a `//` comment, or a `/* */` comment
+does not count toward the depth that finds the next speck. `'` is prime
+notation, not a string quote. An unclosed `/*` or `"`, a `/*` inside a
+block comment, and a `*/` that is not closing a block comment are parse
+errors naming the file and the line.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
