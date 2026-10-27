@@ -50,7 +50,7 @@ function emitAgentForSpeck(
   fs.mkdirSync(path.join(agentDir, 'verifiers'), { recursive: true });
 
   // Machine with synthetic signal actions (AST already injected).
-  const single: AST = { specks: [speck] };
+  const single: AST = { specks: [speck], imports: [], domains: [] };
   generateTypeScriptStateMachine(single, agentDir);
 
   const tsPath = path.join(agentDir, `${speck.name}.ts`);

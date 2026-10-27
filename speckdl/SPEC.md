@@ -190,8 +190,30 @@ import "common.speckdl" as common
 import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 ```
 
-Version pinning is optional for local development and required for Specks
-with `review: manual` or `review: hybrid`.
+An import is a file path, resolved relative to the file that contains it
+(absolute paths are taken as written). The lower pass reads that file,
+lowers it, and merges its specks into the compilation unit. A file-level
+import is attached to every speck in the importing file; an import written
+inside one speck is attached to that speck. `as` names the import: one
+speck uses the alias, several specks use `alias.SpeckName`. With no alias
+the speck's own name is used.
+
+Failures name the file and stop the compile:
+
+- the path cannot be read (missing file, or a directory);
+- the import graph cycles (`a.speckdl -> b.speckdl -> a.speckdl`);
+- `hash "sha256:..."` (or a bare hex digest) does not match the file bytes;
+- the same speck name is declared in two files.
+
+`version` is stored on the resolved import. Looking that pin up in a
+package registry is **not yet implemented**. Requiring a version when
+`review` is `manual` or `hybrid` is **not yet implemented** — a missing
+version is not an error today.
+
+Merging does not inline the imported speck's members into the importer,
+and it does not rewrite expressions that mention an imported name. That
+name resolution is **not yet implemented**. Each merged speck stays one
+speck.
 
 ### 2.9 Expression Operators
 
@@ -299,7 +321,8 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
 
 Generators consume the IR, not the AST. The IR is complete (every fact in
 the spec is in a named facet), lossless (expressions are typed trees, not
-strings), resolved (cross-spec references resolved at lower time), and
+strings), resolved (`import` paths are read and merged at lower time; using
+an imported name inside an expression is not yet implemented), and
 provenanced (missing provenance is synthesized from file metadata).
 
 ### 4.1 Planned Stages (not implemented)

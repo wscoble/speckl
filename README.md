@@ -151,12 +151,27 @@ Formal methods specs from a toggle switch through Raft consensus:
 
 Browse all in [examples/](examples/).
 
+## Imports
+
+A file can `import` another SpeckDL file. The compiler reads it, lowers it,
+and merges its specks into the compilation. A missing file, an import cycle,
+a hash mismatch, or the same speck name in two files is a compile error, and
+the message names the file.
+
+```
+import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
+```
+
+**Not yet implemented:** a package registry for `version` pins (the pin is
+stored, and `hash` is checked); rewriting expressions that name an imported
+speck.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
-- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
+- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics, including `import`
 
 ## Status
 

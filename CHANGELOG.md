@@ -14,6 +14,11 @@ alias.
 
 ### Added
 
+- **`import` resolution.** `import "file.speckdl"` is read, lowered, and
+  merged, with cycle detection, hash checks, and errors that name the file.
+  `version` is stored and not looked up. A package registry, rewriting
+  expressions that name an imported speck, contracts, cost, budgets, and
+  runtime routing are not yet implemented.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

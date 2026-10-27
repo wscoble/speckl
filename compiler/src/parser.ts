@@ -40,6 +40,22 @@ export interface ImportNode {
   alias?: string;
   version?: string;
   hash?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/**
+ * File-level bounded context. Members are speck names. The block is not a
+ * speck member: it groups specks, each of which is still one agent.
+ */
+export interface DomainNode {
+  type: 'domain';
+  name: string;
+  members: string[];
+  /** Text of `language:`, quotes removed. Absent when the clause is omitted. */
+  language?: string;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface InputNode {
@@ -405,6 +421,10 @@ export interface TypeExpr {
 
 export interface AST {
   specks: SpeckNode[];
+  /** File-level `import` statements, in source order. Empty when there are none. */
+  imports: ImportNode[];
+  /** Always empty. `domain` blocks are not parsed. */
+  domains: DomainNode[];
 }
 
 /**
@@ -420,44 +440,54 @@ export function parseSpeckFile(filePath: string): AST {
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
   const specks: SpeckNode[] = [];
+  const imports: ImportNode[] = [];
+  const domains: DomainNode[] = [];
   const lines = content.split('\n');
-  
+
+  // Brace depth so a file-level import is not also read from inside a speck.
+  // A `domain` line is not a construct in this parser: it is skipped, the
+  // same as any other line that is not `import` or `speck`. Speck headers
+  // themselves are still recognized the same way: the first line of a speck
+  // is parsed, then the body is walked line by line.
   let i = 0;
+  let depth = 0;
   while (i < lines.length) {
-    const line = lines[i].trim();
-    
-    // Skip empty lines and comments
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
     if (!line || line.startsWith('//') || line.startsWith('/*')) {
       i++;
       continue;
     }
-    
-    // Handle import statements
-    if (line.startsWith('import ')) {
-      const importNode = parseImportStatement(line);
-      // Import is a special case - it's not part of a speck
-      // We'll handle it separately in a future update
+
+    if (depth === 0 && line.startsWith('import ')) {
+      const node = parseImportStatement(line);
+      imports.push({ ...node, startLine: i + 1, endLine: i + 1 });
       i++;
       continue;
     }
-    
-    // Handle speck definitions
-    if (line.startsWith('speck ')) {
+
+    if (depth === 0 && line.startsWith('speck ')) {
       const speck = parseSpeck(lines, i);
-      if (speck) {
-        specks.push(speck);
-        // Move index past the speck we just parsed
-        i++; // Increment by 1, the loop will continue from next line
-      } else {
-        i++;
-      }
+      if (speck) specks.push(speck);
+      depth += braceDelta(rawLine);
+      if (depth < 0) depth = 0;
+      i++;
       continue;
     }
-    
+
+    depth += braceDelta(rawLine);
+    if (depth < 0) depth = 0;
     i++;
   }
-  
-  return { specks };
+
+  return { specks, imports, domains };
+}
+
+function braceDelta(rawLine: string): number {
+  const opens = (rawLine.match(/{/g) || []).length;
+  const closes = (rawLine.match(/}/g) || []).length;
+  return opens - closes;
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
@@ -929,6 +959,10 @@ function parseInputOutputBlock(
 }
 
 function parseMember(line: string): MemberNode | null {
+  if (line.startsWith('import ')) {
+    return parseImportStatement(line);
+  }
+
   // input:
   if (line.startsWith('input:')) {
     const typeExpr = parseTypeExpr(line.substring(6).trim());
@@ -1151,19 +1185,16 @@ function parseActionHeader(line: string): ActionNode | null {
 }
 
 function parseImportStatement(line: string): ImportNode {
-  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?/);
+  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?\s*(?:\/\/.*)?$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
   }
-  
-  const [, , path, , alias, , version, , hash] = match;
-  
   return {
     type: 'import',
-    path,
-    alias,
-    version: version || undefined,
-    hash: hash || undefined,
+    path: match[2],
+    alias: match[3] || undefined,
+    version: match[5] || undefined,
+    hash: match[7] || undefined,
   };
 }
 
