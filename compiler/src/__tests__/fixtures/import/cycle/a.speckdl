@@ -1,0 +1,6 @@
+import "b.speckdl"
+
+speck A {
+    state { x: Nat }
+    init { x := 0 }
+}

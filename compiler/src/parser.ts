@@ -40,6 +40,22 @@ export interface ImportNode {
   alias?: string;
   version?: string;
   hash?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/**
+ * File-level bounded context. Members are speck names. The block is not a
+ * speck member: it groups specks, each of which is still one agent.
+ */
+export interface DomainNode {
+  type: 'domain';
+  name: string;
+  members: string[];
+  /** Text of `language:`, quotes removed. Absent when the clause is omitted. */
+  language?: string;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface InputNode {
@@ -405,6 +421,10 @@ export interface TypeExpr {
 
 export interface AST {
   specks: SpeckNode[];
+  /** File-level `import` statements, in source order. Empty when there are none. */
+  imports: ImportNode[];
+  /** Always empty. `domain` blocks are not parsed. */
+  domains: DomainNode[];
 }
 
 /**
@@ -420,51 +440,402 @@ export function parseSpeckFile(filePath: string): AST {
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
   const specks: SpeckNode[] = [];
-  const lines = content.split('\n');
-  
+  const imports: ImportNode[] = [];
+  const domains: DomainNode[] = [];
+  const sourceLines = content.split('\n');
+
+  // File-level brace depth decides where the next speck starts. This scan
+  // skips a `{` or `}` inside a finished `"` string, a `//` comment, or a
+  // `/* */` comment. `'` is prime notation, not a string quote. A string ends
+  // on its own line. A `domain` line is not a construct: its braces count, and
+  // a speck header while depth is not 0 is an error, so the speck is not
+  // dropped. At end of file this depth must be 0. Line numbers are the
+  // source file's: the lower pass re-reads action bodies by those numbers.
+  // Member blocks are a separate walk. A brace in a comment or a string
+  // there can still end the member. That gap is the same as main and is
+  // left for a later change.
+  const lines = sourceLines;
+  const masks = scanFileLines(lines, filePath, (n) => n + 1);
+
   let i = 0;
+  let depth = 0;
+  let lostAt = 0;
+  // Index of a `{` that opens a `speck Name` whose brace is on a later line.
+  let openBraceAt = -1;
+  const speckSpans: { start: number; end: number }[] = [];
   while (i < lines.length) {
     const line = lines[i].trim();
-    
-    // Skip empty lines and comments
-    if (!line || line.startsWith('//') || line.startsWith('/*')) {
-      i++;
-      continue;
+    const code = masks[i].trim();
+    const lineNo = i + 1;
+    // Any `speck` word that is not a well-formed header is an error. A
+    // well-formed header is optional whitespace, then `speck`, a name, and
+    // `{`, and the line starts at depth 0. A name starts with a letter or
+    // `_`. `{` alone may be the next line. `{ }` on that next line is not
+    // a header. Punctuation before the name is not a header.
+    const shape = rejectMisplacedSpeck(code, depth, filePath, lineNo);
+
+    if (shape === 'open' || shape === 'empty' || shape === 'pending') {
+      // A `{` or `}` hidden in a comment on the line that opens the speck.
+      if ((shape === 'open' || shape === 'empty') && commentHidesBrace(lines[i], masks[i])) {
+        throw parseProblem(filePath, lineNo, 'comment contains a brace');
+      }
+      let bodyIndex = i + 1;
+      let braceCount = 1;
+      if (shape === 'empty') {
+        bodyIndex = lines.length;
+        braceCount = 0;
+      } else if (shape === 'pending') {
+        const braceLine = openingBraceLine(masks, i);
+        if (braceLine === null) throw parseProblem(filePath, lineNo, 'expected "speck <Name> {"');
+        bodyIndex = braceLine + 1;
+        openBraceAt = braceLine;
+      }
+      const name = /^speck\s+([A-Za-z_][\w-]*)/.exec(code)![1];
+      const speck = parseSpeck(lines, i, name, bodyIndex, braceCount);
+      specks.push(speck);
+      speckSpans.push({ start: speck.startLine ?? lineNo, end: speck.endLine ?? lineNo });
+    } else if (i === openBraceAt) {
+      if (commentHidesBrace(lines[i], masks[i])) {
+        throw parseProblem(filePath, lineNo, 'comment contains a brace');
+      }
+      openBraceAt = -1;
+    } else if (textAfterClose(code, depth)) {
+      // The `}` that returns file-level depth to 0, with more code after
+      // it on this line. Reject only. Parsing that text is a later change.
+      throw parseProblem(filePath, lineNo, 'text after a closing brace');
+    } else if (closeNotAlone(code, depth)) {
+      throw parseProblem(filePath, lineNo, 'closing brace must be alone on the line');
+    } else if (lineClosesBlock(code, depth) && commentHidesBrace(lines[i], masks[i])) {
+      throw parseProblem(filePath, lineNo, 'comment contains a brace');
+    } else if (textAfterMemberClose(code, depth)) {
+      // Text after a member `}` while the speck stays open. Reject only.
+      throw parseProblem(filePath, lineNo, 'text after a closing brace');
+    } else if (/^import(?:\s|$)/.test(code)) {
+      const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
+      // Depth 1 is the interior of a speck. An import there is a member of
+      // that speck. Any deeper brace (an action, a state block, an if) is
+      // not, and neither is a block that is not a speck.
+      if (depth === 0) {
+        const node = parseImportStatement(line);
+        imports.push({ ...node, startLine: lineNo, endLine: lineNo });
+      } else if (!(depth === 1 && insideSpeck)) {
+        throw parseProblem(filePath, lineNo, 'import is inside a block');
+      }
+    } else if (depth === 0 && strayFileText(code) && !depthDipsBelowZero(masks[i], depth)) {
+      throw parseProblem(filePath, lineNo, 'text outside a speck, domain, or import');
     }
-    
-    // Handle import statements
-    if (line.startsWith('import ')) {
-      const importNode = parseImportStatement(line);
-      // Import is a special case - it's not part of a speck
-      // We'll handle it separately in a future update
-      i++;
-      continue;
+
+    // An extra `}` on this line, even if a later `{` would bring depth back.
+    if (depthDipsBelowZero(masks[i], depth)) {
+      throw parseProblem(filePath, lineNo, 'unbalanced braces');
     }
-    
-    // Handle speck definitions
-    if (line.startsWith('speck ')) {
-      const speck = parseSpeck(lines, i);
-      if (speck) {
-        specks.push(speck);
-        // Move index past the speck we just parsed
-        i++; // Increment by 1, the loop will continue from next line
-      } else {
+    const next = depth + maskDelta(masks[i]);
+    if (depth === 0 && next > 0) lostAt = lineNo;
+    depth = next;
+    i++;
+  }
+  if (depth !== 0) throw parseProblem(filePath, lostAt || 1, 'unbalanced braces');
+
+  return { specks, imports, domains };
+}
+
+/** Comment/string state for the file-level brace walk. */
+interface FileLex {
+  kind: 'code' | 'block' | 'string';
+  /** 1-based line where the open block comment or string began. 0 in code. */
+  openLine: number;
+}
+
+function fileLexStart(): FileLex {
+  return { kind: 'code', openLine: 0 };
+}
+
+function parseProblem(file: string | undefined, line: number, detail: string): Error {
+  const where = file ? `${file}:${line}` : `line ${line}`;
+  return new Error(`Parse error at ${where}: ${detail}`);
+}
+
+/**
+ * Mask one line. Comments and string interiors become spaces, so `{` and `}`
+ * in the mask are structural. A block comment may continue onto the next
+ * line. A string may not: an unclosed `"` is an error on that line. `/*`
+ * inside a block comment, and `*` `/` outside one, are parse errors.
+ */
+function scanFileLine(
+  input: string,
+  state: FileLex,
+  lineNo: number,
+  file: string | undefined,
+): { mask: string; state: FileLex } {
+  let kind = state.kind;
+  let openLine = state.openLine;
+  let mask = '';
+  const close = () => {
+    kind = 'code';
+    openLine = 0;
+  };
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (kind === 'string') {
+      if (ch === '\\' && next !== undefined) {
+        // `\\` is an escaped backslash, so a following `"` closes the string.
+        // `\"` is consumed here and does not close it.
+        mask += '  ';
         i++;
+        continue;
+      }
+      mask += ch === '"' ? ch : ' ';
+      if (ch === '"') close();
+      continue;
+    }
+    if (kind === 'block') {
+      if (ch === '/' && next === '*') throw parseProblem(file, lineNo, 'nested block comment');
+      if (ch === '*' && next === '/') {
+        mask += '  ';
+        i++;
+        close();
+        continue;
+      }
+      mask += ' ';
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      mask += ' '.repeat(input.length - i);
+      break;
+    }
+    if (ch === '/' && next === '*') {
+      mask += '  ';
+      i++;
+      kind = 'block';
+      openLine = lineNo;
+      continue;
+    }
+    if (ch === '*' && next === '/') throw parseProblem(file, lineNo, 'stray */');
+    if (ch === '"') {
+      mask += ch;
+      kind = 'string';
+      openLine = lineNo;
+      continue;
+    }
+    // Format characters (Cf) are invisible. A leading BOM is the one exception.
+    // One inside a string or a comment is text, and this branch does not see it.
+    // A supplementary-plane Cf is one code point, so it is checked before the
+    // surrogate halves are walked one unit at a time.
+    const cp = input.codePointAt(i)!;
+    if (cp > 0xffff && isFormatChar(String.fromCodePoint(cp))) {
+      throw parseProblem(file, lineNo, 'invisible format character');
+    }
+    if (isFormatChar(ch)) {
+      if (!(lineNo === 1 && i === 0 && ch === '\uFEFF')) {
+        throw parseProblem(file, lineNo, 'invisible format character');
       }
       continue;
     }
-    
-    i++;
+    mask += ch;
   }
-  
-  return { specks };
+  if (kind === 'string') throw parseProblem(file, lineNo, 'unterminated string');
+  return { mask, state: { kind, openLine } };
 }
 
-function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
-  const headerMatch = lines[startIndex].match(/^speck\s+([\w-]+)\s*{/);
-  if (!headerMatch) return null;
+function maskDelta(mask: string): number {
+  let delta = 0;
+  for (const ch of mask) {
+    if (ch === '{') delta++;
+    else if (ch === '}') delta--;
+  }
+  return delta;
+}
 
-  const name = headerMatch[1];
+function scanFileLines(
+  lines: string[],
+  filePath: string | undefined,
+  lineNo: (index: number) => number,
+): string[] {
+  const masks: string[] = [];
+  let lex = fileLexStart();
+  for (let n = 0; n < lines.length; n++) {
+    const scanned = scanFileLine(lines[n], lex, lineNo(n), filePath);
+    lex = scanned.state;
+    masks.push(scanned.mask);
+  }
+  if (lex.kind === 'block') throw parseProblem(filePath, lex.openLine, 'unterminated block comment');
+  return masks;
+}
+
+/**
+ * Why a line that starts with the keyword `speck` is not a header.
+ * `speck :=` and `speck >=` stay a reserved keyword. A missing name,
+ * members on the header line, and a second speck on that line name the
+ * actual problem. Accepting those forms is a later tokenizer change.
+ */
+function badSpeckDetail(code: string): string {
+  // A name starts with a letter or `_`. `speck -B` and `speck (B)` do not.
+  if (!/^speck\s+[A-Za-z_][\w-]*/.test(code)) {
+    if (/^speck\s*(?:\{|$)/.test(code)) {
+      return 'speck name must be on the same line as "speck"';
+    }
+    if (/\{/.test(code)) return 'expected "speck <Name> {"';
+    return '"speck" is a reserved keyword';
+  }
+  if (/^speck\s+[A-Za-z_][\w-]*\s*\{/.test(code)) {
+    return 'one speck per line: put members on their own lines';
+  }
+  return 'expected "speck <Name> {"';
+}
+
+/** Unicode category Cf. A leading BOM is handled by the caller. */
+function isFormatChar(ch: string): boolean {
+  return /\p{Cf}/u.test(ch);
+}
+
+/**
+ * Shape of a trimmed masked line that starts with the keyword `speck`.
+ * `open` is `speck Name {`, `empty` is `speck Name { }`, `pending` is
+ * `speck Name` with `{` still to come. `bad` starts with the keyword and
+ * is none of those. `no` does not start with the keyword.
+ */
+function headerShape(code: string): 'open' | 'empty' | 'pending' | 'bad' | 'no' {
+  if (!/^speck(?![A-Za-z0-9_-])/.test(code)) return 'no';
+  if (/^speck\s+[A-Za-z_][\w-]*\s*\{\s*\}\s*$/.test(code)) return 'empty';
+  if (/^speck\s+[A-Za-z_][\w-]*\s*\{\s*$/.test(code)) return 'open';
+  if (/^speck\s+[A-Za-z_][\w-]*\s*$/.test(code)) return 'pending';
+  return 'bad';
+}
+
+/** Indexes of the keyword `speck`. `speckled` and `speck-name` are not it. */
+function speckWords(code: string): number[] {
+  const out: number[] = [];
+  const re = /speck(?![A-Za-z0-9_-])/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(code))) {
+    const at = match.index;
+    if (at > 0 && /[A-Za-z0-9_-]/.test(code[at - 1])) continue;
+    out.push(at);
+  }
+  return out;
+}
+
+/**
+ * Throw when a masked line contains a `speck` keyword that is not a
+ * well-formed header at depth 0. Returns the header shape when the line
+ * is one, otherwise `no`. A keyword followed by anything other than a
+ * name and `{` is a malformed header, not an expression.
+ */
+function rejectMisplacedSpeck(
+  code: string,
+  depth: number,
+  file: string | undefined,
+  lineNo: number,
+): 'open' | 'empty' | 'pending' | 'no' {
+  const shape = headerShape(code);
+  const words = speckWords(code);
+  if (words.length === 0) return 'no';
+  if ((shape === 'open' || shape === 'empty' || shape === 'pending') && depth === 0) return shape;
+  if (shape === 'open' || shape === 'empty' || shape === 'pending') {
+    throw parseProblem(file, lineNo, 'unbalanced braces');
+  }
+  if (shape === 'bad') throw parseProblem(file, lineNo, badSpeckDetail(code));
+  throw parseProblem(file, lineNo, 'speck must be a header at the start of the line');
+}
+
+/**
+ * True when a `}` brings file-level depth to 0 and non-comment text
+ * follows it on this masked line. Comments and strings are already blank.
+ */
+function textAfterClose(code: string, depth: number): boolean {
+  let d = depth;
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '{') d++;
+    else if (ch === '}') {
+      d--;
+      if (d === 0 && code.slice(i + 1).trim() !== '') return true;
+    }
+  }
+  return false;
+}
+
+/** True when this masked line's brace walk reaches depth 0. */
+function lineClosesBlock(code: string, depth: number): boolean {
+  if (depth <= 0) return false;
+  let d = depth;
+  for (const ch of code) {
+    if (ch === '{') d++;
+    else if (ch === '}') {
+      d--;
+      if (d === 0) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A line that takes depth to 0 has to be `}` plus a comment.
+ * `action Go { x := x + 1 } }` is not that line.
+ */
+function closeNotAlone(code: string, depth: number): boolean {
+  return lineClosesBlock(code, depth) && code.trim() !== '}';
+}
+
+/**
+ * A line that starts with `}` and still has code, while the speck stays
+ * open. `else` is the one word main already parses. `)` and `,` finish a
+ * record or a call on that line (`})`, `},`).
+ */
+function textAfterMemberClose(code: string, depth: number): boolean {
+  if (depth <= 1 || !code.startsWith('}')) return false;
+  const rest = code.slice(1).trim();
+  if (rest === '' || rest === ')' || rest === ',' || /^else\b/.test(rest)) return false;
+  return true;
+}
+
+/** True when a `{` or `}` in the raw line was masked out of the code. */
+function commentHidesBrace(raw: string, mask: string): boolean {
+  const src = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  const n = Math.min(src.length, mask.length);
+  for (let i = 0; i < n; i++) {
+    const ch = src[i];
+    if ((ch === '{' || ch === '}') && mask[i] === ' ') return true;
+  }
+  return false;
+}
+
+/** True when a `}` on this line drives file-level depth below 0. */
+function depthDipsBelowZero(code: string, depth: number): boolean {
+  let d = depth;
+  for (const ch of code) {
+    if (ch === '{') d++;
+    else if (ch === '}') {
+      d--;
+      if (d < 0) return true;
+    }
+  }
+  return false;
+}
+
+/** File-level text that is not a blank, a closing `}`, or a `domain` line. */
+function strayFileText(code: string): boolean {
+  if (code === '' || code === '}') return false;
+  if (/^domain(?![A-Za-z0-9_-])/.test(code)) return false;
+  return true;
+}
+
+/** Line index of a `{` that opens a speck whose header had no brace. */
+function openingBraceLine(masks: string[], headerIndex: number): number | null {
+  let j = headerIndex + 1;
+  while (j < masks.length && masks[j].trim() === '') j++;
+  if (j < masks.length && masks[j].trim() === '{') return j;
+  return null;
+}
+
+function parseSpeck(
+  lines: string[],
+  startIndex: number,
+  name: string,
+  bodyIndex: number,
+  braceCount: number,
+): SpeckNode {
   const members: MemberNode[] = [];
 
   // Cycle 73: refactored from static-field hack to local-object pattern.
@@ -484,8 +855,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     k8sVersion?: string;
   } = {};
 
-  let i = startIndex + 1;
-  let braceCount = 1;
+  let i = bodyIndex;
   let speckEndLine = Math.min(lines.length, startIndex + 1);
 
   while (i < lines.length && braceCount > 0) {
@@ -929,6 +1299,10 @@ function parseInputOutputBlock(
 }
 
 function parseMember(line: string): MemberNode | null {
+  if (line.startsWith('import ')) {
+    return parseImportStatement(line);
+  }
+
   // input:
   if (line.startsWith('input:')) {
     const typeExpr = parseTypeExpr(line.substring(6).trim());
@@ -1151,19 +1525,19 @@ function parseActionHeader(line: string): ActionNode | null {
 }
 
 function parseImportStatement(line: string): ImportNode {
-  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?/);
+  // The path, version, and hash stop at the closing quote. A leftover clause
+  // (`hash ""`, `hsh "abc"`, `verison "1"`, a `/* */` comment) does not become
+  // part of the path. A trailing `//` comment is allowed.
+  const match = line.match(/^import\s+(['"])([^'"]+)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])([^'"]+)\4)?(?:\s+hash\s+(['"])([^'"]+)\6)?\s*(?:\/\/.*)?$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
   }
-  
-  const [, , path, , alias, , version, , hash] = match;
-  
   return {
     type: 'import',
-    path,
-    alias,
-    version: version || undefined,
-    hash: hash || undefined,
+    path: match[2],
+    alias: match[3] || undefined,
+    version: match[5] || undefined,
+    hash: match[7] || undefined,
   };
 }
 
@@ -1606,6 +1980,50 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   return { type: 'invariant', name, expr: body.trim() };
 }
 
+/**
+ * Join for/if lines with spaces. A line comment would hide every later `}`
+ * if those lines stayed on one physical line, so the next line starts after
+ * the comment. Generators collapse that newline back to a space.
+ */
+function joinBlockLines(lines: string[]): string {
+  let out = '';
+  for (const line of lines) {
+    if (!out) {
+      out = line;
+      continue;
+    }
+    out += (lastLineHasLineComment(out) ? '\n' : ' ') + line;
+  }
+  return out;
+}
+
+function lastLineHasLineComment(text: string): boolean {
+  const line = text.slice(text.lastIndexOf('\n') + 1);
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (ch === '"') {
+      i++;
+      while (i < line.length) {
+        if (line[i] === '\\') { i += 2; continue; }
+        if (line[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '/') return true;
+    if (ch === '/' && next === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+      continue;
+    }
+    i++;
+  }
+  return false;
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
@@ -1776,7 +2194,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         j++;
         if (braceDepth === 0) break;
       }
-      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
+      statements.push({ type: 'forblock', raw: joinBlockLines(blockLines2) } as any);
       i = j - 1;
       continue;
     }
@@ -1799,7 +2217,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (braceDepth === 0) break;
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
-      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
+      statements.push({ type: 'ifblock', raw: joinBlockLines(blockLines) });
       i = j - 1; // skip to end of if block
       continue;
     }

@@ -1,0 +1,6 @@
+import "no-such.speckdl" as missing
+
+speck Root {
+    state { x: Nat }
+    init { x := 0 }
+}

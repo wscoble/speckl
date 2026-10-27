@@ -317,6 +317,22 @@ TLA+ proved that formal methods work at scale. SpeckDL makes them deployable.
 
 ---
 
+## Imports
+
+Specs can name each other. That does not change the rule that one speck is
+one agent.
+
+```speck
+import "ledger.speckdl" as ledger
+```
+
+The import is a file path. The compiler reads it, lowers it, and merges
+its specks. A missing file, a cycle, a bad `hash`, or two specks with the
+same name fails the compile, and the error names the file. `version` is
+recorded. A registry lookup for that pin is **not yet implemented**.
+Rewriting an expression that names an imported speck is **not yet
+implemented**.
+
 ## Next Steps
 
 1. **Read the spec:** `SPEC.md` — full language reference

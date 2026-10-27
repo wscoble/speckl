@@ -14,6 +14,98 @@ alias.
 
 ### Added
 
+- **`import` resolution.** `import "file.speckdl"` is read, lowered, and
+  merged, with cycle detection, hash checks, and errors that name the file.
+  `version` is stored and not looked up. A package registry, rewriting
+  expressions that name an imported speck, contracts, cost, budgets, and
+  runtime routing are not yet implemented. The file-level scan that finds
+  the next speck skips a brace inside a finished `"` string, a `//` comment,
+  or a `/* */` comment. Depth that is not 0 before the next speck, or at
+  the end of the file, is a parse error (`unbalanced braces`) naming the
+  file and line. A stray `}` is that error on the line where depth goes
+  below 0, even when a later `{` or a later comment would bring it back.
+  `domain` is not parsed; a speck inside its braces is
+  that error, not a dropped speck. Members written inside
+  `domain D { ... }` (`action Evil`, `invariant Canary2 { false }`) are
+  dropped, the same as main. Domain blocks are a later change. An `import` inside an action, an `if`
+  inside an action, a multi-line state block, a `domain` block, or any
+  other brace block that is not the speck itself is
+  `import is inside a block`, naming the file and line. An import that is
+  a direct member of a speck is still attached to that speck.
+  A string does not continue onto the next line: an unclosed `"` is
+  `unterminated string` on that line. An unclosed block comment, a nested
+  `/*`, and a stray `*/` are parse errors naming the file and line. A speck
+  header is read from the trimmed line with comments masked, so an indent,
+  a tab, `speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
+  `speck Name {}`, and `speck Name` with `{` alone on the next line are
+  that speck. `{ }` on that next line is not: it is
+  `expected "speck <Name> {"`. A `/* */` comment may also precede
+  `speck` on the same line. After comments and strings are masked, a
+  `speck` written as a header has to be that header. The header has to
+  be at depth 0. A name starts with a letter or `_`. The keyword
+  followed by anything else is a parse error naming the file and the
+  line, including punctuation before the name (`speck -B {`,
+  `speck (B) {`) and an expression (`x := speck + 1`). Mid-line, that is
+  `speck must be a header at the start of the line`. A line that starts
+  with `speck` and a bad name before `{` is `expected "speck <Name> {"`.
+  At nonzero depth a line that would otherwise be a header is
+  `unbalanced braces`. `speck` inside a string or a comment is not the
+  keyword. `specks`, `myspeck`, `speck_count`, and `my-speck` are
+  identifiers. `speck` with
+  the name on the next line is
+  `speck name must be on the same line as "speck"`. A one-line speck
+  with members
+  (`speck L { state { x: Nat } init { x := 0 } }`) and two specks on one
+  line are `one speck per line: put members on their own lines`. On main
+  the split name was dropped, a one-line speck kept the name and dropped
+  the members, and a second speck on the same line was dropped or its
+  members were attached to the first. Those forms are a parse error
+  here. Accepting them belongs to the whole-file tokenizer, not this
+  change. A line that is only `speck` is
+  `speck name must be on the same line as "speck"`. A format character
+  (Unicode Cf) outside a string or a comment is
+  `invisible format character`, except a BOM at the start of the file.
+  A line that starts at depth 0 and is not a speck header, a `domain`
+  line, an `import`, or blank is
+  `text outside a speck, domain, or import`. A lone `}` on that line is
+  `unbalanced braces`. That includes a member
+  written after `speck Name { }`. Non-comment text after the `}` that
+  brings file-level depth back to 0, on that same line, is
+  `text after a closing brace`. That includes `}; thing B {` and
+  `} action Evil { x := 99 }`. This check only rejects that text.
+  The same error is reported for other text after a member's `}`
+  while the speck stays open (`} action Evil`, `} invariant Canary2`,
+  `}; thing C`). A same-line `else` (`} else`, `} else if`) is still
+  parsed. A line that is `})` or `},` is still parsed: it finishes a
+  record or a call. A line that takes depth to 0 has to be `}` plus optional
+  whitespace and an optional comment (`closing brace must be alone on
+  the line`). `action Go { x := x + 1 } }`, `state { x: Nat } }`, and
+  `invariant P { x >= 0 } }` are that error. On a line that opens or
+  closes a speck, a `{` or `}` inside a `//` or `/* */` comment is
+  `comment contains a brace`. That includes `speck A { // }`,
+  `} // {`, `} /* { */`, and `} // speck B { follows`. `speck A // {`
+  with `{` on the next line still parses: that comment is not on the
+  line that opens the speck. `} // speck B` with no brace in the comment
+  still parses. An unknown block that stays inside a speck (`thing B {`,
+  `Speck B {`, a Cyrillic lookalike of `speck`) is merged into that
+  speck, the same as main.
+  `speck` is a reserved keyword. On main, `speck := speck + 1` and
+  `speck >= 0` were accepted. They are now
+  `"speck" is a reserved keyword`, naming the file and line. A header `speck Name` whose `{` never appears is
+  `expected "speck <Name> {"`. A colon-form `if` nested inside another
+  colon-form `if` is never rewritten. That is the same as main. `'` is not a string quote. An empty `hash ""`,
+  a mistyped clause, and a `/* */` comment on an import line are
+  `Failed to parse import statement`. A trailing `//` on an import is
+  accepted. The member walk is unchanged, and it is the same as main.
+  A `{` or `}` inside a `//` comment, a `/* */` comment, or a string on a
+  member line can still decide where that member ends. `if x > 5 { // }`
+  and `if x > 5 { /* } */` can run the following statements unconditionally
+  and drop a following invariant Canary. The same gap drops invariant
+  Canary in g07, g09, g26, and g27. `description: "{ } }}"` can drop
+  the members of that speck, and `log := "}"` inside an action can drop
+  that action's statements and a following invariant. Comment braces inside
+  member blocks are a known gap, the same as main, and are fixed in #47,
+  not here.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

@@ -190,8 +190,129 @@ import "common.speckdl" as common
 import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 ```
 
-Version pinning is optional for local development and required for Specks
-with `review: manual` or `review: hybrid`.
+An import is a file path, resolved relative to the file that contains it
+(absolute paths are taken as written). The lower pass reads that file,
+lowers it, and merges its specks into the compilation unit. A file-level
+import is attached to every speck in the importing file; an import written
+inside one speck is attached to that speck. `as` names the import: one
+speck uses the alias, several specks use `alias.SpeckName`. With no alias
+the speck's own name is used.
+
+Failures name the file and stop the compile:
+
+- the path cannot be read (missing file, or a directory);
+- the import graph cycles (`a.speckdl -> b.speckdl -> a.speckdl`);
+- `hash "sha256:..."` (or a bare hex digest) does not match the file bytes;
+- the same speck name is declared in two files.
+
+`version` is stored on the resolved import. Looking that pin up in a
+package registry is **not yet implemented**. Requiring a version when
+`review` is `manual` or `hybrid` is **not yet implemented** — a missing
+version is not an error today.
+
+Merging does not inline the imported speck's members into the importer,
+and it does not rewrite expressions that mention an imported name. That
+name resolution is **not yet implemented**. Each merged speck stays one
+speck.
+
+The file-level scan that finds the next speck skips a `{` or `}` inside a
+finished `"` string, a `//` comment, or a `/* */` comment. `'` is prime
+notation, not a string quote. A `"` string ends on the line it starts: an
+unclosed `"` is a parse error on that line (`unterminated string`), so a
+`"` on a later line does not close it. An unclosed `/*`, a `/*` inside a
+block comment, and a `*/` that is not closing a block comment are parse
+errors naming the file and the line.
+
+If that depth is not 0 when the next line is a speck header, the parse
+error is `unbalanced braces`, naming the file and the line. At the end of
+the file the same error is reported whenever that depth is not 0. A stray
+`}` is that error on the line where depth goes below 0, even when a
+later `{` or a later comment would bring it back. A `domain`
+block is not parsed in this version. A speck written inside
+`domain D { ... }` hits that error. It is not omitted. Members written
+inside the domain (`action`, `invariant`) are dropped, the same as
+main. Domain blocks are a later change. An `import` inside
+an action, an `if` inside an action, a multi-line state block, a `domain`
+block, or any other brace block that is not the speck itself is
+`import is inside a block`, naming the file and the line. An import that
+is a direct member of a speck is attached to that speck.
+
+A speck header is the trimmed line with comments masked. These are the
+same header: an indent before `speck`, a tab between `speck` and the name,
+`speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
+`speck Name {}`, and `speck Name` with `{` alone on a following line. A
+line `{ }` after `speck Name` is not that header. It is
+`expected "speck <Name> {"`. A `/* */` comment on the same line before
+`speck Name {` is also that header. After comments and strings are
+masked, a `speck` written as a header has to be that header. The header
+is at depth 0. A name starts with a letter or `_`. The keyword followed
+by anything else is a parse error naming the file and the line,
+including punctuation before the name (`speck -B {`, `speck (B) {`) and
+an expression (`x := speck + 1`). Mid-line, that is
+`speck must be a header at the start of the line`. A line that starts
+with `speck` and a bad name before `{` is `expected "speck <Name> {"`.
+`unbalanced braces` is the error when the line would be a header except
+for the depth. `speck` inside a string or a comment is not the keyword.
+`specks`, `myspeck`, `speck_count`, and `my-speck` are identifiers.
+`speck` with the name on the next line is
+`speck name must be on the same line as "speck"`, naming the file and
+the line. A one-line speck with members
+(`speck L { state { x: Nat } init { x := 0 } }`) and two specks on one
+line are `one speck per line: put members on their own lines`. On main,
+a split name was dropped, a one-line speck kept the name and dropped
+the members, and a second speck on the same line was dropped or its
+members were attached to the first. Those forms are a parse error in
+this version. Accepting them belongs to the whole-file tokenizer, not
+this version. A line that is only `speck` is
+`speck name must be on the same line as "speck"`. A format character
+(Unicode category Cf) outside a string or a comment is
+`invisible format character`, except a BOM at the start of the file.
+A line that starts at depth 0 and is not a speck header, a `domain`
+line, an `import`, or blank is
+`text outside a speck, domain, or import`. A lone `}` on that line is
+`unbalanced braces`. Non-comment text after the
+`}` that brings file-level depth back to 0, on that same line, is
+`text after a closing brace`. The same error is reported for
+other text after a member's `}` while the speck stays open
+(`} action`, `} invariant`, `}; thing`). A same-line `else`
+(`} else`, `} else if`) is still parsed. A line that is `})` or
+`},` is still parsed: it finishes a record or a call. A line that takes depth to 0
+has to be `}` plus optional whitespace and an optional comment. The
+error is `closing brace must be alone on the line`.
+`action Go { x := x + 1 } }`, `state { x: Nat } }`, and
+`invariant P { x >= 0 }}` are that error. On a line that opens or
+closes a speck, a `{` or `}` inside a `//` or `/* */` comment is
+`comment contains a brace`. That includes `speck A { // }`, `} // {`,
+`} /* { */`, and `} // speck B { follows`. `speck A // {` with `{` on
+the next line still parses, because that comment is not on the line
+that opens the speck. `} // done` and `} // speck B` with no brace in
+the comment still parse. This check only rejects that text. An
+unknown block that stays inside a speck (`thing B {`, `Speck B {`, a
+Cyrillic lookalike of `speck`) is merged into that speck, the same as
+main. `speck` is a
+reserved keyword. On main, a line such as `speck := speck + 1` or
+`speck >= 0` was accepted. It is now `"speck" is a reserved keyword`,
+naming the file and the line. A
+header `speck Name` whose `{` never appears is
+`expected "speck <Name> {"`. A colon-form `if` nested inside another
+colon-form `if` is never rewritten. That is the same as main.
+
+Inside a member, `{` and `}` are still counted in the raw text, including
+inside a `//` comment, a `/* */` comment, and a string. That walk is
+unchanged, and it is the same as main. A comment brace can decide where
+the member ends: `if x > 5 { // }` and `if x > 5 { /* } */` can run the
+following statements unconditionally and drop a following invariant
+Canary. The same gap drops invariant Canary in g07, g09, g26, and g27.
+`description: "{ } }}"` can drop the members of that speck, and
+`log := "}"` in an action can drop the action's statements and a following
+invariant. Comment braces inside member blocks are a known gap. They are
+fixed in #47, not in this version.
+
+An import line is `import`, a quoted path, then optional `as`, `version`,
+and `hash` clauses, then an optional `//` comment. `hash ""`, a mistyped
+clause such as `hsh` or `verison`, and a `/* */` comment on that line
+fail with `Failed to parse import statement` followed by the line. The
+path does not swallow the leftover text.
 
 ### 2.9 Expression Operators
 
@@ -299,7 +420,8 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
 
 Generators consume the IR, not the AST. The IR is complete (every fact in
 the spec is in a named facet), lossless (expressions are typed trees, not
-strings), resolved (cross-spec references resolved at lower time), and
+strings), resolved (`import` paths are read and merged at lower time; using
+an imported name inside an expression is not yet implemented), and
 provenanced (missing provenance is synthesized from file metadata).
 
 ### 4.1 Planned Stages (not implemented)

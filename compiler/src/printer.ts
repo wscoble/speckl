@@ -12,7 +12,10 @@ import { AST, SpeckNode, MemberNode, TypeExpr } from './parser.js';
 
 /** Render a parsed AST back to SpeckDL source. */
 export function printAST(ast: AST): string {
-  return ast.specks.map(printSpeck).join('\n') + '\n';
+  const chunks: string[] = [];
+  for (const imp of ast.imports ?? []) chunks.push(printMember(imp).join('\n'));
+  for (const speck of ast.specks) chunks.push(printSpeck(speck));
+  return chunks.join('\n') + '\n';
 }
 
 function printSpeck(speck: SpeckNode): string {

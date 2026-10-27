@@ -151,12 +151,97 @@ Formal methods specs from a toggle switch through Raft consensus:
 
 Browse all in [examples/](examples/).
 
+## Imports
+
+A file can `import` another SpeckDL file. The compiler reads it, lowers it,
+and merges its specks into the compilation. A missing file, an import cycle,
+a hash mismatch, or the same speck name in two files is a compile error, and
+the message names the file.
+
+```
+import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
+```
+
+**Not yet implemented:** a package registry for `version` pins (the pin is
+stored, and `hash` is checked); rewriting expressions that name an imported
+speck.
+
+The file-level scan that finds the next speck skips a brace inside a
+finished string or a comment. An unclosed `{` before the next speck, or a
+file whose depth on that scan is not 0 at the end, is a parse error naming
+the file and line (`unbalanced braces`). A stray `}` is that error on
+the line where depth goes below 0, even when a later `{` or a later
+comment would bring it back. `domain` is not parsed; a speck
+inside a domain's braces is that error. Members written inside
+`domain D { ... }` are dropped, the same as main. Domain blocks are a
+later change. An `import` inside an action, an
+`if` inside an action, a state block, a domain, or any other brace block
+that is not the speck itself is `import is inside a block`. An import that
+is a direct member of a speck is attached to that speck. A string does not
+cross lines: an unclosed `"` is an error on that line. An unclosed block
+comment, a nested `/*`, and a stray `*/` are parse errors naming the file
+and line. A speck header is matched on the trimmed line with comments
+masked: an indent, a tab, `speck /* c */ Name {`, `speck Name /* c */ {`,
+`speck Name { }`, `speck Name {}`, and `speck Name` with `{` alone on
+the next line are that speck. `{ }` on that next line is
+`expected "speck <Name> {"`. `/* */` before `speck` on the same line is
+parsed as that speck. After comments and strings are masked, a `speck`
+written as a header has to be that header, at depth 0. A name starts
+with a letter or `_`. The keyword followed by anything else is a parse
+error naming the file and the line, including punctuation before the
+name (`speck -B {`) and an expression (`x := speck + 1`). Mid-line, that
+is `speck must be a header at the start of the line`. A line that starts
+with `speck` and a bad name before `{` is `expected "speck <Name> {"`.
+At nonzero depth a line that would otherwise be a header is
+`unbalanced braces`. `speck` inside a string or a comment is not the
+keyword. `specks`, `myspeck`, `speck_count`, and `my-speck` are
+identifiers. `speck` with the name on the next line is
+`speck name must be on the same line as "speck"`. A one-line speck with
+members, and two specks on one line, are
+`one speck per line: put members on their own lines`. On main the split
+name was dropped, the one-line members were dropped, and the second
+speck was dropped or its members were attached to the first. Those forms
+are a parse error here. A line that is only `speck` is
+`speck name must be on the same line as "speck"`. A format character
+outside a string or a comment is `invisible format character`, except a
+BOM at the start of the file. A line that starts at depth 0 and is not
+a speck header, a `domain` line, an `import`, or blank is
+`text outside a speck, domain, or import`. A lone `}` on that line is
+`unbalanced braces`. Non-comment text after the
+`}` that brings file-level depth back to 0, on that same line, is
+`text after a closing brace`. The same error is reported for
+other text after a member's `}` while the speck stays open. A
+same-line `else` is still parsed, and so is a line that is `})` or
+`},`. A line that takes depth to 0 has to
+be `}` plus optional whitespace and an optional comment (`closing brace
+must be alone on the line`). On a line that opens or closes a speck, a
+`{` or `}` inside a comment is `comment contains a brace`. `speck Name`
+with `// {` and `{` on the next line still parses. This check only
+rejects that text. An unknown block that stays inside a speck is merged
+into it, the same as main.
+`speck` is a reserved keyword. On main, `speck := speck + 1`
+and `speck >= 0` were accepted. They are now
+`"speck" is a reserved keyword`.
+A header `speck Name` whose `{` never appears is
+`expected "speck <Name> {"`. A colon-form `if` nested inside another
+colon-form `if` is never rewritten, the same as main. `hash ""`, a mistyped import clause, and a
+`/* */` comment on an import line fail with
+`Failed to parse import statement`. A trailing `//` on an import is
+accepted. Inside a member, a `{` or `}` in a `//` comment, a `/* */`
+comment, or a string can still decide where the member ends. That is the
+same as main. `if x > 5 { // }` can run the following statements
+unconditionally and drop invariant Canary. The same gap drops invariant
+Canary in g07, g09, g26, and g27. `description: "{ } }}"` can
+drop that speck's members, and `log := "}"` in an action can drop the
+action's statements and a following invariant. Comment braces inside
+member blocks are a known gap, fixed in #47, not here.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
-- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
+- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics, including `import`
 
 ## Status
 
