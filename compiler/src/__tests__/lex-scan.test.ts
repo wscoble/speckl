@@ -267,7 +267,8 @@ describe('scanner paths used by the other block forms', () => {
     const state = speck.members.find(m => m.type === 'state') as { messageName?: string; variables: { name: string }[] };
     expect(state.messageName).toBe('Proto');
     expect(state.variables.map(v => v.name)).toEqual(['n']);
-    const life = speck.members.find(m => m.type === 'lifecycle_metadata') as { key: string; value: unknown };
+    const life = (speck.members as unknown as { type: string; key?: string; value?: unknown }[])
+      .find(m => m.type === 'lifecycle_metadata');
     expect(life).toMatchObject({ key: 'ownerReferences', value: false });
   });
 
