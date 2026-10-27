@@ -428,33 +428,55 @@ decision line. The line's `signal` is `prime`. The fields are:
 - `branch_id`, unique among branch ids already in this log, and never
   equal to its parent. A caller-supplied id is kept when it is free.
 - `parent_branch_id`, from ingress, or null. The hook does not require the
-  parent to appear in this log.
-- `call_id`, `ok` (true only when the post says `ok: true`), `ts`, and
-  `priority`. Priority is the action's `priority` label, or the domain's
-  when the action has none, or null.
-- `kpis`, the `kpi "<name>"` tags of events that action emits, in source
-  order. The tag is static. The hook does not read a runtime payload.
+  parent to appear in this log. A value that is present but not an id
+  (whitespace, too long, or not a string) is stored as null and
+  `trace_flagged` is true. Absent, null, and `""` are an unflagged root.
+- `call_id`, `ok` (true only when the matched post says `ok: true`), `ts`,
+  and `priority`. Priority is the action's `priority` label, or the
+  domain's when the action has none, or null.
+- `kpis`, the `kpi "<name>"` tags of events that action emits with a
+  straight-line `emit`, in source order, once each. An `emit` inside an
+  `if`, a `for`, or a comment is not included. The generated agent
+  machine does not run `if` or `for` bodies, so those emits do not happen
+  there. The tag is static. The hook does not read a runtime payload.
 
 An act `post` whose `call_id` and tool do not match the pending pre is a
-deny, and that deny is still a completion signal. If that post has no
-`trace_id`, it is a fresh flagged root. An observe tool does not get
-these fields.
+deny, and that deny is still a completion signal. It does not keep the
+caller's `ok`, `kpis`, or `trace_id`: `ok` is false, `kpis` is empty, and
+the trace is a fresh flagged root. An observe tool does not get these
+fields.
 
 The allow `pre` of an act tool stores the same trace fields without
 `signal`, `ok`, or `kpis`, so a later report can see the ingress. A denied
-pre does not enter the queue the report counts.
+pre does not enter the queue the report counts. A deny post does not close
+that queue and is not a drain leaf.
 
 `speckl trace report --log <file>` or `--state <file>` reads the log
 offline. It prints, per priority, drain latency (ingress time to the last
-leaf completion), completion-signal lag (that pre to the post), and queue
-depth after each allow pre that still has no completion. Leaf means no
-other line in the trace names that `branch_id` as its parent. KPI-tagged
-completions are listed back to their trace. A priority that was null is
-printed as `(none)`.
+leaf allow completion), completion-signal lag (that allow pre to the allow
+post), and queue depth after each allow pre that no allow post has closed.
+Leaf means no other counted allow line in the trace names that `branch_id`
+as its parent. A deny line is not a parent and cannot flip `flagged`. KPI
+lines are allow posts that matched an allow pre, and each line shows the
+verdict (`verdict allow`). A deny post is not listed under a kpi, even
+when a forged line still carries tags. A priority that was null is printed
+as `(none)`.
 
-The command checks the hash chain. It checks the HMAC only when `--key`
-is passed, and a matching mac still proves nothing to an outside auditor.
-It does not run the agent, does not advance state, and does not enforce a
+The second line of the report is `macs checked` or `macs not checked`.
+Macs are checked only when `--key` is passed. A matching mac still proves
+nothing to an outside auditor. A chain rebuilt without the key can have a
+valid hash; the report then prints `macs not checked` and those numbers
+are not a verified seal.
+
+The command checks the hash chain of the bytes it read. A line with no
+trailing newline is torn and fails. With `--state`, `head.json` is checked
+when it exists: `seq` and `hash`, and the head mac when `--key` is passed.
+A log shorter than that head, or a missing log when the head is not empty,
+fails with `decision record truncated`. A log longer than the head is an
+uncommitted suffix and is accepted. A missing head is accepted. `--log`
+does not read a head, so deleting whole lines from the tail of a file
+passed only as `--log` can still leave a hash-valid prefix. The command
+does not run the agent, does not advance state, and does not enforce a
 queue. A pending call that expired or was cleared is still an open pre in
 this report, because that clear lives in `state.log`, not in a completion
 signal. The durations are a throughput signal, not a risk signal.

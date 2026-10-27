@@ -1,12 +1,16 @@
 // Offline completion-signal report.
 //
 // `speckl trace report` reads a decision log and prints, per priority,
-// drain latency, completion-signal lag, and queue depth. It does not run
-// the hook and it does not enforce a queue. Durations are a throughput
+// drain latency, completion-signal lag, and queue depth. Drain and KPI
+// lines count only an allow post that matched an allow pre. It does not
+// run the hook and it does not enforce a queue. Durations are a throughput
 // signal, not a risk signal.
 //
-// The hash chain is checked. The HMAC is checked only when a key is passed.
-// That HMAC is a shared-key seal. It proves nothing to an outside auditor.
+// The hash chain of the bytes read is checked. With --state, head.json is
+// checked too (seq and hash, and the head mac when --key is passed), so a
+// shortened or deleted log fails. --log does not know the head. The HMAC
+// is checked only when a key is passed, and the report says so. That HMAC
+// is a shared-key seal. It proves nothing to an outside auditor.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -149,6 +153,14 @@ function isPrime(line: TraceLine): boolean {
   return line.signal === 'prime';
 }
 
+/** An allow completion whose call_id matches an earlier allow pre. */
+function matchedAllowPrime(lines: TraceLine[], line: TraceLine): boolean {
+  if (!isPrime(line) || line.verdict !== 'allow' || line.call_id == null) return false;
+  return lines.some(p =>
+    p.phase === 'pre' && p.verdict === 'allow' && p.call_id === line.call_id && p.seq < line.seq,
+  );
+}
+
 function earliest(cands: TraceLine[]): TraceLine | null {
   let best: TraceLine | null = null;
   for (const line of cands) {
@@ -162,12 +174,20 @@ function earliest(cands: TraceLine[]): TraceLine | null {
 }
 
 function drainLines(lines: TraceLine[], priority: string): string[] {
-  const primes = lines.filter(l => isPrime(l) && priorityOf(l) === priority && typeof l.trace_id === 'string' && typeof l.branch_id === 'string');
+  const primes = lines.filter(l =>
+    matchedAllowPrime(lines, l) && priorityOf(l) === priority
+    && typeof l.trace_id === 'string' && typeof l.branch_id === 'string',
+  );
   const traces = [...new Set(primes.map(l => l.trace_id as string))].sort((a, b) => a.localeCompare(b));
   const out: string[] = [];
   for (const traceId of traces) {
-    const group = lines.filter(l => l.trace_id === traceId);
-    const leaves = primes.filter(l => l.trace_id === traceId && !group.some(g => g.parent_branch_id === l.branch_id));
+    // Deny lines are not parents and cannot flip the flag or set ingress.
+    const counted = lines.filter(l =>
+      l.trace_id === traceId && (
+        (l.phase === 'pre' && l.verdict === 'allow') || matchedAllowPrime(lines, l)
+      ),
+    );
+    const leaves = primes.filter(l => l.trace_id === traceId && !counted.some(g => g.parent_branch_id === l.branch_id));
     if (leaves.length === 0) continue;
     let last = leaves[0];
     for (const leaf of leaves.slice(1)) {
@@ -176,9 +196,9 @@ function drainLines(lines: TraceLine[], priority: string): string[] {
       if (a === null) continue;
       if (b === null || a > b || (a === b && leaf.seq > last.seq)) last = leaf;
     }
-    const pres = group.filter(l => l.phase === 'pre' && l.verdict === 'allow');
-    const ingress = earliest(pres) ?? earliest(group);
-    const flagged = group.some(l => l.trace_flagged === true) ? 'true' : 'false';
+    const pres = counted.filter(l => l.phase === 'pre' && l.verdict === 'allow');
+    const ingress = earliest(pres);
+    const flagged = counted.some(l => l.trace_flagged === true) ? 'true' : 'false';
     const inMs = ingress ? epoch(ingress.ts) : null;
     const leafMs = epoch(last.ts);
     if (!ingress || inMs === null || leafMs === null) {
@@ -196,6 +216,11 @@ function lagLines(lines: TraceLine[], priority: string): string[] {
   for (const line of lines) {
     if (!isPrime(line) || priorityOf(line) !== priority) continue;
     const call = line.call_id == null ? '' : String(line.call_id);
+    // A deny must not consume an allow pre, and it is not a measured lag.
+    if (line.verdict !== 'allow') {
+      out.push('  call ' + call + ' unmatched');
+      continue;
+    }
     const pre = lines.find(p =>
       !used.has(p.seq)
       && p.phase === 'pre'
@@ -233,7 +258,7 @@ function queueLines(lines: TraceLine[], priority: string): string[] {
       out.push('  ' + line.ts + ' ' + depth);
       continue;
     }
-    if (isPrime(line)) {
+    if (isPrime(line) && line.verdict === 'allow') {
       const n = open.get(id) ?? 0;
       if (n <= 0) continue;
       open.set(id, n - 1);
@@ -249,17 +274,19 @@ function section(rows: string[]): string[] {
 }
 
 /**
- * Per priority: drain latency (ingress to the last leaf completion),
- * completion-signal lag (allow pre to prime), and queue depth after each
- * pre that has no post yet. KPI-tagged primes are listed back to their trace.
- * A priority of null is printed as `(none)`.
+ * Per priority: drain latency (ingress to the last matched allow leaf),
+ * completion-signal lag (allow pre to an allow prime), and queue depth
+ * after each allow pre that no allow prime has closed. KPI lines are those
+ * same matched allow posts, and each line shows the verdict. A deny post
+ * is not a drain leaf and is not a KPI line. A priority of null is printed
+ * as `(none)`. The second line says whether HMAC macs were checked.
  */
-export function formatTraceReport(lines: TraceLine[]): string {
+export function formatTraceReport(lines: TraceLine[], macsChecked = false): string {
   const priorities = new Set<string>();
   for (const line of lines) {
     if (typeof line.trace_id === 'string' || line.signal === 'prime') priorities.add(priorityOf(line));
   }
-  const out: string[] = ['speckl trace report'];
+  const out: string[] = ['speckl trace report', macsChecked ? 'macs checked' : 'macs not checked'];
   const names = [...priorities].sort((a, b) => a.localeCompare(b));
   if (names.length === 0) out.push('priority', '  none');
   for (const priority of names) {
@@ -273,7 +300,7 @@ export function formatTraceReport(lines: TraceLine[]): string {
   }
   const kpis = new Set<string>();
   for (const line of lines) {
-    if (!isPrime(line) || !Array.isArray(line.kpis)) continue;
+    if (!matchedAllowPrime(lines, line) || !Array.isArray(line.kpis)) continue;
     for (const k of line.kpis) if (typeof k === 'string' && k) kpis.add(k);
   }
   const kpiNames = [...kpis].sort((a, b) => a.localeCompare(b));
@@ -281,42 +308,107 @@ export function formatTraceReport(lines: TraceLine[]): string {
   for (const name of kpiNames) {
     out.push('kpi ' + name);
     for (const line of lines) {
-      if (!isPrime(line) || !Array.isArray(line.kpis) || !line.kpis.includes(name)) continue;
+      if (!matchedAllowPrime(lines, line) || !Array.isArray(line.kpis) || !line.kpis.includes(name)) continue;
       out.push(
         '  trace ' + (typeof line.trace_id === 'string' ? line.trace_id : '')
         + ' call ' + (line.call_id == null ? '' : String(line.call_id))
         + ' branch ' + (typeof line.branch_id === 'string' ? line.branch_id : '')
         + ' ok ' + (line.ok === true ? 'true' : 'false')
         + ' priority ' + priorityOf(line)
-        + ' flagged ' + (line.trace_flagged === true ? 'true' : 'false'),
+        + ' flagged ' + (line.trace_flagged === true ? 'true' : 'false')
+        + ' verdict ' + line.verdict,
       );
     }
   }
   return out.join('\n') + '\n';
 }
 
+function macEqual(have: string, want: string): boolean {
+  if (!/^[0-9a-fA-F]{64}$/.test(have) || !/^[0-9a-fA-F]{64}$/.test(want)) return false;
+  const a = Buffer.from(want, 'hex');
+  const b = Buffer.from(have, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Compare the log to a decision head, the same seq and hash rules as
+ * `judgeDecisionLines`. The head mac is checked only when `key` is passed.
+ * A log longer than the head is an uncommitted suffix and is accepted.
+ */
+export function checkDecisionHead(
+  lines: TraceLine[],
+  head: Record<string, unknown>,
+  state: { runId?: unknown; specHash?: unknown; keyId?: unknown },
+  key?: Buffer,
+): string | null {
+  if (!head || head.v !== 1) return 'decision head is not version 1';
+  if (head.runId !== state.runId || head.specHash !== state.specHash || (head.keyId || null) !== (state.keyId || null)) {
+    return 'decision record belongs to a different state';
+  }
+  const genesis = decisionGenesis(state);
+  if (head.genesis !== genesis) return 'decision genesis mismatch';
+  if (typeof head.seq !== 'number' || !Number.isInteger(head.seq) || typeof head.hash !== 'string') {
+    return 'decision head is missing seq or hash';
+  }
+  if (key) {
+    if (typeof head.mac !== 'string') return 'decision head signature missing';
+    const rest: Record<string, unknown> = {};
+    for (const k of Object.keys(head)) {
+      if (k !== 'mac') rest[k] = head[k];
+    }
+    const want = crypto.createHmac('sha256', key).update(canonical(rest)).digest('hex');
+    if (!macEqual(String(head.mac), want)) return 'decision head signature mismatch';
+  }
+  if (lines.length === 0) {
+    if (head.seq !== -1) return 'decision record truncated';
+    if (head.hash !== genesis) return 'decision head hash mismatch';
+    return null;
+  }
+  if (head.seq < -1 || head.seq >= lines.length) return 'decision record truncated';
+  if (head.seq === -1) {
+    if (head.hash !== genesis) return 'decision head hash mismatch';
+    return null;
+  }
+  if (lines[head.seq].hash !== head.hash) return 'decision head hash mismatch';
+  return null;
+}
+
 export const TRACE_USAGE = [
   'usage: speckl trace report (--log <file> | --state <file>) [--key <file>]',
   '',
   'Read a decision log offline. For each priority print drain latency',
-  '(ingress to the last leaf completion), completion-signal lag (pre to',
-  'post), and queue depth (an allow pre of that priority with no matching',
-  'completion yet). A produced event tagged kpi "<name>" is attributed',
-  'back to the trace of each completion that emitted it.',
+  '(ingress to the last leaf allow completion), completion-signal lag',
+  '(allow pre to allow post), and queue depth (an allow pre of that',
+  'priority that no allow post has closed). A KPI line is an allow post',
+  'that matched an allow pre and whose straight-line emits carry',
+  'kpi "<name>". Each KPI line shows the verdict. A deny post is not a',
+  'drain leaf and is not a KPI line.',
   '',
-  '--log <file>     decision log (log.jsonl)',
-  '--state <file>   state.json; the log is <file>.decisions/log.jsonl',
-  '--key <file>     also check HMAC-SHA256 macs with this state key',
+  '--log <file>     decision log (log.jsonl). Does not read a decision head.',
+  '--state <file>   state.json; the log is <file>.decisions/log.jsonl and',
+  '                 the head, when present, is <file>.decisions/head.json',
+  '--key <file>     check HMAC-SHA256 macs on each line, and on the head',
+  '                 when --state is used',
   '',
-  'The hash chain is always checked. The HMAC is checked only with --key.',
-  'That seal is a shared-key HMAC. It proves nothing to an outside auditor:',
+  'The hash chain of the bytes read is always checked. A line with no',
+  'trailing newline is torn and fails. With --state, a head that exists',
+  'is checked for seq and hash (and its mac with --key). A log shorter',
+  'than that head, or a missing log when the head is not empty, fails.',
+  'A log longer than the head is an uncommitted suffix and is accepted.',
+  'A missing head is accepted. --log cannot see a head, so a shortened',
+  'prefix that still hashes can pass.',
+  '',
+  'Without --key the report prints "macs not checked". With --key it',
+  'prints "macs checked" after the macs match. A chain rebuilt without',
+  'the key can have a valid hash. That is not a verified seal. The HMAC',
+  'is a shared-key seal. It proves nothing to an outside auditor:',
   'anyone who can read the key can forge a line, and someone without the',
   'key cannot check the mac.',
   '',
   'This command does not run the agent and does not enforce a queue.',
   'The durations are a throughput signal, not a risk signal.',
-  'A missing log next to --state is an empty record. A missing --log file',
-  'is an error. Exit 0 prints the report. Exit 1 is a bad log or a bad chain.',
+  'A missing --log file is an error. Exit 0 prints the report. Exit 1 is',
+  'a bad log, a bad chain, or a head that does not match.',
 ].join('\n');
 
 export function runTrace(argv: string[]): number {
@@ -365,6 +457,7 @@ export function runTrace(argv: string[]): number {
     console.error('speckl trace report: ' + read.reason);
     return 1;
   }
+  let stateObj: { runId?: unknown; specHash?: unknown; keyId?: unknown } | null = null;
   if (statePath) {
     let raw: string;
     try { raw = fs.readFileSync(statePath, 'utf8'); }
@@ -382,14 +475,15 @@ export function runTrace(argv: string[]): number {
       console.error('speckl trace report: state file is not an object');
       return 1;
     }
-    const why = checkGenesis(read.lines, state as { runId?: unknown; specHash?: unknown; keyId?: unknown });
+    stateObj = state as { runId?: unknown; specHash?: unknown; keyId?: unknown };
+    const why = checkGenesis(read.lines, stateObj);
     if (why) {
       console.error('speckl trace report: ' + why);
       return 1;
     }
   }
+  let key: Buffer | undefined;
   if (keyPath) {
-    let key: Buffer;
     try {
       const hex = fs.readFileSync(keyPath, 'utf8').trim();
       if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error('bad key');
@@ -398,12 +492,40 @@ export function runTrace(argv: string[]): number {
       console.error('speckl trace report: state key could not be read');
       return 1;
     }
+  }
+  if (stateObj) {
+    const headPath = statePath + '.decisions/head.json';
+    if (fs.existsSync(headPath)) {
+      let headRaw: string;
+      try { headRaw = fs.readFileSync(headPath, 'utf8'); }
+      catch {
+        console.error('speckl trace report: decision head could not be read');
+        return 1;
+      }
+      let head: unknown;
+      try { head = JSON.parse(headRaw); }
+      catch {
+        console.error('speckl trace report: decision head is not JSON');
+        return 1;
+      }
+      if (!head || typeof head !== 'object' || Array.isArray(head)) {
+        console.error('speckl trace report: decision head is not version 1');
+        return 1;
+      }
+      const why = checkDecisionHead(read.lines, head as Record<string, unknown>, stateObj, key);
+      if (why) {
+        console.error('speckl trace report: ' + why);
+        return 1;
+      }
+    }
+  }
+  if (key) {
     const why = checkMacs(read.lines, key);
     if (why) {
       console.error('speckl trace report: ' + why);
       return 1;
     }
   }
-  process.stdout.write(formatTraceReport(read.lines));
+  process.stdout.write(formatTraceReport(read.lines, key !== undefined));
   return 0;
 }

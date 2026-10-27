@@ -51,8 +51,13 @@ export function emitHookMjs(speckName: string): string {
  * line (signal "prime"): trace_id from the ingress pre, branch_id unique
  * in this log, parent_branch_id, call_id, ok, ts, and priority from the
  * action or the domain. A missing trace_id is a fresh root and
- * trace_flagged is true. An act post with no matching pre is a deny, and
- * that deny is still a completion signal. Observe tools do not get one.
+ * trace_flagged is true. A parent_branch_id that was supplied but is not
+ * an id is flagged the same way; it is not turned into a quiet root.
+ * An act post with no matching pre is a deny. That deny is still a
+ * completion signal, but it does not keep the caller's ok, kpis, or
+ * trace_id: ok is false, kpis is empty, and the trace is a fresh flagged
+ * root. Observe tools do not get one. kpis are the straight-line emits
+ * only. An emit inside an if, a for, or a comment is not included.
  *
  * A call-bound sign-off (await \`bind call\`) allows one later call whose
  * digest matches the signed \`call\` hash, and only once that call's post
@@ -240,19 +245,24 @@ function assignBranch(stateFile, requested, parent) {
   return id;
 }
 // trace_id from the ingress message. Missing, empty, or not an id: a fresh
-// root, parent cleared, trace_flagged true. branch_id is unique in this log
+// root, parent cleared, trace_flagged true. A parent_branch_id that is
+// present but not an id (whitespace, too long, or not a string) is flagged
+// too; it is not silently cleared into an unflagged root. Absent, null,
+// and "" are a root and are not a flag. branch_id is unique in this log
 // and is never equal to its parent.
 function resolveIngress(msg, stateFile) {
   const given = cleanTraceId(msg && msg.trace_id);
-  if (!given) {
+  const parentRaw = msg ? msg.parent_branch_id : undefined;
+  const parentSupplied = parentRaw !== undefined && parentRaw !== null && parentRaw !== '';
+  const parent = cleanTraceId(parentRaw);
+  if (!given || (parentSupplied && !parent)) {
     return {
-      trace_id: freshToken('t-'),
+      trace_id: given || freshToken('t-'),
       parent_branch_id: null,
-      branch_id: assignBranch(stateFile, null, null),
+      branch_id: assignBranch(stateFile, given ? cleanTraceId(msg.branch_id) : null, null),
       trace_flagged: true,
     };
   }
-  const parent = cleanTraceId(msg.parent_branch_id);
   return {
     trace_id: given,
     parent_branch_id: parent,
@@ -609,10 +619,11 @@ async function main() {
           kpis: Array.isArray(state.pending.kpis) ? state.pending.kpis : [],
         };
       } else {
-        // No matching pre. The post message is the only ingress. A missing
-        // trace_id becomes a fresh flagged root. The verdict below is deny.
-        const traced = resolveIngress(msg, args.state);
-        audit.trace = traceFromBinding(postBinding, traced, postBinding.kpis, true, ok);
+        // No matching pre. Do not trust this message: ok, kpis, and
+        // trace_id are the caller's. The deny is a fresh flagged root
+        // with ok false and no kpi tags. The verdict below is deny.
+        const traced = resolveIngress({}, args.state);
+        audit.trace = traceFromBinding(postBinding, traced, [], true, false);
       }
     }
     if (!state.pending || state.pending.call_id !== callId) {

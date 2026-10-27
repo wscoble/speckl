@@ -383,15 +383,23 @@ be wired.
 `priority P0` on an action, or on the domain when the action has none,
 and `kpi "name"` on an event, are labels. The generated hook writes a
 completion signal on every `post` of an `effect act` tool: trace id from
-ingress (a missing id becomes a fresh flagged root), a branch id unique
-in that log, the parent branch, the call, whether it was ok, the time,
-and the priority. An act post with no matching pre is denied and still
-logged. `speckl trace report` reads that log offline. Per priority it
-prints drain latency, how long the completion lagged the pre, and how
-deep the queue was. KPI-tagged completions are attributed to their trace.
-The report does not run the agent and does not enforce a queue. Duration
-here is a throughput signal, not a risk signal. The log's seal is a
-shared-key HMAC. It proves nothing to an outside auditor.
+ingress (a missing or ill-formed id becomes a fresh flagged root), a
+branch id unique in that log, the parent branch, the call, whether it
+was ok, the time, and the priority. A parent that is present but not an
+id is flagged. An act post with no matching pre is denied and still
+logged, without the caller's ok, kpi tags, or trace id. A kpi tag is
+recorded only for a straight-line `emit`. An `emit` in an `if`, a `for`,
+or a comment is not tagged. `speckl trace report` reads that log offline.
+Per priority it prints drain latency, how long the allow completion
+lagged the allow pre, and how deep that allow queue was. Only an allow
+post that matched an allow pre is a drain leaf or a KPI line, and each
+KPI line shows the verdict. With `--state` the report checks the decision
+head, so a shortened or deleted log fails. `--log` alone does not know
+the head. A line with no trailing newline is torn and fails. Without
+`--key` the report prints `macs not checked`. The report does not run the
+agent and does not enforce a queue. Duration here is a throughput signal,
+not a risk signal. The log's seal is a shared-key HMAC. It proves nothing
+to an outside auditor.
 
 **Not yet implemented:** a tick scheduler, queues, and runtime routing from
 one domain to another. The budget query does not install a scheduler.

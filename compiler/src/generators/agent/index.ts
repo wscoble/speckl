@@ -155,23 +155,26 @@ export interface AgentRuntimeConfig {
   }[];
 }
 
-/** Events an action emits, including an `emit` written inside an if or for block. */
+/**
+ * Events this action emits on the generated agent machine.
+ * Only a straight-line `emit` counts. An `emit` inside an `if` or `for`
+ * does not: those bodies are not run by the machine. An `emit` in a
+ * comment is not an emit. The list stops at `return`.
+ */
 function emittedEventNames(action: ActionNode): string[] {
   const names: string[] = [];
   for (const s of action.statements) {
+    if (s.type === 'return') break;
     if (s.type === 'emit') names.push(s.event);
-    if ('raw' in s && typeof s.raw === 'string') {
-      for (const m of s.raw.matchAll(/\bemit\s+([A-Za-z_]\w*)/g)) names.push(m[1]);
-    }
   }
   return names;
 }
 
 /**
  * Priority is the action's `priority` label, otherwise the domain's.
- * KPIs are the tags on events this action emits, in source order, once each.
- * Both are omitted when absent so a spec that declares neither keeps the
- * same tool object as before.
+ * KPIs are the tags on events this action actually emits (straight-line
+ * `emit` only), in source order, once each. Both are omitted when absent
+ * so a spec that declares neither keeps the same tool object as before.
  */
 function toolAnnotations(
   speck: SpeckNode,
@@ -506,11 +509,16 @@ function buildAgentsMd(
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
   lines.push('- On `post` of an `effect act` tool the decision line is a completion signal');
   lines.push('  (`signal` is `prime`): `trace_id` from the ingress `pre` (a missing `trace_id`');
-  lines.push('  is a fresh root and `trace_flagged` is true), `branch_id` unique in this log,');
+  lines.push('  is a fresh root and `trace_flagged` is true), `branch_id` unique per branch,');
   lines.push('  `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` from the action or,');
-  lines.push('  when the action has none, from the domain. An act `post` with no matching `pre`');
-  lines.push('  is a deny, and that deny is still a completion signal. `speckl trace report`');
-  lines.push('  reads the log offline. It does not run the agent and it does not enforce a queue.');
+  lines.push('  when the action has none, from the domain. A supplied `parent_branch_id` that');
+  lines.push('  is not an id is flagged; it is not stored as a quiet root. `kpis` are the tags');
+  lines.push('  on straight-line `emit`s only. An `emit` inside an `if`, a `for`, or a comment');
+  lines.push('  is not included. An act `post` with no matching `pre` is a deny. That deny does');
+  lines.push('  not keep the caller\'s `ok`, `kpis`, or `trace_id`. `speckl trace report`');
+  lines.push('  reads the log offline. With `--state` it checks the keyed decision head, so a');
+  lines.push('  shortened or deleted log fails. Without `--key` it prints `macs not checked`.');
+  lines.push('  It does not run the agent and it does not enforce a queue.');
   lines.push('  The durations it prints are a throughput signal, not a risk signal.');
   lines.push('');
   lines.push('## Tamper-evident state');

@@ -288,8 +288,9 @@ scheduler knows is not rejected in this pass.
 
 `kpi "<name>"` tags an event. The name is a JSON string of 1 to 200
 characters with no control characters. Two declarations of the same event
-cannot carry different tags (including one tagged and one not). Actions
-that emit the event have that tag on their completion signal. The Camel
+cannot carry different tags (including one tagged and one not). A
+straight-line `emit` of the event puts that tag on the action's completion
+signal. An `emit` inside an `if`, a `for`, or a comment does not. The Camel
 target does not copy the tag onto the Java class.
 
 The IR records each one as an `IRDomain`. Provenance appends a domain
@@ -310,20 +311,42 @@ domain did not list is an error. A listed event that nobody emits is not.
 
 On `post` of an `effect act` tool the generated hook appends a completion
 signal on that decision-log line (`signal` is `prime`): `trace_id` from
-the ingress `pre` (a missing `trace_id` is a fresh root and
-`trace_flagged` is true), `branch_id` unique per branch (the matching post reuses it),
-`parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` from the action
-or the domain. An act `post` with no matching `pre` is a deny, and that
-deny is still a completion signal. Observe tools do not get one.
+the ingress `pre` (a missing or ill-formed `trace_id` is a fresh root and
+`trace_flagged` is true), `branch_id` unique per branch (the matching post
+reuses it), `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` from
+the action or the domain. A `parent_branch_id` that is present but not an
+id is flagged and stored as null. An absent parent is an unflagged root.
+An act `post` with no matching `pre` is a deny, and that deny is still a
+completion signal. It does not keep the caller's `ok`, `kpis`, or
+`trace_id`: `ok` is false, `kpis` is empty, and the trace is a fresh
+flagged root. Observe tools do not get one. The `kpis` on a tool are the
+tags of events that action emits with a straight-line `emit`. An `emit`
+inside an `if`, a `for`, or a comment is not tagged. The generated agent
+machine does not run `if` or `for` bodies.
+
 `speckl trace report` reads the log offline and prints, per priority,
-drain latency (ingress to the last leaf completion), completion-signal
-lag (pre to that post), and queue depth (an allow pre with no completion
-yet). KPI-tagged completions are listed back to their trace. The report
-does not run the agent and does not enforce a queue. Those durations are
-a throughput signal, not a risk signal. The seal on the line is unchanged:
-HMAC-SHA256 with the shared state key. It proves nothing to an outside
-auditor. Anyone who can read the key can forge a line, and someone
-without the key cannot check the mac.
+drain latency (ingress to the last leaf allow completion), completion-signal
+lag (allow pre to that allow post), and queue depth (an allow pre that no
+allow post has closed). Drain and the KPI list count only an allow post
+that matched an allow pre. Each KPI line shows the verdict. A deny post
+is not a drain leaf and is not a KPI line. A null priority is printed as
+`(none)`.
+
+With `--state` the report checks `<state>.decisions/head.json` when that
+file exists: `seq` and `hash`, and the head mac when `--key` is passed. A
+log shorter than the head, or a missing log when the head is not empty,
+fails. A log longer than the head is an uncommitted suffix and is
+accepted. `--log` alone checks the hash chain of the bytes it was given
+and does not know the head, so a shortened prefix that still hashes can
+pass. A line with no trailing newline is torn and fails. Without `--key`
+the report prints `macs not checked`. A chain rebuilt without the key can
+have a valid hash. That is not a verified seal.
+
+The report does not run the agent and does not enforce a queue. Those
+durations are a throughput signal, not a risk signal. The seal on the line
+is unchanged: HMAC-SHA256 with the shared state key. It proves nothing to
+an outside auditor. Anyone who can read the key can forge a line, and
+someone without the key cannot check the mac.
 
 **Not yet implemented:** a tick scheduler, queues, and runtime routing of
 events between domains. A domain does

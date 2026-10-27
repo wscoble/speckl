@@ -764,14 +764,34 @@ function unsupportedVerify(line: string, index: number): Error {
  * A brace in `require n > "}"` is text, not the end of the block.
  * Returns true from `visit` to stop.
  */
+/** Drop a `//` comment that is not inside a double-quoted string. */
+function stripLineCommentOutsideStrings(text: string): string {
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inStr && c === '\\') { i++; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (!inStr && c === '/' && text[i + 1] === '/') return text.slice(0, i).replace(/\s+$/, '');
+  }
+  return text;
+}
+
 function forEachCodeBrace(text: string, visit: (ch: '{' | '}', index: number) => boolean | void): void {
   let inStr = false;
+  let openOnLine = 0;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === '\\' && inStr) { i++; continue; }
     if (c === '"') { inStr = !inStr; continue; }
     if (inStr) continue;
+    // A brace in a line comment is text when this line has not left a brace
+    // open. `priority P0 // hot path {` must not extend the block, and
+    // `event E kpi "x" { } // {` must not swallow the next speck.
+    // A `{` earlier on the same line still has to close: the printer emits a
+    // for/if raw as one line, and that raw can contain `//` before its `}`.
+    if (c === '/' && text[i + 1] === '/' && openOnLine <= 0) return;
     if (c === '{' || c === '}') {
+      openOnLine += c === '{' ? 1 : -1;
       if (visit(c, i) === true) return;
     }
   }
@@ -2341,8 +2361,10 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
   const header = parseEvent(firstLine);
 
   // Handle single-line events: event Foo { a: Type, b: Type }
-  // extract fields from the first line itself
-  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?(?:\s+kpi\s+"(?:\\.|[^"\\])*")?\s*\{(.*)\}\s*$/);
+  // extract fields from the first line itself. A trailing `//` comment is
+  // not part of the block (`event E kpi "x" { } // {`).
+  const codeLine = stripLineCommentOutsideStrings(firstLine);
+  const inlineMatch = codeLine.match(/^event\s+(\w+)(?:\s+external)?(?:\s+kpi\s+"(?:\\.|[^"\\])*")?\s*\{(.*)\}\s*$/);
   const inlineFields: { name: string; type: TypeExpr }[] = [];
   if (inlineMatch && inlineMatch[2].trim()) {
     const fieldStr = inlineMatch[2].trim();
@@ -2357,7 +2379,7 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
   // Single-line form: the braces balance on the header line itself, so the
   // block walk below must not run - it would overrun into later members
   // (their `state:` / `actions:` lines would leak in as event fields).
-  if (inlineMatch && firstLine.endsWith('}')) {
+  if (inlineMatch && codeLine.endsWith('}')) {
     return { ...header, fields: inlineFields };
   }
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);

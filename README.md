@@ -207,15 +207,22 @@ none) and `kpi "<name>"` on an event are labels for completion signals.
 They do not install a queue. The Camel target does not copy the kpi tag.
 
 On `post` of an `effect act` tool the hook records a completion signal on
-the decision line: `trace_id` from ingress (a missing id is a fresh root
-and is flagged), a `branch_id` unique per branch (the matching post reuses it), `parent_branch_id`,
-`call_id`, `ok`, `ts`, and `priority`. An act post with no matching pre
-is a deny, and that deny is still the signal. `speckl trace report` reads
-the log offline and prints drain latency, completion-signal lag, and queue
-depth per priority, and attributes KPI-tagged completions to their trace.
-It does not run the agent or enforce a queue. Those durations are a
-throughput signal, not a risk signal. The decision record stays a
-shared-key HMAC. That seal proves nothing to an outside auditor.
+the decision line: `trace_id` from ingress (a missing or ill-formed id is
+a fresh flagged root), a `branch_id` unique per branch (the matching post
+reuses it), `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority`. A
+parent that is present but not an id is flagged. An act post with no
+matching pre is a deny. That deny is still the signal, and it does not
+keep the caller's `ok`, `kpis`, or `trace_id`. `kpis` on the tool are
+straight-line `emit`s only. An `emit` inside an `if`, a `for`, or a
+comment is not tagged. `speckl trace report` reads the log offline.
+Drain and the KPI list count only an allow post that matched an allow
+pre, and each KPI line shows the verdict. With `--state` the report
+checks the decision head, so a shortened or deleted log fails. `--log`
+alone does not know the head. A line with no trailing newline is torn
+and fails. Without `--key` the report prints `macs not checked`. It does
+not run the agent or enforce a queue. Those durations are a throughput
+signal, not a risk signal. The decision record stays a shared-key HMAC.
+That seal proves nothing to an outside auditor.
 
 **Not yet implemented:** a package registry for `version` pins (the pin is
 stored, and `hash` is checked); rewriting expressions that name an imported

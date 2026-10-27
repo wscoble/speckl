@@ -23,17 +23,29 @@ alias.
   is not mapped in its harness block.
 - **Completion signals and trace ids.** On `post` of an `effect act` tool
   the hook appends a completion signal to the decision line: `trace_id`
-  from ingress (a missing id is a fresh root and `trace_flagged` is true),
-  `branch_id` unique per branch (the matching post reuses it), `parent_branch_id`, `call_id`, `ok`,
-  `ts`, and `priority` from the action or the domain. An act post with no
-  matching pre is a deny, and that deny is still the signal. `priority
-  <Name>` on an action or domain, and `kpi "<name>"` on an event, are
-  labels. `speckl trace report` reads the log offline and prints, per
-  priority, drain latency, completion-signal lag, and queue depth, and
-  attributes KPI-tagged completions to their trace. It does not run the
-  agent and does not enforce a queue. Those durations are a throughput
-  signal, not a risk signal. The seal is still HMAC-SHA256 with the shared
-  state key. It proves nothing to an outside auditor.
+  from ingress (a missing or ill-formed id is a fresh root and
+  `trace_flagged` is true), `branch_id` unique per branch (the matching
+  post reuses it), `parent_branch_id`, `call_id`, `ok`, `ts`, and
+  `priority` from the action or the domain. A `parent_branch_id` that is
+  present but not an id is flagged and stored as null. An act post with
+  no matching pre is a deny. That deny is still the signal, with `ok`
+  false, no `kpis`, and a fresh flagged `trace_id` (the caller's values
+  are not kept). `priority <Name>` on an action or domain, and
+  `kpi "<name>"` on an event, are labels. A tool's `kpis` are the tags on
+  straight-line `emit` statements only. An `emit` inside an `if`, a
+  `for`, or a comment is not tagged, and the agent machine does not run
+  `if` or `for` bodies. `speckl trace report` reads the log offline and
+  prints, per priority, drain latency, completion-signal lag, and queue
+  depth. Drain and the KPI list count only an allow post that matched an
+  allow pre, and each KPI line shows the verdict. With `--state` it
+  checks `head.json` (seq and hash, and the head mac with `--key`), so a
+  shortened or deleted log fails. `--log` alone does not know the head.
+  A line with no trailing newline is torn and fails. Without `--key` the
+  report prints `macs not checked`. A rebuilt chain can have a valid hash
+  and is not a verified seal. The report does not run the agent and does
+  not enforce a queue. Those durations are a throughput signal, not a
+  risk signal. The seal is still HMAC-SHA256 with the shared state key.
+  It proves nothing to an outside auditor.
 - **Domain contracts and budgets.** `consumes` / `produces` name existing
   `event` declarations. `event Name external` is an outside event. A
   consumed event that nobody produces and that is not external, or a
