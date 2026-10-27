@@ -424,6 +424,139 @@ describe('compile entry', () => {
     }
   });
 
+  it('u05 and y03: unbalanced braces are a parse error, on LF and CRLF', () => {
+    const canary = [
+      'speck B {',
+      '    invariant Canary {',
+      '        false',
+      '    }',
+      '}',
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      const u05 = [
+        'speck A {',
+        '    invariant Bad {',
+        '        false',
+        '}',
+        ...canary,
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(u05, 'u05.speckdl')).toThrow(/Parse error at u05\.speckdl:5: unbalanced braces/);
+      expect(() => parseSpeckContent(u05)).toThrow(/Parse error at line 5: unbalanced braces/);
+
+      const u05eof = [
+        'speck A {',
+        '    invariant Bad {',
+        '        false',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(u05eof, 'u05.speckdl')).toThrow(/Parse error at u05\.speckdl:1: unbalanced braces/);
+
+      const y03 = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}{',
+        ...canary,
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(y03, 'y03.speckdl')).toThrow(/Parse error at y03\.speckdl:5: unbalanced braces/);
+
+      const extra = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(extra, 'extra.speckdl')).toThrow(/Parse error at extra\.speckdl:5: unbalanced braces/);
+    }
+  });
+
+  it('r34: a domain block does not drop the specks inside it, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = [
+        'domain D {',
+        'speck A {',
+        '    invariant Canary {',
+        '        false',
+        '    }',
+        '}',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(src, 'r34.speckdl')).toThrow(/Parse error at r34\.speckdl:2: unbalanced braces/);
+      expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 2: unbalanced braces/);
+    }
+  });
+
+  it('s18: an unclosed quote errors on its own line, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = [
+        'speck A {',
+        '    state { s: String }',
+        '    init { s := "open',
+        '}',
+        'speck B {',
+        '    state { s: String }',
+        '    init { s := "close" }',
+        '    invariant Canary {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(src, 's18.speckdl')).toThrow(/Parse error at s18\.speckdl:3: unterminated string/);
+      expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 3: unterminated string/);
+    }
+  });
+
+  it('a block comment before a speck header does not drop the speck, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      for (const header of ['/* x */ speck B {', '/**/ speck B {']) {
+        const src = [
+          'speck A {',
+          '    state { x: Nat }',
+          '    init { x := 0 }',
+          '}',
+          header,
+          '    invariant Canary {',
+          '        false',
+          '    }',
+          '}',
+          '',
+        ].join(nl);
+        const ast = parseSpeckContent(src, 'lead.speckdl');
+        expect(ast.specks.map(s => s.name), header).toEqual(['A', 'B']);
+        const inv = ast.specks[1].members.find(m => m.type === 'invariant') as { name: string; expr: string };
+        expect(inv.name, header).toBe('Canary');
+        expect(inv.expr, header).toBe('false');
+      }
+    }
+  });
+
+  it('an empty hash, a mistyped clause, and a block comment on an import are parse errors', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const cases = [
+        'import "lib.speckdl" hash ""',
+        'import "lib.speckdl" hsh "abc"',
+        'import "lib.speckdl" verison "1"',
+        '/* c */ import "lib.speckdl"',
+        'import "lib.speckdl" /* c */',
+      ];
+      for (const line of cases) {
+        const src = line + nl;
+        expect(() => parseSpeckContent(src, 'imp.speckdl'), line).toThrow(
+          new RegExp(`Failed to parse import statement: ${line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+        );
+      }
+      const ok = parseSpeckContent(`import "lib.speckdl" // note${nl}`, 'imp.speckdl');
+      expect(ok.imports.map(i => i.path)).toEqual(['lib.speckdl']);
+    }
+  });
+
   it('main compiles a file', async () => {
     const root = mkdtempSync(join(tmpdir(), 'speckl-main-'));
     const file = join(root, 'Tiny.speckdl');

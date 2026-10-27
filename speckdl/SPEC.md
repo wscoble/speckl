@@ -215,11 +215,29 @@ and it does not rewrite expressions that mention an imported name. That
 name resolution is **not yet implemented**. Each merged speck stays one
 speck.
 
-A `{` or `}` inside a `"` string, a `//` comment, or a `/* */` comment
-does not count toward the depth that finds the next speck. `'` is prime
-notation, not a string quote. An unclosed `/*` or `"`, a `/*` inside a
-block comment, and a `*/` that is not closing a block comment are parse
-errors naming the file and the line.
+A `{` or `}` inside a finished `"` string, a `//` comment, or a `/* */`
+comment does not count toward the depth that finds the next speck. `'` is
+prime notation, not a string quote. A `"` string ends on the line it
+starts: an unclosed `"` is a parse error on that line (`unterminated
+string`), so a `"` on a later line does not close it. An unclosed `/*`,
+a `/*` inside a block comment, and a `*/` that is not closing a block
+comment are parse errors naming the file and the line.
+
+If that depth is not 0 when the next line is a speck header, the parse
+error is `unbalanced braces`, naming the file and the line. At the end of
+the file the same error is reported when the raw `{` `}` count is not 0
+either. A `}` that a `//` comment covers, while the raw text still
+balances, is not this error. A `domain` block is not parsed in this
+version. A speck written inside `domain D { ... }` hits that error. It is
+not omitted.
+A `/* */` comment on the same line before `speck Name {` is part of the
+header. The speck is parsed.
+
+An import line is `import`, a quoted path, then optional `as`, `version`,
+and `hash` clauses, then an optional `//` comment. `hash ""`, a mistyped
+clause such as `hsh` or `verison`, and a `/* */` comment on that line
+fail with `Failed to parse import statement` followed by the line. The
+path does not swallow the leftover text.
 
 ### 2.9 Expression Operators
 

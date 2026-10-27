@@ -19,10 +19,19 @@ alias.
   `version` is stored and not looked up. A package registry, rewriting
   expressions that name an imported speck, contracts, cost, budgets, and
   runtime routing are not yet implemented. File-level `{` `}` depth ignores
-  `"` strings, `//` comments, and `/* */` comments, so a brace there does
-  not hide the next speck. An unclosed block comment or string, a nested
-  `/*`, and a stray `*/` are parse errors naming the file and line. `'` is
-  not a string quote.
+  a brace inside a finished `"` string, a `//` comment, or a `/* */` comment.
+  Depth that is not 0 before the next speck is a parse error (`unbalanced
+  braces`) naming the file and line. The same error is reported at the end
+  of the file when the raw brace count is not 0 as well. A `}` covered by
+  a `//` comment is not, by itself, a missing brace. `domain` is not parsed;
+  a speck inside its braces is that error, not a dropped speck.
+  A string does not continue onto the next line: an unclosed `"` is
+  `unterminated string` on that line. An unclosed block comment, a nested
+  `/*`, and a stray `*/` are parse errors naming the file and line. A
+  `/* */` comment may precede `speck` on the same line. `'` is not a string
+  quote. An empty `hash ""`, a mistyped clause, and a `/* */` comment on an
+  import line are `Failed to parse import statement`. A trailing `//` on an
+  import is accepted.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

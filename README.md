@@ -166,9 +166,17 @@ import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
 stored, and `hash` is checked); rewriting expressions that name an imported
 speck.
 
-A brace inside a string or a comment does not hide the next speck. An
-unclosed comment or string, a nested `/*`, and a stray `*/` are parse
-errors naming the file and line.
+A brace inside a finished string or a comment does not hide the next
+speck. An unclosed `{` before the next speck is a parse error naming the
+file and line (`unbalanced braces`). At the end of the file that error is
+reported when the raw brace count is not 0 as well. `domain` is not
+parsed; a speck inside a domain's braces is that error. A string
+does not cross lines: an unclosed `"` is an error on that line. An
+unclosed block comment, a nested `/*`, and a stray `*/` are parse errors
+naming the file and line. `/* */` before `speck` on the same line is
+parsed as that speck. `hash ""`, a mistyped import clause, and a `/* */`
+comment on an import line fail with `Failed to parse import statement`.
+A trailing `//` on an import is accepted.
 
 ## Documentation
 
