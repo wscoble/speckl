@@ -18,10 +18,63 @@ export interface LexState {
    * The string error names that close.
    */
   commentClosedInString: number;
+  /** Unmatched `{` outside strings and comments. Carried across lines. */
+  braceDepth: number;
+  /** One entry per unmatched `{`, outermost first. `block` closes a header. */
+  braceKinds: ('block' | 'expr')[];
+  /**
+   * 1: a `}` that closes a block may not be followed by code.
+   * -1: expression fragments, where a record brace is not a block.
+   */
+  closeFloor: number;
 }
 
 export function lexStart(): LexState {
-  return { kind: 'code', openLine: 0, commentClosedInString: 0 };
+  return {
+    kind: 'code',
+    openLine: 0,
+    commentClosedInString: 0,
+    braceDepth: 0,
+    braceKinds: [],
+    closeFloor: -1,
+  };
+}
+
+/**
+ * A `{` opens a block when this line's header says so (`invariant Name`,
+ * `if`, `else`, `speck`). A `{` after `=`, `[`, `,`, or `\` is a value
+ * (`x := { ... }`, `ballots[{ ... }]`, `union {x}`, `servers \ {s}`).
+ */
+function isBlockOpen(maskBefore: string): boolean {
+  const trimmed = maskBefore.trimEnd();
+  if (!trimmed) return false;
+  const prev = trimmed[trimmed.length - 1];
+  if (prev === '[' || prev === ',' || prev === '=' || prev === '\\') return false;
+  const stmt = trimmed.slice(trimmed.lastIndexOf('}') + 1);
+  return /(?:^|\s)(?:speck|domain|state|init|action|event|invariant|verify|constraint|agent|interface|service|bom|provenance|input|output|transition|component|oneof|type|stages|await|if|for|else|next|harness)\b/.test(stmt);
+}
+
+/**
+ * `else` continues an `if`. A run of `}` may close blocks that are still
+ * inside the speck (`n := n - 1 } }`). A `}` that steps out of the speck
+ * (`false } }`) is not that run.
+ */
+function blockCloseRestAllowed(rest: string, depthAfter: number): boolean {
+  if (/^else\b/.test(rest)) return true;
+  if (!/^\}(?:\s*\})*$/.test(rest)) return false;
+  let depth = depthAfter;
+  for (const ch of rest) {
+    if (ch !== '}') continue;
+    depth--;
+    if (depth < 1) return false;
+  }
+  return true;
+}
+
+/** Code after the `}` that closes a block. Comments are already blank. */
+export function rejectTextAfterClose(code: string, closeAt: number, lineNo: number): void {
+  const rest = code.slice(closeAt + 1).trim();
+  if (rest) throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
 }
 
 /** File currently being parsed, so errors can name it. Empty outside a parse. */
@@ -63,6 +116,10 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
   let kind = state.kind;
   let openLine = state.openLine;
   let commentClosedInString = state.commentClosedInString;
+  let depth = state.braceDepth;
+  const kinds = state.braceKinds.slice();
+  const closeFloor = state.closeFloor;
+  const blockCloses: { at: number; depth: number }[] = [];
   let mask = '';
   let code = '';
   const open = (next: 'block' | 'string') => {
@@ -130,10 +187,38 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
       open('string');
       continue;
     }
+    if (ch === '{') {
+      kinds.push(isBlockOpen(mask) ? 'block' : 'expr');
+      depth++;
+    } else if (ch === '}') {
+      const opened = kinds.pop();
+      depth--;
+      // Record the closer. The rest of the line is checked after comments
+      // on this line have been blanked, so a trailing line comment is empty.
+      if (closeFloor >= 0 && opened !== 'expr') blockCloses.push({ at: i, depth });
+    }
     mask += ch;
     code += ch;
   }
-  return { mask, code, state: { kind, openLine, commentClosedInString } };
+  if (closeFloor >= 0) {
+    for (const hit of blockCloses) {
+      const rest = code.slice(hit.at + 1).trim();
+      if (!rest || blockCloseRestAllowed(rest, hit.depth)) continue;
+      throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
+    }
+  }
+  return {
+    mask,
+    code,
+    state: {
+      kind,
+      openLine,
+      commentClosedInString,
+      braceDepth: depth,
+      braceKinds: kinds,
+      closeFloor,
+    },
+  };
 }
 
 /** Drop comments. String contents, including `""` and `"\\"`, stay. */

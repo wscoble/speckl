@@ -5,6 +5,7 @@ import {
   inlineBlockInner,
   lexProblem,
   lexStart,
+  rejectTextAfterClose,
   scanLine,
   setParseFile,
   stripComments,
@@ -462,7 +463,10 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   // walked line by line.
   let i = 0;
   let depth = 0;
-  let lex = lexStart();
+  // The scanner rejects code after a `}` that closes a block. Every line of
+  // the file is scanned with that check on, so a branch that skips ahead
+  // still cannot keep the trailing text.
+  let lex = armCloseCheck();
   while (i < lines.length) {
     const rawLine = lines[i];
     const masked = maskCode(rawLine, lex, i + 1);
@@ -487,7 +491,7 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       domains.push(domain);
       // endLine is the 1-based closing line, so it is also the next 0-based index.
       const next = domain.endLine ?? (i + 1);
-      lex = lexAfter(lines, next - 1, i);
+      lex = lexAfter(lines, next - 1, i, armCloseCheck());
       i = next;
       continue;
     }
@@ -552,10 +556,15 @@ function braceCounts(text: string, state?: LexState): { open: number; close: num
 }
 
 /** Lex state after consuming lines[from..endInclusive]. */
-function lexAfter(lines: string[], endInclusive: number, from = 0): LexState {
-  let lex = lexStart();
+function lexAfter(lines: string[], endInclusive: number, from = 0, seed: LexState = lexStart()): LexState {
+  let lex = seed;
   for (let k = from; k <= endInclusive && k < lines.length; k++) lex = maskCode(lines[k], lex, k + 1).state;
   return lex;
+}
+
+/** The scanner's block-closer check. Expression fragments leave it off. */
+function armCloseCheck(state: LexState = lexStart()): LexState {
+  return { ...state, closeFloor: 1 };
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
@@ -585,7 +594,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
   let i = startIndex + 1;
   let braceCount = 1;
   let speckEndLine = Math.min(lines.length, startIndex + 1);
-  let lex = lexAfter(lines, startIndex, startIndex);
+  let lex = lexAfter(lines, startIndex, startIndex, armCloseCheck());
 
   while (i < lines.length && braceCount > 0) {
     const rawLine = lines[i];
@@ -612,7 +621,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
       const { node, endIndex } = parseNextRelation(lines, i);
       members.push(Object.assign(node, { startLine, endLine: endIndex + 1 }));
       speckEndLine = endIndex + 1;
-      lex = lexAfter(lines, endIndex, startIndex);
+      lex = lexAfter(lines, endIndex, startIndex, armCloseCheck());
       i = endIndex + 1;
       continue;
     }
@@ -716,7 +725,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
         speckEndLine = endIdx + 1;
         // Skip past this block if it spans multiple lines. The lexer has to
         // follow, or a block comment inside the block stays open.
-        lex = lexAfter(lines, endIdx, startIndex);
+        lex = lexAfter(lines, endIdx, startIndex, armCloseCheck());
         i = endIdx + 1;
       } else {
         // The member's `{ ... }` closes on this line. Text after that `}`
@@ -864,15 +873,6 @@ function readBraceBlock(
 
 function findBlockEnd(lines: string[], startIndex: number, startBraceCount: number, lex: LexState = lexStart()): number {
   return readBraceBlock(lines, startIndex, startBraceCount, lex).endIndex;
-}
-
-/**
- * Code after the `}` that closes a block is not a comment and not the next
- * member. `false } // note` is empty here because the comment is blank.
- */
-function rejectTextAfterClose(code: string, closeAt: number, lineNo: number): void {
-  const rest = code.slice(closeAt + 1).trim();
-  if (rest) throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
 }
 
 /** SpeckDL actions have no `;`. One inside a string or a comment is not one. */
