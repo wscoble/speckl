@@ -26,8 +26,16 @@ alias.
   notation, not a string quote. An unterminated block comment or string, or
   a stray `*/`, is a parse error naming the file and line. Code after
   `/* ... */` on the same line is kept. A trailing `//` comment is not part
-  of a `require`, `let`, or invariant expression. An
-  import that declares no specks and no domains is an error. `sha256:`
+  of a `require`, `let`, or invariant expression.   Code between `{` and that
+  comment is kept when the closing `}` is on the next line. Code before the
+  closing `}` is part of the body for an invariant, verify, constraint,
+  action, event, and agent block, on one line or across lines, including a
+  trailing `//` comment after a one-line `}` (`action X { n := n + 2 }`,
+  `event E { x: Nat } // c`). An invariant, `verify "…"`, or constraint body
+  that is empty or only a comment is a parse error naming the file and line,
+  and is not treated as true. A body such as `{ false }` is not an empty body.
+  If a block comment closes inside a string, the unterminated-string error
+  says so. An import that declares no specks and no domains is an error. `sha256:`
   is case-insensitive; an empty hash is a parse error. Contracts, cost,
   budgets, and runtime routing are not yet implemented.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
@@ -189,9 +197,22 @@ alias.
 
 - **Trailing comments are not part of the expression.** A `//` comment after
   a `require`, a `let`, or an invariant is dropped before generators run.
-  Go guard errors no longer repeat that comment. SQLiteWAL's Go, Elm, and
-  AST SMT output, and OAuth's Rust invariant text and Elm machine, change
-  for that reason. Other bundled examples are unchanged.
+  Go guard errors no longer repeat that comment. Five bundled outputs differ
+  from the previous compiler. The maintainer approved that exception to the
+  byte-identical rule on October 26, 2026:
+  - SQLiteWAL Go: 14 `guard failed:` strings lose the `//` comment. The
+    conditions are unchanged.
+  - SQLiteWAL AST SMT: one `; skipped:` comment drops the comment's words
+    (`frame`, `is`, `within`, `reader_posts`, `snapshot`). No assertion changes.
+  - SQLiteWAL Elm: 10 guards that were `-- guard checked server-side` comments
+    are now enforced client-side (`|> guard`). Four untranslatable guards stay
+    server-side, without the comment text. The client now rejects inputs it
+    used to let through.
+  - OAuth Rust: two invariant doc strings lose `// 90 days max` and
+    `// This is enforced…`.
+  - OAuth Elm: one server-side comment loses `// 1 hour`
+    (`let expiresAt := currentTime + 3600`).
+  Other bundled examples are unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
