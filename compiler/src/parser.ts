@@ -469,9 +469,9 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     const lineNo = i + 1;
     // Any `speck` word that is not a well-formed header is an error. A
     // well-formed header is optional whitespace, then `speck`, a name, and
-    // `{`, and the line starts at depth 0. `{` alone may be the next line.
-    // `{ }` on that next line is not a header. `speck :=` and `speck >=`
-    // stay a reserved keyword. `x := speck + 1` stays an expression.
+    // `{`, and the line starts at depth 0. A name starts with a letter or
+    // `_`. `{` alone may be the next line. `{ }` on that next line is not
+    // a header. Punctuation before the name is not a header.
     const shape = rejectMisplacedSpeck(code, depth, filePath, lineNo);
 
     if (shape === 'open' || shape === 'empty' || shape === 'pending') {
@@ -486,12 +486,16 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
         bodyIndex = braceLine + 1;
         openBraceAt = braceLine;
       }
-      const name = /^speck\s+([\w-]+)/.exec(code)![1];
+      const name = /^speck\s+([A-Za-z_][\w-]*)/.exec(code)![1];
       const speck = parseSpeck(lines, i, name, bodyIndex, braceCount);
       specks.push(speck);
       speckSpans.push({ start: speck.startLine ?? lineNo, end: speck.endLine ?? lineNo });
     } else if (i === openBraceAt) {
       openBraceAt = -1;
+    } else if (textAfterClose(code, depth)) {
+      // The `}` that returns file-level depth to 0, with more code after
+      // it on this line. Reject only. Parsing that text is a later change.
+      throw parseProblem(filePath, lineNo, 'text after a closing brace');
     } else if (/^import(?:\s|$)/.test(code)) {
       const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
       // Depth 1 is the interior of a speck. An import there is a member of
@@ -649,13 +653,15 @@ function scanFileLines(
  * actual problem. Accepting those forms is a later tokenizer change.
  */
 function badSpeckDetail(code: string): string {
-  if (!/^speck\s+[\w-]/.test(code)) {
+  // A name starts with a letter or `_`. `speck -B` and `speck (B)` do not.
+  if (!/^speck\s+[A-Za-z_][\w-]*/.test(code)) {
     if (/^speck\s*(?:\{|$)/.test(code)) {
       return 'speck name must be on the same line as "speck"';
     }
+    if (/\{/.test(code)) return 'expected "speck <Name> {"';
     return '"speck" is a reserved keyword';
   }
-  if (/^speck\s+[\w-]+\s*\{/.test(code)) {
+  if (/^speck\s+[A-Za-z_][\w-]*\s*\{/.test(code)) {
     return 'one speck per line: put members on their own lines';
   }
   return 'expected "speck <Name> {"';
@@ -674,9 +680,9 @@ function isFormatChar(ch: string): boolean {
  */
 function headerShape(code: string): 'open' | 'empty' | 'pending' | 'bad' | 'no' {
   if (!/^speck(?![A-Za-z0-9_-])/.test(code)) return 'no';
-  if (/^speck\s+[\w-]+\s*\{\s*\}\s*$/.test(code)) return 'empty';
-  if (/^speck\s+[\w-]+\s*\{\s*$/.test(code)) return 'open';
-  if (/^speck\s+[\w-]+\s*$/.test(code)) return 'pending';
+  if (/^speck\s+[A-Za-z_][\w-]*\s*\{\s*\}\s*$/.test(code)) return 'empty';
+  if (/^speck\s+[A-Za-z_][\w-]*\s*\{\s*$/.test(code)) return 'open';
+  if (/^speck\s+[A-Za-z_][\w-]*\s*$/.test(code)) return 'pending';
   return 'bad';
 }
 
@@ -694,24 +700,10 @@ function speckWords(code: string): number[] {
 }
 
 /**
- * A `speck` token used as an expression name, as in `x := speck + 1`.
- * A token followed by a name or `{` is a header attempt, not an expression.
- */
-function identifierSpeck(code: string, index: number): boolean {
-  if (code.slice(0, index).trim() === '') return false;
-  let j = index + 'speck'.length;
-  while (j < code.length && /\s/.test(code[j])) j++;
-  if (j >= code.length) return false;
-  const ch = code[j];
-  if (ch === '{') return false;
-  if (/[A-Za-z0-9_]/.test(ch)) return false;
-  return true;
-}
-
-/**
  * Throw when a masked line contains a `speck` keyword that is not a
  * well-formed header at depth 0. Returns the header shape when the line
- * is one, otherwise `no`.
+ * is one, otherwise `no`. A keyword followed by anything other than a
+ * name and `{` is a malformed header, not an expression.
  */
 function rejectMisplacedSpeck(
   code: string,
@@ -727,10 +719,24 @@ function rejectMisplacedSpeck(
     throw parseProblem(file, lineNo, 'unbalanced braces');
   }
   if (shape === 'bad') throw parseProblem(file, lineNo, badSpeckDetail(code));
-  if (words.some(idx => !identifierSpeck(code, idx))) {
-    throw parseProblem(file, lineNo, 'speck must be a header at the start of the line');
+  throw parseProblem(file, lineNo, 'speck must be a header at the start of the line');
+}
+
+/**
+ * True when a `}` brings file-level depth to 0 and non-comment text
+ * follows it on this masked line. Comments and strings are already blank.
+ */
+function textAfterClose(code: string, depth: number): boolean {
+  let d = depth;
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '{') d++;
+    else if (ch === '}') {
+      d--;
+      if (d === 0 && code.slice(i + 1).trim() !== '') return true;
+    }
   }
-  return 'no';
+  return false;
 }
 
 /** File-level text that is not a blank, a closing `}`, or a `domain` line. */

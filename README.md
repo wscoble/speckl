@@ -183,11 +183,16 @@ masked: an indent, a tab, `speck /* c */ Name {`, `speck Name /* c */ {`,
 the next line are that speck. `{ }` on that next line is
 `expected "speck <Name> {"`. `/* */` before `speck` on the same line is
 parsed as that speck. After comments and strings are masked, a `speck`
-written as a header has to be that header, at depth 0. Mid-line, after
-punctuation, inside braces, or at nonzero depth, that is a parse error
-naming the file and the line. It is
-`speck must be a header at the start of the line`, or `unbalanced braces`
-when the only problem is the depth. `speck` with the name on the next line is
+written as a header has to be that header, at depth 0. A name starts
+with a letter or `_`. The keyword followed by anything else is a parse
+error naming the file and the line, including punctuation before the
+name (`speck -B {`) and an expression (`x := speck + 1`). Mid-line, that
+is `speck must be a header at the start of the line`. A line that starts
+with `speck` and a bad name before `{` is `expected "speck <Name> {"`.
+At nonzero depth a line that would otherwise be a header is
+`unbalanced braces`. `speck` inside a string or a comment is not the
+keyword. `specks`, `myspeck`, `speck_count`, and `my-speck` are
+identifiers. `speck` with the name on the next line is
 `speck name must be on the same line as "speck"`. A one-line speck with
 members, and two specks on one line, are
 `one speck per line: put members on their own lines`. On main the split
@@ -196,11 +201,16 @@ speck was dropped or its members were attached to the first. Those forms
 are a parse error here. A line that is only `speck` is
 `speck name must be on the same line as "speck"`. A format character
 outside a string or a comment is `invisible format character`, except a
-BOM at the start of the file. Other file-level text, outside a speck, a
-`domain`, or an `import`, is `text outside a speck, domain, or import`.
+BOM at the start of the file. A line that starts at depth 0 and is not
+a speck header, a `domain` line, an `import`, blank, or a lone `}` is
+`text outside a speck, domain, or import`. Non-comment text after the
+`}` that brings file-level depth back to 0, on that same line, is
+`text after a closing brace`. This check only rejects that text. An
+unknown block that stays inside a speck is merged into it, the same as
+main.
 `speck` is a reserved keyword. On main, `speck := speck + 1`
 and `speck >= 0` were accepted. They are now
-`"speck" is a reserved keyword`. `x := speck + 1` is still an expression.
+`"speck" is a reserved keyword`.
 A header `speck Name` whose `{` never appears is
 `expected "speck <Name> {"`. A colon-form `if` nested inside another
 colon-form `if` is never rewritten, the same as main. `hash ""`, a mistyped import clause, and a

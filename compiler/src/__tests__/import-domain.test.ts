@@ -462,7 +462,8 @@ describe('compile entry', () => {
         ...canary,
         '',
       ].join(nl);
-      expect(() => parseSpeckContent(y03, 'y03.speckdl')).toThrow(/Parse error at y03\.speckdl:5: unbalanced braces/);
+      expect(() => parseSpeckContent(y03, 'y03.speckdl')).toThrow(/Parse error at y03\.speckdl:4: text after a closing brace/);
+      expect(() => parseSpeckContent(y03)).toThrow(/Parse error at line 4: text after a closing brace/);
 
       const extra = [
         'speck A {',
@@ -1066,22 +1067,36 @@ describe('compile entry', () => {
       }
       expectLineError(`speck A {\tstate { x: Nat }\tinit { x := 0 }\t}${nl}`, 'tabpack.speckdl', 1, 'one speck per line: put members on their own lines');
 
-      // An expression name is not a header. A hyphenated name is not the keyword.
-      const expr = [
+      // The keyword is not an expression. A longer identifier is not the keyword.
+      expectLineError(
+        [
+          'speck A {',
+          '    state { x: Nat }',
+          '    init { x := 0 }',
+          '    action Go {',
+          '        x := speck + 1',
+          '    }',
+          '}',
+          '',
+        ].join(nl),
+        'expr.speckdl',
+        5,
+        misplaced,
+      );
+      const ident = [
         'speck A {',
         '    state { x: Nat }',
         '    init { x := 0 }',
         '    action Go {',
-        '        x := speck + 1',
+        '        x := specks + myspeck + speck_count',
         '        x := my-speck + 1',
-        '        x:=speck+1',
         '    }',
         '}',
         '',
       ].join(nl);
-      const ast = parseSpeckContent(expr, 'expr.speckdl');
+      const ast = parseSpeckContent(ident, 'ident.speckdl');
       const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { expr?: string }[] };
-      expect(action.statements.some(s => s.expr === 'speck + 1')).toBe(true);
+      expect(action.statements.some(s => s.expr === 'specks + myspeck + speck_count')).toBe(true);
     }
 
     // A file whose lines are separated only by CR is one line, and it errors.
@@ -1128,23 +1143,94 @@ describe('compile entry', () => {
         /Parse error at f08\.speckdl:9: "speck" is a reserved keyword/,
       );
 
-      const kept = [
+      expectLineError(
+        [
+          'speck A {',
+          '    state {',
+          '        x: Nat',
+          '    }',
+          '    init {',
+          '        x := 0',
+          '    }',
+          '    action Go {',
+          '        x := speck + 1',
+          '    }',
+          '}',
+          '',
+        ].join(nl),
+        'name.speckdl',
+        9,
+        'speck must be a header at the start of the line',
+      );
+    }
+  });
+
+  it('adv9w and adv9t: a punctuated speck name, and text after a closing brace, are errors, on LF and CRLF', () => {
+    const misplaced = 'speck must be a header at the start of the line';
+    const after = 'text after a closing brace';
+    const body = [
+      '    state { y: Nat }',
+      '    init { y := 0 }',
+      '    action Inc { y := y + 1 }',
+      '    invariant Canary { false }',
+      '}',
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      const head = [
         'speck A {',
-        '    state {',
-        '        x: Nat',
-        '    }',
-        '    init {',
-        '        x := 0',
-        '    }',
-        '    action Go {',
-        '        x := speck + 1',
-        '    }',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action Go { x := x + 1 }',
+      ];
+      // adv9w: speck followed by punctuation is not an expression.
+      for (const join of [
+        '}; speck -B {',
+        '}; speck (B) {',
+        '}; speck ~B {',
+        '}; speck "B" {',
+        '}; speck .B {',
+        '}; speck :B {',
+        '}; speck <B> {',
+        '}; speck $B {',
+        '}; speck *B {',
+        '}; speck \u00E9B {',
+        '};speck\u00E9B {',
+      ]) {
+        expectLineError([...head, join, ...body, ''].join(nl), 'adv9w.speckdl', 5, misplaced);
+      }
+      expectLineError(
+        [...head, '    x := speck -B {', ...body, ''].join(nl),
+        'w_inside.speckdl',
+        5,
+        misplaced,
+      );
+      expectLineError(`speck -B {\n}\n`.replace(/\n/g, nl), 'w_line.speckdl', 1, 'expected "speck <Name> {"');
+
+      // adv9t, and the same close with a member after it.
+      for (const join of [
+        '}; thing B {',
+        '} {',
+        '} specks B {',
+        '}; speck-B {',
+        '} action Evil { x := 99 }',
+        '} invariant Canary2 { false }',
+        '} state { z: Nat }',
+        '} x := 1',
+      ]) {
+        expectLineError([...head, join, ...body, ''].join(nl), 'adv9t.speckdl', 5, after);
+      }
+
+      const commented = [...head, '} // speck -B {', ''].join(nl);
+      expect(parseSpeckContent(commented, 'note.speckdl').specks.map(s => s.name)).toEqual(['A']);
+      const quoted = [
+        'speck A {',
+        '    description: "speck -B {"',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
         '}',
         '',
       ].join(nl);
-      const ast = parseSpeckContent(kept, 'name.speckdl');
-      const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { type: string; expr?: string }[] };
-      expect(action.statements.some(s => s.type === 'assign' && s.expr === 'speck + 1')).toBe(true);
+      expect(parseSpeckContent(quoted, 'str.speckdl').specks.map(s => s.name)).toEqual(['A']);
     }
   });
 
