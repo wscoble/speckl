@@ -631,13 +631,17 @@ describe('compile entry', () => {
         expect(inv.name, header.join(' ')).toBe('Canary');
         expect(inv.expr, header.join(' ')).toBe('false');
       }
-      for (const bad of ['speck', 'speck {', 'speck B extra', 'speck B { trailing']) {
+      for (const bad of ['speck {', 'speck B extra', 'speck B { trailing']) {
         const src = [...speckA, bad, ...canary, ''].join(nl);
         expect(() => parseSpeckContent(src, 'bad.speckdl'), bad).toThrow(
           /Parse error at bad\.speckdl:\d+: "speck" is a reserved keyword/,
         );
         expect(() => parseSpeckContent(src), bad).toThrow(/Parse error at line \d+: "speck" is a reserved keyword/);
       }
+      const lone = [...speckA, 'speck', ...canary, ''].join(nl);
+      expect(() => parseSpeckContent(lone, 'bad.speckdl')).toThrow(
+        /Parse error at bad\.speckdl:\d+: expected a name after "speck"/,
+      );
       const missingBrace = [...speckA, 'speck B', ...canary, ''].join(nl);
       expect(() => parseSpeckContent(missingBrace, 'bad.speckdl')).toThrow(
         /Parse error at bad\.speckdl:\d+: expected "speck <Name> \{"/,
@@ -663,6 +667,91 @@ describe('compile entry', () => {
         const inv = ast.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
         expect(inv.expr, header).toBe('false');
       }
+    }
+  });
+
+  it('f17 f10 and two specks on one line keep their members, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const canary = [
+        'speck M {',
+        '    invariant Canary {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+
+      const f17 = `speck L { state { x: Nat } init { x := 0 } }${nl}` + canary;
+      const ast17 = parseSpeckContent(f17, 'f17.speckdl');
+      expect(ast17.specks.map(s => s.name)).toEqual(['L', 'M']);
+      const state = ast17.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+      const init = ast17.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
+      expect(state.variables.map(v => v.name)).toEqual(['x']);
+      expect(init.assignments).toEqual([{ name: 'x', expr: '0' }]);
+      const invM = ast17.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
+      expect(invM.expr).toBe('false');
+
+      const f10 = [
+        'speck',
+        'B {',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
+        '    invariant Canary {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      const ast10 = parseSpeckContent(f10, 'f10.speckdl');
+      expect(ast10.specks.map(s => s.name)).toEqual(['B']);
+      const st10 = ast10.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+      expect(st10.variables.map(v => v.name)).toEqual(['x']);
+      const inv10 = ast10.specks[0].members.find(m => m.type === 'invariant') as { name: string; expr: string };
+      expect(inv10.name).toBe('Canary');
+      expect(inv10.expr).toBe('false');
+
+      const f10b = ['speck', 'B', '{', '    invariant Canary { false }', '}', ''].join(nl);
+      const ast10b = parseSpeckContent(f10b, 'f10.speckdl');
+      expect(ast10b.specks.map(s => s.name)).toEqual(['B']);
+
+      const two = `speck A { state { x: Nat } init { x := 0 } } speck B { invariant Canary { false } }${nl}`;
+      const astTwo = parseSpeckContent(two, 'f13.speckdl');
+      expect(astTwo.specks.map(s => s.name)).toEqual(['A', 'B']);
+      const aState = astTwo.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+      expect(aState.variables.map(v => v.name)).toEqual(['x']);
+      const bInv = astTwo.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
+      expect(bInv.expr).toBe('false');
+
+      const e29 = [
+        'speck A { } speck B {',
+        '    invariant Canary {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      const ast29 = parseSpeckContent(e29, 'e29.speckdl');
+      expect(ast29.specks.map(s => s.name)).toEqual(['A', 'B']);
+      expect(ast29.specks[0].members).toEqual([]);
+      const inv29 = ast29.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
+      expect(inv29.expr).toBe('false');
+
+      const h06 = `speck A {} speck B { state { x: Nat } init { x := 0 } }${nl}`;
+      const ast06 = parseSpeckContent(h06, 'h06.speckdl');
+      expect(ast06.specks.map(s => s.name)).toEqual(['A', 'B']);
+      expect(ast06.specks[0].members).toEqual([]);
+      const bState = ast06.specks[1].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+      expect(bState.variables.map(v => v.name)).toEqual(['x']);
+
+      const commented = `speck /* c */ L { state { x: Nat } init { x := 0 } }${nl}`;
+      const astC = parseSpeckContent(commented, 'c.speckdl');
+      expect(astC.specks.map(s => s.name)).toEqual(['L']);
+      const cState = astC.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+      expect(cState.variables.map(v => v.name)).toEqual(['x']);
     }
   });
 

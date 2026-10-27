@@ -181,11 +181,17 @@ and line. A speck header is matched on the trimmed line with comments
 masked: an indent, a tab, `speck /* c */ Name {`, `speck Name /* c */ {`,
 `speck Name { }`, `speck Name {}`, and `speck Name` with `{` on the next
 line are that speck. `/* */` before `speck` on the same line is parsed as
-that speck. `speck` is a reserved keyword. On main, `speck := speck + 1`
+that speck. `speck` on one line and the name on the next are that speck.
+A one-line speck with members, and two specks on one line, keep those
+members. On main the split name was dropped, the one-line members were
+dropped, and the second speck was dropped. A line that is only `speck`
+and is not followed by a name is `expected a name after "speck"`.
+`speck` is a reserved keyword. On main, `speck := speck + 1`
 and `speck >= 0` were accepted. They are now
 `"speck" is a reserved keyword`. `x := speck + 1` is still an expression.
 A header `speck Name` whose `{` never appears is
-`expected "speck <Name> {"`. `hash ""`, a mistyped import clause, and a
+`expected "speck <Name> {"`. A colon-form `if` nested inside another
+colon-form `if` is never rewritten, the same as main. `hash ""`, a mistyped import clause, and a
 `/* */` comment on an import line fail with
 `Failed to parse import statement`. A trailing `//` on an import is
 accepted. Inside a member, a `{` or `}` in a `//` comment, a `/* */`

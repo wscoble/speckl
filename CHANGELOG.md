@@ -36,11 +36,19 @@ alias.
   a tab, `speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
   `speck Name {}`, and `speck Name` with `{` on the next line are that
   speck. A `/* */` comment may also precede `speck` on the same line.
+  `speck` on its own line and the name on the next line are that speck.
+  A one-line speck with members (`speck L { state { x: Nat } init { x := 0 } }`)
+  and two specks on one line are parsed, and the members stay with the
+  speck they were written on. On main the split name was dropped, a
+  one-line speck kept the name and dropped the members, and a second
+  speck on the same line was dropped. A line that is only `speck` and is
+  not followed by a name is `expected a name after "speck"`.
   `speck` is a reserved keyword. On main, `speck := speck + 1` and
   `speck >= 0` were accepted. They are now
   `"speck" is a reserved keyword`, naming the file and line. `x := speck + 1`
   is still an expression. A header `speck Name` whose `{` never appears is
-  `expected "speck <Name> {"`. `'` is not a string quote. An empty `hash ""`,
+  `expected "speck <Name> {"`. A colon-form `if` nested inside another
+  colon-form `if` is never rewritten. That is the same as main. `'` is not a string quote. An empty `hash ""`,
   a mistyped clause, and a `/* */` comment on an import line are
   `Failed to parse import statement`. A trailing `//` on an import is
   accepted. The member walk is unchanged, and it is the same as main.

@@ -239,11 +239,19 @@ same header: an indent before `speck`, a tab between `speck` and the name,
 `speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
 `speck Name {}`, and `speck Name` with `{` alone on a following line. A
 `/* */` comment on the same line before `speck Name {` is also that
-header. `speck` is a reserved keyword. On main, a line such as
-`speck := speck + 1` or `speck >= 0` was accepted. It is now
-`"speck" is a reserved keyword`, naming the file and the line.
-`x := speck + 1` is still an expression. A header `speck Name` whose `{`
-never appears is `expected "speck <Name> {"`.
+header. `speck` on one line and `Name {` on the next is that header.
+`speck L { state { x: Nat } init { x := 0 } }` is speck L with that state
+and that init. Two specks written on one line are both parsed, and each
+keeps the members written inside it. On main, a split name was dropped,
+a one-line speck kept the name and dropped the members, and a second
+speck on the same line was dropped. A line that is only `speck` and is
+not followed by a name is `expected a name after "speck"`. `speck` is a
+reserved keyword. On main, a line such as `speck := speck + 1` or
+`speck >= 0` was accepted. It is now `"speck" is a reserved keyword`,
+naming the file and the line. `x := speck + 1` is still an expression. A
+header `speck Name` whose `{` never appears is
+`expected "speck <Name> {"`. A colon-form `if` nested inside another
+colon-form `if` is never rewritten. That is the same as main.
 
 Inside a member, `{` and `}` are still counted in the raw text, including
 inside a `//` comment, a `/* */` comment, and a string. That walk is

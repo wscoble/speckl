@@ -442,7 +442,7 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   const specks: SpeckNode[] = [];
   const imports: ImportNode[] = [];
   const domains: DomainNode[] = [];
-  const lines = content.split('\n');
+  const sourceLines = content.split('\n');
 
   // File-level brace depth decides where the next speck starts. This scan
   // skips a `{` or `}` inside a finished `"` string, a `//` comment, or a
@@ -452,14 +452,14 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   // dropped. At end of file this depth must be 0. Member blocks are a
   // separate walk. A brace in a comment or a string there can still end the
   // member. That gap is the same as main and is left for a later change.
-  const masks: string[] = [];
-  let lex = fileLexStart();
-  for (let n = 0; n < lines.length; n++) {
-    const scanned = scanFileLine(lines[n], lex, n + 1, filePath);
-    lex = scanned.state;
-    masks.push(scanned.mask);
-  }
-  if (lex.kind === 'block') throw parseProblem(filePath, lex.openLine, 'unterminated block comment');
+  const sourceMasks = scanFileLines(sourceLines, filePath, (n) => n + 1);
+  // A one-line speck with members, two specks on one line, and `speck` with
+  // the name on the next line are laid out as the multi-line headers this
+  // walker already parses. Anything else stays on its original lines.
+  const laid = layOutSpeckHeaders(sourceLines, sourceMasks);
+  const lines = laid.lines;
+  const origins = laid.origins;
+  const masks = scanFileLines(lines, filePath, (n) => origins[n]);
 
   let i = 0;
   let depth = 0;
@@ -471,9 +471,12 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     const header = speckHeader(code);
 
     if (header === 'bad') {
-      throw parseProblem(filePath, i + 1, '"speck" is a reserved keyword');
+      const detail = code === 'speck'
+        ? 'expected a name after "speck"'
+        : '"speck" is a reserved keyword';
+      throw parseProblem(filePath, origins[i], detail);
     } else if (header !== 'no') {
-      if (depth !== 0) throw parseProblem(filePath, i + 1, 'unbalanced braces');
+      if (depth !== 0) throw parseProblem(filePath, origins[i], 'unbalanced braces');
       let bodyIndex = i + 1;
       let braceCount = 1;
       if (header.empty) {
@@ -481,7 +484,7 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
         braceCount = 0;
       } else if (!header.opened) {
         const braceLine = openingBraceLine(masks, i);
-        if (braceLine === null) throw parseProblem(filePath, i + 1, 'expected "speck <Name> {"');
+        if (braceLine === null) throw parseProblem(filePath, origins[i], 'expected "speck <Name> {"');
         bodyIndex = braceLine + 1;
       }
       const speck = parseSpeck(lines, i, header.name, bodyIndex, braceCount);
@@ -497,13 +500,13 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
         const node = parseImportStatement(line);
         imports.push({ ...node, startLine: lineNo, endLine: lineNo });
       } else if (!(depth === 1 && insideSpeck)) {
-        throw parseProblem(filePath, lineNo, 'import is inside a block');
+        throw parseProblem(filePath, origins[i], 'import is inside a block');
       }
     }
 
     const next = depth + maskDelta(masks[i]);
-    if (depth === 0 && next > 0) lostAt = i + 1;
-    else if (depth >= 0 && next < 0) lostAt = i + 1;
+    if (depth === 0 && next > 0) lostAt = origins[i];
+    else if (depth >= 0 && next < 0) lostAt = origins[i];
     depth = next;
     i++;
   }
@@ -604,6 +607,189 @@ function maskDelta(mask: string): number {
     else if (ch === '}') delta--;
   }
   return delta;
+}
+
+function scanFileLines(
+  lines: string[],
+  filePath: string | undefined,
+  lineNo: (index: number) => number,
+): string[] {
+  const masks: string[] = [];
+  let lex = fileLexStart();
+  for (let n = 0; n < lines.length; n++) {
+    const scanned = scanFileLine(lines[n], lex, lineNo(n), filePath);
+    lex = scanned.state;
+    masks.push(scanned.mask);
+  }
+  if (lex.kind === 'block') throw parseProblem(filePath, lex.openLine, 'unterminated block comment');
+  return masks;
+}
+
+/**
+ * A member keyword the line walker already parses when it has its own line.
+ * Used only to decide whether a packed header line can be laid out that way.
+ */
+const PACKED_MEMBER = /^(?:state|init|action|event|invariant|interface|provenance|bom|verify|constraint|service|oneof|transition|agent|component|type|input|output|next)\b/;
+
+function isSpeckAt(mask: string, index: number): boolean {
+  if (!mask.startsWith('speck', index)) return false;
+  const before = index === 0 || /\s/.test(mask[index - 1]);
+  const after = mask[index + 5];
+  return before && (after === undefined || /\s/.test(after));
+}
+
+function matchBrace(mask: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < mask.length; i++) {
+    if (mask[i] === '{') depth++;
+    else if (mask[i] === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function splitSpeckSegments(line: string, mask: string): { text: string; mask: string }[] {
+  const cuts: number[] = [];
+  let depth = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] === '{') depth++;
+    else if (mask[i] === '}') depth--;
+    else if (depth === 0 && isSpeckAt(mask, i)) cuts.push(i);
+  }
+  if (cuts.length === 0) return [{ text: line, mask }];
+  const out: { text: string; mask: string }[] = [];
+  for (let c = 0; c < cuts.length; c++) {
+    const start = cuts[c];
+    const end = c + 1 < cuts.length ? cuts[c + 1] : line.length;
+    out.push({ text: line.slice(start, end), mask: mask.slice(start, end) });
+  }
+  return out;
+}
+
+function topChunks(mask: string): string[] {
+  const chunks: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] === '{') depth++;
+    else if (mask[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        chunks.push(mask.slice(start, i + 1));
+        start = i + 1;
+      }
+    }
+  }
+  if (mask.slice(start).trim()) chunks.push(mask.slice(start));
+  return chunks;
+}
+
+/** A complete or open `speck Name { ... }` whose interior is only known members. */
+function isExpandableSpeck(mask: string): boolean {
+  const trimmed = mask.trimStart();
+  const header = trimmed.match(/^speck\s+[\w-]+\s*\{/);
+  if (!header) return false;
+  const brace = mask.length - trimmed.length + header[0].length - 1;
+  const close = matchBrace(mask, brace);
+  if (close < 0) return mask.slice(brace + 1).trim() === '';
+  if (mask.slice(close + 1).trim() !== '') return false;
+  for (const chunk of topChunks(mask.slice(brace + 1, close))) {
+    const code = chunk.trim();
+    if (!code) continue;
+    if (!PACKED_MEMBER.test(code) || !code.includes('{')) return false;
+  }
+  return true;
+}
+
+function explodeInterior(text: string, mask: string): string[] {
+  if (!text.trim()) return [];
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] === '{') depth++;
+    else if (mask[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        out.push(...explodeBlock(text.slice(start, i + 1), mask.slice(start, i + 1)));
+        start = i + 1;
+      }
+    }
+  }
+  const tail = text.slice(start);
+  if (tail.trim()) out.push(tail);
+  return out;
+}
+
+function explodeBlock(text: string, mask: string): string[] {
+  const open = mask.indexOf('{');
+  if (open < 0) return text.trim() ? [text] : [];
+  const close = matchBrace(mask, open);
+  if (close < 0) {
+    return [text.slice(0, open + 1), ...explodeInterior(text.slice(open + 1), mask.slice(open + 1))];
+  }
+  const inner = text.slice(open + 1, close);
+  if (!inner.trim() && !text.slice(close + 1).trim()) return [text];
+  const lines = [text.slice(0, open + 1)];
+  lines.push(...explodeInterior(inner, mask.slice(open + 1, close)));
+  lines.push(text.slice(close, close + 1));
+  const after = text.slice(close + 1);
+  if (after.trim()) lines.push(...explodeInterior(after, mask.slice(close + 1)));
+  return lines;
+}
+
+function expandPackedLine(line: string, mask: string): string[] {
+  const code = mask.trim();
+  if (/^speck\s+[\w-]+\s*(?:\{\s*\}?)?\s*$/.test(code)) return [line];
+  if (!/^speck\s+[\w-]+\s*\{/.test(code)) return [line];
+  const segments = splitSpeckSegments(line, mask);
+  if (!segments.every(seg => isExpandableSpeck(seg.mask))) return [line];
+  const out: string[] = [];
+  for (const seg of segments) out.push(...explodeBlock(seg.text, seg.mask));
+  return out.length ? out : [line];
+}
+
+/**
+ * Lay packed headers out as separate lines, and join a lone `speck` with the
+ * name on the following line. Reported errors keep the original line number.
+ */
+function layOutSpeckHeaders(
+  lines: string[],
+  masks: string[],
+): { lines: string[]; origins: number[] } {
+  const outLines: string[] = [];
+  const origins: number[] = [];
+  let depth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const code = masks[i].trim();
+    if (depth === 0 && code === 'speck') {
+      let j = i + 1;
+      while (j < lines.length && masks[j].trim() === '') j++;
+      const next = j < lines.length ? masks[j].trim() : '';
+      if (next && !/^speck(?:\s|$)/.test(next) && /^[\w-]+(?:\s*\{.*)?$/.test(next)) {
+        const joined = lines[i].replace(/\s*$/, '') + ' ' + lines[j].trim();
+        const joinedMask = scanFileLine(joined, fileLexStart(), 1, undefined).mask;
+        const pieces = expandPackedLine(joined, joinedMask);
+        for (const piece of pieces) {
+          outLines.push(piece);
+          origins.push(i + 1);
+        }
+        depth += maskDelta(masks[i]);
+        for (let k = i + 1; k <= j; k++) depth += maskDelta(masks[k]);
+        i = j;
+        continue;
+      }
+    }
+    const pieces = depth === 0 ? expandPackedLine(lines[i], masks[i]) : [lines[i]];
+    for (const piece of pieces) {
+      outLines.push(piece);
+      origins.push(i + 1);
+    }
+    depth += maskDelta(masks[i]);
+  }
+  return { lines: outLines, origins };
 }
 
 /**
