@@ -34,12 +34,24 @@ alias.
   `event E { x: Nat } // c`). The `}` that closes a block is the last code
   on that line. A `//` comment or a `/* */` comment may follow it, and the
   block comment may continue on later lines. A `}` inside a string or a
-  comment does not close the block. `else` may follow the `}` of an `if`.
-  Further `}` may follow when they close blocks still inside the speck
-  (`n := n - 1 } }`). Any other text is a parse error naming the file and
-  line, so `false } invariant Two` and `invariant A0 { true } invariant Mono {`
-  are not dropped, `false } }` does not merge the next speck, and
-  `} speck D {` does not merge speck D into the previous speck. A `;` in an
+  comment does not close the block. `else` may follow only the `}` that
+  closes an `if` or an `else if`. Further `}` may follow when they close
+  blocks still inside the speck (`n := n - 1 } }`). A set or a record is an
+  expression, including when a keyword appears earlier on the line
+  (`n in {0, 1}`, `{1, 2} = {1, 2}`, `{a: 1}`, `for x in {1, 2} {`,
+  `if n in {1, 2} {`, `if cond: a else {record}`, `emit Log { msg: "a" }`).
+  Any other text after a block-closing `}` is a parse error naming the file
+  and line. The same error is reported when the `}` of a set, a record, or a
+  `map` is followed on that line by another block (`status: { phase: n } invariant Mono {`,
+  `emit Log { msg: "a" } invariant Mono {`, `map M { a -> b } invariant Mono {`).
+  So `false } invariant Two`, `invariant A0 { true } invariant Mono {`,
+  `action Two { n := 1 } invariant Mono {`, `event E { x: Nat } invariant Mono {`,
+  `invariant Mono { false } action Two {`, `invariant A0 { true } else invariant Mono {`,
+  `invariant A0 { true } else {`, `invariant Mono { n >= 0 } else {`, and
+  `action Two { n := 1 } else {` are not dropped, `false } }` does not merge
+  the next speck, and `} speck D {` does not merge speck D into the previous
+  speck. A header whose `{` is on the next line, and a `{` that is still open
+  at the end of the file, are not rejected by this check. A `;` in an
   action is a parse error; a `;` inside a string or a comment is not. An
   invariant, `verify "…"`, or constraint body that is empty or only a
   comment is a parse error naming the file and line, and is not treated as

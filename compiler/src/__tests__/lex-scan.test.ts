@@ -862,14 +862,189 @@ describe('a one-line block cannot open the next block on the same line', () => {
 
   it('rejects a speck closer after a member, and allows a nested closer, in the scanner', () => {
     setParseFile('direct.speckdl');
-    const member = { ...lexStart(), closeFloor: 1, braceDepth: 2, braceKinds: ['block', 'block'] as ('block' | 'expr')[] };
+    const member = { ...lexStart(), closeFloor: 1, braceDepth: 2, braceKinds: ['block', 'block'] as ('block' | 'expr' | 'if')[] };
     expect(() => scanLine('        false } }', member, 3)).toThrow(
       /Parse error at direct\.speckdl:3: text after closing '\}'/,
     );
-    const nested = { ...lexStart(), closeFloor: 1, braceDepth: 3, braceKinds: ['block', 'block', 'block'] as ('block' | 'expr')[] };
+    const nested = { ...lexStart(), closeFloor: 1, braceDepth: 3, braceKinds: ['block', 'block', 'block'] as ('block' | 'expr' | 'if')[] };
     expect(scanLine('        n := n - 1 } }', nested, 4).code).toContain('n := n - 1');
-    const deeper = { ...lexStart(), closeFloor: 1, braceDepth: 4, braceKinds: ['block', 'block', 'block', 'block'] as ('block' | 'expr')[] };
+    const deeper = { ...lexStart(), closeFloor: 1, braceDepth: 4, braceKinds: ['block', 'block', 'block', 'block'] as ('block' | 'expr' | 'if')[] };
     expect(scanLine('        n := n - 1 } } }', deeper, 5).code).toContain('}');
     expect(() => scanLine('require { type: "Prepared", rm: rm } in msgs', lexStart(), 1)).not.toThrow();
+    const armed = { ...lexStart(), closeFloor: 1 };
+    expect(() => scanLine('require { type: "Prepared", rm: rm } in msgs', armed, 1)).not.toThrow();
+    expect(() => scanLine('}', armed, 1)).not.toThrow();
   });
+});
+
+describe('else only continues an if, and a set or a record is not a block', () => {
+  function wrap(body: string[], nl: string): string {
+    return ['speck Gate {', '    state { n: Nat }', '    init { n := 0 }', ...body, '}', ''].join(nl);
+  }
+
+  const dropped: { title: string; file: string; line: number; body: string[] }[] = [
+    {
+      title: 'm31 invariant A0 then invariant Mono',
+      file: 'm31.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    invariant A0 { true } invariant Mono {', '    false', '    }'],
+    },
+    {
+      title: 'm31b action Two then invariant Mono',
+      file: 'm31b.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    action Two { n := 1 } invariant Mono {', '    false', '    }'],
+    },
+    {
+      title: 'm31c invariant Mono then action Two',
+      file: 'm31c.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    invariant Mono { false } action Two {', '    n := 0', '    }'],
+    },
+    {
+      title: 'm31d invariant A0 then invariant Mono closed on the next line',
+      file: 'm31d.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    invariant A0 { true } invariant Mono { false', '    }'],
+    },
+    {
+      title: 'm31e event E then invariant Mono',
+      file: 'm31e.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    event E { x: Nat } invariant Mono {', '    false', '    }'],
+    },
+    {
+      title: 'm32 speck D on the previous speck closer',
+      file: 'm32.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '} speck D {', '    state { y: Nat }', '    invariant Mono { false }'],
+    },
+    {
+      title: 'r24 else invariant after an invariant',
+      file: 'r24.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    invariant A0 { true } else invariant Mono {', '    false', '    }'],
+    },
+    {
+      title: 'r25 else block after an invariant',
+      file: 'r25.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    invariant A0 { true } else {', '    false', '    }'],
+    },
+    {
+      title: 'r45 else after invariant Mono',
+      file: 'r45.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    invariant Mono { n >= 0 } else {', '    false', '    }'],
+    },
+    {
+      title: 'r46 else after action Two',
+      file: 'r46.speckdl',
+      line: 5,
+      body: ['    action Go() { n := n + 1 }', '    action Two { n := 1 } else {', '    n := 0 - 1', '    }'],
+    },
+  ];
+
+  for (const nl of ['\n', '\r\n'] as const) {
+    const ending = nl === '\n' ? 'LF' : 'CRLF';
+    for (const repro of dropped) {
+      it(`rejects ${repro.title} (${ending})`, () => {
+        const src = wrap(repro.body, nl);
+        expect(() => parseSpeckContent(src, repro.file)).toThrow(
+          new RegExp(`Parse error at ${repro.file.replace('.', '\\.')}:${repro.line}: text after closing '\\}'`),
+        );
+      });
+    }
+
+    it(`keeps set and record braces that main accepts (${ending})`, () => {
+      const src = wrap([
+        '    action Go() { n := n + 1 }',
+        '    action Sum() {',
+        '        for x in {1, 2} {',
+        '            n := n + x',
+        '        }',
+        '    }',
+        '    invariant Nested { {1, 2} = {1, 2} and false }',
+        '    invariant InSet { n in {1, 2} and false } // }',
+        '    invariant OrSet { n in {0, 1} or n >= 0 }',
+        '    invariant RecEq { n >= 0 and {a: 1} = {a: 1} }',
+        '    action IfSet() {',
+        '        if n in {1, 2} {',
+        '            n := 0',
+        '        }',
+        '    }',
+        '    action InlineIf() { if n in {1, 2} { n := 0 } }',
+        '    action EmitElse() { if n > 0 { emit Log { msg: "a" } } else { n := 2 } }',
+        '    action ElseIf() {',
+        '        if n > 0 {',
+        '            n := 1',
+        '        } else if n >= 0 {',
+        '            n := 2',
+        '        } else {',
+        '            n := 3',
+        '        }',
+        '    }',
+        '    action Ternary() { let prev := if n in {1, 2}: n else { number: 0 } }',
+        '    action MapRec() { let m := Map(Nat, { a: 1 }) }',
+        '    action Index() { let b := ballots[{ a: 1 }] }',
+        '    input: { x: Nat }',
+      ], nl);
+      const ast = parseSpeckContent(src, 'kept-expr.speckdl');
+      const gate = ast.specks[0];
+      const inv = (name: string) => (gate.members.find(m => m.type === 'invariant' && m.name === name) as { expr: string }).expr;
+      expect(inv('Nested')).toBe('{1, 2} = {1, 2} and false');
+      expect(inv('InSet')).toBe('n in {1, 2} and false');
+      expect(inv('OrSet')).toBe('n in {0, 1} or n >= 0');
+      expect(inv('RecEq')).toBe('n >= 0 and {a: 1} = {a: 1}');
+      const raw = (name: string) => (gate.members.find(m => m.type === 'action' && m.name === name) as { statements: { raw?: string }[] }).statements[0].raw ?? '';
+      expect(raw('Sum')).toContain('for x in {1, 2}');
+      expect(raw('Sum')).toContain('n := n + x');
+      expect(raw('IfSet')).toContain('if n in {1, 2}');
+      expect(raw('IfSet')).toContain('n := 0');
+      expect(raw('InlineIf')).toContain('if n in {1, 2} { n := 0 }');
+      expect(raw('EmitElse')).toContain('emit Log { msg: "a" }');
+      expect(raw('EmitElse')).toContain('else { n := 2 }');
+      expect(raw('ElseIf')).toContain('else if');
+      expect(raw('ElseIf')).toContain('else');
+      const exprOf = (name: string) => (gate.members.find(m => m.type === 'action' && m.name === name) as { statements: { expr?: string }[] }).statements[0].expr ?? '';
+      expect(exprOf('Ternary')).toContain('else { number: 0 }');
+      expect(exprOf('MapRec')).toContain('Map(Nat, { a: 1 })');
+      expect(exprOf('Index')).toContain('ballots[{ a: 1 }]');
+    });
+  }
+
+  for (const nl of ['\n', '\r\n'] as const) {
+    const ending = nl === '\n' ? 'LF' : 'CRLF';
+    it(`rejects a block opened after a set, a record, or a map (${ending})`, () => {
+      const status = wrap([
+        '    action Go() { n := n + 1 }',
+        '    status: { phase: n } invariant Mono {',
+        '    false',
+        '    }',
+      ], nl);
+      expect(() => parseSpeckContent(status, 'r28.speckdl')).toThrow(
+        /Parse error at r28\.speckdl:5: text after closing '\}'/,
+      );
+      const emit = wrap([
+        '    action Two {',
+        '        emit Log { msg: "a" } invariant Mono {',
+        '        false',
+        '        }',
+        '    }',
+      ], nl);
+      expect(() => parseSpeckContent(emit, 'r33.speckdl')).toThrow(
+        /Parse error at r33\.speckdl:5: text after closing '\}'/,
+      );
+      const map = wrap([
+        '    action Go() { n := n + 1 }',
+        '    harness H { map M { a -> b } invariant Mono {',
+        '    false',
+        '    }',
+        '    }',
+      ], nl);
+      expect(() => parseSpeckContent(map, 'r41.speckdl')).toThrow(
+        /Parse error at r41\.speckdl:5: text after closing '\}'/,
+      );
+    });
+  }
 });

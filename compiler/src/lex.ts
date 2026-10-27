@@ -20,8 +20,12 @@ export interface LexState {
   commentClosedInString: number;
   /** Unmatched `{` outside strings and comments. Carried across lines. */
   braceDepth: number;
-  /** One entry per unmatched `{`, outermost first. `block` closes a header. */
-  braceKinds: ('block' | 'expr')[];
+  /**
+   * One entry per unmatched `{`, outermost first.
+   * `if` is an `if` or `else if` body (only that closer may be followed by `else`).
+   * `block` is any other header body. `expr` is a set or a record.
+   */
+  braceKinds: ('block' | 'expr' | 'if')[];
   /**
    * 1: a `}` that closes a block may not be followed by code.
    * -1: expression fragments, where a record brace is not a block.
@@ -41,26 +45,52 @@ export function lexStart(): LexState {
 }
 
 /**
- * A `{` opens a block when this line's header says so (`invariant Name`,
- * `if`, `else`, `speck`). A `{` after `=`, `[`, `,`, or `\` is a value
- * (`x := { ... }`, `ballots[{ ... }]`, `union {x}`, `servers \ {s}`).
+ * What the `{` that follows `maskBefore` opens, from the header still in
+ * front of it. Balanced `()`, `[]`, and `{}` are values, so a keyword
+ * earlier on the line does not make a set or a record into a block.
+ * `n in {1, 2}`, `{a: 1}`, `:= { ... }`, `ballots[{ ... }]`, and
+ * `if cond: a else {record}` are expressions. `type Name = { ... }` is too.
+ * `if` / `else if` bodies are `if`, so only their `}` may be followed by `else`.
  */
-function isBlockOpen(maskBefore: string): boolean {
-  const trimmed = maskBefore.trimEnd();
-  if (!trimmed) return false;
-  const prev = trimmed[trimmed.length - 1];
-  if (prev === '[' || prev === ',' || prev === '=' || prev === '\\') return false;
-  const stmt = trimmed.slice(trimmed.lastIndexOf('}') + 1);
-  return /(?:^|\s)(?:speck|domain|state|init|action|event|invariant|verify|constraint|agent|interface|service|bom|provenance|input|output|transition|component|oneof|type|stages|await|if|for|else|next|harness)\b/.test(stmt);
+function isBlockOpen(maskBefore: string): 'expr' | 'block' | 'if' {
+  let s = maskBefore.replace(/"[^"]*"/g, ' STR ');
+  for (;;) {
+    const n = s
+      .replace(/\{[^{}]*\}/g, ' BRACE ')
+      .replace(/\([^()]*\)/g, ' PAREN ')
+      .replace(/\[[^\[\]]*\]/g, ' BRACK ');
+    if (n === s) break;
+    s = n;
+  }
+  // Still inside a call or an index: `Map(ClientId, {` and `ballots[{`.
+  if (s.includes('[') || s.includes('(')) return 'expr';
+  const cut = s.lastIndexOf('{');
+  const clause = (cut >= 0 ? s.slice(cut + 1) : s).trim();
+  if (!clause) return 'expr';
+  // `input: {` / `output: {` keep the colon. `status: {` and `msg: {` do not.
+  if (/^(?:input|output|state|verify|constraint)\s*:$/.test(clause)) return 'block';
+  // The `{` is the operand, not the body: `in {`, `= {`, `if {1}`, `for x in {`.
+  if (/(?:\b(?:in|and|or|not|implies|union|if|for)\b|&&|\|\||==|!=|>=|<=|:=|->|[+\-*/%<>=!&|^\\([,:.~?])\s*$/.test(clause)) {
+    return 'expr';
+  }
+  if (/\belse\s+if\b/.test(clause)) return 'if';
+  if (/^[}\s]*else$/.test(clause) || /\bBRACE\s+else$/.test(clause)) return 'block';
+  if (/\belse$/.test(clause)) return 'expr';
+  if (/^if\b/.test(clause)) return 'if';
+  if (/^for\b/.test(clause)) return 'block';
+  if (/^(?:speck|domain|state|init|action|event|invariant|verify|constraint|agent|interface|service|bom|provenance|input|output|transition|component|oneof|type|stages|await|next|harness)\b/.test(clause)) {
+    return 'block';
+  }
+  return 'expr';
 }
 
 /**
- * `else` continues an `if`. A run of `}` may close blocks that are still
- * inside the speck (`n := n - 1 } }`). A `}` that steps out of the speck
- * (`false } }`) is not that run.
+ * `else` continues an `if` or `else if` only. A run of `}` may close blocks
+ * that are still inside the speck (`n := n - 1 } }`). A `}` that steps out
+ * of the speck (`false } }`) is not that run.
  */
-function blockCloseRestAllowed(rest: string, depthAfter: number): boolean {
-  if (/^else\b/.test(rest)) return true;
+function blockCloseRestAllowed(rest: string, depthAfter: number, kind: 'block' | 'if'): boolean {
+  if (/^else\b/.test(rest)) return kind === 'if';
   if (!/^\}(?:\s*\})*$/.test(rest)) return false;
   let depth = depthAfter;
   for (const ch of rest) {
@@ -70,6 +100,13 @@ function blockCloseRestAllowed(rest: string, depthAfter: number): boolean {
   }
   return true;
 }
+
+/**
+ * A finished set or record is not a block. Another block on that same line
+ * is still a parse error (`status: { phase: n } invariant`,
+ * `emit Log { ... } invariant`, `map M { a -> b } invariant`).
+ */
+const HEADER_AFTER_EXPR = /^(?:speck|domain|state|init|action|event|invariant|verify|constraint|agent|interface|service|bom|provenance|input|output|transition|component|oneof|type|stages|await|if|for|else|next|harness|map)\b/;
 
 /** Code after the `}` that closes a block. Comments are already blank. */
 export function rejectTextAfterClose(code: string, closeAt: number, lineNo: number): void {
@@ -119,7 +156,8 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
   let depth = state.braceDepth;
   const kinds = state.braceKinds.slice();
   const closeFloor = state.closeFloor;
-  const blockCloses: { at: number; depth: number }[] = [];
+  const blockCloses: { at: number; depth: number; kind: 'block' | 'if' }[] = [];
+  const exprCloses: number[] = [];
   let mask = '';
   let code = '';
   const open = (next: 'block' | 'string') => {
@@ -188,14 +226,18 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
       continue;
     }
     if (ch === '{') {
-      kinds.push(isBlockOpen(mask) ? 'block' : 'expr');
+      kinds.push(isBlockOpen(mask));
       depth++;
     } else if (ch === '}') {
       const opened = kinds.pop();
       depth--;
       // Record the closer. The rest of the line is checked after comments
       // on this line have been blanked, so a trailing line comment is empty.
-      if (closeFloor >= 0 && opened !== 'expr') blockCloses.push({ at: i, depth });
+      if (closeFloor >= 0 && (opened === 'block' || opened === 'if')) {
+        blockCloses.push({ at: i, depth, kind: opened });
+      } else if (closeFloor >= 0 && opened === 'expr') {
+        exprCloses.push(i);
+      }
     }
     mask += ch;
     code += ch;
@@ -203,7 +245,12 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
   if (closeFloor >= 0) {
     for (const hit of blockCloses) {
       const rest = code.slice(hit.at + 1).trim();
-      if (!rest || blockCloseRestAllowed(rest, hit.depth)) continue;
+      if (!rest || blockCloseRestAllowed(rest, hit.depth, hit.kind)) continue;
+      throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
+    }
+    for (const at of exprCloses) {
+      const rest = code.slice(at + 1).trim();
+      if (!rest || !HEADER_AFTER_EXPR.test(rest)) continue;
       throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
     }
   }
