@@ -1050,12 +1050,12 @@ describe('compile entry', () => {
       expect(parseSpeckContent(bomOk, 'bom.speckdl').specks.map(s => s.name)).toEqual(['A']);
       expectLineError(`\uFEFFspeck A { state { x: Nat } init { x := 0 } }${nl}`, 'bompack.speckdl', 1, 'one speck per line: put members on their own lines');
 
-      // Headers the file walker already accepts, including braces hidden from the mask.
+      // Headers the file walker already accepts. A `{` or `}` in a comment
+      // on the line that opens the speck is an error; see the adv10 test.
+      // `speck A // {` does not open the speck. The `{` line does.
       const kept = [
         ['speck My-Name {', '    state { x: Nat }', '    init { x := 0 }', '}'],
         ['speck A // {', '{', '    state { x: Nat }', '    init { x := 0 }', '}'],
-        ['speck A { // }', '    state { x: Nat }', '    init { x := 0 }', '}'],
-        ['speck A /* { */ {', '    state { x: Nat }', '    init { x := 0 }', '}'],
         ['speck A {', '    state { x: Nat }', '    init { x := 0 }', '}', '// speck B and speckled'],
         ['speck A {', '    description: "} speck B {"', '    state { x: Nat }', '    init { x := 0 }', '}'],
         ['speck A {', '    description: "a\u200Bb"', '    state { x: Nat }', '    init { x := 0 }', '}'],
@@ -1220,7 +1220,9 @@ describe('compile entry', () => {
         expectLineError([...head, join, ...body, ''].join(nl), 'adv9t.speckdl', 5, after);
       }
 
-      const commented = [...head, '} // speck -B {', ''].join(nl);
+      // A brace inside the comment on the line that closes the speck.
+      expectLineError([...head, '} // speck -B {', ''].join(nl), 'note.speckdl', 5, 'comment contains a brace');
+      const commented = [...head, '} // speck B', ''].join(nl);
       expect(parseSpeckContent(commented, 'note.speckdl').specks.map(s => s.name)).toEqual(['A']);
       const quoted = [
         'speck A {',
@@ -1231,6 +1233,188 @@ describe('compile entry', () => {
         '',
       ].join(nl);
       expect(parseSpeckContent(quoted, 'str.speckdl').specks.map(s => s.name)).toEqual(['A']);
+    }
+  });
+
+  it('adv10 and adv10b: a speck close that is not alone, a comment brace, text after a member close, and a depth dip are errors, on LF and CRLF', () => {
+    const alone = 'closing brace must be alone on the line';
+    const comment = 'comment contains a brace';
+    const after = 'text after a closing brace';
+    const dip = 'unbalanced braces';
+    const next = [
+      'speck B {',
+      '    state { y: Nat }',
+      '    init { y := 0 }',
+      '    action Inc { y := y + 1 }',
+      '    invariant Canary { false }',
+      '}',
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      // F2. The line that takes depth to 0 is not only `}`.
+      const closes: [string, string][] = [
+        ['c01_oneline_action_close', '    action Go { x := x + 1 } }'],
+        ['c02_oneline_state_close', '    state { x: Nat } }'],
+        ['c09_inv_close_then_header_next', '    invariant P { x >= 0 } }'],
+        ['a16_inv_close_both', '    invariant P { x >= 0 }}'],
+        ['c03_oneline_action_last', '    action Go { x := x + 1 } }'],
+      ];
+      for (const [file, line] of closes) {
+        const tail = file === 'c03_oneline_action_last' ? [] : next;
+        expectLineError(['speck A {', line, ...tail, ''].join(nl), `${file}.speckdl`, 2, alone);
+      }
+
+      // F1. A `{` or `}` in a comment on the line that opens or closes a speck.
+      expectLineError('speck A { // }\n'.replace(/\n/g, nl), 'open-line.speckdl', 1, comment);
+      expectLineError('speck A /* { */ {\n'.replace(/\n/g, nl), 'open-block.speckdl', 1, comment);
+      const closed = ['speck A {', '    state { x: Nat }', '    init { x := 0 }'];
+      for (const [file, line] of [
+        ['a10_close_comment_mentions_speck', '} // speck B { follows'],
+        ['c04_close_comment_open_brace', '} // {'],
+        ['c05_close_blockcomment_open_brace', '} /* { */'],
+      ] as const) {
+        expectLineError([...closed, line, ...next, ''].join(nl), `${file}.speckdl`, 4, comment);
+      }
+
+      // F3. Non-comment text after a member `}` while the speck stays open.
+      const member = ['speck A {', '    action Go {', '        x := 0'];
+      for (const [file, line] of [
+        ['b03_member_close_then_action', '    } action Evil { x := 99 }'],
+        ['b04_member_close_then_invariant', '    } invariant Canary2 { false }'],
+        ['b05_member_close_thing_block', '    }; thing C { state { z: Nat } }'],
+      ] as const) {
+        expectLineError([...member, line, '}', ''].join(nl), `${file}.speckdl`, 4, after);
+      }
+
+      // F4. Depth below 0 on the extra `}` line, before a later `{` could return to 0.
+      const opened = ['speck A {', '    state { x: Nat }', '    init { x := 0 }', '}'];
+      expectLineError(
+        [...opened, '}', '    action Evil { x := 99 }', '    invariant Canary2 { false }', '{', ...next, ''].join(nl),
+        'b06_negative_depth_drop.speckdl',
+        5,
+        dip,
+      );
+      expectLineError(
+        [...opened, '}', '    invariant Canary2 { false }', '{', ...next, ''].join(nl),
+        'c08_neg_depth_inv_canary_only.speckdl',
+        5,
+        dip,
+      );
+      expectLineError([...opened, '}', '{', ''].join(nl), 'b08_close_then_open.speckdl', 5, dip);
+      expectLineError('}{\n'.replace(/\n/g, nl), 'dip-same-line.speckdl', 1, dip);
+      // c07: `thing` after the depth has already gone below 0. The extra `}` is the error.
+      expectLineError(
+        [...opened, '}', 'thing T {', '    state { z: Nat }', '}', ...next, ''].join(nl),
+        'c07_thing_at_neg_depth.speckdl',
+        5,
+        dip,
+      );
+
+      // F5. Members inside a domain are still dropped. Domain blocks are #46.
+      const domain = [
+        'domain D {',
+        '    action Evil { x := 99 }',
+        '    invariant Canary2 { false }',
+        '}',
+        '',
+      ].join(nl);
+      const dropped = parseSpeckContent(domain, 'b09_domain_members_dropped.speckdl');
+      expect(dropped.specks).toEqual([]);
+      expect(dropped.domains).toEqual([]);
+
+      // Shapes that stay accepted: a comment with no brace, whitespace after `}`,
+      // an empty speck, and a same-line `else` while the speck stays open.
+      const bTail = ['    invariant Canary { false }', '}'];
+      for (const close of ['} // done', '} /* c */', '}\t// c', '}\t/* c */', '}/**/', '} // speck B']) {
+        const ast = parseSpeckContent(['speck A {', '    state { x: Nat }', '    init { x := 0 }', close, 'speck B {', ...bTail, ''].join(nl), 'keep.speckdl');
+        expect(ast.specks.map(s => s.name), close).toEqual(['A', 'B']);
+      }
+      for (const close of ['}', '}   ', '}\t', '}\u00A0', '}\u3000']) {
+        const ast = parseSpeckContent(['speck A {', '    state { x: Nat }', '    init { x := 0 }', close, ''].join(nl), 'ws.speckdl');
+        expect(ast.specks.map(s => s.name), JSON.stringify(close)).toEqual(['A']);
+      }
+      const trailed = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '} /* note',
+        '   { still a comment',
+        '*/',
+        '',
+        'speck B {',
+        ...bTail,
+        '',
+      ].join(nl);
+      expect(parseSpeckContent(trailed, 'trail.speckdl').specks.map(s => s.name)).toEqual(['A', 'B']);
+      const three = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        'speck E { }',
+        'speck B {',
+        ...bTail,
+        '',
+      ].join(nl);
+      expect(parseSpeckContent(three, 'three.speckdl').specks.map(s => s.name)).toEqual(['A', 'E', 'B']);
+      const withElse = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action Go {',
+        '        if x > 0 {',
+        '            x := 1',
+        '        } else if x > 1 {',
+        '            x := 2',
+        '        } else {',
+        '            x := 0',
+        '        }',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      const elseAst = parseSpeckContent(withElse, 'else.speckdl');
+      expect(elseAst.specks.map(s => s.name)).toEqual(['A']);
+      const go = elseAst.specks[0].members.find(m => m.type === 'action') as { name: string };
+      expect(go.name).toBe('Go');
+      const record = [
+        'speck A {',
+        '    state { msgs: Set }',
+        '    init { msgs := {} }',
+        '    action Go {',
+        '        msgs := msgs union {{ type: "Prepared", rm: rm }}',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(parseSpeckContent(record, 'record.speckdl').specks.map(s => s.name)).toEqual(['A']);
+      const mapClose = [
+        'speck A {',
+        '    state {',
+        '        codes: Map(Code, {',
+        '            used: Bool',
+        '        })',
+        '    }',
+        '    action Go {',
+        '        let c := Customer {',
+        '            metadata: ObjectMeta {',
+        '                name: name',
+        '            },',
+        '            status: null',
+        '        }',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(parseSpeckContent(mapClose, 'mapclose.speckdl').specks.map(s => s.name)).toEqual(['A']);
+      // Already-loud trailing text on the `}` that returns depth to 0.
+      const openHead = ['speck A {', '    state { x: Nat }', '    init { x := 0 }'];
+      for (const [file, line] of [
+        ['b01_quote', '} "evil"'],
+        ['b02_semi', '};'],
+        ['b07_hangul', '} \u3164'],
+      ] as const) {
+        expectLineError([...openHead, line, ...next, ''].join(nl), `${file}.speckdl`, 4, after);
+      }
     }
   });
 

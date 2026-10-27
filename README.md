@@ -169,9 +169,12 @@ speck.
 The file-level scan that finds the next speck skips a brace inside a
 finished string or a comment. An unclosed `{` before the next speck, or a
 file whose depth on that scan is not 0 at the end, is a parse error naming
-the file and line (`unbalanced braces`). A stray `}` is that error even
-when a later comment contains a `{`. `domain` is not parsed; a speck
-inside a domain's braces is that error. An `import` inside an action, an
+the file and line (`unbalanced braces`). A stray `}` is that error on
+the line where depth goes below 0, even when a later `{` or a later
+comment would bring it back. `domain` is not parsed; a speck
+inside a domain's braces is that error. Members written inside
+`domain D { ... }` are dropped, the same as main. Domain blocks are a
+later change. An `import` inside an action, an
 `if` inside an action, a state block, a domain, or any other brace block
 that is not the speck itself is `import is inside a block`. An import that
 is a direct member of a speck is attached to that speck. A string does not
@@ -202,12 +205,20 @@ are a parse error here. A line that is only `speck` is
 `speck name must be on the same line as "speck"`. A format character
 outside a string or a comment is `invisible format character`, except a
 BOM at the start of the file. A line that starts at depth 0 and is not
-a speck header, a `domain` line, an `import`, blank, or a lone `}` is
-`text outside a speck, domain, or import`. Non-comment text after the
+a speck header, a `domain` line, an `import`, or blank is
+`text outside a speck, domain, or import`. A lone `}` on that line is
+`unbalanced braces`. Non-comment text after the
 `}` that brings file-level depth back to 0, on that same line, is
-`text after a closing brace`. This check only rejects that text. An
-unknown block that stays inside a speck is merged into it, the same as
-main.
+`text after a closing brace`. The same error is reported for
+other text after a member's `}` while the speck stays open. A
+same-line `else` is still parsed, and so is a line that is `})` or
+`},`. A line that takes depth to 0 has to
+be `}` plus optional whitespace and an optional comment (`closing brace
+must be alone on the line`). On a line that opens or closes a speck, a
+`{` or `}` inside a comment is `comment contains a brace`. `speck Name`
+with `// {` and `{` on the next line still parses. This check only
+rejects that text. An unknown block that stays inside a speck is merged
+into it, the same as main.
 `speck` is a reserved keyword. On main, `speck := speck + 1`
 and `speck >= 0` were accepted. They are now
 `"speck" is a reserved keyword`.

@@ -22,9 +22,12 @@ alias.
   the next speck skips a brace inside a finished `"` string, a `//` comment,
   or a `/* */` comment. Depth that is not 0 before the next speck, or at
   the end of the file, is a parse error (`unbalanced braces`) naming the
-  file and line. A stray `}` is that error even when a later comment
-  contains a `{`. `domain` is not parsed; a speck inside its braces is
-  that error, not a dropped speck. An `import` inside an action, an `if`
+  file and line. A stray `}` is that error on the line where depth goes
+  below 0, even when a later `{` or a later comment would bring it back.
+  `domain` is not parsed; a speck inside its braces is
+  that error, not a dropped speck. Members written inside
+  `domain D { ... }` (`action Evil`, `invariant Canary2 { false }`) are
+  dropped, the same as main. Domain blocks are a later change. An `import` inside an action, an `if`
   inside an action, a multi-line state block, a `domain` block, or any
   other brace block that is not the speck itself is
   `import is inside a block`, naming the file and line. An import that is
@@ -63,15 +66,29 @@ alias.
   (Unicode Cf) outside a string or a comment is
   `invisible format character`, except a BOM at the start of the file.
   A line that starts at depth 0 and is not a speck header, a `domain`
-  line, an `import`, blank, or a lone `}` is
-  `text outside a speck, domain, or import`. That includes a member
+  line, an `import`, or blank is
+  `text outside a speck, domain, or import`. A lone `}` on that line is
+  `unbalanced braces`. That includes a member
   written after `speck Name { }`. Non-comment text after the `}` that
   brings file-level depth back to 0, on that same line, is
   `text after a closing brace`. That includes `}; thing B {` and
   `} action Evil { x := 99 }`. This check only rejects that text.
-  An unknown block that stays inside a speck (`thing B {`, `Speck B {`,
-  a Cyrillic lookalike of `speck`) is merged into that speck, the same
-  as main.
+  The same error is reported for other text after a member's `}`
+  while the speck stays open (`} action Evil`, `} invariant Canary2`,
+  `}; thing C`). A same-line `else` (`} else`, `} else if`) is still
+  parsed. A line that is `})` or `},` is still parsed: it finishes a
+  record or a call. A line that takes depth to 0 has to be `}` plus optional
+  whitespace and an optional comment (`closing brace must be alone on
+  the line`). `action Go { x := x + 1 } }`, `state { x: Nat } }`, and
+  `invariant P { x >= 0 } }` are that error. On a line that opens or
+  closes a speck, a `{` or `}` inside a `//` or `/* */` comment is
+  `comment contains a brace`. That includes `speck A { // }`,
+  `} // {`, `} /* { */`, and `} // speck B { follows`. `speck A // {`
+  with `{` on the next line still parses: that comment is not on the
+  line that opens the speck. `} // speck B` with no brace in the comment
+  still parses. An unknown block that stays inside a speck (`thing B {`,
+  `Speck B {`, a Cyrillic lookalike of `speck`) is merged into that
+  speck, the same as main.
   `speck` is a reserved keyword. On main, `speck := speck + 1` and
   `speck >= 0` were accepted. They are now
   `"speck" is a reserved keyword`, naming the file and line. A header `speck Name` whose `{` never appears is

@@ -475,6 +475,10 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     const shape = rejectMisplacedSpeck(code, depth, filePath, lineNo);
 
     if (shape === 'open' || shape === 'empty' || shape === 'pending') {
+      // A `{` or `}` hidden in a comment on the line that opens the speck.
+      if ((shape === 'open' || shape === 'empty') && commentHidesBrace(lines[i], masks[i])) {
+        throw parseProblem(filePath, lineNo, 'comment contains a brace');
+      }
       let bodyIndex = i + 1;
       let braceCount = 1;
       if (shape === 'empty') {
@@ -491,10 +495,20 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       specks.push(speck);
       speckSpans.push({ start: speck.startLine ?? lineNo, end: speck.endLine ?? lineNo });
     } else if (i === openBraceAt) {
+      if (commentHidesBrace(lines[i], masks[i])) {
+        throw parseProblem(filePath, lineNo, 'comment contains a brace');
+      }
       openBraceAt = -1;
     } else if (textAfterClose(code, depth)) {
       // The `}` that returns file-level depth to 0, with more code after
       // it on this line. Reject only. Parsing that text is a later change.
+      throw parseProblem(filePath, lineNo, 'text after a closing brace');
+    } else if (closeNotAlone(code, depth)) {
+      throw parseProblem(filePath, lineNo, 'closing brace must be alone on the line');
+    } else if (lineClosesBlock(code, depth) && commentHidesBrace(lines[i], masks[i])) {
+      throw parseProblem(filePath, lineNo, 'comment contains a brace');
+    } else if (textAfterMemberClose(code, depth)) {
+      // Text after a member `}` while the speck stays open. Reject only.
       throw parseProblem(filePath, lineNo, 'text after a closing brace');
     } else if (/^import(?:\s|$)/.test(code)) {
       const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
@@ -507,13 +521,16 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       } else if (!(depth === 1 && insideSpeck)) {
         throw parseProblem(filePath, lineNo, 'import is inside a block');
       }
-    } else if (depth === 0 && strayFileText(code)) {
+    } else if (depth === 0 && strayFileText(code) && !depthDipsBelowZero(masks[i], depth)) {
       throw parseProblem(filePath, lineNo, 'text outside a speck, domain, or import');
     }
 
+    // An extra `}` on this line, even if a later `{` would bring depth back.
+    if (depthDipsBelowZero(masks[i], depth)) {
+      throw parseProblem(filePath, lineNo, 'unbalanced braces');
+    }
     const next = depth + maskDelta(masks[i]);
     if (depth === 0 && next > 0) lostAt = lineNo;
-    else if (depth >= 0 && next < 0) lostAt = lineNo;
     depth = next;
     i++;
   }
@@ -734,6 +751,64 @@ function textAfterClose(code: string, depth: number): boolean {
     else if (ch === '}') {
       d--;
       if (d === 0 && code.slice(i + 1).trim() !== '') return true;
+    }
+  }
+  return false;
+}
+
+/** True when this masked line's brace walk reaches depth 0. */
+function lineClosesBlock(code: string, depth: number): boolean {
+  if (depth <= 0) return false;
+  let d = depth;
+  for (const ch of code) {
+    if (ch === '{') d++;
+    else if (ch === '}') {
+      d--;
+      if (d === 0) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A line that takes depth to 0 has to be `}` plus a comment.
+ * `action Go { x := x + 1 } }` is not that line.
+ */
+function closeNotAlone(code: string, depth: number): boolean {
+  return lineClosesBlock(code, depth) && code.trim() !== '}';
+}
+
+/**
+ * A line that starts with `}` and still has code, while the speck stays
+ * open. `else` is the one word main already parses. `)` and `,` finish a
+ * record or a call on that line (`})`, `},`).
+ */
+function textAfterMemberClose(code: string, depth: number): boolean {
+  if (depth <= 1 || !code.startsWith('}')) return false;
+  const rest = code.slice(1).trim();
+  if (rest === '' || rest === ')' || rest === ',' || /^else\b/.test(rest)) return false;
+  return true;
+}
+
+/** True when a `{` or `}` in the raw line was masked out of the code. */
+function commentHidesBrace(raw: string, mask: string): boolean {
+  const src = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  const n = Math.min(src.length, mask.length);
+  for (let i = 0; i < n; i++) {
+    const ch = src[i];
+    if ((ch === '{' || ch === '}') && mask[i] === ' ') return true;
+  }
+  return false;
+}
+
+/** True when a `}` on this line drives file-level depth below 0. */
+function depthDipsBelowZero(code: string, depth: number): boolean {
+  let d = depth;
+  for (const ch of code) {
+    if (ch === '{') d++;
+    else if (ch === '}') {
+      d--;
+      if (d < 0) return true;
     }
   }
   return false;
