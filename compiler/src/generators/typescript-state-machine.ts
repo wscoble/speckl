@@ -264,6 +264,8 @@ function emitSpeck(speck: SpeckNode): string {
     allKnownStateValues.push(...values);
   }
 
+  const mapInitLines: string = mapVarNames.size > 0 ? Array.from(mapVarNames).map(function (n: string): string { return '    if (!(this.' + n + ' instanceof Map)) { this.' + n + ' = new Map(Object.entries(this.' + n + ' ?? {})); }'; }).join('\n') : '    // no map-typed state fields';
+
   const initAssignments = initNode
     ? initNode.assignments.map(a => {
         const name = cleanName(a.name);
@@ -445,7 +447,11 @@ ${statePropertiesNonNull}
 
   constructor() {
 ${initAssignments || '    // No init block defined'}
-  }
+
+    // Map-typed state fields are normalized: a field the init block omitted
+    // becomes an empty Map; an object literal (and a restored snapshot's
+    // plain-object form) is converted so .get() guards see a Map.
+${mapInitLines}
 
 ${actionMethods}
 
