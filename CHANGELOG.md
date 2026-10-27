@@ -14,6 +14,11 @@ alias.
 
 ### Added
 
+- **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
+  inside a finished `"` string, a `//` comment, or a `/* */` comment, so
+  that brace cannot end a speck or a member or hide the next speck.
+  `'` is post-state prime notation, not a string quote. An unclosed `/*`
+  or `"` is not yet a parse error. There is no shared scanner module yet.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

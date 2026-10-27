@@ -100,7 +100,11 @@ speck ToggleSwitch {
 `var.values`, or a range. This sugar is recognized by the language but not
 yet lowered to Z3 (see §3.5).
 
-**Comments** — `//` line comments and `/* ... */` block comments.
+**Comments** — `//` line comments and `/* ... */` block comments. A `{` or `}`
+inside a comment or a `"` string is not a structural brace. `'` is
+post-state prime notation, not a string quote. An unclosed `/*` or `"`
+is not yet a parse error; the comment or string stays open onto the
+next line.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
