@@ -26,14 +26,24 @@ alias.
   notation, not a string quote. An unterminated block comment or string, or
   a stray `*/`, is a parse error naming the file and line. Code after
   `/* ... */` on the same line is kept. A trailing `//` comment is not part
-  of a `require`, `let`, or invariant expression.   Code between `{` and that
+  of a `require`, `let`, or invariant expression. Code between `{` and that
   comment is kept when the closing `}` is on the next line. Code before the
   closing `}` is part of the body for an invariant, verify, constraint,
   action, event, and agent block, on one line or across lines, including a
   trailing `//` comment after a one-line `}` (`action X { n := n + 2 }`,
-  `event E { x: Nat } // c`). An invariant, `verify "…"`, or constraint body
-  that is empty or only a comment is a parse error naming the file and line,
-  and is not treated as true. A body such as `{ false }` is not an empty body.
+  `event E { x: Nat } // c`). The `}` that closes a block is the last code
+  on that line. A `//` comment or a `/* */` comment may follow it, and the
+  block comment may continue on later lines. A `}` inside a string or a
+  comment does not close the block. `else` may follow the `}` of an `if`.
+  Further `}` may follow when they close blocks still inside the speck
+  (`n := n - 1 } }`). Any other text is a parse error naming the file and
+  line, so `false } invariant Two` and `invariant A0 { true } invariant Mono {`
+  are not dropped, `false } }` does not merge the next speck, and
+  `} speck D {` does not merge speck D into the previous speck. A `;` in an
+  action is a parse error; a `;` inside a string or a comment is not. An
+  invariant, `verify "…"`, or constraint body that is empty or only a
+  comment is a parse error naming the file and line, and is not treated as
+  true. A body such as `{ false }` is not an empty body.
   If a block comment closes inside a string, the unterminated-string error
   says so. An import that declares no specks and no domains is an error. `sha256:`
   is case-insensitive; an empty hash is a parse error. Contracts, cost,

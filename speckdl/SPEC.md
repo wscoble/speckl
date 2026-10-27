@@ -105,7 +105,20 @@ comment is not structure: a `}` inside one does not close a block, including
 when the comment spans lines. `'` is post-state notation, not a string quote.
 An unterminated block comment or string, or a `*/` that does not close one,
 is a parse error naming the file and line. A trailing `//` comment is not
-part of a `require`, `let`, or invariant expression.
+part of a `require`, `let`, or invariant expression. The `}` that closes a
+block is the last code on that line. A `//` comment or a `/* */` comment may
+follow it, and the block comment may continue on later lines. A `}` inside a
+string or a comment does not close the block. `else` may follow the `}` of
+an `if`. Further `}` may follow when they close blocks that are still inside
+the speck (`n := n - 1 } }`). Any other text is a parse error naming the file
+and line, including another block on that line (`invariant A0 { true } invariant Mono {`,
+`action Two { n := 1 } invariant Mono {`, `event E { x: Nat } invariant Mono {`,
+`invariant Mono { false } action Two {`), a declaration after the closer
+(`false } invariant Two`), a speck closer on the member's last line
+(`false } }`), and a speck opened on the line that closed the previous one
+(`} speck D {`). The following block is not dropped, and the next speck is
+not merged. Actions have no `;`. A semicolon in an action is a parse error;
+one inside a string or a comment is not.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

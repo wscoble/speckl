@@ -62,6 +62,8 @@ speck ToggleSwitch {
 - `require` is a guard — the action fails if the condition isn't met
 - `:=` is assignment
 - `return` makes the result observable
+- statements are separated by newlines, not `;`
+- the `}` that closes a block is the last code on that line; a `//` comment or a `/* */` comment may follow it, and `else` may follow the `}` of an `if`
 
 **Next** defines which actions can fire. `TurnOn | TurnOff` means either can happen at any time — it's nondeterministic. The model checker explores all interleavings.
 

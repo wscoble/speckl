@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseSpeckContent } from '../parser.js';
 import { compileSpec } from '../compile.js';
-import { scanLine, setParseFile } from '../lex.js';
+import { lexStart, scanLine, setParseFile } from '../lex.js';
 // @ts-ignore plain ESM helper shared with scripts/verify-z3.mjs
 import { judge } from '../../scripts/lib/obligations.mjs';
 
@@ -668,4 +668,208 @@ describe('code before the closing brace is part of the body', () => {
     expect(v.status, smt + '\n' + (r.stdout ?? '') + (r.stderr ?? '')).toBe('VIOLATED');
     expect(v.obligations.some((o: { key?: string; ok?: boolean }) => o.key === 'Mono' && o.ok === false)).toBe(true);
   }, 60_000);
+});
+
+describe('text after a closing brace and a semicolon in an action', () => {
+  it('keeps a trailing comment and a brace inside a string', () => {
+    const ast = parseSpeckContent(`speck A {
+    state { n: Nat s: String }
+    init { n := 0 s := "" }
+    invariant Mono { false } // stays
+    invariant Quoted {
+        s = "}" }
+    invariant Noted {
+        false } // stays
+    action Go() { s := "}" }
+    action NotedAct() { n := n + 1 } // a;b
+    action Inside() { n := n + 1 /* a;b */ }
+    action Words() { s := "a;b" }
+    action Nest() { if n > 0 { n := n } }
+    next: Go | NotedAct | Inside | Words | Nest
+}
+speck B {
+    state { y: Nat }
+    init { y := 0 }
+    invariant Two { true }
+}
+`, 'keep.speckdl');
+    expect(ast.specks.map(s => s.name)).toEqual(['A', 'B']);
+    const a = ast.specks[0];
+    const expr = (name: string) => (a.members.find(m => m.type === 'invariant' && m.name === name) as { expr: string }).expr;
+    expect(expr('Mono')).toBe('false');
+    expect(expr('Quoted')).toBe('s = "}"');
+    expect(expr('Noted')).toBe('false');
+    expect(expr('Mono')).not.toContain('stays');
+    const stmts = (name: string) => (a.members.find(m => m.type === 'action' && m.name === name) as { statements: { type: string; expr?: string; raw?: string }[] }).statements;
+    expect(stmts('Go').map(s => s.expr)).toEqual(['"}"']);
+    expect(stmts('NotedAct').map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n + 1']);
+    expect(stmts('Inside').map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n + 1']);
+    expect(stmts('Words').map(s => s.expr)).toEqual(['"a;b"']);
+    expect(stmts('Nest')[0].type).toBe('ifblock');
+    const b = ast.specks[1];
+    expect((b.members.find(m => m.type === 'invariant') as { name: string; expr: string }).expr).toBe('true');
+    expect(b.members.some(m => m.type === 'action')).toBe(false);
+  });
+
+  it('rejects a declaration after the closing brace', () => {
+    const multi = `speck A {
+    invariant Mono {
+        false } invariant Two { true }
+}
+`;
+    expect(() => parseSpeckContent(multi, 'trail.speckdl')).toThrow(/Parse error at trail\.speckdl:3: text after closing '\}'/);
+    const one = `speck A {
+    invariant Mono { false } invariant Two { true }
+}
+`;
+    expect(() => parseSpeckContent(one, 'trail.speckdl')).toThrow(/Parse error at trail\.speckdl:2: text after closing '\}'/);
+    const commented = `speck A {
+    invariant Mono {
+        false } invariant Two { true } // no
+}
+`;
+    expect(() => parseSpeckContent(commented, 'trail.speckdl')).toThrow(/text after closing '\}'/);
+  });
+
+  it('rejects a speck closer on the member\'s last line', () => {
+    const src = `speck A {
+    invariant Mono {
+        false } }
+speck B {
+    state { y: Nat }
+    init { y := 0 }
+    action Go() { y := y + 1 }
+}
+`;
+    expect(() => parseSpeckContent(src, 'bound.speckdl')).toThrow(/Parse error at bound\.speckdl:3: text after closing '\}'/);
+    const noted = `speck A {
+    invariant Mono {
+        false } } // still closed here
+}
+`;
+    expect(() => parseSpeckContent(noted, 'bound.speckdl')).toThrow(/Parse error at bound\.speckdl:3: text after closing '\}'/);
+    const inString = `speck A {
+    invariant Mono {
+        s = "}" } }
+}
+`;
+    expect(() => parseSpeckContent(inString, 'bound.speckdl')).toThrow(/Parse error at bound\.speckdl:3: text after closing '\}'/);
+  });
+
+  it('rejects a semicolon in a one-line action', () => {
+    const src = `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    action Go() { require n > 5; n := n + 1 }
+}
+`;
+    expect(() => parseSpeckContent(src, 'semi.speckdl')).toThrow(/Parse error at semi\.speckdl:4: ';' is not allowed in an action/);
+    const multi = `speck A {
+    action Go() {
+        require n > 5; n := n + 1
+    }
+}
+`;
+    expect(() => parseSpeckContent(multi, 'semi.speckdl')).toThrow(/Parse error at semi\.speckdl:3: ';' is not allowed in an action/);
+  });
+});
+
+describe('a one-line block cannot open the next block on the same line', () => {
+  const repros: { header: string; line: number; file: string }[] = [
+    { header: 'invariant A0 { true } invariant Mono {', line: 2, file: 'a0.speckdl' },
+    { header: 'action Two { n := 1 } invariant Mono {', line: 2, file: 'act.speckdl' },
+    { header: 'event E { x: Nat } invariant Mono {', line: 2, file: 'ev.speckdl' },
+    { header: 'invariant Mono { false } action Two {', line: 2, file: 'lost.speckdl' },
+  ];
+
+  function gate(header: string, nl: string): string {
+    return [`speck Gate {`, `    ${header}`, '    false', '    }', '}', ''].join(nl);
+  }
+
+  for (const nl of ['\n', '\r\n'] as const) {
+    const ending = nl === '\n' ? 'LF' : 'CRLF';
+    for (const repro of repros) {
+      it(`rejects ${repro.header} (${ending})`, () => {
+        const src = gate(repro.header, nl);
+        expect(() => parseSpeckContent(src, repro.file)).toThrow(
+          new RegExp(`Parse error at ${repro.file.replace('.', '\\.')}:${repro.line}: text after closing '\\}'`),
+        );
+      });
+    }
+
+    it(`rejects a speck opened on the previous speck's closing line (${ending})`, () => {
+      const src = [
+        'speck A {',
+        '    state { n: Nat }',
+        '} speck D {',
+        '    state { y: Nat }',
+        '    invariant Mono { false }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(src, 'merge.speckdl')).toThrow(
+        /Parse error at merge\.speckdl:3: text after closing '\}'/,
+      );
+    });
+  }
+
+  function kept(nl: string): string {
+    return [
+      'speck A {',
+      '    state { n: Nat s: String }',
+      '    init { n := 0 s := "" }',
+      '    invariant A0 { true } // kept',
+      '    invariant Block { true } /* kept */',
+      '    invariant Past { true } /* kept',
+      '    across lines */',
+      '    invariant Quoted { s = "}" }',
+      '    action Go() {',
+      '        if n > 0 {',
+      '            n := n - 1',
+      '        } else {',
+      '            n := n + 1',
+      '        }',
+      '    }',
+      '} // end',
+      '/* still',
+      'a comment */',
+      'speck D {',
+      '    invariant Mono { false }',
+      '}',
+      '',
+    ].join(nl);
+  }
+
+  for (const nl of ['\n', '\r\n'] as const) {
+    const ending = nl === '\n' ? 'LF' : 'CRLF';
+    it(`keeps a trailing comment, a block comment, and a brace in a string (${ending})`, () => {
+      const ast = parseSpeckContent(kept(nl), 'ok.speckdl');
+      expect(ast.specks.map(s => s.name)).toEqual(['A', 'D']);
+      const a = ast.specks[0];
+      const expr = (name: string) => (a.members.find(m => m.type === 'invariant' && m.name === name) as { expr: string }).expr;
+      expect(expr('A0')).toBe('true');
+      expect(expr('Block')).toBe('true');
+      expect(expr('Past')).toBe('true');
+      expect(expr('Quoted')).toBe('s = "}"');
+      expect(expr('A0')).not.toContain('kept');
+      const go = a.members.find(m => m.type === 'action' && m.name === 'Go') as { statements: { type: string; raw?: string }[] };
+      expect(go.statements[0].type).toBe('ifblock');
+      expect(go.statements[0].raw).toContain('else');
+      const d = ast.specks[1];
+      expect((d.members.find(m => m.type === 'invariant') as { expr: string }).expr).toBe('false');
+    });
+  }
+
+  it('rejects a speck closer after a member, and allows a nested closer, in the scanner', () => {
+    setParseFile('direct.speckdl');
+    const member = { ...lexStart(), closeFloor: 1, braceDepth: 2, braceKinds: ['block', 'block'] as ('block' | 'expr')[] };
+    expect(() => scanLine('        false } }', member, 3)).toThrow(
+      /Parse error at direct\.speckdl:3: text after closing '\}'/,
+    );
+    const nested = { ...lexStart(), closeFloor: 1, braceDepth: 3, braceKinds: ['block', 'block', 'block'] as ('block' | 'expr')[] };
+    expect(scanLine('        n := n - 1 } }', nested, 4).code).toContain('n := n - 1');
+    const deeper = { ...lexStart(), closeFloor: 1, braceDepth: 4, braceKinds: ['block', 'block', 'block', 'block'] as ('block' | 'expr')[] };
+    expect(scanLine('        n := n - 1 } } }', deeper, 5).code).toContain('}');
+    expect(() => scanLine('require { type: "Prepared", rm: rm } in msgs', lexStart(), 1)).not.toThrow();
+  });
 });
