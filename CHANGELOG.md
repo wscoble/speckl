@@ -17,8 +17,12 @@ alias.
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
   that brace cannot end a speck or a member or hide the next speck.
-  `'` is post-state prime notation, not a string quote. An unclosed `/*`
-  or `"` is not yet a parse error. There is no shared scanner module yet.
+  `'` is post-state prime notation, not a string quote.
+- **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
+  count uses. An unterminated block comment or string, or a stray `*/`, is
+  a parse error naming the file and line. Code after `/* ... */` on the same
+  line is kept. A trailing `//` comment is not part of a `require`, `let`,
+  or invariant expression.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
@@ -175,6 +179,12 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Trailing comments are not part of the expression.** A `//` comment after
+  a `require`, a `let`, or an invariant is dropped before generators run.
+  Go guard errors no longer repeat that comment. SQLiteWAL's Go, Elm, and
+  AST SMT output, and OAuth's Rust invariant text and Elm machine, change
+  for that reason. Other bundled examples are unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
