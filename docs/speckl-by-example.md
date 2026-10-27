@@ -380,10 +380,23 @@ Camel and is not affiliated with the Apache Software Foundation.
 tool that is not mapped in its harness block, and when a contract cannot
 be wired.
 
-**Not yet implemented:** a tick scheduler, queues, runtime routing from one
-domain to another, completion signals, and trace IDs. The budget query
-does not install a scheduler. Rewriting an expression that names an
-imported speck is also **not yet implemented**.
+`priority P0` on an action, or on the domain when the action has none,
+and `kpi "name"` on an event, are labels. The generated hook writes a
+completion signal on every `post` of an `effect act` tool: trace id from
+ingress (a missing id becomes a fresh flagged root), a branch id unique
+in that log, the parent branch, the call, whether it was ok, the time,
+and the priority. An act post with no matching pre is denied and still
+logged. `speckl trace report` reads that log offline. Per priority it
+prints drain latency, how long the completion lagged the pre, and how
+deep the queue was. KPI-tagged completions are attributed to their trace.
+The report does not run the agent and does not enforce a queue. Duration
+here is a throughput signal, not a risk signal. The log's seal is a
+shared-key HMAC. It proves nothing to an outside auditor.
+
+**Not yet implemented:** a tick scheduler, queues, and runtime routing from
+one domain to another. The budget query does not install a scheduler.
+Rewriting an expression that names an imported speck is also **not yet
+implemented**.
 
 ## Next Steps
 

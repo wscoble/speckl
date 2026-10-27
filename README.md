@@ -202,10 +202,24 @@ that its harness blocks do not map, and when a consumes/produces contract
 cannot be wired. That is separate from the adapter `doctor` probe, which
 runs an installed hook.
 
+`priority <Name>` on an action (or on the domain, when the action has
+none) and `kpi "<name>"` on an event are labels for completion signals.
+They do not install a queue. The Camel target does not copy the kpi tag.
+
+On `post` of an `effect act` tool the hook records a completion signal on
+the decision line: `trace_id` from ingress (a missing id is a fresh root
+and is flagged), a `branch_id` unique per branch (the matching post reuses it), `parent_branch_id`,
+`call_id`, `ok`, `ts`, and `priority`. An act post with no matching pre
+is a deny, and that deny is still the signal. `speckl trace report` reads
+the log offline and prints drain latency, completion-signal lag, and queue
+depth per priority, and attributes KPI-tagged completions to their trace.
+It does not run the agent or enforce a queue. Those durations are a
+throughput signal, not a risk signal. The decision record stays a
+shared-key HMAC. That seal proves nothing to an outside auditor.
+
 **Not yet implemented:** a package registry for `version` pins (the pin is
 stored, and `hash` is checked); rewriting expressions that name an imported
-speck; a tick scheduler, queues, and runtime routing between domains;
-completion signals and trace IDs.
+speck; a tick scheduler, queues, and runtime routing between domains.
 
 ## Documentation
 

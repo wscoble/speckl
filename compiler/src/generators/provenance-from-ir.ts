@@ -203,6 +203,7 @@ function renderProvGraph(speck: IRSpeck, domains: IRDomain[]): any {
       ...(event.fields.length > 0
         ? { 'speckl:fields': event.fields.map(f => f.name).join(', ') }
         : {}),
+      ...(event.kpi !== undefined ? { 'speckl:kpi': event.kpi } : {}),
     });
     graph.push({
       '@type': 'prov:wasDerivedFrom',
@@ -291,6 +292,7 @@ function renderProvGraph(speck: IRSpeck, domains: IRDomain[]): any {
       ...(domain.consumes.length > 0 ? { 'speckl:consumes': domain.consumes } : {}),
       ...(domain.produces.length > 0 ? { 'speckl:produces': domain.produces } : {}),
       ...(domain.budgetPerTick !== undefined ? { 'speckl:budgetPerTick': domain.budgetPerTick } : {}),
+      ...(domain.priority !== undefined ? { 'speckl:priority': domain.priority } : {}),
     });
   }
 

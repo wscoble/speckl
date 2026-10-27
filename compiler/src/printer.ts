@@ -24,6 +24,7 @@ function printDomain(domain: DomainNode): string {
   if (domain.language !== undefined) lines.push(`    language: ${JSON.stringify(domain.language)};`);
   for (const name of domain.consumes ?? []) lines.push(`    consumes ${name};`);
   for (const name of domain.produces ?? []) lines.push(`    produces ${name};`);
+  if (domain.priority !== undefined) lines.push(`    priority ${domain.priority};`);
   if (domain.budgetPerTick !== undefined) lines.push(`    budget ${domain.budgetPerTick} per tick;`);
   lines.push('}');
   return lines.join('\n');
@@ -89,7 +90,10 @@ function printMember(member: MemberNode): string[] {
     case 'agent':
       return printAgent(member);
     case 'event': {
-      const lines = [`event ${member.name}${member.external ? ' external' : ''} {`];
+      let head = `event ${member.name}`;
+      if (member.external) head += ' external';
+      if (member.kpi !== undefined) head += ` kpi ${JSON.stringify(member.kpi)}`;
+      const lines = [`${head} {`];
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
       lines.push('}');
       return lines;
@@ -246,6 +250,9 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
       }
       case 'cost':
         lines.push(`    cost ${stmt.amount}`);
+        break;
+      case 'priority':
+        lines.push(`    priority ${stmt.name}`);
         break;
       case 'return':
         lines.push(`    return ${stmt.expr}`);

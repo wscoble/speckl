@@ -1,0 +1,5 @@
+speckl trace report
+priority
+  none
+kpi
+  none

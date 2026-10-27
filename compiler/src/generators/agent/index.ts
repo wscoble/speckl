@@ -7,7 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import {
-  AST, SpeckNode, ActionNode, AgentMemberNode, StateNode,
+  AST, SpeckNode, ActionNode, AgentMemberNode, StateNode, DomainNode,
 } from '../../parser.js';
 import { generateTypeScriptStateMachine } from '../typescript-state-machine.js';
 import { injectSignalActions, isSignalActionName, signalActionName } from './inject-signals.js';
@@ -37,7 +37,7 @@ export function generateAgent(ast: AST, options: AgentGenerateOptions): void {
       console.log(`  skip ${speck.name}: no agent { } block`);
       continue;
     }
-    emitAgentForSpeck(speck, agent, options);
+    emitAgentForSpeck(speck, agent, options, injected.domains ?? []);
   }
 }
 
@@ -45,6 +45,7 @@ function emitAgentForSpeck(
   speck: SpeckNode,
   agent: AgentMemberNode,
   options: AgentGenerateOptions,
+  domains: DomainNode[],
 ): void {
   const agentDir = path.join(options.outputDir, 'agent');
   fs.mkdirSync(path.join(agentDir, 'verifiers'), { recursive: true });
@@ -65,10 +66,10 @@ function emitAgentForSpeck(
 
   const actions = speck.members.filter((m): m is ActionNode => m.type === 'action');
   const state = speck.members.find((m): m is StateNode => m.type === 'state');
-  const config = buildConfig(speck, agent, actions, state, specHash);
+  const config = buildConfig(speck, agent, actions, state, specHash, domains);
   fs.writeFileSync(path.join(agentDir, 'agent-config.json'), JSON.stringify(config, null, 2) + '\n');
 
-  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(agent, actions), null, 2) + '\n');
+  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(speck, agent, actions, domains), null, 2) + '\n');
   fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), buildAgentsMd(speck, agent, config, specHash));
   fs.writeFileSync(path.join(agentDir, 'hook.mjs'), emitHookMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'signal.mjs'), emitSignalMjs(speck.name));
@@ -133,7 +134,7 @@ export interface AgentRuntimeConfig {
   machineExport: string;
   stageVariable: string;
   stages: Record<string, number>;
-  tools: { name: string; action: string; effect: 'act' | 'observe' }[];
+  tools: { name: string; action: string; effect: 'act' | 'observe'; priority?: string; kpis?: string[] }[];
   /** In-flight tool calls older than this are cleared as failed. */
   pendingTimeout: { durationMs: number; durationText: string };
   /** Compiled `harness` blocks; present only when the spec declares one. */
@@ -154,12 +155,64 @@ export interface AgentRuntimeConfig {
   }[];
 }
 
+/** Events an action emits, including an `emit` written inside an if or for block. */
+function emittedEventNames(action: ActionNode): string[] {
+  const names: string[] = [];
+  for (const s of action.statements) {
+    if (s.type === 'emit') names.push(s.event);
+    if ('raw' in s && typeof s.raw === 'string') {
+      for (const m of s.raw.matchAll(/\bemit\s+([A-Za-z_]\w*)/g)) names.push(m[1]);
+    }
+  }
+  return names;
+}
+
+/**
+ * Priority is the action's `priority` label, otherwise the domain's.
+ * KPIs are the tags on events this action emits, in source order, once each.
+ * Both are omitted when absent so a spec that declares neither keeps the
+ * same tool object as before.
+ */
+function toolAnnotations(
+  speck: SpeckNode,
+  action: ActionNode | undefined,
+  domains: DomainNode[],
+): { priority?: string; kpis?: string[] } {
+  if (!action) return {};
+  let priority: string | undefined;
+  for (const s of action.statements) {
+    if (s.type === 'priority') priority = s.name;
+  }
+  if (!priority) {
+    const domain = domains.find(d => d.members.includes(speck.name));
+    if (domain?.priority) priority = domain.priority;
+  }
+  const kpiByEvent = new Map<string, string>();
+  for (const m of speck.members) {
+    if (m.type === 'event' && m.kpi) kpiByEvent.set(m.name, m.kpi);
+  }
+  const kpis: string[] = [];
+  const seen = new Set<string>();
+  for (const name of emittedEventNames(action)) {
+    const kpi = kpiByEvent.get(name);
+    if (kpi && !seen.has(kpi)) {
+      seen.add(kpi);
+      kpis.push(kpi);
+    }
+  }
+  return {
+    ...(priority ? { priority } : {}),
+    ...(kpis.length > 0 ? { kpis } : {}),
+  };
+}
+
 function buildConfig(
   speck: SpeckNode,
   agent: AgentMemberNode,
   _actions: ActionNode[],
   _state: StateNode | undefined,
   specHash: string,
+  domains: DomainNode[],
 ): AgentRuntimeConfig {
   const labels = new Map((agent.stages?.labels ?? []).map(l => [l.name, l.value]));
   const stageVariable = agent.stages?.variable ?? 'stage';
@@ -173,7 +226,10 @@ function buildConfig(
     machineExport: `${speck.name}Machine`,
     stageVariable,
     stages,
-    tools: agent.tools.map(t => ({ name: t.name, action: t.action, effect: t.effect })),
+    tools: agent.tools.map(t => {
+      const action = _actions.find(a => a.name === t.action);
+      return { name: t.name, action: t.action, effect: t.effect, ...toolAnnotations(speck, action, domains) };
+    }),
     pendingTimeout: agent.pendingTimeout
       ? { ...agent.pendingTimeout }
       : { durationMs: DEFAULT_PENDING_TIMEOUT_MS, durationText: DEFAULT_PENDING_TIMEOUT_TEXT },
@@ -276,7 +332,7 @@ function listWords(words: string[]): string {
   return words.length <= 2 ? words.join(' and ') : words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
 }
 
-function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
+function buildToolsJson(speck: SpeckNode, agent: AgentMemberNode, actions: ActionNode[], domains: DomainNode[]) {
   const byName = new Map(actions.map(a => [a.name, a]));
   return {
     tools: agent.tools.map(t => {
@@ -296,7 +352,11 @@ function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
           required,
           additionalProperties: false,
         },
-        'x-speckl': { action: t.action, effect: t.effect },
+        'x-speckl': {
+          action: t.action,
+          effect: t.effect,
+          ...toolAnnotations(speck, action, domains),
+        },
       };
     }),
   };
@@ -433,7 +493,9 @@ function buildAgentsMd(
   lines.push('- Spec-hash mismatch denies.');
   lines.push('- After the state verifies, each allow and deny is appended to `<state>.decisions/`');
   lines.push('  (SHA-256 chain, HMAC-SHA256 with the state key). That is a keyed record, not a');
-  lines.push('  signature a third party can check. A denial does not modify the state file.');
+  lines.push('  signature a third party can check. The seal is a shared-key HMAC. It proves');
+  lines.push('  nothing to an outside auditor: anyone who can read the key can forge a line,');
+  lines.push('  and someone without the key cannot check the mac. A denial does not modify the state file.');
   lines.push('  Calls that fail before the state verifies are denied and not recorded. If the');
   lines.push('  record cannot be written, the call is denied. Within 256 KiB the hook rechecks');
   lines.push('  the whole decision chain; past that it checks the keyed head and the last 64 KiB.');
@@ -442,6 +504,14 @@ function buildAgentsMd(
   lines.push('  `state.log` entry; the process does not exit 0.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
+  lines.push('- On `post` of an `effect act` tool the decision line is a completion signal');
+  lines.push('  (`signal` is `prime`): `trace_id` from the ingress `pre` (a missing `trace_id`');
+  lines.push('  is a fresh root and `trace_flagged` is true), `branch_id` unique in this log,');
+  lines.push('  `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` from the action or,');
+  lines.push('  when the action has none, from the domain. An act `post` with no matching `pre`');
+  lines.push('  is a deny, and that deny is still a completion signal. `speckl trace report`');
+  lines.push('  reads the log offline. It does not run the agent and it does not enforce a queue.');
+  lines.push('  The durations it prints are a throughput signal, not a risk signal.');
   lines.push('');
   lines.push('## Tamper-evident state');
   lines.push('');
@@ -456,8 +526,8 @@ function buildAgentsMd(
   lines.push('');
   lines.push('Allows and denies after the state verifies are recorded again, separately, in');
   lines.push('`<state>.decisions/`, HMAC-SHA256 with the same key. Anyone who can read the key');
-  lines.push('can rebuild that record; it is not third-party proof and it is not replayed into');
-  lines.push('the machine, so a denial cannot advance the spec or rewrite `state.json`. Denials');
+  lines.push('can rebuild that record. That shared-key HMAC proves nothing to an outside auditor.');
+  lines.push('It is not replayed into the machine, so a denial cannot advance the spec or rewrite `state.json`. Denials');
   lines.push('before the state verifies are not recorded. Past 256 KiB the hook checks the keyed');
   lines.push('head and the last 64 KiB; `verify` still walks every line. A crash between the');
   lines.push('allow line and the `state.json` rename can leave an allow with no matching');
@@ -539,7 +609,7 @@ node signal.mjs init --state ./state.json --dev
 export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 
 # State chain plus the decision record. The record is an HMAC with the state
-# key, not a third-party signature. It is empty until the first verdict after
+# key. That shared-key HMAC proves nothing to an outside auditor. It is empty until the first verdict after
 # the state verifies; denials before that are not recorded. verify walks every
 # decision line (the hook's check stops at the tail once the log passes 256 KiB).
 node signal.mjs verify --state ./state.json

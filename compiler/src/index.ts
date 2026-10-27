@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { compileSpec, type CompileOptions } from './compile.js';
 import { runVerify, packageVersion } from './cli-support.js';
 import { runDoctor } from './doctor.js';
+import { runTrace } from './trace-report.js';
 
 export { runVerify, runDoctor };
 
@@ -18,10 +19,14 @@ export async function main(argv: string[] = process.argv): Promise<number> {
   if (argv[2] === 'doctor') {
     return runDoctor(argv.slice(3));
   }
+  if (argv[2] === 'trace') {
+    return runTrace(argv.slice(3));
+  }
   const parsed = await yargs(hideBin(argv))
     .scriptName('speckl')
     .version(packageVersion())
-    .usage('Usage:\n  $0 <file> [options]\n  $0 verify [paths..] [--depth <n>]\n  $0 doctor <file>')
+    .usage('Usage:\n  $0 <file> [options]\n  $0 verify [paths..] [--depth <n>]\n  $0 doctor <file>\n  $0 trace report (--log <file> | --state <file>) [--key <file>]')
+    .command('trace', 'Offline completion-signal report (`speckl trace report`)')
     .command('$0 <file>', 'Compile a SpeckDL specification', (yargsCmd) => {
       return yargsCmd
         .positional('file', {

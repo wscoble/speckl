@@ -13,6 +13,8 @@ interface EventDecl {
   /** Field shape, so two declarations of one name can be compared. */
   shape: string;
   specks: string[];
+  /** `kpi` tag. Null when the declaration has none. */
+  kpi: string | null;
 }
 
 function typeKey(t: { kind: string; primitive?: string; name?: string; elementType?: unknown; keyType?: unknown; valueType?: unknown; nullable?: boolean }): string {
@@ -56,9 +58,10 @@ export function checkEventContracts(specks: IRSpeck[], domains: IRDomain[], diag
     for (const ev of speck.facets.behavior.events) {
       const shape = shapeOf(ev);
       const external = ev.external === true;
+      const kpi = ev.kpi ?? null;
       const prev = events.get(ev.name);
       if (!prev) {
-        events.set(ev.name, { external, shape, specks: [speck.name] });
+        events.set(ev.name, { external, shape, specks: [speck.name], kpi });
         continue;
       }
       prev.specks.push(speck.name);
@@ -67,6 +70,9 @@ export function checkEventContracts(specks: IRSpeck[], domains: IRDomain[], diag
       }
       if (prev.shape !== shape) {
         push(diagnostics, `domain: event ${ev.name} is declared with different fields`);
+      }
+      if (prev.kpi !== kpi) {
+        push(diagnostics, `domain: event ${ev.name} kpi differs across declarations`);
       }
     }
   }

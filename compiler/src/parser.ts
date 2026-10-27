@@ -60,6 +60,11 @@ export interface DomainNode {
   produces?: string[];
   /** `budget <n> per tick`. Absent when the clause is omitted. Zero is a real budget. */
   budgetPerTick?: number;
+  /**
+   * `priority <Name>` for act tools whose action does not declare its own.
+   * A label such as `P0`, not a runtime queue.
+   */
+  priority?: string;
   startLine?: number;
   endLine?: number;
 }
@@ -136,6 +141,11 @@ export interface EventNode {
    * the event is internal.
    */
   external?: boolean;
+  /**
+   * `kpi "<name>"` on the event. Completions of actions that emit this
+   * event are attributed to that name. Absent when the tag is omitted.
+   */
+  kpi?: string;
 }
 
 // oneof: discriminated-union variant for proto wire-format compatibility.
@@ -266,7 +276,8 @@ export type ActionStatement =
   | { type: 'emit'; event: string; fields: { name: string; value: string }[] }
   | { type: 'return'; expr: string }
   | { type: 'ifblock'; raw: string }
-  | { type: 'cost'; amount: number };
+  | { type: 'cost'; amount: number }
+  | { type: 'priority'; name: string };
 
 /** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
 export interface LineSpan {
@@ -1329,6 +1340,7 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
   const consumes: string[] = [];
   const produces: string[] = [];
   let budgetPerTick: number | undefined;
+  let priority: string | undefined;
   const seenConsumes = new Set<string>();
   const seenProduces = new Set<string>();
   for (const raw of stmts) {
@@ -1380,6 +1392,17 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
       }
       continue;
     }
+    if (stmt.startsWith('priority')) {
+      const pri = stmt.match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} priority must be an identifier`);
+      }
+      if (priority !== undefined) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} declares priority twice`);
+      }
+      priority = pri[1];
+      continue;
+    }
     if (stmt.startsWith('budget')) {
       const bud = stmt.match(/^budget\s+(\d+)\s+per\s+tick$/);
       const n = bud ? Number(bud[1]) : NaN;
@@ -1405,6 +1428,7 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
     ...(consumes.length > 0 ? { consumes } : {}),
     ...(produces.length > 0 ? { produces } : {}),
     ...(budgetPerTick !== undefined ? { budgetPerTick } : {}),
+    ...(priority !== undefined ? { priority } : {}),
     startLine: startIndex + 1,
     endLine: extracted.endLine,
   };
@@ -1740,20 +1764,34 @@ function parseInterface(line: string): InterfaceNode {
 }
 
 function parseEvent(line: string): EventNode {
-  // event Name {   or   event Name external {
-  const match = line.match(/^event\s+(\w+)(?:\s+external)?\s*\{/);
+  // event Name {
+  // event Name external {
+  // event Name kpi "<name>" {
+  // event Name external kpi "<name>" {
+  const match = line.match(/^event\s+(\w+)(?:\s+external)?(?:\s+kpi\s+("(?:\\.|[^"\\])*"))?\s*\{/);
   if (!match) {
     throw new Error(`Failed to parse event: ${line}`);
   }
 
   const name = match[1];
   const external = /^event\s+\w+\s+external\b/.test(line.trim());
+  let kpi: string | undefined;
+  if (match[2] !== undefined) {
+    let value: unknown;
+    try { value = JSON.parse(match[2]); }
+    catch { throw new Error(`Failed to parse event: ${line}`); }
+    if (typeof value !== 'string' || value.length === 0 || value.length > 200 || /[\u0000-\u001f]/.test(value)) {
+      throw new Error(`Failed to parse event: ${line}`);
+    }
+    kpi = value;
+  }
 
   return {
     type: 'event',
     name,
     fields: [],
     ...(external ? { external: true } : {}),
+    ...(kpi !== undefined ? { kpi } : {}),
   };
 }
 
@@ -2002,6 +2040,12 @@ function isCostStatement(stmt: string): boolean {
   return /^cost\s+\S/.test(text) && !/^cost\s*:=/.test(text);
 }
 
+/** A `priority <Name>` statement, not an assignment `priority := ...`. */
+function isPriorityStatement(stmt: string): boolean {
+  const text = withoutTrailingComment(stmt);
+  return /^priority\b/.test(text) && !/^priority\s*:=/.test(text);
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const inlineBody = closedInlineBody(firstLine);
@@ -2144,6 +2188,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
             nextLine.startsWith('if ') || isCostStatement(nextLine) ||
+            isPriorityStatement(nextLine) ||
             nextLine.includes(':=')) {
           break;
         }
@@ -2177,6 +2222,18 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         }
       }
       statements.push({ type: 'emit', event: eventName, fields });
+      continue;
+    }
+    // priority <Name> — one label per action. Not an assignment.
+    if (isPriorityStatement(stmt)) {
+      const pri = withoutTrailingComment(stmt).match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} priority must be an identifier`);
+      }
+      if (statements.some(s => s.type === 'priority')) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} declares priority more than once`);
+      }
+      statements.push({ type: 'priority', name: pri[1] });
       continue;
     }
     // cost <n> — non-negative integer literal. One per action.
@@ -2251,7 +2308,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (!nt || nt.startsWith('//')) break;
         if (nt.startsWith('require ') || nt.startsWith('return ') ||
             nt.startsWith('emit ') || nt.startsWith('let ') ||
-            isCostStatement(nt) ||
+            isCostStatement(nt) || isPriorityStatement(nt) ||
             /\w+\s*:=/.test(nt)) {
           break;
         }
@@ -2285,7 +2342,7 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
 
   // Handle single-line events: event Foo { a: Type, b: Type }
   // extract fields from the first line itself
-  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?\s*\{(.*)\}\s*$/);
+  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?(?:\s+kpi\s+"(?:\\.|[^"\\])*")?\s*\{(.*)\}\s*$/);
   const inlineFields: { name: string; type: TypeExpr }[] = [];
   if (inlineMatch && inlineMatch[2].trim()) {
     const fieldStr = inlineMatch[2].trim();

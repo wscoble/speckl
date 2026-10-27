@@ -411,6 +411,58 @@ decision chain checks. Each such allow, and each such deny, is one line:
   rotation or a new binding does not move it.
 - `mac` is HMAC-SHA256 of that hash. Unsigned `--dev` states (no key) keep
   the chain only, same as `state.json`. `head.json` is HMAC'd the same way.
+  This seal is a shared-key HMAC. It proves nothing to an outside auditor.
+  Anyone who can read the key can forge a line. Someone who does not have
+  the key cannot check the mac.
+
+## Completion signals
+
+A `post` for an `effect act` tool stores a completion signal on that same
+decision line. The line's `signal` is `prime`. The fields are:
+
+- `trace_id`, copied from the matching allow `pre` (the ingress). Stdin
+  may pass `trace_id`, `branch_id`, and `parent_branch_id`. A missing,
+  empty, or ill-formed `trace_id` is replaced with a fresh root, the
+  parent is cleared, and `trace_flagged` is true. The call is not denied
+  for that alone.
+- `branch_id`, unique among branch ids already in this log, and never
+  equal to its parent. A caller-supplied id is kept when it is free.
+- `parent_branch_id`, from ingress, or null. The hook does not require the
+  parent to appear in this log.
+- `call_id`, `ok` (true only when the post says `ok: true`), `ts`, and
+  `priority`. Priority is the action's `priority` label, or the domain's
+  when the action has none, or null.
+- `kpis`, the `kpi "<name>"` tags of events that action emits, in source
+  order. The tag is static. The hook does not read a runtime payload.
+
+An act `post` whose `call_id` and tool do not match the pending pre is a
+deny, and that deny is still a completion signal. If that post has no
+`trace_id`, it is a fresh flagged root. An observe tool does not get
+these fields.
+
+The allow `pre` of an act tool stores the same trace fields without
+`signal`, `ok`, or `kpis`, so a later report can see the ingress. A denied
+pre does not enter the queue the report counts.
+
+`speckl trace report --log <file>` or `--state <file>` reads the log
+offline. It prints, per priority, drain latency (ingress time to the last
+leaf completion), completion-signal lag (that pre to the post), and queue
+depth after each allow pre that still has no completion. Leaf means no
+other line in the trace names that `branch_id` as its parent. KPI-tagged
+completions are listed back to their trace. A priority that was null is
+printed as `(none)`.
+
+The command checks the hash chain. It checks the HMAC only when `--key`
+is passed, and a matching mac still proves nothing to an outside auditor.
+It does not run the agent, does not advance state, and does not enforce a
+queue. A pending call that expired or was cleared is still an open pre in
+this report, because that clear lives in `state.log`, not in a completion
+signal. The durations are a throughput signal, not a risk signal.
+
+```
+speckl trace report --state ./state.json
+speckl trace report --log ./state.json.decisions/log.jsonl --key "$SPECKL_STATE_KEY_FILE"
+```
 
 A call-bound mismatch is one of those denials: the reason names the wanted
 digest and the digest of this call, `state.boundCall` stays put, and

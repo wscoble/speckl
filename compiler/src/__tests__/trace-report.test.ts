@@ -1,0 +1,501 @@
+// Completion signals: priority and kpi in the spec, a hash-chained signal on
+// every effect-act post, branch ids unique in the log, and an offline report.
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path, { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parseSpeckContent } from '../parser.js';
+import { printAST } from '../printer.js';
+import { lower } from '../ir/lower.js';
+import { parseActionStatements } from '../expr/stmt-parser.js';
+import { generateAgent } from '../generators/agent/index.js';
+import { generateDomainBudgets } from '../generators/z3-budget.js';
+import { generateProvenanceFromIR } from '../generators/provenance-from-ir.js';
+import { main } from '../index.js';
+import {
+  canonical, checkGenesis, checkMacs, decisionGenesis, formatTraceReport,
+  readDecisionLog, runTrace, type TraceLine,
+} from '../trace-report.js';
+import { useStateKey } from './helpers/agent-state.js';
+
+const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const viteNode = join(compilerDir, 'node_modules', 'vite-node', 'vite-node.mjs');
+const fix = join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'trace');
+const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+
+const SPEC = `speck Trace {
+    state {
+        stage: Nat
+        n: Nat
+    }
+    init {
+        stage := 0
+        n := 0
+    }
+    action Note {
+        priority P0
+        n := n + 1
+        emit Noted { }
+        if n == 1 {
+            emit Extra { }
+        }
+    }
+    action Ship {
+        n := n + 1
+        emit Shipped { }
+    }
+    action Look {
+        return true
+    }
+    event Noted kpi "notes" { }
+    event Extra kpi "extra" { }
+    event Shipped kpi "shipments" { }
+    agent {
+        tool note -> Note effect act
+        tool ship -> Ship effect act
+        tool look -> Look effect observe
+    }
+    next: Note | Ship | Look
+}
+domain Work {
+    members: Trace;
+    produces Noted, Extra, Shipped;
+    priority P1;
+}
+`;
+
+function brokenReason(text: string): string {
+  const got = readDecisionLog(text);
+  if (got.ok) throw new Error('expected a broken decision log');
+  return got.reason;
+}
+
+function chain(bodies: Record<string, unknown>[], genesis = 'g'.repeat(64), key?: Buffer): string {
+  let prev = genesis;
+  const lines = bodies.map((body, i) => {
+    const full = { ...body, seq: i, prev };
+    const hash = sha(canonical(full));
+    prev = hash;
+    const line: Record<string, unknown> = { ...full, hash };
+    if (key) line.mac = crypto.createHmac('sha256', key).update(hash).digest('hex');
+    return JSON.stringify(line);
+  });
+  return lines.join('\n') + (lines.length ? '\n' : '');
+}
+
+const baseLine = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  ts: '2026-01-01T00:00:00.000Z',
+  phase: 'pre',
+  tool: 'note',
+  call_id: 'c',
+  action: 'Note',
+  verdict: 'deny',
+  reason: 'no',
+  input_sha256: 'ab',
+  ...over,
+});
+
+describe('priority and kpi syntax', () => {
+  it('round-trips an action priority, a domain priority, and a kpi tag', () => {
+    const ast = parseSpeckContent(SPEC);
+    const again = parseSpeckContent(printAST(ast));
+    const note = again.specks[0].members.find(m => m.type === 'action' && m.name === 'Note');
+    expect(note && note.type === 'action' && note.statements.some(s => s.type === 'priority' && s.name === 'P0')).toBe(true);
+    expect(again.domains[0].priority).toBe('P1');
+    const noted = again.specks[0].members.find(m => m.type === 'event' && m.name === 'Noted');
+    expect(noted && noted.type === 'event' && noted.kpi).toBe('notes');
+    const file = join(mkdtempSync(join(tmpdir(), 'speckl-trace-src-')), 't.speckdl');
+    writeFileSync(file, SPEC);
+    const ir = lower(parseSpeckContent(SPEC, file), { filePath: file, resolveImports: false });
+    expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
+    const action = ir.specks[0].facets.behavior.actions.find(a => a.name === 'Note');
+    expect(action?.priority).toBe('P0');
+    expect(action?.statements.some(s => s.kind === 'emit' && s.event === 'Noted')).toBe(true);
+    expect(ir.specks[0].facets.behavior.events.find(e => e.name === 'Shipped')?.kpi).toBe('shipments');
+    expect(ir.domains[0].priority).toBe('P1');
+    const provDir = join(path.dirname(file), 'prov');
+    mkdirSync(provDir);
+    generateProvenanceFromIR(ir, provDir);
+    const prov = readFileSync(join(provDir, 'Trace.prov.jsonld'), 'utf8');
+    expect(prov).toContain('"speckl:kpi": "notes"');
+    expect(prov).toContain('"speckl:priority": "P1"');
+  });
+
+  it('rejects a bad, duplicate, or assigned priority and a bad kpi', () => {
+    expect(() => parseSpeckContent('domain D { members: A; priority; }')).toThrow(/priority must be an identifier/);
+    expect(() => parseSpeckContent('domain D { members: A; priority P0; priority P1; }')).toThrow(/priority twice/);
+    expect(() => parseSpeckContent('domain D { members: A; priority 1; }')).toThrow(/priority must be an identifier/);
+    const act = (body: string) => `speck S {\n    action Go {\n        ${body}\n    }\n}\n`;
+    expect(() => parseSpeckContent(act('priority'))).toThrow(/priority must be an identifier/);
+    expect(() => parseSpeckContent(act('priority P0\n        priority P1'))).toThrow(/priority more than once/);
+    expect(parseSpeckContent(act('priority := 1')).specks[0].members.find(m => m.type === 'action')).toMatchObject({
+      statements: [{ type: 'assign', target: 'priority' }],
+    });
+    expect(() => parseSpeckContent('speck S {\n    event E kpi "" { }\n}\n')).toThrow(/Failed to parse event/);
+    expect(() => parseSpeckContent('speck S {\n    event E kpi notes { }\n}\n')).toThrow(/Failed to parse event/);
+    expect(() => parseActionStatements(['priority P0', 'priority P1'])).toThrow(/more than once/);
+    expect(() => parseActionStatements(['priority 1'])).toThrow(/identifier/);
+  });
+
+  it('rejects two kpi tags for one event name', () => {
+    const src = `speck A {\n    event E kpi "one" { }\n}\nspeck B {\n    event E kpi "two" { }\n}\n`;
+    const file = join(mkdtempSync(join(tmpdir(), 'speckl-kpi-')), 'k.speckdl');
+    writeFileSync(file, src);
+    const msgs = lower(parseSpeckContent(src, file), { filePath: file, resolveImports: false }).diagnostics.map(d => d.message);
+    expect(msgs.join('\n')).toMatch(/event E kpi differs/);
+  });
+
+  it('a priority label does not make a budget obligation unlowerable', () => {
+    const src = `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Add {
+        priority P0
+        cost 1
+        n := n + 1
+    }
+    next: Add
+}
+domain Books { members: Meter; budget 5 per tick; }
+`;
+    const file = join(mkdtempSync(join(tmpdir(), 'speckl-pri-budget-')), 'm.speckdl');
+    writeFileSync(file, src);
+    const ast = parseSpeckContent(src, file);
+    const ir = lower(ast, { filePath: file, resolveImports: false });
+    const out = join(path.dirname(file), 'out');
+    mkdirSync(out);
+    generateDomainBudgets(ast, ir.domains, out, 4);
+    const smt = readFileSync(join(out, 'Books.budget.smt2'), 'utf8');
+    expect(smt).not.toMatch(/cannot be lowered/);
+    expect(smt).toContain('speckl-expect: unsat');
+  });
+});
+
+describe('trace report', () => {
+  const lines = JSON.parse(readFileSync(join(fix, 'report-lines.json'), 'utf8')) as TraceLine[];
+
+  it('matches the golden report, including an empty log', () => {
+    expect(formatTraceReport(lines)).toBe(readFileSync(join(fix, 'report.txt'), 'utf8'));
+    expect(formatTraceReport([])).toBe(readFileSync(join(fix, 'empty.txt'), 'utf8'));
+  });
+
+  it('drops a parent from the drain, keeps a null priority, and skips a deny pre in the queue', () => {
+    const onlyParent: TraceLine[] = [
+      { seq: 1, prev: 'p', ts: '2026-01-01T00:00:00.000Z', phase: 'pre', call_id: 'a', verdict: 'allow', hash: 'h', trace_id: 't', branch_id: 'parent', parent_branch_id: null, priority: 'P0', trace_flagged: false },
+      { seq: 0, prev: 'p', ts: '2026-01-01T00:00:00.000Z', phase: 'pre', call_id: 'early', verdict: 'allow', hash: 'h', trace_id: 't', branch_id: 'other', parent_branch_id: null, priority: 'P0', trace_flagged: false },
+      { seq: 2, prev: 'p', ts: '2026-01-01T00:00:01.000Z', phase: 'post', call_id: 'a', verdict: 'allow', hash: 'h', signal: 'prime', trace_id: 't', branch_id: 'parent', parent_branch_id: null, priority: 'P0', trace_flagged: false, ok: true, kpis: [] },
+      { seq: 3, prev: 'p', ts: '2026-01-01T00:00:01.000Z', phase: 'post', call_id: 'b', verdict: 'allow', hash: 'h', signal: 'prime', trace_id: 't', branch_id: 'child', parent_branch_id: 'parent', priority: 'P0', trace_flagged: false, ok: true, kpis: [] },
+      { seq: 4, prev: 'p', ts: 'not-a-time', phase: 'pre', call_id: 'd', verdict: 'deny', hash: 'h', trace_id: 't', branch_id: 'd', parent_branch_id: null, priority: null, trace_flagged: false },
+      { seq: 5, prev: 'p', ts: 'still-not', phase: 'post', call_id: 'u', verdict: 'deny', hash: 'h', signal: 'prime', trace_id: 'bad', branch_id: 'u', parent_branch_id: null, priority: 'P0', trace_flagged: false, ok: false, kpis: [''] },
+    ];
+    const text = formatTraceReport(onlyParent);
+    expect(text).toContain('trace t 1000 ms ingress 2026-01-01T00:00:00.000Z last_leaf 2026-01-01T00:00:01.000Z flagged false');
+    expect(text.match(/trace t /g)?.length).toBe(1);
+    expect(text).toContain('trace bad unparsed');
+    expect(text).toContain('call u unmatched');
+    expect(text).toContain('priority (none)');
+    const depth = text.split('queue_depth')[1];
+    expect(depth).not.toContain('not-a-time');
+  });
+
+  it('reports an unparsed lag when the pre timestamp is not a time', () => {
+    const text = formatTraceReport([
+      { seq: 0, prev: 'p', ts: 'nope', phase: 'pre', call_id: 'c', verdict: 'allow', hash: 'h', trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: 'P0', trace_flagged: false },
+      { seq: 1, prev: 'p', ts: '2026-01-01T00:00:00.000Z', phase: 'post', call_id: 'c', verdict: 'allow', hash: 'h', signal: 'prime', trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: 'P0', trace_flagged: false, ok: true, kpis: [] },
+    ]);
+    expect(text).toContain('call c unparsed');
+    expect(text).toContain('trace t unparsed');
+  });
+
+  it('checks the hash chain and leaves the HMAC for a key', () => {
+    expect(readDecisionLog('')).toEqual({ ok: true, lines: [] });
+    expect(readDecisionLog('{"a":1}')).toMatchObject({ ok: false, reason: 'decision record is torn' });
+    expect(readDecisionLog('\n')).toMatchObject({ ok: false, reason: 'blank line in decision record' });
+    expect(readDecisionLog('not json\n')).toMatchObject({ ok: false, reason: 'decision record line is not JSON' });
+    expect(readDecisionLog('null\n')).toMatchObject({ ok: false, reason: 'decision record line is not an object' });
+    expect(readDecisionLog('[]\n')).toMatchObject({ ok: false, reason: 'decision record line is not an object' });
+    const good = chain([baseLine()]);
+    expect(readDecisionLog(good).ok).toBe(true);
+    const brokenPrev = good.replace('"prev":"' + 'g'.repeat(64) + '"', '"prev":1');
+    expect(readDecisionLog(brokenPrev).ok).toBe(false);
+    const seq = chain([baseLine(), baseLine({ call_id: 'd' })]);
+    const parsed = readDecisionLog(seq);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const tweaked = seq.replace('"call_id":"d"', '"call_id":"e"');
+    expect(brokenReason(tweaked)).toMatch(/hash/);
+    const badSeq = seq.replace('"seq":1', '"seq":9');
+    expect(brokenReason(badSeq)).toMatch(/seq/);
+    const swapped = chain([baseLine(), baseLine({ call_id: 'd' })]).split('\n').filter(Boolean);
+    const rejoined = [swapped[1], swapped[0]].join('\n') + '\n';
+    expect(brokenReason(rejoined)).toMatch(/seq|prev/);
+    const allow = chain([baseLine({ verdict: 'allow', reason: 'why' })]);
+    expect(brokenReason(allow)).toMatch(/reason/);
+    const verdict = chain([baseLine({ verdict: 'maybe' })]);
+    expect(brokenReason(verdict)).toMatch(/verdict/);
+    const prime = chain([baseLine({
+      phase: 'post', verdict: 'deny', signal: 'prime', trace_id: 't', branch_id: 'b',
+      parent_branch_id: null, priority: 'P0', trace_flagged: false, ok: false, kpis: [],
+    })]);
+    expect(readDecisionLog(prime).ok).toBe(true);
+    const noOk = chain([baseLine({
+      phase: 'post', signal: 'prime', trace_id: 't', branch_id: 'b',
+      parent_branch_id: null, priority: 'P0', trace_flagged: false, kpis: [],
+    })]);
+    expect(brokenReason(noOk)).toMatch(/ok/);
+    const badSignal = chain([baseLine({ signal: 'other', trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: null, trace_flagged: true })]);
+    expect(brokenReason(badSignal)).toMatch(/signal/);
+    const ingressOk = chain([baseLine({ trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: null, trace_flagged: false, ok: true })]);
+    expect(brokenReason(ingressOk)).toMatch(/signal/);
+    const shapes: Record<string, unknown>[] = [
+      { trace_id: '', branch_id: 'b', parent_branch_id: null, priority: null, trace_flagged: false },
+      { trace_id: 't', branch_id: '', parent_branch_id: null, priority: null, trace_flagged: false },
+      { trace_id: 't', branch_id: 'b', parent_branch_id: 1, priority: null, trace_flagged: false },
+      { trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: 1, trace_flagged: false },
+      { trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: null, trace_flagged: 'no' },
+      { phase: 'post', signal: 'prime', trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: null, trace_flagged: false, ok: true, kpis: 'notes' },
+      { phase: 'post', signal: 'prime', trace_id: 't', branch_id: 'b', parent_branch_id: null, priority: null, trace_flagged: false, ok: true, kpis: [1] },
+    ];
+    for (const extra of shapes) {
+      const got = readDecisionLog(chain([baseLine(extra)]));
+      expect(got.ok, JSON.stringify(extra)).toBe(false);
+    }
+    const cycle = formatTraceReport([
+      { seq: 2, prev: 'p', ts: 'nope', phase: 'pre', call_id: 'late', verdict: 'allow', hash: 'h', trace_id: 'cycle', branch_id: 'a', parent_branch_id: 'b', priority: 'P9', trace_flagged: false },
+      { seq: 1, prev: 'p', ts: '2026-01-01T00:00:00.000Z', phase: 'pre', call_id: null, verdict: 'allow', hash: 'h', trace_id: 'cycle', branch_id: 'b', parent_branch_id: 'a', priority: 'P9', trace_flagged: false },
+      { seq: 3, prev: 'p', ts: '2026-01-01T00:00:01.000Z', phase: 'post', call_id: null, verdict: 'allow', hash: 'h', signal: 'prime', trace_id: 'cycle', branch_id: 'a', parent_branch_id: 'b', priority: 'P9', trace_flagged: false, ok: true, kpis: [] },
+      { seq: 4, prev: 'p', ts: 'nope', phase: 'post', call_id: 'z', verdict: 'allow', hash: 'h', signal: 'prime', trace_id: 'cycle', branch_id: 'b', parent_branch_id: 'a', priority: 'P9', trace_flagged: false, ok: false, kpis: [] },
+      { seq: 5, prev: 'p', ts: 'nope', phase: 'pre', call_id: 'p1', verdict: 'allow', hash: 'h', trace_id: 'ord', branch_id: 'leaf', parent_branch_id: null, priority: 'P8', trace_flagged: false },
+      { seq: 0, prev: 'p', ts: '2026-01-01T00:00:00.000Z', phase: 'pre', call_id: 'p2', verdict: 'allow', hash: 'h', trace_id: 'ord', branch_id: 'leaf2', parent_branch_id: null, priority: 'P8', trace_flagged: false },
+      { seq: 9, prev: 'p', ts: 'zzz', phase: 'pre', call_id: 'p3', verdict: 'allow', hash: 'h', trace_id: 'ord', branch_id: 'onlypre', parent_branch_id: null, priority: 'P8', trace_flagged: false },
+      { seq: 6, prev: 'p', ts: '2026-01-01T00:00:02.000Z', phase: 'post', call_id: 'p1', verdict: 'allow', hash: 'h', signal: 'prime', trace_id: 'ord', branch_id: 'leaf', parent_branch_id: null, priority: 'P8', trace_flagged: false, ok: true, kpis: [] },
+      { seq: 7, prev: 'p', ts: 'nope', phase: 'post', call_id: 'p2', verdict: 'allow', hash: 'h', signal: 'prime', trace_id: 'ord', branch_id: 'leaf2', parent_branch_id: null, priority: 'P8', trace_flagged: false, ok: true, kpis: [] },
+    ]);
+    expect(cycle).toContain('priority P9');
+    expect(cycle.split('priority P9')[1].split('lag')[0]).toContain('none');
+    expect(cycle).toContain('call  unmatched');
+    expect(cycle).toContain('2026-01-01T00:00:00.000Z 2');
+    expect(cycle).toContain('trace ord 2000 ms');
+    const state = { runId: 'run', specHash: 'spec', keyId: 'kid' };
+    expect(checkGenesis([], state)).toBeNull();
+    expect(checkGenesis(parsed.lines, state)).toMatch(/does not match/);
+    const keyed = chain([baseLine()], decisionGenesis(state), Buffer.alloc(32, 3));
+    const keyedLines = readDecisionLog(keyed);
+    expect(keyedLines.ok).toBe(true);
+    if (!keyedLines.ok) return;
+    expect(checkGenesis(keyedLines.lines, state)).toBeNull();
+    expect(checkMacs(keyedLines.lines, Buffer.alloc(32, 3))).toBeNull();
+    expect(checkMacs(keyedLines.lines, Buffer.alloc(32, 4))).toMatch(/mac does not match/);
+    expect(checkMacs(parsed.lines, Buffer.alloc(32, 3))).toMatch(/has no mac/);
+    expect(decisionGenesis({ runId: 'run', specHash: 'spec' })).toBe(decisionGenesis({ runId: 'run', specHash: 'spec', keyId: '' }));
+  });
+});
+
+describe('speckl trace report', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function run(args: string[]): { code: number; out: string; err: string } {
+    const out: string[] = [];
+    const err: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((c) => { out.push(String(c)); return true; });
+    vi.spyOn(console, 'log').mockImplementation((m) => { out.push(String(m) + '\n'); });
+    vi.spyOn(console, 'error').mockImplementation((m) => { err.push(String(m)); });
+    const code = runTrace(args);
+    return { code, out: out.join(''), err: err.join('\n') };
+  }
+
+  it('prints usage and refuses a missing or ambiguous path', async () => {
+    expect((await main(['node', 'speckl', 'trace', '--help']))).toBe(0);
+    expect(run(['--help']).out).toContain('proves nothing to an outside auditor');
+    expect(run([]).code).toBe(1);
+    expect(run(['nope']).code).toBe(1);
+    expect(run(['report']).err).toMatch(/exactly one/);
+    expect(run(['report', '--log', 'a', '--state', 'b']).err).toMatch(/exactly one/);
+    expect(run(['report', '--bogus']).err).toMatch(/unknown argument/);
+    expect(run(['report', '--log']).err).toMatch(/exactly one/);
+  });
+
+  it('prints the golden report for a chained log and fails closed on a bad one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-trace-cli-'));
+    const bodies = (JSON.parse(readFileSync(join(fix, 'report-lines.json'), 'utf8')) as Record<string, unknown>[]).map(row => baseLine({
+      ...row,
+      tool: 'note',
+      action: 'Note',
+      reason: row.verdict === 'allow' ? null : 'no',
+      input_sha256: 'ab',
+    }));
+    const key = Buffer.alloc(32, 9);
+    const log = join(dir, 'log.jsonl');
+    writeFileSync(log, chain(bodies, 'g'.repeat(64), key));
+    const ok = run(['report', '--log', log, '--key', join(dir, 'missing')]);
+    expect(ok.code).toBe(1);
+    expect(ok.err).toMatch(/state key could not be read/);
+    writeFileSync(join(dir, 'k'), key.toString('hex') + '\n');
+    const printed = run(['report', '--log', log, '--key', join(dir, 'k')]);
+    expect(printed.code, printed.err).toBe(0);
+    expect(printed.out).toBe(readFileSync(join(fix, 'report.txt'), 'utf8'));
+    writeFileSync(join(dir, 'bad'), 'abcd');
+    expect(run(['report', '--log', log, '--key', join(dir, 'bad')]).err).toMatch(/state key/);
+    writeFileSync(log, readFileSync(log, 'utf8').replace('"ok":true', '"ok":false'));
+    const tampered = run(['report', '--log', log]);
+    expect(tampered.code).toBe(1);
+    expect(tampered.out).toBe('');
+    expect(tampered.err).toMatch(/hash|ok/);
+    expect(run(['report', '--log', join(dir, 'nope')]).err).toMatch(/not found/);
+    expect(run(['report', '--log', dir]).err).toMatch(/could not be read/);
+    const state = join(dir, 'state.json');
+    writeFileSync(state, JSON.stringify({ runId: 'run', specHash: 'spec', keyId: null }));
+    expect(run(['report', '--state', state]).out).toBe(readFileSync(join(fix, 'empty.txt'), 'utf8'));
+    writeFileSync(state, '[]');
+    expect(run(['report', '--state', state]).err).toMatch(/not an object/);
+    writeFileSync(state, '{');
+    expect(run(['report', '--state', state]).err).toMatch(/not JSON/);
+    expect(run(['report', '--state', join(dir, 'absent')]).err).toMatch(/could not be read/);
+    writeFileSync(state, JSON.stringify({ runId: 'other', specHash: 'spec', keyId: null }));
+    mkdirSync(state + '.decisions');
+    writeFileSync(state + '.decisions/log.jsonl', chain([baseLine()], decisionGenesis({ runId: 'run', specHash: 'spec', keyId: null })));
+    expect(run(['report', '--state', state]).err).toMatch(/does not match/);
+  });
+
+  it('the CLI entry prints the same report', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-trace-bin-'));
+    const log = join(dir, 'log.jsonl');
+    writeFileSync(log, '');
+    const r = spawnSync(process.execPath, [viteNode, join(compilerDir, 'src', 'index.ts'), 'trace', 'report', '--log', log], { encoding: 'utf-8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toBe(readFileSync(join(fix, 'empty.txt'), 'utf8'));
+  }, 60_000);
+});
+
+describe('hook completion signals', () => {
+  useStateKey();
+  const root = mkdtempSync(join(tmpdir(), 'speckl-trace-hook-'));
+  const file = join(root, 'Trace.speckdl');
+  writeFileSync(file, SPEC);
+  generateAgent(parseSpeckContent(SPEC, file), { outputDir: root, sourcePath: file });
+  const agent = join(root, 'agent');
+  const config = JSON.parse(readFileSync(join(agent, 'agent-config.json'), 'utf8'));
+  const tools = config.tools as { name: string; priority?: string; kpis?: string[] }[];
+
+  it('puts action priority above the domain, and kpi tags from emits including an if', () => {
+    expect(tools.find(t => t.name === 'note')).toMatchObject({ priority: 'P0', kpis: ['notes', 'extra'] });
+    expect(tools.find(t => t.name === 'ship')).toMatchObject({ priority: 'P1', kpis: ['shipments'] });
+    expect(tools.find(t => t.name === 'look')?.priority).toBe('P1');
+    expect(tools.find(t => t.name === 'look')?.kpis).toBeUndefined();
+    const x = JSON.parse(readFileSync(join(agent, 'tools.json'), 'utf8')).tools as { name: string; 'x-speckl': { priority?: string; kpis?: string[] } }[];
+    expect(x.find(t => t.name === 'note')?.['x-speckl'].kpis).toEqual(['notes', 'extra']);
+    expect(readFileSync(join(agent, 'AGENTS.md'), 'utf8')).toContain('proves nothing to an outside auditor');
+    expect(readFileSync(join(agent, 'state-integrity.mjs'), 'utf8')).toContain('proves nothing to an outside auditor');
+  });
+
+  it('seals trace fields, keeps branch ids unique, and denies an act post with no pre', async () => {
+    const integ = await import(pathToFileURL(join(agent, 'state-integrity.mjs')).href) as {
+      canonical: (v: unknown) => string;
+      verifyDecisions: (file: string, key: Buffer, state: Record<string, unknown>) => { ok: boolean; reason?: string };
+      readKey: (p: string) => Buffer;
+      listDecisionBranchIds: (file: string) => string[];
+    };
+    const state = join(root, 'state.json');
+    const init = spawnSync(process.execPath, [join(agent, 'signal.mjs'), 'init', '--state', state], { encoding: 'utf-8' });
+    expect(init.status, init.stderr).toBe(0);
+    const hook = (cmd: string, msg: object) => spawnSync(process.execPath, [join(agent, 'hook.mjs'), cmd, '--state', state], {
+      input: JSON.stringify(msg), encoding: 'utf-8',
+    });
+    const lines = () => readFileSync(state + '.decisions/log.jsonl', 'utf8').trimEnd().split('\n').map(l => JSON.parse(l) as Record<string, unknown>);
+
+    const note = hook('pre', { tool: 'note', input: {}, call_id: 'c1', trace_id: 't1', branch_id: 'same', parent_branch_id: 'root' });
+    expect(note.status, note.stderr).toBe(0);
+    const notePost = hook('post', { tool: 'note', call_id: 'c1', ok: true, trace_id: 'ignored', branch_id: 'other' });
+    expect(notePost.status, notePost.stderr).toBe(0);
+
+    const again = hook('pre', { tool: 'note', input: {}, call_id: 'c2', trace_id: 't1', branch_id: 'same', parent_branch_id: 'same' });
+    expect(again.status, again.stderr).toBe(0);
+    expect(hook('post', { tool: 'note', call_id: 'c2', ok: true }).status).toBe(0);
+
+    const loop = hook('pre', { tool: 'note', input: {}, call_id: 'c3', trace_id: 't-loop', branch_id: 'loop', parent_branch_id: 'loop' });
+    expect(loop.status, loop.stderr).toBe(0);
+    expect(hook('post', { tool: 'note', call_id: 'c3', ok: false }).status).toBe(0);
+
+    const ship = hook('pre', { tool: 'ship', input: {}, call_id: 's1' });
+    expect(ship.status, ship.stderr).toBe(0);
+    expect(hook('post', { tool: 'ship', call_id: 's1', ok: true }).status).toBe(0);
+
+    const look = hook('pre', { tool: 'look', input: {}, call_id: 'o1' });
+    expect(look.status, look.stderr).toBe(0);
+    expect(hook('post', { tool: 'look', call_id: 'o1', ok: true }).status).toBe(0);
+
+    const orphan = hook('post', { tool: 'note', call_id: 'missing', ok: true });
+    expect(orphan.status).toBe(2);
+    expect(orphan.stdout).toContain('no matching pending');
+
+    const logged = lines();
+    const key = integ.readKey(process.env.SPECKL_STATE_KEY_FILE!);
+    let prev = '';
+    logged.forEach((line, i) => {
+      const { hash, mac, ...body } = line;
+      if (i === 0) prev = String(body.prev);
+      expect(body.seq).toBe(i);
+      expect(body.prev).toBe(prev);
+      expect(hash).toBe(sha(integ.canonical(body)));
+      expect(hash).toBe(sha(canonical(body)));
+      expect(mac).toBe(crypto.createHmac('sha256', key).update(String(hash)).digest('hex'));
+      prev = String(hash);
+    });
+    const st = JSON.parse(readFileSync(state, 'utf8'));
+    expect(integ.verifyDecisions(state, key, st).ok).toBe(true);
+
+    const notePre = logged.find(l => l.call_id === 'c1' && l.phase === 'pre')!;
+    const noteDone = logged.find(l => l.call_id === 'c1' && l.phase === 'post')!;
+    expect(notePre).toMatchObject({ trace_id: 't1', branch_id: 'same', parent_branch_id: 'root', priority: 'P0', trace_flagged: false, verdict: 'allow' });
+    expect(notePre.signal).toBeUndefined();
+    expect(noteDone).toMatchObject({
+      signal: 'prime', trace_id: 't1', branch_id: 'same', parent_branch_id: 'root',
+      priority: 'P0', ok: true, verdict: 'allow', kpis: ['notes', 'extra'],
+    });
+
+    const second = logged.find(l => l.call_id === 'c2' && l.phase === 'pre')!;
+    expect(second.branch_id).not.toBe('same');
+    expect(second.branch_id).not.toBe(notePre.branch_id);
+    expect(second.parent_branch_id).toBe('same');
+
+    const looped = logged.find(l => l.call_id === 'c3' && l.phase === 'pre')!;
+    expect(looped.branch_id).not.toBe('loop');
+    expect(looped.parent_branch_id).toBe('loop');
+    expect(looped.branch_id).not.toBe(looped.parent_branch_id);
+
+    const shipped = logged.find(l => l.call_id === 's1' && l.phase === 'post')!;
+    expect(shipped).toMatchObject({ signal: 'prime', priority: 'P1', trace_flagged: true, parent_branch_id: null, kpis: ['shipments'], ok: true });
+    expect(String(shipped.trace_id)).toMatch(/^t-/);
+    expect(String(shipped.branch_id)).toMatch(/^b-/);
+
+    const observed = logged.filter(l => l.call_id === 'o1');
+    expect(observed.every(l => l.signal === undefined && l.trace_id === undefined)).toBe(true);
+
+    const denied = logged.find(l => l.call_id === 'missing')!;
+    expect(denied).toMatchObject({ phase: 'post', verdict: 'deny', signal: 'prime', trace_flagged: true, parent_branch_id: null, priority: 'P0' });
+
+    const ids = logged.map(l => l.branch_id).filter((id): id is string => typeof id === 'string');
+    const perCall = new Map<string, string>();
+    for (const line of logged) {
+      if (typeof line.branch_id !== 'string') continue;
+      const prev = perCall.get(String(line.call_id));
+      if (prev === undefined) perCall.set(String(line.call_id), line.branch_id);
+      else expect(line.branch_id).toBe(prev);
+    }
+    const branches = [...perCall.values()];
+    expect(new Set(branches).size).toBe(branches.length);
+    expect(branches.length).toBe(5);
+    expect(integ.listDecisionBranchIds(state).sort()).toEqual([...ids].sort());
+
+    const raw = readFileSync(state + '.decisions/log.jsonl', 'utf8');
+    writeFileSync(state + '.decisions/log.jsonl', raw.replace('"trace_id":"t1"', '"trace_id":"tampered"'));
+    const broken = integ.verifyDecisions(state, key, st);
+    expect(broken.ok).toBe(false);
+    expect(broken.reason).toMatch(/hash/);
+    const v = spawnSync(process.execPath, [join(agent, 'signal.mjs'), 'verify', '--state', state], { encoding: 'utf-8' });
+    expect(v.status).not.toBe(0);
+  }, 60_000);
+});
