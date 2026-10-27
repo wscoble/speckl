@@ -26,10 +26,14 @@ alias.
   notation, not a string quote. An unterminated block comment or string, or
   a stray `*/`, is a parse error naming the file and line. Code after
   `/* ... */` on the same line is kept. A trailing `//` comment is not part
-  of a `require`, `let`, or invariant expression. Code between `{` and that
-  comment is kept when the closing `}` is on the next line. An invariant,
-  `verify "…"`, or constraint body that is empty once the comment is removed
-  is a parse error naming the file and line, and is not treated as true.
+  of a `require`, `let`, or invariant expression.   Code between `{` and that
+  comment is kept when the closing `}` is on the next line. Code before the
+  closing `}` is part of the body for an invariant, verify, constraint,
+  action, event, and agent block, on one line or across lines, including a
+  trailing `//` comment after a one-line `}` (`action X { n := n + 2 }`,
+  `event E { x: Nat } // c`). An invariant, `verify "…"`, or constraint body
+  that is empty or only a comment is a parse error naming the file and line,
+  and is not treated as true. A body such as `{ false }` is not an empty body.
   If a block comment closes inside a string, the unterminated-string error
   says so. An import that declares no specks and no domains is an error. `sha256:`
   is case-insensitive; an empty hash is a parse error. Contracts, cost,

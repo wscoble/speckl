@@ -475,17 +475,21 @@ describe('a one-line header keeps its body when } is on the next line', () => {
     expect(bound.expr).not.toContain('note');
   });
 
-  it('a same-line agent closer does not take the header as a following line', () => {
+  it('a same-line agent keeps its tool and does not swallow the next member', () => {
     const ast = parseSpeckContent(`speck S {
     state { n: Nat }
     init { n := 0 }
     action Go() { n := n }
     agent { tool go -> Go effect observe }
+    action Later() { n := n + 1 }
 }
 `, 'same.speckdl');
-    expect(ast.specks[0].members.some(m => m.type === 'action' && m.name === 'Go')).toBe(true);
-    const agent = ast.specks[0].members.find(m => m.type === 'agent') as { tools: unknown[] };
-    expect(agent.tools).toEqual([]);
+    const go = ast.specks[0].members.find(m => m.type === 'action' && m.name === 'Go') as { statements: { type: string; expr: string }[] };
+    const later = ast.specks[0].members.find(m => m.type === 'action' && m.name === 'Later') as { statements: { type: string; expr: string }[] };
+    expect(go.statements.map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n']);
+    expect(later.statements.map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n + 1']);
+    const agent = ast.specks[0].members.find(m => m.type === 'agent') as { tools: { name: string; action: string; effect: string }[] };
+    expect(agent.tools).toEqual([{ name: 'go', action: 'Go', effect: 'observe' }]);
   });
 
   it('an empty invariant, verify, or constraint body is a parse error', () => {
@@ -526,6 +530,142 @@ describe('a one-line header keeps its body when } is on the next line', () => {
     const r = spawnSync('z3', ['-smt2', '-in', '-T:60'], { input: smt, encoding: 'utf-8' });
     const v = judge(smt, r.stdout ?? '', r.stderr ?? '');
     expect(v.status, smt + '\n' + (r.stdout ?? '')).toBe('VIOLATED');
+    expect(v.obligations.some((o: { key?: string; ok?: boolean }) => o.key === 'Mono' && o.ok === false)).toBe(true);
+  }, 60_000);
+});
+
+describe('code before the closing brace is part of the body', () => {
+  const src = `speck Gate {
+    state { n: Nat }
+    init { n := 0 }
+    event E { x: Nat } // c
+    event F {
+        y: Nat }
+    event G { }
+    action X { n := n + 2 }
+    action Y { n := n + 3 } // kept
+    action Dec() {
+        n := n - 1 }
+    action Guard() { require true }
+    action Empty() { }
+    action Nested() {
+        if n > 0 {
+            n := n - 1 } }
+    invariant Mono {
+        n >= 0 and
+        false }
+    invariant Also { n >= 0 and
+        false }
+    invariant Just {
+        false }
+    invariant Set {
+        n in {
+        1, 2 } }
+    constraint Bound: {
+        n >= 0 and
+        false }
+    constraint "Also" {
+        false }
+    verify "holds" {
+        false }
+    verify "with depth" { depth 2,
+        false }
+    agent {
+        stages stage {
+            Idle = 0 }
+        pending timeout 24h
+        tool go -> Dec effect observe }
+    agent { }
+    next: X | Y | Dec | Guard | Empty | Nested
+}
+`;
+
+  it('keeps closing-line code for invariant, verify, constraint, action, event, and agent', () => {
+    const ast = parseSpeckContent(src, 'close.speckdl');
+    const speck = ast.specks[0];
+    const expr = (name: string) => (speck.members.find(m => (m.type === 'invariant' || m.type === 'constraint') && m.name === name) as { expr: string }).expr;
+    expect(expr('Mono')).toBe('n >= 0 and false');
+    expect(expr('Also')).toBe('n >= 0 and false');
+    expect(expr('Just')).toBe('false');
+    expect(expr('Set')).toBe('n in { 1, 2 }');
+    expect(expr('Bound')).toBe('n >= 0 and false');
+    const quoted = speck.members.find(m => m.type === 'constraint' && m.name === 'Also') as { expr: string };
+    expect(quoted.expr).toBe('false');
+    const verifies = speck.members.filter(m => m.type === 'verify') as { name: string; temporalExpr: string; depth?: number }[];
+    expect(verifies.map(v => [v.name, v.temporalExpr, v.depth])).toEqual([
+      ['holds', 'false', undefined],
+      ['with depth', 'false', 2],
+    ]);
+    const fieldsOf = (name: string) => (speck.members.find(m => m.type === 'event' && m.name === name) as { fields: { name: string; type: { name: string } }[] }).fields;
+    expect(fieldsOf('E').map(f => [f.name, f.type.name])).toEqual([['x', 'Nat']]);
+    expect(fieldsOf('F').map(f => f.name)).toEqual(['y']);
+    expect(fieldsOf('G')).toEqual([]);
+    const stmts = (name: string) => (speck.members.find(m => m.type === 'action' && m.name === name) as { statements: { type: string; expr?: string; raw?: string }[] }).statements;
+    expect(stmts('X').map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n + 2']);
+    expect(stmts('Y').map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n + 3']);
+    expect(stmts('Dec').map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n - 1']);
+    expect(stmts('Guard').map(s => `${s.type}:${s.expr}`)).toEqual(['require:true']);
+    expect(stmts('Empty')).toEqual([]);
+    expect(stmts('Nested')[0].raw).toContain('n := n - 1');
+    expect(stmts('Nested')[0].raw).toContain('}');
+    const next = speck.members.find(m => m.type === 'next') as { actions: string[] };
+    expect(next.actions).toEqual(['X', 'Y', 'Dec', 'Guard', 'Empty', 'Nested']);
+    const agents = speck.members.filter(m => m.type === 'agent') as {
+      tools: { name: string; action: string; effect: string }[];
+      stages?: { labels: { name: string; value: number }[] };
+      pendingTimeout?: { durationText: string };
+    }[];
+    expect(agents[0].stages?.labels).toEqual([{ name: 'Idle', value: 0 }]);
+    expect(agents[0].pendingTimeout?.durationText).toBe('24h');
+    expect(agents[0].tools).toEqual([{ name: 'go', action: 'Dec', effect: 'observe' }]);
+    expect(agents[1].tools).toEqual([]);
+  });
+
+  it('reports empty only for an empty or comment-only body', () => {
+    const justFalse = 'speck S {\n    invariant Mono {\n        false }\n}\n';
+    const ast = parseSpeckContent(justFalse, 'false.speckdl');
+    const inv = ast.specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(inv.expr).toBe('false');
+    expect(() => parseSpeckContent('speck S {\n    invariant Mono {\n    }\n}\n', 'empty.speckdl')).toThrow(/Parse error at empty\.speckdl:\d+: empty invariant body/);
+    expect(() => parseSpeckContent('speck S {\n    invariant Mono {\n\n    }\n}\n', 'empty.speckdl')).toThrow(/empty invariant body/);
+    expect(() => parseSpeckContent('speck S {\n    invariant Mono {\n        // note\n    }\n}\n', 'empty.speckdl')).toThrow(/empty invariant body/);
+    expect(() => parseSpeckContent('speck S {\n    verify "p" {\n        // note\n    }\n}\n', 'empty.speckdl')).toThrow(/empty verify body/);
+    expect(() => parseSpeckContent('speck S {\n    constraint Bound: {\n    }\n}\n', 'empty.speckdl')).toThrow(/empty constraint body/);
+    const open = parseSpeckContent('speck S {\n    invariant Mono {\n        n >= 0\n', 'open.speckdl');
+    expect((open.specks[0].members.find(m => m.type === 'invariant') as { expr: string }).expr).toBe('n >= 0');
+  });
+
+  it('a false invariant on the closing line is a counterexample', () => {
+    const hasZ3 = spawnSync('z3', ['--version']).status === 0;
+    if (!hasZ3) return;
+    const falseSrc = `speck Gate {
+    state { n: Nat }
+    init { n := 0 }
+    action Inc() {
+        require true
+        n := n + 1
+    }
+    invariant Mono {
+        n >= 0 and
+        false }
+    next: Inc
+    verify Always(Mono) {
+        depth 3
+    }
+}
+`;
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-close-inv-'));
+    const file = join(dir, 'Gate.speckdl');
+    writeFileSync(file, falseSrc);
+    const out = join(dir, 'out');
+    compileSpec(file, { outputDir: out, target: 'z3', bomFormat: 'cdx', verifyDepth: 3 });
+    const smt = readFileSync(join(out, 'Gate.smt2'), 'utf-8');
+    expect(smt).toMatch(/define-fun Mono \(\) Bool/);
+    expect(smt).toMatch(/false/);
+    expect(smt).not.toMatch(/define-fun Mono \(\) Bool\n {2}\(and\n {4}true\)/);
+    const r = spawnSync('z3', ['-smt2', '-in', '-T:60'], { input: smt, encoding: 'utf-8' });
+    const v = judge(smt, r.stdout ?? '', r.stderr ?? '');
+    expect(v.status, smt + '\n' + (r.stdout ?? '') + (r.stderr ?? '')).toBe('VIOLATED');
     expect(v.obligations.some((o: { key?: string; ok?: boolean }) => o.key === 'Mono' && o.ok === false)).toBe(true);
   }, 60_000);
 });
