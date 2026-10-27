@@ -186,6 +186,7 @@ export function localDomains(
       consumes: [...(d.consumes ?? [])],
       produces: [...(d.produces ?? [])],
       ...(d.budgetPerTick !== undefined ? { budgetPerTick: d.budgetPerTick } : {}),
+      ...(d.priority !== undefined ? { priority: d.priority } : {}),
       sourcePath: filePath,
     });
   }

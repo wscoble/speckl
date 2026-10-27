@@ -21,6 +21,38 @@ alias.
   to those specks. A duplicate member or a speck in two domains is a
   compile error. `speckl doctor` fails when a domain member's `act` tool
   is not mapped in its harness block.
+- **Completion signals and trace ids.** On `post` of an `effect act` tool
+  the hook appends a completion signal to the decision line: `trace_id`
+  from ingress (a missing or ill-formed id is a fresh root and
+  `trace_flagged` is true), `branch_id` unique per branch (the matching
+  post reuses it), `parent_branch_id`, `call_id`, `ok`, `ts`, and
+  `priority` from the action or the domain. A `parent_branch_id` that is
+  present but not an id is flagged and stored as null. An act post with
+  no matching pre is a deny. That deny is still the signal, with `ok`
+  false, no `kpis`, and a fresh flagged `trace_id` (the caller's values
+  are not kept). `priority <Name>` on an action or domain, and
+  `kpi "<name>"` on an event, are labels. A tool's `kpis` are the tags on
+  straight-line `emit Name { }` only. An `emit` inside an `if`, a `for`,
+  a `//` comment, or a block comment is not tagged. `while` and `match`
+  that contain `emit`, and a bare `emit Name`, are parse errors.
+An `emit Name {` whose `}` is on a later line is not a statement and is not tagged. The
+  agent machine does not run `if` or `for` bodies. `speckl trace report`
+  reads the log offline and prints, per priority, drain latency,
+  completion-signal lag, and queue depth. Drain and the KPI list count
+  only an allow post that matched an allow pre, and each KPI line shows
+  the verdict. With `--state`, a shortened or deleted log fails while
+  `head.json` is present. If the decisions directory exists without
+  `head.json`, the report and `signal.mjs verify` fail. `macs checked`
+  is printed only when `--key` checked at least one line. `--log` alone
+  does not know the head. A line with no trailing newline is torn and
+  fails. An older log and its matching head from the same run still
+  verify: there is no anchor outside this directory. A `//` brace is
+  ignored only when that line has not already opened a `{`. A rebuilt
+  chain can have a valid hash and is not a verified seal. The report
+  does not run the agent and does not enforce a queue. Those durations
+  are a throughput signal, not a risk signal. The seal is still
+  HMAC-SHA256 with the shared state key. It proves nothing to an outside
+  auditor.
 - **Domain contracts and budgets.** `consumes` / `produces` name existing
   `event` declarations. `event Name external` is an outside event. A
   consumed event that nobody produces and that is not external, or a
@@ -31,8 +63,8 @@ alias.
   fails with a counterexample trace. When the tick cannot be lowered the
   obligation is UNCHECKED and is not a pass. The Camel target emits the
   contract as a comment block and a typed event class. It does not
-  throttle at runtime. A tick scheduler, queues, routing, completion
-  signals, and trace IDs are not yet implemented.
+  throttle at runtime. A tick scheduler, queues, and routing are not yet
+  implemented.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

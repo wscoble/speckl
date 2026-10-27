@@ -101,6 +101,11 @@ export interface IRDomain {
    * Zero is a real budget, not "unset".
    */
   budgetPerTick?: number;
+  /**
+   * `priority <Name>`. Absent when the domain declares no priority.
+   * A label for completion signals. Not a runtime queue.
+   */
+  priority?: string;
   /** File that declared the domain (the path the lower pass was given). */
   sourcePath: string;
 }
@@ -328,6 +333,11 @@ export interface IRAction {
    * not turn it into a runtime throttle.
    */
   cost?: number;
+  /**
+   * `priority <Name>` on the action. Absent when the action declares none.
+   * The domain priority applies only when this is absent. Not a runtime queue.
+   */
+  priority?: string;
   doc?: string;
 }
 
@@ -364,6 +374,8 @@ export interface IREvent {
   fields: IRFieldDef[];
   /** `event Name external`. Absent means the event is internal. */
   external?: boolean;
+  /** `kpi "<name>"`. Absent when the event is not tagged. */
+  kpi?: string;
   doc?: string;
 }
 

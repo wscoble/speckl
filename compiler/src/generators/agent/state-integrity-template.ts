@@ -21,8 +21,16 @@ export function emitStateIntegrityMjs(): string {
  * where the hook and signal tooling can read it and the agent cannot.
  *
  * Decision record: <state>.decisions/log.jsonl is a second hash chain, HMAC'd
- * with the same key, holding every hook allow and deny. It is not replayed
- * into the machine. signal.mjs verify walks the whole chain.
+ * with the same key, holding every hook allow and deny. The mac is a
+ * shared-key HMAC. It proves nothing to an outside auditor: anyone who can
+ * read the key can forge a line, and someone without the key cannot check
+ * it. The record is not replayed into the machine. signal.mjs verify walks
+ * the whole chain.
+ *
+ * An effect-act post adds a completion signal on that same line
+ * (signal "prime"): trace_id, branch_id, parent_branch_id, ok, priority,
+ * trace_flagged, and kpis. The matching pre stores the trace fields without
+ * signal, ok, or kpis. Those fields are covered by the line hash.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -352,19 +360,12 @@ function loadDecisionHead(paths, state, key) {
   const dirExists = fs.existsSync(paths.dir);
   const headExists = dirExists && fs.existsSync(paths.head);
   const logExists = dirExists && fs.existsSync(paths.log);
-  if (!headExists && !logExists) {
-    // A leftover head tmp from a crashed rename is not a record. Anything else
-    // in the directory without a head or a log is not a chain we can extend.
-    if (dirExists && fs.readdirSync(paths.dir).some(n => !n.includes('.tmp.'))) {
-      throw new Error('decision head missing');
-    }
-    return { head: freshDecisionHead(state), buf: Buffer.alloc(0) };
-  }
   if (!headExists) {
-    // Append landed and the process died before the head was replaced.
-    // The lines are an uncommitted suffix of a fresh chain; the next append
-    // adopts them if they verify, and refuses them if they do not.
-    return { head: freshDecisionHead(state), buf: fs.readFileSync(paths.log) };
+    // A log, or any decisions directory, without head.json is not an empty
+    // record. Treating it as a fresh chain let a deleted head plus a shortened
+    // log verify. No directory at all is an empty record.
+    if (dirExists || logExists) throw new Error('decision head missing');
+    return { head: freshDecisionHead(state), buf: Buffer.alloc(0) };
   }
   let head;
   try { head = JSON.parse(fs.readFileSync(paths.head, 'utf-8')); }
@@ -405,7 +406,41 @@ function decisionLineError(line, seq, prev, key) {
   } else if (line.mac !== undefined) return 'unexpected mac';
   if (body.verdict !== 'allow' && body.verdict !== 'deny') return 'verdict';
   if (body.verdict === 'allow' && body.reason !== null) return 'reason';
+  const shape = traceShapeError(body);
+  if (shape) return shape;
   return null;
+}
+
+function traceShapeError(body) {
+  const has = body.trace_id !== undefined || body.branch_id !== undefined || body.signal !== undefined
+    || body.parent_branch_id !== undefined || body.priority !== undefined || body.trace_flagged !== undefined
+    || body.kpis !== undefined || body.ok !== undefined;
+  if (!has) return null;
+  if (body.signal !== undefined && body.signal !== 'prime') return 'signal';
+  if (typeof body.trace_id !== 'string' || body.trace_id.length === 0) return 'trace_id';
+  if (typeof body.branch_id !== 'string' || body.branch_id.length === 0) return 'branch_id';
+  if (!(body.parent_branch_id === null || typeof body.parent_branch_id === 'string')) return 'parent_branch_id';
+  if (!(body.priority === null || typeof body.priority === 'string')) return 'priority';
+  if (typeof body.trace_flagged !== 'boolean') return 'trace_flagged';
+  if (body.signal === 'prime') {
+    if (typeof body.ok !== 'boolean') return 'ok';
+    if (!Array.isArray(body.kpis) || body.kpis.some(k => typeof k !== 'string')) return 'kpis';
+    return null;
+  }
+  if (body.ok !== undefined || body.kpis !== undefined) return 'signal';
+  return null;
+}
+
+/** branch_id values already in the decision log. Empty when the log does not exist yet. */
+export function listDecisionBranchIds(stateFile) {
+  const paths = decisionPaths(stateFile);
+  if (!fs.existsSync(paths.log)) return [];
+  const parsed = parseDecisionLog(fs.readFileSync(paths.log));
+  const ids = [];
+  for (const line of parsed.lines) {
+    if (line && typeof line.branch_id === 'string' && line.branch_id) ids.push(line.branch_id);
+  }
+  return ids;
 }
 
 function walkDecisionLines(lines, genesis, key) {
@@ -554,6 +589,21 @@ export function appendDecision(stateFile, key, state, fields) {
     reason: fields.verdict === 'deny' ? clipReason(fields.reason) : null,
     input_sha256: typeof fields.input_sha256 === 'string' ? fields.input_sha256 : digestInput(null),
   };
+  const traced = fields.trace;
+  if (traced && typeof traced === 'object') {
+    if (typeof traced.trace_id === 'string') body.trace_id = traced.trace_id;
+    if (typeof traced.branch_id === 'string') body.branch_id = traced.branch_id;
+    if (traced.parent_branch_id === null || typeof traced.parent_branch_id === 'string') {
+      body.parent_branch_id = traced.parent_branch_id;
+    }
+    if (traced.priority === null || typeof traced.priority === 'string') body.priority = traced.priority;
+    body.trace_flagged = traced.trace_flagged === true;
+    if (traced.signal === 'prime') {
+      body.signal = 'prime';
+      body.ok = traced.ok === true;
+      body.kpis = Array.isArray(traced.kpis) ? traced.kpis.filter(k => typeof k === 'string') : [];
+    }
+  }
   const hash = sha(canonical(body));
   const line = { ...body, hash };
   if (key) line.mac = crypto.createHmac('sha256', key).update(hash).digest('hex');

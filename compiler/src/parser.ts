@@ -60,6 +60,11 @@ export interface DomainNode {
   produces?: string[];
   /** `budget <n> per tick`. Absent when the clause is omitted. Zero is a real budget. */
   budgetPerTick?: number;
+  /**
+   * `priority <Name>` for act tools whose action does not declare its own.
+   * A label such as `P0`, not a runtime queue.
+   */
+  priority?: string;
   startLine?: number;
   endLine?: number;
 }
@@ -136,6 +141,11 @@ export interface EventNode {
    * the event is internal.
    */
   external?: boolean;
+  /**
+   * `kpi "<name>"` on the event. Completions of actions that emit this
+   * event are attributed to that name. Absent when the tag is omitted.
+   */
+  kpi?: string;
 }
 
 // oneof: discriminated-union variant for proto wire-format compatibility.
@@ -266,7 +276,8 @@ export type ActionStatement =
   | { type: 'emit'; event: string; fields: { name: string; value: string }[] }
   | { type: 'return'; expr: string }
   | { type: 'ifblock'; raw: string }
-  | { type: 'cost'; amount: number };
+  | { type: 'cost'; amount: number }
+  | { type: 'priority'; name: string };
 
 /** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
 export interface LineSpan {
@@ -753,14 +764,63 @@ function unsupportedVerify(line: string, index: number): Error {
  * A brace in `require n > "}"` is text, not the end of the block.
  * Returns true from `visit` to stop.
  */
+/**
+ * Remove a block comment, which may start or end on another line.
+ * A line comment is left in place so a for/if raw keeps the source text.
+ * A single quote is not a string quote.
+ */
+function stripBlockCommentState(text: string, inBlock: boolean): { text: string; inBlock: boolean } {
+  let out = '';
+  let i = 0;
+  let inStr = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inBlock) {
+      if (c === '*' && text[i + 1] === '/') { inBlock = false; i += 2; continue; }
+      i++;
+      continue;
+    }
+    if (inStr && c === '\\') { out += text.slice(i, i + 2); i += 2; continue; }
+    if (c === '"') { inStr = !inStr; out += c; i++; continue; }
+    if (!inStr && c === '/' && text[i + 1] === '/') {
+      out += text.slice(i);
+      break;
+    }
+    if (!inStr && c === '/' && text[i + 1] === '*') { inBlock = true; i += 2; continue; }
+    out += c;
+    i++;
+  }
+  return { text: out, inBlock };
+}
+
+/** Drop a `//` comment that is not inside a double-quoted string. */
+function stripLineCommentOutsideStrings(text: string): string {
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inStr && c === '\\') { i++; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (!inStr && c === '/' && text[i + 1] === '/') return text.slice(0, i).replace(/\s+$/, '');
+  }
+  return text;
+}
+
 function forEachCodeBrace(text: string, visit: (ch: '{' | '}', index: number) => boolean | void): void {
   let inStr = false;
+  let openOnLine = 0;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === '\\' && inStr) { i++; continue; }
     if (c === '"') { inStr = !inStr; continue; }
     if (inStr) continue;
+    // A brace in a line comment is text when this line has not left a brace
+    // open. `priority P0 // hot path {` must not extend the block, and
+    // `event E kpi "x" { } // {` must not swallow the next speck.
+    // A `{` earlier on the same line still has to close: the printer emits a
+    // for/if raw as one line, and that raw can contain `//` before its `}`.
+    if (c === '/' && text[i + 1] === '/' && openOnLine <= 0) return;
     if (c === '{' || c === '}') {
+      openOnLine += c === '{' ? 1 : -1;
       if (visit(c, i) === true) return;
     }
   }
@@ -1329,6 +1389,7 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
   const consumes: string[] = [];
   const produces: string[] = [];
   let budgetPerTick: number | undefined;
+  let priority: string | undefined;
   const seenConsumes = new Set<string>();
   const seenProduces = new Set<string>();
   for (const raw of stmts) {
@@ -1380,6 +1441,17 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
       }
       continue;
     }
+    if (stmt.startsWith('priority')) {
+      const pri = stmt.match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} priority must be an identifier`);
+      }
+      if (priority !== undefined) {
+        throw new Error(`Parse error at line ${startIndex + 1}: domain ${name} declares priority twice`);
+      }
+      priority = pri[1];
+      continue;
+    }
     if (stmt.startsWith('budget')) {
       const bud = stmt.match(/^budget\s+(\d+)\s+per\s+tick$/);
       const n = bud ? Number(bud[1]) : NaN;
@@ -1405,6 +1477,7 @@ function parseDomain(lines: string[], startIndex: number): DomainNode {
     ...(consumes.length > 0 ? { consumes } : {}),
     ...(produces.length > 0 ? { produces } : {}),
     ...(budgetPerTick !== undefined ? { budgetPerTick } : {}),
+    ...(priority !== undefined ? { priority } : {}),
     startLine: startIndex + 1,
     endLine: extracted.endLine,
   };
@@ -1740,20 +1813,34 @@ function parseInterface(line: string): InterfaceNode {
 }
 
 function parseEvent(line: string): EventNode {
-  // event Name {   or   event Name external {
-  const match = line.match(/^event\s+(\w+)(?:\s+external)?\s*\{/);
+  // event Name {
+  // event Name external {
+  // event Name kpi "<name>" {
+  // event Name external kpi "<name>" {
+  const match = line.match(/^event\s+(\w+)(?:\s+external)?(?:\s+kpi\s+("(?:\\.|[^"\\])*"))?\s*\{/);
   if (!match) {
     throw new Error(`Failed to parse event: ${line}`);
   }
 
   const name = match[1];
   const external = /^event\s+\w+\s+external\b/.test(line.trim());
+  let kpi: string | undefined;
+  if (match[2] !== undefined) {
+    let value: unknown;
+    try { value = JSON.parse(match[2]); }
+    catch { throw new Error(`Failed to parse event: ${line}`); }
+    if (typeof value !== 'string' || value.length === 0 || value.length > 200 || /[\u0000-\u001f]/.test(value)) {
+      throw new Error(`Failed to parse event: ${line}`);
+    }
+    kpi = value;
+  }
 
   return {
     type: 'event',
     name,
     fields: [],
     ...(external ? { external: true } : {}),
+    ...(kpi !== undefined ? { kpi } : {}),
   };
 }
 
@@ -2002,6 +2089,12 @@ function isCostStatement(stmt: string): boolean {
   return /^cost\s+\S/.test(text) && !/^cost\s*:=/.test(text);
 }
 
+/** A `priority <Name>` statement, not an assignment `priority := ...`. */
+function isPriorityStatement(stmt: string): boolean {
+  const text = withoutTrailingComment(stmt);
+  return /^priority\b/.test(text) && !/^priority\s*:=/.test(text);
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const inlineBody = closedInlineBody(firstLine);
@@ -2016,11 +2109,23 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   // Keep blank lines as null to separate statements, filter only comments.
   // Preserve indentation: it bounds colon-form if/else regions.
   type BodyEntry = { text: string; indent: number } | null;
-  const bodyEntries: BodyEntry[] = lines.slice(startIndex + 1, endIndex).map(l => {
-    const trimmed = l.trim();
-    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
-    return { text: trimmed, indent: l.length - l.trimStart().length };
-  });
+  const bodyEntries: BodyEntry[] = [];
+  let inBlockComment = false;
+  for (const l of lines.slice(startIndex + 1, endIndex)) {
+    const stripped = stripBlockCommentState(l, inBlockComment);
+    inBlockComment = stripped.inBlock;
+    const trimmed = stripped.text.trim();
+    // A line that is only a `//` or a `/* */` is not a statement. A `/* */`
+    // that spans lines must not leave the emit inside it as a statement.
+    if (!trimmed || trimmed.startsWith('//')) {
+      bodyEntries.push(null);
+      continue;
+    }
+    bodyEntries.push({ text: trimmed, indent: l.length - l.trimStart().length });
+  }
+  if (inBlockComment) {
+    throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} has an unterminated block comment`);
+  }
   // A statement sharing the opening or closing line is still a statement:
   // `action Go { cost 1` / `cost 2 }` must not disappear between the braces.
   const headerTail = firstLine.slice(firstLine.indexOf('{') + 1).trim();
@@ -2144,6 +2249,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
             nextLine.startsWith('if ') || isCostStatement(nextLine) ||
+            isPriorityStatement(nextLine) ||
             nextLine.includes(':=')) {
           break;
         }
@@ -2158,9 +2264,69 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       statements.push({ type: 'return', expr: stmt.substring(7).trim() });
       continue;
     }
-    // emit Event { fields }
-    const emitMatch = stmt.match(/^emit\s+(\w+)\s*\{\s*(.*)\s*\}$/);
-    if (emitMatch) {
+    // while / match are not run by the agent machine. A block that contains
+    // emit must be a parse error, not a straight-line emit.
+    if (/^(while|match)\b/.test(stmt)) {
+      const kind = /^while\b/.test(stmt) ? 'while' : 'match';
+      let braceDepth = 0;
+      let j = i;
+      let sawBrace = false;
+      const blockLines: string[] = [];
+      while (j < bodyLines.length) {
+        const line = bodyLines[j];
+        if (line === null) { j++; continue; }
+        blockLines.push(line);
+        // Count braces outside strings and `//` comments so `while n { // }`
+        // still owns the following lines. This is the while/match collector
+        // only; the shared brace scan is unchanged.
+        const codeLine = stripLineCommentOutsideStrings(line);
+        let inStr = false;
+        for (let k = 0; k < codeLine.length; k++) {
+          const ch = codeLine[k];
+          if (inStr && ch === '\\') { k++; continue; }
+          if (ch === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (ch === '{') { braceDepth++; sawBrace = true; }
+          else if (ch === '}') braceDepth--;
+        }
+        j++;
+        if (sawBrace && braceDepth <= 0) break;
+        if (!sawBrace) {
+          let k = j;
+          while (k < bodyLines.length && bodyLines[k] === null) k++;
+          const next = k < bodyLines.length ? stripLineCommentOutsideStrings(bodyLines[k]!).trim() : '';
+          if (!next.startsWith('{')) break;
+        }
+      }
+      const code = blockLines.map(l => stripLineCommentOutsideStrings(l)).join('\n');
+      if (/\bemit\b/.test(code)) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} ${kind} is not supported and must not contain emit`);
+      }
+      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
+      i = j - 1;
+      continue;
+    }
+    // emit Event { fields }. A trailing `//` comment is not part of the
+    // statement (`emit X { } // c`). A bare `emit X` is an error, not a drop.
+    // An unclosed `{` is a multi-line emit. Those are not statements here,
+    // same as before: joining them would change the example machines.
+    const emitCode = stripLineCommentOutsideStrings(stmt).trim();
+    if (/^emit\b/.test(emitCode)) {
+      const emitMatch = emitCode.match(/^emit\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*(.*)\s*\}$/);
+      if (!emitMatch) {
+        let depth = 0;
+        let inStr = false;
+        for (let k = 0; k < emitCode.length; k++) {
+          const ch = emitCode[k];
+          if (inStr && ch === '\\') { k++; continue; }
+          if (ch === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (ch === '{') depth++;
+          else if (ch === '}') depth--;
+        }
+        if (depth > 0) continue;
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} emit must be \`emit Name { ... }\`, got ${JSON.stringify(emitCode)}`);
+      }
       const eventName = emitMatch[1];
       const fieldsStr = emitMatch[2];
       const fields: { name: string; value: string }[] = [];
@@ -2177,6 +2343,18 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         }
       }
       statements.push({ type: 'emit', event: eventName, fields });
+      continue;
+    }
+    // priority <Name> — one label per action. Not an assignment.
+    if (isPriorityStatement(stmt)) {
+      const pri = withoutTrailingComment(stmt).match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} priority must be an identifier`);
+      }
+      if (statements.some(s => s.type === 'priority')) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} declares priority more than once`);
+      }
+      statements.push({ type: 'priority', name: pri[1] });
       continue;
     }
     // cost <n> — non-negative integer literal. One per action.
@@ -2251,7 +2429,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (!nt || nt.startsWith('//')) break;
         if (nt.startsWith('require ') || nt.startsWith('return ') ||
             nt.startsWith('emit ') || nt.startsWith('let ') ||
-            isCostStatement(nt) ||
+            isCostStatement(nt) || isPriorityStatement(nt) ||
             /\w+\s*:=/.test(nt)) {
           break;
         }
@@ -2284,8 +2462,10 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
   const header = parseEvent(firstLine);
 
   // Handle single-line events: event Foo { a: Type, b: Type }
-  // extract fields from the first line itself
-  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?\s*\{(.*)\}\s*$/);
+  // extract fields from the first line itself. A trailing `//` comment is
+  // not part of the block (`event E kpi "x" { } // {`).
+  const codeLine = stripLineCommentOutsideStrings(firstLine);
+  const inlineMatch = codeLine.match(/^event\s+(\w+)(?:\s+external)?(?:\s+kpi\s+"(?:\\.|[^"\\])*")?\s*\{(.*)\}\s*$/);
   const inlineFields: { name: string; type: TypeExpr }[] = [];
   if (inlineMatch && inlineMatch[2].trim()) {
     const fieldStr = inlineMatch[2].trim();
@@ -2300,7 +2480,7 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
   // Single-line form: the braces balance on the header line itself, so the
   // block walk below must not run - it would overrun into later members
   // (their `state:` / `actions:` lines would leak in as event fields).
-  if (inlineMatch && firstLine.endsWith('}')) {
+  if (inlineMatch && codeLine.endsWith('}')) {
     return { ...header, fields: inlineFields };
   }
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);

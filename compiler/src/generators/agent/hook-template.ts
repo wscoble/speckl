@@ -41,10 +41,26 @@ export function emitHookMjs(speckName: string): string {
  *
  * After the state verifies, each allow and deny is appended to a separate
  * decision record (<state>.decisions/), SHA-256 chained and HMAC-SHA256'd
- * with the same key. That is a keyed record, not a signature a third party
- * can check. A denial does not modify state.json. Calls that fail before
- * the state verifies are denied and not recorded. If the record cannot be
- * written, the call is denied.
+ * with the same key. That seal is a shared-key HMAC. It proves nothing to
+ * an outside auditor: anyone who can read the key can forge a line, and
+ * someone without the key cannot check the mac. A denial does not modify
+ * state.json. Calls that fail before the state verifies are denied and not
+ * recorded. If the record cannot be written, the call is denied.
+ *
+ * A post for an effect act tool also stores a completion signal on that
+ * line (signal "prime"): trace_id from the ingress pre, branch_id unique
+ * in this log, parent_branch_id, call_id, ok, ts, and priority from the
+ * action or the domain. A missing trace_id is a fresh root and
+ * trace_flagged is true. A parent_branch_id that was supplied but is not
+ * an id is flagged the same way; it is not turned into a quiet root.
+ * An act post with no matching pre is a deny. That deny is still a
+ * completion signal, but it does not keep the caller's ok, kpis, or
+ * trace_id: ok is false, kpis is empty, and the trace is a fresh flagged
+ * root. Observe tools do not get one. kpis are straight-line
+ * \`emit Name { }\` only. An emit inside an if, a for, a // comment, or a
+ * block comment is not included. while and match that contain emit are
+ * a parse error. A bare \`emit Name\` is a parse error. An emit Name
+ * { whose } is on a later line is not a statement and is not tagged.
  *
  * A call-bound sign-off (await \`bind call\`) allows one later call whose
  * digest matches the signed \`call\` hash, and only once that call's post
@@ -52,10 +68,11 @@ export function emitHookMjs(speckName: string): string {
  * is sha256 of the canonical spec tool name and mapped arguments (see
  * state-integrity.mjs callDigest). The binding itself stays in state.log.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyState, append, sign, keyPathFrom, verifyDecisions, appendDecision, digestInput, callDigest, canonical } from './state-integrity.mjs';
+import { verifyState, append, sign, keyPathFrom, verifyDecisions, appendDecision, digestInput, callDigest, canonical, listDecisionBranchIds } from './state-integrity.mjs';
 
 ${denyFns}
 
@@ -185,6 +202,7 @@ function seal(verdict, reason) {
     verdict,
     reason: verdict === 'deny' ? clean(reason) : reason,
     input_sha256: digestInput(audit.input),
+    trace: audit.trace || null,
   });
   audit.sealed = true;
   audit.verdict = verdict;
@@ -207,6 +225,68 @@ function commitAllow(stateFile, state) {
   catch (e) { decisionUnavailable(e, 2); }
   save(stateFile, state);
   respond('allow', undefined, 0);
+}
+
+function freshToken(prefix) {
+  return prefix + crypto.randomBytes(16).toString('hex');
+}
+function cleanTraceId(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s || s.length > 200) return null;
+  if (!/^[A-Za-z0-9_.:@+-]+$/.test(s)) return null;
+  return s;
+}
+function assignBranch(stateFile, requested, parent) {
+  let used;
+  try { used = new Set(listDecisionBranchIds(stateFile)); }
+  catch { throw new Error('decision record could not be read'); }
+  const ok = (id) => typeof id === 'string' && id.length > 0 && id !== parent && !used.has(id);
+  if (ok(requested)) return requested;
+  let id = freshToken('b-');
+  while (!ok(id)) id = freshToken('b-');
+  return id;
+}
+// trace_id from the ingress message. Missing, empty, or not an id: a fresh
+// root, parent cleared, trace_flagged true. A parent_branch_id that is
+// present but not an id (whitespace, too long, or not a string) is flagged
+// too; it is not silently cleared into an unflagged root. Absent, null,
+// and "" are a root and are not a flag. branch_id is unique in this log
+// and is never equal to its parent.
+function resolveIngress(msg, stateFile) {
+  const given = cleanTraceId(msg && msg.trace_id);
+  const parentRaw = msg ? msg.parent_branch_id : undefined;
+  const parentSupplied = parentRaw !== undefined && parentRaw !== null && parentRaw !== '';
+  const parent = cleanTraceId(parentRaw);
+  if (!given || (parentSupplied && !parent)) {
+    return {
+      trace_id: given || freshToken('t-'),
+      parent_branch_id: null,
+      branch_id: assignBranch(stateFile, given ? cleanTraceId(msg.branch_id) : null, null),
+      trace_flagged: true,
+    };
+  }
+  return {
+    trace_id: given,
+    parent_branch_id: parent,
+    branch_id: assignBranch(stateFile, cleanTraceId(msg.branch_id), parent),
+    trace_flagged: false,
+  };
+}
+function traceFromBinding(binding, traced, kpis, prime, ok) {
+  const row = {
+    trace_id: traced.trace_id,
+    branch_id: traced.branch_id,
+    parent_branch_id: traced.parent_branch_id == null ? null : traced.parent_branch_id,
+    priority: binding && binding.priority != null && binding.priority !== '' ? String(binding.priority) : null,
+    trace_flagged: traced.trace_flagged === true,
+    kpis: Array.isArray(kpis) ? kpis.map(k => String(k)) : [],
+  };
+  if (prime) {
+    row.signal = 'prime';
+    row.ok = ok === true;
+  }
+  return row;
 }
 
 function parseArgs(argv) {
@@ -399,6 +479,7 @@ async function main() {
       keep: [],
       sealed: false,
       verdict: null,
+      trace: null,
     };
     if (state.specHash !== config.specHash) {
       finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));
@@ -416,6 +497,9 @@ async function main() {
       const binding = toolByName.get(tool);
       if (!binding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths(state)));
       audit.action = binding.action;
+      if (binding.effect === 'act') {
+        audit.trace = traceFromBinding(binding, resolveIngress(msg, args.state), binding.kpis, false, false);
+      }
       if (state.pending) {
         const st = pendingStatus(state.pending, Date.now());
         if (st === 'expired') {
@@ -500,7 +584,16 @@ async function main() {
       }
 
       append(state, { kind: 'pre', call_id: callId, tool, action: binding.action, input });
-      state.pending = { call_id: callId, tool, action: binding.action, input, since: new Date().toISOString() };
+      const pendingRec = { call_id: callId, tool, action: binding.action, input, since: new Date().toISOString() };
+      if (audit.trace) {
+        pendingRec.trace_id = audit.trace.trace_id;
+        pendingRec.branch_id = audit.trace.branch_id;
+        pendingRec.parent_branch_id = audit.trace.parent_branch_id;
+        pendingRec.priority = audit.trace.priority;
+        pendingRec.trace_flagged = audit.trace.trace_flagged;
+        pendingRec.kpis = audit.trace.kpis;
+      }
+      state.pending = pendingRec;
       state.machine = machine.serialize();
       commitAllow(args.state, state);
     }
@@ -514,6 +607,28 @@ async function main() {
     }
     const postBinding = toolByName.get(tool);
     if (postBinding) audit.action = postBinding.action;
+    if (postBinding && postBinding.effect === 'act') {
+      const matched = state.pending && state.pending.call_id === callId && state.pending.tool === tool
+        && typeof state.pending.trace_id === 'string' && state.pending.trace_id;
+      if (matched) {
+        audit.trace = {
+          signal: 'prime',
+          trace_id: state.pending.trace_id,
+          branch_id: state.pending.branch_id,
+          parent_branch_id: state.pending.parent_branch_id == null ? null : state.pending.parent_branch_id,
+          priority: state.pending.priority == null ? null : state.pending.priority,
+          trace_flagged: state.pending.trace_flagged === true,
+          ok: ok,
+          kpis: Array.isArray(state.pending.kpis) ? state.pending.kpis : [],
+        };
+      } else {
+        // No matching pre. Do not trust this message: ok, kpis, and
+        // trace_id are the caller's. The deny is a fresh flagged root
+        // with ok false and no kpi tags. The verdict below is deny.
+        const traced = resolveIngress({}, args.state);
+        audit.trace = traceFromBinding(postBinding, traced, [], true, false);
+      }
+    }
     if (!state.pending || state.pending.call_id !== callId) {
       finishDeny(2, () => renderDenyReason('internal', 'post: no matching pending call_id', internalNext('post-mismatch'), secretPaths(state)));
     }

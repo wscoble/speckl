@@ -121,6 +121,21 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
       continue;
     }
 
+    // --- priority <Name> (one identifier per action) ---
+    // `priority := ...` is an assignment, not this statement.
+    const priorityText = stripLineComment(trimmed);
+    if (/^priority\b/.test(priorityText) && !/^priority\s*:=/.test(priorityText)) {
+      const pri = priorityText.match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw new Error(`priority must be an identifier, got ${JSON.stringify(priorityText)}`);
+      }
+      if (stmts.some(s => s.type === 'priority')) {
+        throw new Error('priority is declared more than once');
+      }
+      stmts.push({ type: 'priority', name: pri[1] });
+      continue;
+    }
+
     // --- if condition { ... } else ... ---
     if (trimmed.startsWith('if ')) {
       // Collect the full if/else block as raw text

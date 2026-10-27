@@ -42,6 +42,27 @@ function normalized(out: string, file: string): string {
     .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, '<TIME>');
 }
 
+const outputBaseline = JSON.parse(readFileSync(join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'trace', 'example-output-baseline.json'), 'utf8')) as {
+  allow: string[];
+  digests: Record<string, Record<string, string>>;
+};
+
+/** Example artifacts other than the hook, its decision-record module, and the agent docs stay byte-identical once paths and timestamps are masked. */
+function assertExampleOutput(name: string, target: string, got: Record<string, string>) {
+  const key = `${name} -t ${target}`;
+  const expected = outputBaseline.digests[key];
+  expect(expected, key).toBeTruthy();
+  const allow = new Set(outputBaseline.allow);
+  for (const [file, hash] of Object.entries(expected)) {
+    if (allow.has(file)) continue;
+    expect(got[file], `${key} ${file}`).toBe(hash);
+  }
+  for (const file of Object.keys(got)) {
+    if (allow.has(file)) continue;
+    expect(expected, `${key} unexpected file ${file}`).toHaveProperty(file);
+  }
+}
+
 function digests(out: string): Record<string, string> {
   const r: Record<string, string> = {};
   for (const f of walk(out)) r[relative(out, f)] = createHash('sha256').update(normalized(out, f)).digest('hex').slice(0, 16);
@@ -75,7 +96,9 @@ describe('generated output is pinned for every example', () => {
   for (const name of examples) {
     for (const target of ['all', 'all-ir'] as const) {
       it(`${name} -t ${target}`, () => {
-        expect(digests(run(join(examplesDir, name), target))).toMatchSnapshot();
+        const got = digests(run(join(examplesDir, name), target));
+        assertExampleOutput(name, target, got);
+        expect(got).toMatchSnapshot();
       }, 60_000);
     }
   }

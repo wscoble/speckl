@@ -202,10 +202,40 @@ that its harness blocks do not map, and when a consumes/produces contract
 cannot be wired. That is separate from the adapter `doctor` probe, which
 runs an installed hook.
 
+`priority <Name>` on an action (or on the domain, when the action has
+none) and `kpi "<name>"` on an event are labels for completion signals.
+They do not install a queue. The Camel target does not copy the kpi tag.
+
+On `post` of an `effect act` tool the hook records a completion signal on
+the decision line: `trace_id` from ingress (a missing or ill-formed id is
+a fresh flagged root), a `branch_id` unique per branch (the matching post
+reuses it), `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority`. A
+parent that is present but not an id is flagged. An act post with no
+matching pre is a deny. That deny is still the signal, and it does not
+keep the caller's `ok`, `kpis`, or `trace_id`. `kpis` on the tool are
+straight-line `emit Name { }` only. An `emit` inside an `if`, a `for`,
+a `//` comment, or a block comment is not tagged. `while` and `match`
+that contain `emit`, and a bare `emit Name`, are parse errors.
+An `emit Name {` whose `}` is on a later line is not a statement and is not tagged.
+`speckl trace report` reads the log offline. Drain and the KPI list
+count only an allow post that matched an allow pre, and each KPI line
+shows the verdict. With `--state`, a shortened or deleted log fails
+while `head.json` is still there. A decisions directory without
+`head.json` fails the report and `signal.mjs verify`. If that directory
+is absent, there is no record, and the report does not print
+`macs checked`. It prints `macs checked` only when `--key` checked at
+least one line. `--log` alone does not know the head. A line with no
+trailing newline is torn and fails. An older log and its matching head
+from the same run still verify: there is no anchor outside this
+directory. A `//` brace is ignored only when that line has not already
+opened a `{`. The report does not run the agent or enforce a queue.
+Those durations are a throughput signal, not a risk signal. The decision
+record stays a shared-key HMAC. That seal proves nothing to an outside
+auditor.
+
 **Not yet implemented:** a package registry for `version` pins (the pin is
 stored, and `hash` is checked); rewriting expressions that name an imported
-speck; a tick scheduler, queues, and runtime routing between domains;
-completion signals and trace IDs.
+speck; a tick scheduler, queues, and runtime routing between domains.
 
 ## Documentation
 

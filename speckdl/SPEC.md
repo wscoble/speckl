@@ -281,6 +281,18 @@ same event. Which domain delivers it at runtime is **not yet implemented**.
 verification annotation. It is not a runtime throttle. An action with no
 `cost` is not treated as cost 0.
 
+`priority <Name>` on an action, or on the domain, is an identifier such as
+`P0`. The action's label is used when both are set. It is stored on a
+completion signal. It does not create a queue, and a name that no
+scheduler knows is not rejected in this pass.
+
+`kpi "<name>"` tags an event. The name is a JSON string of 1 to 200
+characters with no control characters. Two declarations of the same event
+cannot carry different tags (including one tagged and one not). A
+straight-line `emit` of the event puts that tag on the action's completion
+signal. An `emit` inside an `if`, a `for`, or a comment does not. The Camel
+target does not copy the tag onto the Java class.
+
 The IR records each one as an `IRDomain`. Provenance appends a domain
 entity to each member's PROV-O graph: a `prov:Collection` whose
 `prov:hadMember` links the member specks. Specks that are not in a domain
@@ -297,8 +309,62 @@ Listing an event in `produces` does not require any member to emit it.
 The clause is the domain's permission to emit that event. An emit the
 domain did not list is an error. A listed event that nobody emits is not.
 
-**Not yet implemented:** a tick scheduler, queues, runtime routing of
-events between domains, completion signals, and trace IDs. A domain does
+On `post` of an `effect act` tool the generated hook appends a completion
+signal on that decision-log line (`signal` is `prime`): `trace_id` from
+the ingress `pre` (a missing or ill-formed `trace_id` is a fresh root and
+`trace_flagged` is true), `branch_id` unique per branch (the matching post
+reuses it), `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` from
+the action or the domain. A `parent_branch_id` that is present but not an
+id is flagged and stored as null. An absent parent is an unflagged root.
+An act `post` with no matching `pre` is a deny, and that deny is still a
+completion signal. It does not keep the caller's `ok`, `kpis`, or
+`trace_id`: `ok` is false, `kpis` is empty, and the trace is a fresh
+flagged root. Observe tools do not get one. The `kpis` on a tool are the
+tags of events that action emits with a straight-line `emit Name { }`.
+An `emit` inside an `if`, a `for`, a `//` comment, or a `/* */` comment
+is not tagged. `while` and `match` blocks that contain `emit` are a parse
+error, and so is a bare `emit Name`. `emit Name { } // comment` and
+`/* comment */ emit Name { }` are real emits. An `emit Name {` whose `}` is on a later line is not a statement and is not tagged. The generated agent machine
+does not run `if` or `for` bodies.
+
+`speckl trace report` reads the log offline and prints, per priority,
+drain latency (ingress to the last leaf allow completion), completion-signal
+lag (allow pre to that allow post), and queue depth (an allow pre that no
+allow post has closed). Drain and the KPI list count only an allow post
+that matched an allow pre. Each KPI line shows the verdict. A deny post
+is not a drain leaf and is not a KPI line. A null priority is printed as
+`(none)`.
+
+With `--state`, if `<state>.decisions/head.json` exists the report checks
+its `seq` and `hash`, and the head mac when `--key` is passed. A log
+shorter than that head, or a missing log when the head is not empty,
+fails. A log longer than the head is an uncommitted suffix and is
+accepted. If `<state>.decisions/` exists and `head.json` does not, the
+report and `signal.mjs verify` fail with `decision head missing`. If that
+directory is absent, there is no record. `--log`
+alone checks the hash chain of the bytes it was given and does not know
+the head, so a shortened prefix that still hashes can pass. A line with
+no trailing newline is torn and fails. The report prints `macs checked`
+only when `--key` checked at least one line. Otherwise, including an
+empty log, it prints `macs not checked`. A chain rebuilt without the key
+can have a valid hash. That is not a verified seal. Replacing the log
+and head with an older pair from the same run, or restoring an older
+snapshot of the state and the decisions directory together, still
+verifies. There is no anchor outside that directory.
+
+A `//` brace is ignored only when that line has not already opened a
+`{`. `action Go { // }`, a `{` after `//` on an event or action line that
+already opened a brace, and `} /* { */` between specks are not handled
+here. A single quote is not a string quote.
+
+The report does not run the agent and does not enforce a queue. Those
+durations are a throughput signal, not a risk signal. The seal on the line
+is unchanged: HMAC-SHA256 with the shared state key. It proves nothing to
+an outside auditor. Anyone who can read the key can forge a line, and
+someone without the key cannot check the mac.
+
+**Not yet implemented:** a tick scheduler, queues, and runtime routing of
+events between domains. A domain does
 not fuse member specks into one state machine. The budget check assumes
 the model in §3.5 (BMC depth only; each member stutters or takes exactly
 one `next` action per tick; members are independent; each firing chooses

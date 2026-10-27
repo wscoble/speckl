@@ -344,9 +344,14 @@ function lowerBehavior(
       // `cost` is action metadata, not a transition statement.
       const stmts: IRStmt[] = [];
       let cost: number | undefined;
+      let priority: string | undefined;
       for (const s of rawStmts) {
         if (s.type === 'cost') {
           cost = s.amount;
+          continue;
+        }
+        if (s.type === 'priority') {
+          priority = s.name;
           continue;
         }
         stmts.push(lowerStatement(s, diagnostics, speck.name));
@@ -356,6 +361,7 @@ function lowerBehavior(
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
         statements: stmts,
         ...(cost !== undefined ? { cost } : {}),
+        ...(priority !== undefined ? { priority } : {}),
       });
     } else if (m.type === 'event') {
       const e = m as EventNode;
@@ -367,6 +373,7 @@ function lowerBehavior(
           optional: false,
         })),
         ...(e.external ? { external: true } : {}),
+        ...(e.kpi !== undefined ? { kpi: e.kpi } : {}),
       });
     }
   }
@@ -933,7 +940,7 @@ function lowerTypeExpr(t: TypeExpr): IRTypeRef {
 
 
 function lowerStatement(
-  s: Exclude<ActionStatement, { type: 'cost' }>,
+  s: Exclude<ActionStatement, { type: 'cost' } | { type: 'priority' }>,
   diagnostics: IRDiagnostic[],
   speckName: string,
 ): IRStmt {
