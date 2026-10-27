@@ -460,34 +460,38 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   let i = 0;
   let depth = 0;
   let lostAt = 0;
+  // Index of a `{` that opens a `speck Name` whose brace is on a later line.
+  let openBraceAt = -1;
   const speckSpans: { start: number; end: number }[] = [];
   while (i < lines.length) {
     const line = lines[i].trim();
     const code = masks[i].trim();
-    const header = speckHeader(code);
     const lineNo = i + 1;
+    // Any `speck` word that is not a well-formed header is an error. A
+    // well-formed header is optional whitespace, then `speck`, a name, and
+    // `{`, and the line starts at depth 0. `{` alone may be the next line.
+    // `{ }` on that next line is not a header. `speck :=` and `speck >=`
+    // stay a reserved keyword. `x := speck + 1` stays an expression.
+    const shape = rejectMisplacedSpeck(code, depth, filePath, lineNo);
 
-    if (header === 'bad') {
-      throw parseProblem(filePath, lineNo, badSpeckDetail(code));
-    } else if (header !== 'no') {
-      if (depth !== 0) throw parseProblem(filePath, lineNo, 'unbalanced braces');
+    if (shape === 'open' || shape === 'empty' || shape === 'pending') {
       let bodyIndex = i + 1;
       let braceCount = 1;
-      if (header.empty) {
+      if (shape === 'empty') {
         bodyIndex = lines.length;
         braceCount = 0;
-      } else if (!header.opened) {
+      } else if (shape === 'pending') {
         const braceLine = openingBraceLine(masks, i);
         if (braceLine === null) throw parseProblem(filePath, lineNo, 'expected "speck <Name> {"');
         bodyIndex = braceLine + 1;
+        openBraceAt = braceLine;
       }
-      const speck = parseSpeck(lines, i, header.name, bodyIndex, braceCount);
+      const name = /^speck\s+([\w-]+)/.exec(code)![1];
+      const speck = parseSpeck(lines, i, name, bodyIndex, braceCount);
       specks.push(speck);
       speckSpans.push({ start: speck.startLine ?? lineNo, end: speck.endLine ?? lineNo });
-    } else if (domainSharesLine(code)) {
-      throw parseProblem(filePath, lineNo, 'domain and speck must be on separate lines');
-    } else if (speckFollowsClose(code)) {
-      throw parseProblem(filePath, lineNo, 'one speck per line: "speck" follows "}" on the same line');
+    } else if (i === openBraceAt) {
+      openBraceAt = -1;
     } else if (/^import(?:\s|$)/.test(code)) {
       const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
       // Depth 1 is the interior of a speck. An import there is a member of
@@ -499,6 +503,8 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       } else if (!(depth === 1 && insideSpeck)) {
         throw parseProblem(filePath, lineNo, 'import is inside a block');
       }
+    } else if (depth === 0 && strayFileText(code)) {
+      throw parseProblem(filePath, lineNo, 'text outside a speck, domain, or import');
     }
 
     const next = depth + maskDelta(masks[i]);
@@ -591,6 +597,20 @@ function scanFileLine(
       openLine = lineNo;
       continue;
     }
+    // Format characters (Cf) are invisible. A leading BOM is the one exception.
+    // One inside a string or a comment is text, and this branch does not see it.
+    // A supplementary-plane Cf is one code point, so it is checked before the
+    // surrogate halves are walked one unit at a time.
+    const cp = input.codePointAt(i)!;
+    if (cp > 0xffff && isFormatChar(String.fromCodePoint(cp))) {
+      throw parseProblem(file, lineNo, 'invisible format character');
+    }
+    if (isFormatChar(ch)) {
+      if (!(lineNo === 1 && i === 0 && ch === '\uFEFF')) {
+        throw parseProblem(file, lineNo, 'invisible format character');
+      }
+      continue;
+    }
     mask += ch;
   }
   if (kind === 'string') throw parseProblem(file, lineNo, 'unterminated string');
@@ -641,40 +661,83 @@ function badSpeckDetail(code: string): string {
   return 'expected "speck <Name> {"';
 }
 
-/** Keyword `speck`, not the identifier prefix `speckled`. */
-function hasSpeckKeyword(code: string): boolean {
-  return /(?:^|\s)speck(?![A-Za-z0-9_-])/.test(code);
-}
-
-/** A `}` and a later keyword `speck` on one masked line. */
-function speckFollowsClose(code: string): boolean {
-  let from = 0;
-  while (from < code.length) {
-    const close = code.indexOf('}', from);
-    if (close < 0) return false;
-    if (hasSpeckKeyword(code.slice(close + 1))) return true;
-    from = close + 1;
-  }
-  return false;
-}
-
-/** `domain` and a keyword `speck` written on the same masked line. */
-function domainSharesLine(code: string): boolean {
-  return /^domain(?:\s|$)/.test(code) && hasSpeckKeyword(code);
+/** Unicode category Cf. A leading BOM is handled by the caller. */
+function isFormatChar(ch: string): boolean {
+  return /\p{Cf}/u.test(ch);
 }
 
 /**
- * A trimmed, comment-masked line. `speck Name` and `speck Name {` are
- * headers (a `{` may also be the next non-comment line). Anything else
- * that starts with the keyword `speck` is `bad`. `speckled` is `no`.
+ * Shape of a trimmed masked line that starts with the keyword `speck`.
+ * `open` is `speck Name {`, `empty` is `speck Name { }`, `pending` is
+ * `speck Name` with `{` still to come. `bad` starts with the keyword and
+ * is none of those. `no` does not start with the keyword.
  */
-function speckHeader(code: string): { name: string; opened: boolean; empty: boolean } | 'no' | 'bad' {
-  if (!/^speck(?:\s|$)/.test(code)) return 'no';
-  // `speck Name { }` is an empty speck. Anything else that starts with the
-  // keyword is not a header (`speck := ...`, `speck >= 0`).
-  const match = code.match(/^speck\s+([\w-]+)\s*(?:(\{)\s*(\})?)?\s*$/);
-  if (!match) return 'bad';
-  return { name: match[1], opened: match[2] === '{', empty: match[3] === '}' };
+function headerShape(code: string): 'open' | 'empty' | 'pending' | 'bad' | 'no' {
+  if (!/^speck(?![A-Za-z0-9_-])/.test(code)) return 'no';
+  if (/^speck\s+[\w-]+\s*\{\s*\}\s*$/.test(code)) return 'empty';
+  if (/^speck\s+[\w-]+\s*\{\s*$/.test(code)) return 'open';
+  if (/^speck\s+[\w-]+\s*$/.test(code)) return 'pending';
+  return 'bad';
+}
+
+/** Indexes of the keyword `speck`. `speckled` and `speck-name` are not it. */
+function speckWords(code: string): number[] {
+  const out: number[] = [];
+  const re = /speck(?![A-Za-z0-9_-])/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(code))) {
+    const at = match.index;
+    if (at > 0 && /[A-Za-z0-9_-]/.test(code[at - 1])) continue;
+    out.push(at);
+  }
+  return out;
+}
+
+/**
+ * A `speck` token used as an expression name, as in `x := speck + 1`.
+ * A token followed by a name or `{` is a header attempt, not an expression.
+ */
+function identifierSpeck(code: string, index: number): boolean {
+  if (code.slice(0, index).trim() === '') return false;
+  let j = index + 'speck'.length;
+  while (j < code.length && /\s/.test(code[j])) j++;
+  if (j >= code.length) return false;
+  const ch = code[j];
+  if (ch === '{') return false;
+  if (/[A-Za-z0-9_]/.test(ch)) return false;
+  return true;
+}
+
+/**
+ * Throw when a masked line contains a `speck` keyword that is not a
+ * well-formed header at depth 0. Returns the header shape when the line
+ * is one, otherwise `no`.
+ */
+function rejectMisplacedSpeck(
+  code: string,
+  depth: number,
+  file: string | undefined,
+  lineNo: number,
+): 'open' | 'empty' | 'pending' | 'no' {
+  const shape = headerShape(code);
+  const words = speckWords(code);
+  if (words.length === 0) return 'no';
+  if ((shape === 'open' || shape === 'empty' || shape === 'pending') && depth === 0) return shape;
+  if (shape === 'open' || shape === 'empty' || shape === 'pending') {
+    throw parseProblem(file, lineNo, 'unbalanced braces');
+  }
+  if (shape === 'bad') throw parseProblem(file, lineNo, badSpeckDetail(code));
+  if (words.some(idx => !identifierSpeck(code, idx))) {
+    throw parseProblem(file, lineNo, 'speck must be a header at the start of the line');
+  }
+  return 'no';
+}
+
+/** File-level text that is not a blank, a closing `}`, or a `domain` line. */
+function strayFileText(code: string): boolean {
+  if (code === '' || code === '}') return false;
+  if (/^domain(?![A-Za-z0-9_-])/.test(code)) return false;
+  return true;
 }
 
 /** Line index of a `{` that opens a speck whose header had no brace. */

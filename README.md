@@ -179,19 +179,25 @@ cross lines: an unclosed `"` is an error on that line. An unclosed block
 comment, a nested `/*`, and a stray `*/` are parse errors naming the file
 and line. A speck header is matched on the trimmed line with comments
 masked: an indent, a tab, `speck /* c */ Name {`, `speck Name /* c */ {`,
-`speck Name { }`, `speck Name {}`, and `speck Name` with `{` on the next
-line are that speck. `/* */` before `speck` on the same line is parsed as
-that speck. `speck` with the name on the next line is
+`speck Name { }`, `speck Name {}`, and `speck Name` with `{` alone on
+the next line are that speck. `{ }` on that next line is
+`expected "speck <Name> {"`. `/* */` before `speck` on the same line is
+parsed as that speck. After comments and strings are masked, a `speck`
+written as a header has to be that header, at depth 0. Mid-line, after
+punctuation, inside braces, or at nonzero depth, that is a parse error
+naming the file and the line. It is
+`speck must be a header at the start of the line`, or `unbalanced braces`
+when the only problem is the depth. `speck` with the name on the next line is
 `speck name must be on the same line as "speck"`. A one-line speck with
 members, and two specks on one line, are
-`one speck per line: put members on their own lines`. A `}` and `speck`
-on the same line is
-`one speck per line: "speck" follows "}" on the same line`. `domain` and
-`speck` on the same line is `domain and speck must be on separate lines`.
-On main the split name was dropped, the one-line members were dropped,
-and the second speck was dropped or its members were attached to the
-first. Those forms are a parse error here. A line that is only `speck`
-is `speck name must be on the same line as "speck"`.
+`one speck per line: put members on their own lines`. On main the split
+name was dropped, the one-line members were dropped, and the second
+speck was dropped or its members were attached to the first. Those forms
+are a parse error here. A line that is only `speck` is
+`speck name must be on the same line as "speck"`. A format character
+outside a string or a comment is `invisible format character`, except a
+BOM at the start of the file. Other file-level text, outside a speck, a
+`domain`, or an `import`, is `text outside a speck, domain, or import`.
 `speck` is a reserved keyword. On main, `speck := speck + 1`
 and `speck >= 0` were accepted. They are now
 `"speck" is a reserved keyword`. `x := speck + 1` is still an expression.

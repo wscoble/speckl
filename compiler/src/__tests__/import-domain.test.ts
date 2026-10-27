@@ -801,8 +801,7 @@ describe('compile entry', () => {
   it('packed specks and shifted action bodies are a parse error, on LF and CRLF', () => {
     const members = 'one speck per line: put members on their own lines';
     const sameLine = 'speck name must be on the same line as "speck"';
-    const follows = 'one speck per line: "speck" follows "}" on the same line';
-    const domain = 'domain and speck must be on separate lines';
+    const misplaced = 'speck must be a header at the start of the line';
     for (const nl of ['\n', '\r\n'] as const) {
       const speckB = [
         'speck B {',
@@ -912,7 +911,7 @@ describe('compile entry', () => {
         '}',
         '',
       ].join(nl);
-      expectLineError(k15, 'k15.speckdl', 3, follows);
+      expectLineError(k15, 'k15.speckdl', 3, misplaced);
 
       const k16 = [
         'speck A {',
@@ -921,7 +920,7 @@ describe('compile entry', () => {
         '}',
         '',
       ].join(nl);
-      expectLineError(k16, 'k16.speckdl', 2, follows);
+      expectLineError(k16, 'k16.speckdl', 2, misplaced);
 
       const k40 = [
         'speck A {',
@@ -932,13 +931,13 @@ describe('compile entry', () => {
         '}',
         '',
       ].join(nl);
-      expectLineError(k40, 'k40.speckdl', 4, follows);
+      expectLineError(k40, 'k40.speckdl', 4, misplaced);
 
       expectLineError(
         `domain D { } speck A { state { x: Nat } init { x := 0 } }${nl}`,
         'k12.speckdl',
         1,
-        domain,
+        misplaced,
       );
 
       const separate = [
@@ -961,6 +960,135 @@ describe('compile entry', () => {
       ].join(nl);
       expect(parseSpeckContent(commentedClose, 'note.speckdl').specks.map(s => s.name)).toEqual(['A']);
     }
+  });
+
+  it('adv8 and adv8b: a speck word that is not a header is an error, on LF and CRLF', () => {
+    const misplaced = 'speck must be a header at the start of the line';
+    const stray = 'text outside a speck, domain, or import';
+    const format = 'invisible format character';
+    const zwsp = '\u200B';
+    const body = [
+      '    state { y: Nat }',
+      '    init { y := 0 }',
+      '    action Inc { y := y + 1 }',
+      '    invariant Canary { false }',
+      '}',
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      const head = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action Go { x := x + 1 }',
+      ];
+      // D1: any character between } and the keyword, not only whitespace.
+      for (const join of [
+        '};speck B {',
+        '},speck B {',
+        '} ;speck B {',
+        '}:speck B {',
+        '})speck B {',
+        '}"c"speck B {',
+        '}speck B {',
+        '}; speck B {',
+        '} /* c */ speck B {',
+        '}\tspeck B {',
+        '}\u00A0speck B {',
+        '}speck{',
+        'foo speck',
+        'foo speck{',
+        '}\tspeck',
+      ]) {
+        const src = [...head, join, ...body, ''].join(nl);
+        expectLineError(src, 'd1.speckdl', 5, misplaced);
+      }
+      expectLineError([...head, `}${zwsp}speck B {`, ...body, ''].join(nl), 'd1.speckdl', 5, format);
+
+      // D2: the keyword partway through a member line.
+      const d2 = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    description: "a" speck B {',
+        '        state { y: Nat }',
+        '        action Inc { y := y + 1 }',
+        '        invariant Canary { false }',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expectLineError(d2, 'd2.speckdl', 4, misplaced);
+
+      // D3: a format character before a file-level header drops nothing quietly.
+      expectLineError(`${zwsp}speck B {\n    invariant Canary { false }\n}\n`.replace(/\n/g, nl), 'd3.speckdl', 1, format);
+      expectLineError(`speck A {\n}\n${zwsp}speck B {\n    invariant Canary { false }\n}\n`.replace(/\n/g, nl), 'd3b.speckdl', 3, format);
+      for (const cf of ['\u00AD', '\u200C', '\u200D', '\u2060', '\u{E0001}']) {
+        expectLineError(`${cf}speck B {\n}\n`.replace(/\n/g, nl), 'cf.speckdl', 1, format);
+      }
+      // A non-format character outside the basic plane is still file-level text.
+      expectLineError('\u{1F600}\n'.replace(/\n/g, nl), 'emoji.speckdl', 1, stray);
+      expectLineError(`speck A {\n}\n\uFEFFspeck B {\n}\n`.replace(/\n/g, nl), 'bommid.speckdl', 3, format);
+
+      // D4: domain or a brace wrapper sharing the line with a header.
+      expectLineError(`domain D { };speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n`.replace(/\n/g, nl), 'd4.speckdl', 1, misplaced);
+      expectLineError(`{ speck A { state { x: Nat } init { x := 0 } action Go { x := 1 } invariant Canary { false } } }\n`.replace(/\n/g, nl), 'd4b.speckdl', 1, misplaced);
+
+      // D5: members after an empty speck, and other file-level text, are not dropped.
+      expectLineError(['speck E { }', '    state { x: Nat }', '    init { x := 0 }', ''].join(nl), 'd5.speckdl', 2, stray);
+      expectLineError(['state { x: Nat }', 'speck A {', '    init { x := 0 }', '}', ''].join(nl), 'd5b.speckdl', 1, stray);
+      expectLineError(['speck A { }', 'state { x: Nat }', 'speck B { }', ''].join(nl), 'd5c.speckdl', 2, stray);
+      expectLineError(['speck E', '{ }', '    state { x: Nat }', ''].join(nl), 'brace.speckdl', 1, 'expected "speck <Name> {"');
+
+      // A leading BOM is not a format error. A packed header after it still is.
+      const bomOk = [
+        '\uFEFFspeck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action Go { x := x + 1 }',
+        '}',
+        '',
+      ].join(nl);
+      expect(parseSpeckContent(bomOk, 'bom.speckdl').specks.map(s => s.name)).toEqual(['A']);
+      expectLineError(`\uFEFFspeck A { state { x: Nat } init { x := 0 } }${nl}`, 'bompack.speckdl', 1, 'one speck per line: put members on their own lines');
+
+      // Headers the file walker already accepts, including braces hidden from the mask.
+      const kept = [
+        ['speck My-Name {', '    state { x: Nat }', '    init { x := 0 }', '}'],
+        ['speck A // {', '{', '    state { x: Nat }', '    init { x := 0 }', '}'],
+        ['speck A { // }', '    state { x: Nat }', '    init { x := 0 }', '}'],
+        ['speck A /* { */ {', '    state { x: Nat }', '    init { x := 0 }', '}'],
+        ['speck A {', '    state { x: Nat }', '    init { x := 0 }', '}', '// speck B and speckled'],
+        ['speck A {', '    description: "} speck B {"', '    state { x: Nat }', '    init { x := 0 }', '}'],
+        ['speck A {', '    description: "a\u200Bb"', '    state { x: Nat }', '    init { x := 0 }', '}'],
+        ['speck\tA\t{', '    state { x: Nat }', '    init { x := 0 }', '}'],
+      ];
+      for (const lines of kept) {
+        const ast = parseSpeckContent([...lines, ''].join(nl), 'kept.speckdl');
+        expect(ast.specks.map(s => s.name)[0]).toBe(lines[0].includes('My-Name') ? 'My-Name' : 'A');
+      }
+      expectLineError(`speck A {\tstate { x: Nat }\tinit { x := 0 }\t}${nl}`, 'tabpack.speckdl', 1, 'one speck per line: put members on their own lines');
+
+      // An expression name is not a header. A hyphenated name is not the keyword.
+      const expr = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action Go {',
+        '        x := speck + 1',
+        '        x := my-speck + 1',
+        '        x:=speck+1',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      const ast = parseSpeckContent(expr, 'expr.speckdl');
+      const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { expr?: string }[] };
+      expect(action.statements.some(s => s.expr === 'speck + 1')).toBe(true);
+    }
+
+    // A file whose lines are separated only by CR is one line, and it errors.
+    const crOnly = 'speck A {\r    state { x: Nat }\r    init { x := 0 }\r}\r';
+    expectLineError(crOnly, 'cr.speckdl', 1, 'one speck per line: put members on their own lines');
   });
 
   it('f02 and f08: speck used as a name is a reserved keyword, on LF and CRLF', () => {
@@ -1050,7 +1178,7 @@ describe('compile entry', () => {
         '',
       ].join(nl);
       expect(() => parseSpeckContent(bare, 'blk.speckdl')).toThrow(
-        /Parse error at blk\.speckdl:2: import is inside a block/,
+        /Parse error at blk\.speckdl:1: text outside a speck, domain, or import/,
       );
 
       const inAction = [
