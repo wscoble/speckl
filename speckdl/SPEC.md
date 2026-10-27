@@ -215,7 +215,52 @@ and it does not rewrite expressions that mention an imported name. That
 name resolution is **not yet implemented**. Each merged speck stays one
 speck.
 
-### 2.9 Expression Operators
+### 2.9 Domains
+
+```
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+
+domain Fulfillment {
+    members: Shipment;
+    language: "A shipment leaves the warehouse";
+}
+```
+
+A `domain` is a bounded context: a name, the specks that belong to it, and
+an optional ubiquitous-language note. It is file-level. It is not a member
+of a speck, and it does not fuse those specks into one agent. Each member
+is still one speck.
+
+`members` is required and lists speck names (local, or merged in from
+imports). `language` is a quoted string or bare text up to the semicolon.
+The same failures are compile errors:
+
+- a member listed twice in one domain;
+- a speck that is a member of two domains;
+- a member that is not a speck in this compilation;
+- the same domain name declared twice.
+
+The IR records each one as an `IRDomain`. Provenance appends a domain
+entity to each member's PROV-O graph: a `prov:Collection` whose
+`prov:hadMember` links the member specks. Specks that are not in a domain
+keep the same provenance graph as before.
+
+`speckl doctor <file>` resolves imports and domains, then fails when a
+domain member declares an `effect act` tool that is not the target of a
+`map` rule in every `harness` block on that member (no harness block
+counts as not mapped). Observe tools are not checked. An act tool on a
+speck that is not in a domain is not checked. This is a spec check. It is
+not the generated adapter's `doctor` probe, which runs an installed hook.
+
+**Not yet implemented** on a domain: `consumes` / `produces` contracts,
+per-action `cost`, a domain `budget`, and runtime routing of events
+between domains. A domain does not change how a speck compiles to a state
+machine.
+
+### 2.10 Expression Operators
 
 Binary operators, from loosest to tightest binding:
 
@@ -323,7 +368,8 @@ Generators consume the IR, not the AST. The IR is complete (every fact in
 the spec is in a named facet), lossless (expressions are typed trees, not
 strings), resolved (`import` paths are read and merged at lower time; using
 an imported name inside an expression is not yet implemented), and
-provenanced (missing provenance is synthesized from file metadata).
+provenanced (missing provenance is synthesized from file metadata). A
+`domain` is an `IRDomain` on that IR, not a ninth facet of one speck.
 
 ### 4.1 Planned Stages (not implemented)
 
@@ -442,6 +488,7 @@ Exit codes: `0` all verified, `1` failure, `2` z3 not available.
 | Tool | Purpose | Status |
 |------|---------|--------|
 | `speckl-compile` | Reference compiler | Working |
+| `speckl doctor` | Import, domain, and act-tool harness check | Working |
 | Z3 verification script | Real-solver verification of example suite | Done |
 | `speckl-lsp` | Language Server Protocol (IDE support) | Planned |
 | `speckl-playground` | Browser-based spec editor + live verification | Planned |

@@ -8,14 +8,22 @@
 // does not contain them), as are `next:` relations (parsed separately from
 // raw source) and `type` aliases (not captured as members).
 
-import { AST, SpeckNode, MemberNode, TypeExpr } from './parser.js';
+import { AST, SpeckNode, MemberNode, TypeExpr, DomainNode } from './parser.js';
 
 /** Render a parsed AST back to SpeckDL source. */
 export function printAST(ast: AST): string {
   const chunks: string[] = [];
   for (const imp of ast.imports ?? []) chunks.push(printMember(imp).join('\n'));
+  for (const domain of ast.domains ?? []) chunks.push(printDomain(domain));
   for (const speck of ast.specks) chunks.push(printSpeck(speck));
   return chunks.join('\n') + '\n';
+}
+
+function printDomain(domain: DomainNode): string {
+  const lines = [`domain ${domain.name} {`, `    members: ${domain.members.join(', ')};`];
+  if (domain.language !== undefined) lines.push(`    language: ${JSON.stringify(domain.language)};`);
+  lines.push('}');
+  return lines.join('\n');
 }
 
 function printSpeck(speck: SpeckNode): string {

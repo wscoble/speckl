@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
 import { parseSpeckContent, type AST, type ImportNode } from '../parser.js';
-import type { IR, IRDiagnostic, IRImport, IRSpeck } from './types.js';
+import type { IR, IRDiagnostic, IRDomain, IRImport, IRSpeck } from './types.js';
 import type { LowerOptions } from './lower.js';
 
 export interface LowerCtx {
@@ -132,9 +132,11 @@ function hashMatches(declared: string, bytes: Buffer): boolean {
 export function mergeUnit(
   unit: IR,
   specks: IRSpeck[],
+  domains: IRDomain[],
   diagnostics: IRDiagnostic[],
 ): void {
   for (const s of unit.specks) addSpeck(specks, s, diagnostics);
+  for (const d of unit.domains) addDomain(domains, d);
   for (const d of unit.diagnostics) diagnostics.push(d);
 }
 
@@ -146,4 +148,64 @@ function addSpeck(into: IRSpeck[], speck: IRSpeck, diagnostics: IRDiagnostic[]):
   }
   if (into.some(s => s.name === speck.name && canonical(s.sourcePath) === canonical(speck.sourcePath))) return;
   into.push(speck);
+}
+
+function addDomain(into: IRDomain[], domain: IRDomain): void {
+  if (into.some(d => d.name === domain.name && canonical(d.sourcePath) === canonical(domain.sourcePath))) return;
+  into.push(domain);
+}
+
+export function localDomains(
+  ast: AST,
+  specks: IRSpeck[],
+  diagnostics: IRDiagnostic[],
+  filePath: string,
+): IRDomain[] {
+  const known = new Set(specks.map(s => s.name));
+  const out: IRDomain[] = [];
+  const seenNames = new Set<string>();
+  for (const d of ast.domains ?? []) {
+    if (seenNames.has(d.name)) {
+      pushError(diagnostics, `domain: ${d.name} is declared more than once in ${filePath}`, undefined, d.startLine);
+    }
+    seenNames.add(d.name);
+    const seenMembers = new Set<string>();
+    for (const member of d.members) {
+      if (seenMembers.has(member)) {
+        pushError(diagnostics, `domain: ${d.name} lists ${member} more than once in ${filePath}`, undefined, d.startLine);
+      }
+      seenMembers.add(member);
+      if (!known.has(member)) {
+        pushError(diagnostics, `domain: ${d.name} member ${member} is not a speck in ${filePath}`, undefined, d.startLine);
+      }
+    }
+    out.push({
+      name: d.name,
+      members: [...d.members],
+      ...(d.language !== undefined ? { language: d.language } : {}),
+      sourcePath: filePath,
+    });
+  }
+  return out;
+}
+
+export function crossCheckDomains(domains: IRDomain[], diagnostics: IRDiagnostic[]): void {
+  const namePath = new Map<string, string>();
+  const memberDomain = new Map<string, string>();
+  for (const d of domains) {
+    const prev = namePath.get(d.name);
+    if (prev === undefined) {
+      namePath.set(d.name, d.sourcePath);
+    } else if (canonical(prev) !== canonical(d.sourcePath)) {
+      pushError(diagnostics, `domain: ${d.name} is declared in both ${prev} and ${d.sourcePath}`);
+    }
+    for (const member of new Set(d.members)) {
+      const other = memberDomain.get(member);
+      if (other === undefined) memberDomain.set(member, d.name);
+      else if (other !== d.name) {
+        const [left, right] = [other, d.name].sort();
+        pushError(diagnostics, `domain: speck ${member} is a member of ${left} and ${right}`);
+      }
+    }
+  }
 }

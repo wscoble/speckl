@@ -1,5 +1,10 @@
 import "lib.speckdl" as ledger version "1.2.0"
 
+domain Books {
+    members: Invoice, Ledger;
+    language: "A ledger posts an invoice";
+}
+
 speck Invoice {
     state { issued: Bool }
     init { issued := false }
