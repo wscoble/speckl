@@ -36,13 +36,20 @@ alias.
   a tab, `speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
   `speck Name {}`, and `speck Name` with `{` on the next line are that
   speck. A `/* */` comment may also precede `speck` on the same line.
-  `speck` on its own line and the name on the next line are that speck.
-  A one-line speck with members (`speck L { state { x: Nat } init { x := 0 } }`)
-  and two specks on one line are parsed, and the members stay with the
-  speck they were written on. On main the split name was dropped, a
-  one-line speck kept the name and dropped the members, and a second
-  speck on the same line was dropped. A line that is only `speck` and is
-  not followed by a name is `expected a name after "speck"`.
+  `speck` with the name on the next line is
+  `speck name must be on the same line as "speck"`, naming the file and
+  the line. A one-line speck with members
+  (`speck L { state { x: Nat } init { x := 0 } }`) and two specks on one
+  line are `one speck per line: put members on their own lines`. A `}`
+  and `speck` on the same line is
+  `one speck per line: "speck" follows "}" on the same line`. `domain`
+  and `speck` on the same line is `domain and speck must be on separate
+  lines`. On main the split name was dropped, a one-line speck kept the
+  name and dropped the members, and a second speck on the same line was
+  dropped or its members were attached to the first. Those forms are a
+  parse error here. Accepting them belongs to the whole-file tokenizer,
+  not this change. A line that is only `speck` is
+  `speck name must be on the same line as "speck"`.
   `speck` is a reserved keyword. On main, `speck := speck + 1` and
   `speck >= 0` were accepted. They are now
   `"speck" is a reserved keyword`, naming the file and line. `x := speck + 1`
@@ -55,7 +62,8 @@ alias.
   A `{` or `}` inside a `//` comment, a `/* */` comment, or a string on a
   member line can still decide where that member ends. `if x > 5 { // }`
   and `if x > 5 { /* } */` can run the following statements unconditionally
-  and drop a following invariant Canary. `description: "{ } }}"` can drop
+  and drop a following invariant Canary. The same gap drops invariant
+  Canary in g07, g09, g26, and g27. `description: "{ } }}"` can drop
   the members of that speck, and `log := "}"` inside an action can drop
   that action's statements and a following invariant. Comment braces inside
   member blocks are a known gap, the same as main, and are fixed in #47,

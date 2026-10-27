@@ -181,11 +181,17 @@ and line. A speck header is matched on the trimmed line with comments
 masked: an indent, a tab, `speck /* c */ Name {`, `speck Name /* c */ {`,
 `speck Name { }`, `speck Name {}`, and `speck Name` with `{` on the next
 line are that speck. `/* */` before `speck` on the same line is parsed as
-that speck. `speck` on one line and the name on the next are that speck.
-A one-line speck with members, and two specks on one line, keep those
-members. On main the split name was dropped, the one-line members were
-dropped, and the second speck was dropped. A line that is only `speck`
-and is not followed by a name is `expected a name after "speck"`.
+that speck. `speck` with the name on the next line is
+`speck name must be on the same line as "speck"`. A one-line speck with
+members, and two specks on one line, are
+`one speck per line: put members on their own lines`. A `}` and `speck`
+on the same line is
+`one speck per line: "speck" follows "}" on the same line`. `domain` and
+`speck` on the same line is `domain and speck must be on separate lines`.
+On main the split name was dropped, the one-line members were dropped,
+and the second speck was dropped or its members were attached to the
+first. Those forms are a parse error here. A line that is only `speck`
+is `speck name must be on the same line as "speck"`.
 `speck` is a reserved keyword. On main, `speck := speck + 1`
 and `speck >= 0` were accepted. They are now
 `"speck" is a reserved keyword`. `x := speck + 1` is still an expression.
@@ -197,7 +203,8 @@ colon-form `if` is never rewritten, the same as main. `hash ""`, a mistyped impo
 accepted. Inside a member, a `{` or `}` in a `//` comment, a `/* */`
 comment, or a string can still decide where the member ends. That is the
 same as main. `if x > 5 { // }` can run the following statements
-unconditionally and drop invariant Canary. `description: "{ } }}"` can
+unconditionally and drop invariant Canary. The same gap drops invariant
+Canary in g07, g09, g26, and g27. `description: "{ } }}"` can
 drop that speck's members, and `log := "}"` in an action can drop the
 action's statements and a following invariant. Comment braces inside
 member blocks are a known gap, fixed in #47, not here.

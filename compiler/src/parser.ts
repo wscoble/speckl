@@ -449,17 +449,13 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   // `/* */` comment. `'` is prime notation, not a string quote. A string ends
   // on its own line. A `domain` line is not a construct: its braces count, and
   // a speck header while depth is not 0 is an error, so the speck is not
-  // dropped. At end of file this depth must be 0. Member blocks are a
-  // separate walk. A brace in a comment or a string there can still end the
-  // member. That gap is the same as main and is left for a later change.
-  const sourceMasks = scanFileLines(sourceLines, filePath, (n) => n + 1);
-  // A one-line speck with members, two specks on one line, and `speck` with
-  // the name on the next line are laid out as the multi-line headers this
-  // walker already parses. Anything else stays on its original lines.
-  const laid = layOutSpeckHeaders(sourceLines, sourceMasks);
-  const lines = laid.lines;
-  const origins = laid.origins;
-  const masks = scanFileLines(lines, filePath, (n) => origins[n]);
+  // dropped. At end of file this depth must be 0. Line numbers are the
+  // source file's: the lower pass re-reads action bodies by those numbers.
+  // Member blocks are a separate walk. A brace in a comment or a string
+  // there can still end the member. That gap is the same as main and is
+  // left for a later change.
+  const lines = sourceLines;
+  const masks = scanFileLines(lines, filePath, (n) => n + 1);
 
   let i = 0;
   let depth = 0;
@@ -469,14 +465,12 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     const line = lines[i].trim();
     const code = masks[i].trim();
     const header = speckHeader(code);
+    const lineNo = i + 1;
 
     if (header === 'bad') {
-      const detail = code === 'speck'
-        ? 'expected a name after "speck"'
-        : '"speck" is a reserved keyword';
-      throw parseProblem(filePath, origins[i], detail);
+      throw parseProblem(filePath, lineNo, badSpeckDetail(code));
     } else if (header !== 'no') {
-      if (depth !== 0) throw parseProblem(filePath, origins[i], 'unbalanced braces');
+      if (depth !== 0) throw parseProblem(filePath, lineNo, 'unbalanced braces');
       let bodyIndex = i + 1;
       let braceCount = 1;
       if (header.empty) {
@@ -484,14 +478,17 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
         braceCount = 0;
       } else if (!header.opened) {
         const braceLine = openingBraceLine(masks, i);
-        if (braceLine === null) throw parseProblem(filePath, origins[i], 'expected "speck <Name> {"');
+        if (braceLine === null) throw parseProblem(filePath, lineNo, 'expected "speck <Name> {"');
         bodyIndex = braceLine + 1;
       }
       const speck = parseSpeck(lines, i, header.name, bodyIndex, braceCount);
       specks.push(speck);
-      speckSpans.push({ start: speck.startLine ?? i + 1, end: speck.endLine ?? i + 1 });
+      speckSpans.push({ start: speck.startLine ?? lineNo, end: speck.endLine ?? lineNo });
+    } else if (domainSharesLine(code)) {
+      throw parseProblem(filePath, lineNo, 'domain and speck must be on separate lines');
+    } else if (speckFollowsClose(code)) {
+      throw parseProblem(filePath, lineNo, 'one speck per line: "speck" follows "}" on the same line');
     } else if (/^import(?:\s|$)/.test(code)) {
-      const lineNo = i + 1;
       const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
       // Depth 1 is the interior of a speck. An import there is a member of
       // that speck. Any deeper brace (an action, a state block, an if) is
@@ -500,13 +497,13 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
         const node = parseImportStatement(line);
         imports.push({ ...node, startLine: lineNo, endLine: lineNo });
       } else if (!(depth === 1 && insideSpeck)) {
-        throw parseProblem(filePath, origins[i], 'import is inside a block');
+        throw parseProblem(filePath, lineNo, 'import is inside a block');
       }
     }
 
     const next = depth + maskDelta(masks[i]);
-    if (depth === 0 && next > 0) lostAt = origins[i];
-    else if (depth >= 0 && next < 0) lostAt = origins[i];
+    if (depth === 0 && next > 0) lostAt = lineNo;
+    else if (depth >= 0 && next < 0) lostAt = lineNo;
     depth = next;
     i++;
   }
@@ -626,170 +623,44 @@ function scanFileLines(
 }
 
 /**
- * A member keyword the line walker already parses when it has its own line.
- * Used only to decide whether a packed header line can be laid out that way.
+ * Why a line that starts with the keyword `speck` is not a header.
+ * `speck :=` and `speck >=` stay a reserved keyword. A missing name,
+ * members on the header line, and a second speck on that line name the
+ * actual problem. Accepting those forms is a later tokenizer change.
  */
-const PACKED_MEMBER = /^(?:state|init|action|event|invariant|interface|provenance|bom|verify|constraint|service|oneof|transition|agent|component|type|input|output|next)\b/;
-
-function isSpeckAt(mask: string, index: number): boolean {
-  if (!mask.startsWith('speck', index)) return false;
-  const before = index === 0 || /\s/.test(mask[index - 1]);
-  const after = mask[index + 5];
-  return before && (after === undefined || /\s/.test(after));
-}
-
-function matchBrace(mask: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < mask.length; i++) {
-    if (mask[i] === '{') depth++;
-    else if (mask[i] === '}') {
-      depth--;
-      if (depth === 0) return i;
+function badSpeckDetail(code: string): string {
+  if (!/^speck\s+[\w-]/.test(code)) {
+    if (/^speck\s*(?:\{|$)/.test(code)) {
+      return 'speck name must be on the same line as "speck"';
     }
+    return '"speck" is a reserved keyword';
   }
-  return -1;
+  if (/^speck\s+[\w-]+\s*\{/.test(code)) {
+    return 'one speck per line: put members on their own lines';
+  }
+  return 'expected "speck <Name> {"';
 }
 
-function splitSpeckSegments(line: string, mask: string): { text: string; mask: string }[] {
-  const cuts: number[] = [];
-  let depth = 0;
-  for (let i = 0; i < mask.length; i++) {
-    if (mask[i] === '{') depth++;
-    else if (mask[i] === '}') depth--;
-    else if (depth === 0 && isSpeckAt(mask, i)) cuts.push(i);
-  }
-  if (cuts.length === 0) return [{ text: line, mask }];
-  const out: { text: string; mask: string }[] = [];
-  for (let c = 0; c < cuts.length; c++) {
-    const start = cuts[c];
-    const end = c + 1 < cuts.length ? cuts[c + 1] : line.length;
-    out.push({ text: line.slice(start, end), mask: mask.slice(start, end) });
-  }
-  return out;
+/** Keyword `speck`, not the identifier prefix `speckled`. */
+function hasSpeckKeyword(code: string): boolean {
+  return /(?:^|\s)speck(?![A-Za-z0-9_-])/.test(code);
 }
 
-function topChunks(mask: string): string[] {
-  const chunks: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < mask.length; i++) {
-    if (mask[i] === '{') depth++;
-    else if (mask[i] === '}') {
-      depth--;
-      if (depth === 0) {
-        chunks.push(mask.slice(start, i + 1));
-        start = i + 1;
-      }
-    }
+/** A `}` and a later keyword `speck` on one masked line. */
+function speckFollowsClose(code: string): boolean {
+  let from = 0;
+  while (from < code.length) {
+    const close = code.indexOf('}', from);
+    if (close < 0) return false;
+    if (hasSpeckKeyword(code.slice(close + 1))) return true;
+    from = close + 1;
   }
-  if (mask.slice(start).trim()) chunks.push(mask.slice(start));
-  return chunks;
+  return false;
 }
 
-/** A complete or open `speck Name { ... }` whose interior is only known members. */
-function isExpandableSpeck(mask: string): boolean {
-  const trimmed = mask.trimStart();
-  const header = trimmed.match(/^speck\s+[\w-]+\s*\{/);
-  if (!header) return false;
-  const brace = mask.length - trimmed.length + header[0].length - 1;
-  const close = matchBrace(mask, brace);
-  if (close < 0) return mask.slice(brace + 1).trim() === '';
-  if (mask.slice(close + 1).trim() !== '') return false;
-  for (const chunk of topChunks(mask.slice(brace + 1, close))) {
-    const code = chunk.trim();
-    if (!code) continue;
-    if (!PACKED_MEMBER.test(code) || !code.includes('{')) return false;
-  }
-  return true;
-}
-
-function explodeInterior(text: string, mask: string): string[] {
-  if (!text.trim()) return [];
-  const out: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < mask.length; i++) {
-    if (mask[i] === '{') depth++;
-    else if (mask[i] === '}') {
-      depth--;
-      if (depth === 0) {
-        out.push(...explodeBlock(text.slice(start, i + 1), mask.slice(start, i + 1)));
-        start = i + 1;
-      }
-    }
-  }
-  const tail = text.slice(start);
-  if (tail.trim()) out.push(tail);
-  return out;
-}
-
-function explodeBlock(text: string, mask: string): string[] {
-  const open = mask.indexOf('{');
-  if (open < 0) return text.trim() ? [text] : [];
-  const close = matchBrace(mask, open);
-  if (close < 0) {
-    return [text.slice(0, open + 1), ...explodeInterior(text.slice(open + 1), mask.slice(open + 1))];
-  }
-  const inner = text.slice(open + 1, close);
-  if (!inner.trim() && !text.slice(close + 1).trim()) return [text];
-  const lines = [text.slice(0, open + 1)];
-  lines.push(...explodeInterior(inner, mask.slice(open + 1, close)));
-  lines.push(text.slice(close, close + 1));
-  const after = text.slice(close + 1);
-  if (after.trim()) lines.push(...explodeInterior(after, mask.slice(close + 1)));
-  return lines;
-}
-
-function expandPackedLine(line: string, mask: string): string[] {
-  const code = mask.trim();
-  if (/^speck\s+[\w-]+\s*(?:\{\s*\}?)?\s*$/.test(code)) return [line];
-  if (!/^speck\s+[\w-]+\s*\{/.test(code)) return [line];
-  const segments = splitSpeckSegments(line, mask);
-  if (!segments.every(seg => isExpandableSpeck(seg.mask))) return [line];
-  const out: string[] = [];
-  for (const seg of segments) out.push(...explodeBlock(seg.text, seg.mask));
-  return out.length ? out : [line];
-}
-
-/**
- * Lay packed headers out as separate lines, and join a lone `speck` with the
- * name on the following line. Reported errors keep the original line number.
- */
-function layOutSpeckHeaders(
-  lines: string[],
-  masks: string[],
-): { lines: string[]; origins: number[] } {
-  const outLines: string[] = [];
-  const origins: number[] = [];
-  let depth = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const code = masks[i].trim();
-    if (depth === 0 && code === 'speck') {
-      let j = i + 1;
-      while (j < lines.length && masks[j].trim() === '') j++;
-      const next = j < lines.length ? masks[j].trim() : '';
-      if (next && !/^speck(?:\s|$)/.test(next) && /^[\w-]+(?:\s*\{.*)?$/.test(next)) {
-        const joined = lines[i].replace(/\s*$/, '') + ' ' + lines[j].trim();
-        const joinedMask = scanFileLine(joined, fileLexStart(), 1, undefined).mask;
-        const pieces = expandPackedLine(joined, joinedMask);
-        for (const piece of pieces) {
-          outLines.push(piece);
-          origins.push(i + 1);
-        }
-        depth += maskDelta(masks[i]);
-        for (let k = i + 1; k <= j; k++) depth += maskDelta(masks[k]);
-        i = j;
-        continue;
-      }
-    }
-    const pieces = depth === 0 ? expandPackedLine(lines[i], masks[i]) : [lines[i]];
-    for (const piece of pieces) {
-      outLines.push(piece);
-      origins.push(i + 1);
-    }
-    depth += maskDelta(masks[i]);
-  }
-  return { lines: outLines, origins };
+/** `domain` and a keyword `speck` written on the same masked line. */
+function domainSharesLine(code: string): boolean {
+  return /^domain(?:\s|$)/.test(code) && hasSpeckKeyword(code);
 }
 
 /**

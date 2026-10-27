@@ -631,16 +631,26 @@ describe('compile entry', () => {
         expect(inv.name, header.join(' ')).toBe('Canary');
         expect(inv.expr, header.join(' ')).toBe('false');
       }
-      for (const bad of ['speck {', 'speck B extra', 'speck B { trailing']) {
+      const badHeaders: [string, string][] = [
+        ['speck {', 'speck name must be on the same line as "speck"'],
+        ['speck B extra', 'expected "speck <Name> {"'],
+        ['speck B { trailing', 'one speck per line: put members on their own lines'],
+      ];
+      for (const [bad, detail] of badHeaders) {
         const src = [...speckA, bad, ...canary, ''].join(nl);
         expect(() => parseSpeckContent(src, 'bad.speckdl'), bad).toThrow(
-          /Parse error at bad\.speckdl:\d+: "speck" is a reserved keyword/,
+          new RegExp(`Parse error at bad\\.speckdl:5: ${detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
         );
-        expect(() => parseSpeckContent(src), bad).toThrow(/Parse error at line \d+: "speck" is a reserved keyword/);
+        expect(() => parseSpeckContent(src), bad).toThrow(
+          new RegExp(`Parse error at line 5: ${detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+        );
       }
       const lone = [...speckA, 'speck', ...canary, ''].join(nl);
       expect(() => parseSpeckContent(lone, 'bad.speckdl')).toThrow(
-        /Parse error at bad\.speckdl:\d+: expected a name after "speck"/,
+        /Parse error at bad\.speckdl:5: speck name must be on the same line as "speck"/,
+      );
+      expect(() => parseSpeckContent(lone)).toThrow(
+        /Parse error at line 5: speck name must be on the same line as "speck"/,
       );
       const missingBrace = [...speckA, 'speck B', ...canary, ''].join(nl);
       expect(() => parseSpeckContent(missingBrace, 'bad.speckdl')).toThrow(
@@ -670,7 +680,59 @@ describe('compile entry', () => {
     }
   });
 
-  it('f17 f10 and two specks on one line keep their members, on LF and CRLF', () => {
+  it('an empty speck before an action lowers that action from its own lines, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      for (const header of ['speck L { }', 'speck L {}']) {
+        const src = [
+          header,
+          'speck M {',
+          '    state {',
+          '        x: Nat',
+          '    }',
+          '    init {',
+          '        x := 0',
+          '    }',
+          '    action Inc {',
+          '        x := x + 1',
+          '    }',
+          '}',
+          '',
+        ].join(nl);
+        const filePath = join(mkdtempSync(join(tmpdir(), 'speckl-empty-')), 'empty.speckdl');
+        writeFileSync(filePath, src);
+        const ast = parseSpeckContent(src, filePath);
+        expect(ast.specks.map(s => s.name), header).toEqual(['L', 'M']);
+        expect(ast.specks[0].members, header).toEqual([]);
+        const ir = lower(ast, { filePath, resolveImports: false });
+        expect(errors(ir), header).toEqual([]);
+        const inc = ir.specks[1].facets.behavior.actions.find(a => a.name === 'Inc');
+        expect(inc?.statements[0], header).toMatchObject({
+          kind: 'assign',
+          target: 'x',
+          value: {
+            kind: 'binop',
+            op: '+',
+            left: { kind: 'ident', name: 'x' },
+            right: { kind: 'int_lit', value: 1 },
+          },
+        });
+      }
+    }
+  });
+
+  function expectLineError(src: string, file: string, line: number, detail: string) {
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    expect(() => parseSpeckContent(src, file)).toThrow(
+      new RegExp(`Parse error at ${esc(file)}:${line}: ${esc(detail)}`),
+    );
+    expect(() => parseSpeckContent(src)).toThrow(
+      new RegExp(`Parse error at line ${line}: ${esc(detail)}`),
+    );
+  }
+
+  it('f17 f10 and two specks on one line are a parse error, on LF and CRLF', () => {
+    const members = 'one speck per line: put members on their own lines';
+    const sameLine = 'speck name must be on the same line as "speck"';
     for (const nl of ['\n', '\r\n'] as const) {
       const canary = [
         'speck M {',
@@ -681,15 +743,7 @@ describe('compile entry', () => {
         '',
       ].join(nl);
 
-      const f17 = `speck L { state { x: Nat } init { x := 0 } }${nl}` + canary;
-      const ast17 = parseSpeckContent(f17, 'f17.speckdl');
-      expect(ast17.specks.map(s => s.name)).toEqual(['L', 'M']);
-      const state = ast17.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
-      const init = ast17.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
-      expect(state.variables.map(v => v.name)).toEqual(['x']);
-      expect(init.assignments).toEqual([{ name: 'x', expr: '0' }]);
-      const invM = ast17.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
-      expect(invM.expr).toBe('false');
+      expectLineError(`speck L { state { x: Nat } init { x := 0 } }${nl}` + canary, 'f17.speckdl', 1, members);
 
       const f10 = [
         'speck',
@@ -706,25 +760,17 @@ describe('compile entry', () => {
         '}',
         '',
       ].join(nl);
-      const ast10 = parseSpeckContent(f10, 'f10.speckdl');
-      expect(ast10.specks.map(s => s.name)).toEqual(['B']);
-      const st10 = ast10.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
-      expect(st10.variables.map(v => v.name)).toEqual(['x']);
-      const inv10 = ast10.specks[0].members.find(m => m.type === 'invariant') as { name: string; expr: string };
-      expect(inv10.name).toBe('Canary');
-      expect(inv10.expr).toBe('false');
+      expectLineError(f10, 'f10.speckdl', 1, sameLine);
 
       const f10b = ['speck', 'B', '{', '    invariant Canary { false }', '}', ''].join(nl);
-      const ast10b = parseSpeckContent(f10b, 'f10.speckdl');
-      expect(ast10b.specks.map(s => s.name)).toEqual(['B']);
+      expectLineError(f10b, 'f10.speckdl', 1, sameLine);
 
-      const two = `speck A { state { x: Nat } init { x := 0 } } speck B { invariant Canary { false } }${nl}`;
-      const astTwo = parseSpeckContent(two, 'f13.speckdl');
-      expect(astTwo.specks.map(s => s.name)).toEqual(['A', 'B']);
-      const aState = astTwo.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
-      expect(aState.variables.map(v => v.name)).toEqual(['x']);
-      const bInv = astTwo.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
-      expect(bInv.expr).toBe('false');
+      expectLineError(
+        `speck A { state { x: Nat } init { x := 0 } } speck B { invariant Canary { false } }${nl}`,
+        'f13.speckdl',
+        1,
+        members,
+      );
 
       const e29 = [
         'speck A { } speck B {',
@@ -734,24 +780,186 @@ describe('compile entry', () => {
         '}',
         '',
       ].join(nl);
-      const ast29 = parseSpeckContent(e29, 'e29.speckdl');
-      expect(ast29.specks.map(s => s.name)).toEqual(['A', 'B']);
-      expect(ast29.specks[0].members).toEqual([]);
-      const inv29 = ast29.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
-      expect(inv29.expr).toBe('false');
+      expectLineError(e29, 'e29.speckdl', 1, members);
 
-      const h06 = `speck A {} speck B { state { x: Nat } init { x := 0 } }${nl}`;
-      const ast06 = parseSpeckContent(h06, 'h06.speckdl');
-      expect(ast06.specks.map(s => s.name)).toEqual(['A', 'B']);
-      expect(ast06.specks[0].members).toEqual([]);
-      const bState = ast06.specks[1].members.find(m => m.type === 'state') as { variables: { name: string }[] };
-      expect(bState.variables.map(v => v.name)).toEqual(['x']);
+      expectLineError(
+        `speck A {} speck B { state { x: Nat } init { x := 0 } }${nl}`,
+        'h06.speckdl',
+        1,
+        members,
+      );
 
-      const commented = `speck /* c */ L { state { x: Nat } init { x := 0 } }${nl}`;
-      const astC = parseSpeckContent(commented, 'c.speckdl');
-      expect(astC.specks.map(s => s.name)).toEqual(['L']);
-      const cState = astC.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
-      expect(cState.variables.map(v => v.name)).toEqual(['x']);
+      expectLineError(
+        `speck /* c */ L { state { x: Nat } init { x := 0 } }${nl}`,
+        'c.speckdl',
+        1,
+        members,
+      );
+    }
+  });
+
+  it('packed specks and shifted action bodies are a parse error, on LF and CRLF', () => {
+    const members = 'one speck per line: put members on their own lines';
+    const sameLine = 'speck name must be on the same line as "speck"';
+    const follows = 'one speck per line: "speck" follows "}" on the same line';
+    const domain = 'domain and speck must be on separate lines';
+    for (const nl of ['\n', '\r\n'] as const) {
+      const speckB = [
+        'speck B {',
+        '    state {',
+        '        y: Nat',
+        '    }',
+        '    init {',
+        '        y := 0',
+        '    }',
+        '    action Inc {',
+        '        y := y + 1',
+        '    }',
+        '    action Reset {',
+        '        y := 0',
+        '    }',
+        '}',
+      ];
+      const speckC = [
+        'speck C {',
+        '    state {',
+        '        z: Nat',
+        '    }',
+        '    init {',
+        '        z := 0',
+        '    }',
+        '    action Wipe {',
+        '        z := 42',
+        '    }',
+        '    action Hold {',
+        '        z := z',
+        '    }',
+        '}',
+      ];
+
+      // m01: a one-line speck before a multi-line speck with actions.
+      expectLineError(
+        [`speck A { state { x: Nat } init { x := 0 } }`, ...speckB, ''].join(nl),
+        'm01.speckdl',
+        1,
+        members,
+      );
+      // m02: the name on the next line used to shift the later action body.
+      expectLineError(
+        ['speck', 'A {', '    state { x: Nat }', '    init { x := 0 }', '}', ...speckB, ''].join(nl),
+        'm02.speckdl',
+        1,
+        sameLine,
+      );
+      // m03: a one-line speck that itself contains an action.
+      expectLineError(
+        `speck A { state { x: Nat } init { x := 0 } action Go { x := x + 1 } }${nl}`,
+        'm03.speckdl',
+        1,
+        members,
+      );
+      // m04: that one-line action speck placed before a multi-line speck.
+      expectLineError(
+        [`speck A { state { x: Nat } init { x := 0 } action Go { x := x + 1 } }`, ...speckB, ''].join(nl),
+        'm04.speckdl',
+        1,
+        members,
+      );
+      // m05: enough trailing lines that a shifted read used to stay in range.
+      expectLineError(
+        [
+          'speck A { state { x: Nat } init { x := 0 } }',
+          ...speckB,
+          ...speckC,
+          ...Array.from({ length: 10 }, () => '// pad'),
+          '',
+        ].join(nl),
+        'm05.speckdl',
+        1,
+        members,
+      );
+
+      expectLineError(
+        `speck A { state { x: Nat } init { x := 0 } action Go { if x > 5 { x := 0 } else { x := 1 } } }${nl}`,
+        'k02.speckdl',
+        1,
+        members,
+      );
+      expectLineError(
+        `speck A { state { x: Nat } init { x := 0 } action Go { for i in {1, 2} { x := x + i } } }${nl}`,
+        'k04.speckdl',
+        1,
+        members,
+      );
+      expectLineError(
+        `speck A { /* } */ state { x: Nat } init { x := 0 } }${nl}`,
+        'k07.speckdl',
+        1,
+        members,
+      );
+      expectLineError(
+        `speck A {\tstate { x: Nat }\tinit { x := 0 }\t}${nl}`,
+        'k37.speckdl',
+        1,
+        members,
+      );
+
+      const k15 = [
+        'speck A {',
+        '  state { x: Nat }',
+        '} speck B { state { y: Nat }',
+        '  init { y := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      expectLineError(k15, 'k15.speckdl', 3, follows);
+
+      const k16 = [
+        'speck A {',
+        '  init { x := 0 } } speck B {',
+        '  init { y := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      expectLineError(k16, 'k16.speckdl', 2, follows);
+
+      const k40 = [
+        'speck A {',
+        '  state { x: Nat }',
+        '  init { x := 0 }',
+        '} speck B { init { y := 0 } } speck C {',
+        '  init { z := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      expectLineError(k40, 'k40.speckdl', 4, follows);
+
+      expectLineError(
+        `domain D { } speck A { state { x: Nat } init { x := 0 } }${nl}`,
+        'k12.speckdl',
+        1,
+        domain,
+      );
+
+      const separate = [
+        'domain D { }',
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      const ast = parseSpeckContent(separate, 'domain.speckdl');
+      expect(ast.specks.map(s => s.name)).toEqual(['A']);
+
+      const commentedClose = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '} // speck B',
+        '',
+      ].join(nl);
+      expect(parseSpeckContent(commentedClose, 'note.speckdl').specks.map(s => s.name)).toEqual(['A']);
     }
   });
 
