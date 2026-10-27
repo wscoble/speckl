@@ -108,16 +108,27 @@ is a parse error naming the file and line. A trailing `//` comment is not
 part of a `require`, `let`, or invariant expression. The `}` that closes a
 block is the last code on that line. A `//` comment or a `/* */` comment may
 follow it, and the block comment may continue on later lines. A `}` inside a
-string or a comment does not close the block. `else` may follow the `}` of
-an `if`. Further `}` may follow when they close blocks that are still inside
-the speck (`n := n - 1 } }`). Any other text is a parse error naming the file
+string or a comment does not close the block. `else` may follow only the `}`
+that closes an `if` or an `else if`. Further `}` may follow when they close
+blocks that are still inside the speck (`n := n - 1 } }`). A set or a record
+is an expression, including when a keyword appears earlier on the line
+(`n in {0, 1}`, `{1, 2} = {1, 2}`, `{a: 1}`, `for x in {1, 2} {`,
+`if n in {1, 2} {`, `if cond: a else {record}`, `emit Log { msg: "a" }`).
+Any other text after a block-closing `}` is a parse error naming the file
 and line, including another block on that line (`invariant A0 { true } invariant Mono {`,
 `action Two { n := 1 } invariant Mono {`, `event E { x: Nat } invariant Mono {`,
-`invariant Mono { false } action Two {`), a declaration after the closer
-(`false } invariant Two`), a speck closer on the member's last line
-(`false } }`), and a speck opened on the line that closed the previous one
-(`} speck D {`). The following block is not dropped, and the next speck is
-not merged. Actions have no `;`. A semicolon in an action is a parse error;
+`invariant Mono { false } action Two {`), `else` after a closer that is not
+an `if` (`invariant A0 { true } else invariant Mono {`, `invariant A0 { true } else {`,
+`invariant Mono { n >= 0 } else {`, `action Two { n := 1 } else {`), a
+declaration after the closer (`false } invariant Two`), a speck closer on
+the member's last line (`false } }`), and a speck opened on the line that
+closed the previous one (`} speck D {`). A block keyword after the `}` of a
+set, a record, or a `map` on that same line is the same error
+(`status: { phase: n } invariant Mono {`, `emit Log { msg: "a" } invariant Mono {`,
+`map M { a -> b } invariant Mono {`). The following block is not dropped, and
+the next speck is not merged. A header whose `{` is on the next line, and a
+`{` that is still open at the end of the file, are not rejected by this check.
+Actions have no `;`. A semicolon in an action is a parse error;
 one inside a string or a comment is not.
 
 ### 2.3 Declarative Form (v0.2, still supported)
