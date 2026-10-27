@@ -719,6 +719,20 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
         lex = lexAfter(lines, endIdx, startIndex);
         i = endIdx + 1;
       } else {
+        // The member's `{ ... }` closes on this line. Text after that `}`
+        // (`invariant Two`, or the speck's `}`) is not a trailing comment.
+        let depth = 0;
+        for (let c = 0; c < masked.text.length; c++) {
+          const ch = masked.text[c];
+          if (ch === '{') depth++;
+          else if (ch === '}') {
+            depth--;
+            if (depth === 0) {
+              rejectTextAfterClose(masked.code, c, i + 1);
+              break;
+            }
+          }
+        }
         if (member) {
           members.push(Object.assign(member, { startLine: blockStartLine, endLine: blockStartLine }));
         }
@@ -833,6 +847,9 @@ function readBraceBlock(
       else if (ch === '}') {
         braceCount--;
         if (braceCount < startBraceCount) {
+          // `false } invariant Two` and `false } }` used to drop the tail
+          // or swallow the next speck. A `//` comment is already blank.
+          rejectTextAfterClose(masked.code, c, i + 1);
           return { endIndex: i, closeCode: masked.code.slice(0, c).trim() };
         }
       }
@@ -847,6 +864,22 @@ function readBraceBlock(
 
 function findBlockEnd(lines: string[], startIndex: number, startBraceCount: number, lex: LexState = lexStart()): number {
   return readBraceBlock(lines, startIndex, startBraceCount, lex).endIndex;
+}
+
+/**
+ * Code after the `}` that closes a block is not a comment and not the next
+ * member. `false } // note` is empty here because the comment is blank.
+ */
+function rejectTextAfterClose(code: string, closeAt: number, lineNo: number): void {
+  const rest = code.slice(closeAt + 1).trim();
+  if (rest) throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
+}
+
+/** SpeckDL actions have no `;`. One inside a string or a comment is not one. */
+function rejectActionSemicolon(code: string, lineNo: number): void {
+  if (maskCode(code, lexStart(), lineNo).text.includes(';')) {
+    throw lexProblem(lineNo, "';' is not allowed in an action");
+  }
 }
 
 // Check if an expression has balanced braces, parens, and brackets
@@ -2056,11 +2089,14 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const bodyEntries: BodyEntry[] = [];
   const indentOf = (rawLine: string) => rawLine.length - rawLine.trimStart().length;
   if (inline !== null) {
+    // `{ require n > 5; n := n + 1 }` is not two statements. The grammar has no `;`.
+    rejectActionSemicolon(inline, startIndex + 1);
     bodyEntries.push({ text: inline, raw: inline, indent: indentOf(lines[startIndex]) });
   } else {
     const head = headerAfterBrace(firstLine, startIndex + 1);
     const span = readBraceBlock(lines, startIndex + 1, startBraceCount, head.state);
     if (head.code) {
+      rejectActionSemicolon(head.code, startIndex + 1);
       bodyEntries.push({ text: head.code, raw: head.code, indent: indentOf(lines[startIndex]) });
     }
     let bodyLex = head.state;
@@ -2077,10 +2113,12 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         else bodyEntries.push(null);
         continue;
       }
+      rejectActionSemicolon(code, startIndex + 2 + b);
       bodyEntries.push({ text: code, raw: l.trim(), indent: l.length - l.trimStart().length });
     }
     if (span.closeCode) {
       const rawClose = lines[span.endIndex];
+      rejectActionSemicolon(span.closeCode, span.endIndex + 1);
       bodyEntries.push({ text: span.closeCode, raw: span.closeCode, indent: indentOf(rawClose) });
     }
   }

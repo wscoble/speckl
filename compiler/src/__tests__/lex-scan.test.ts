@@ -669,3 +669,107 @@ describe('code before the closing brace is part of the body', () => {
     expect(v.obligations.some((o: { key?: string; ok?: boolean }) => o.key === 'Mono' && o.ok === false)).toBe(true);
   }, 60_000);
 });
+
+describe('text after a closing brace and a semicolon in an action', () => {
+  it('keeps a trailing comment and a brace inside a string', () => {
+    const ast = parseSpeckContent(`speck A {
+    state { n: Nat s: String }
+    init { n := 0 s := "" }
+    invariant Mono { false } // stays
+    invariant Quoted {
+        s = "}" }
+    invariant Noted {
+        false } // stays
+    action Go() { s := "}" }
+    action NotedAct() { n := n + 1 } // a;b
+    action Inside() { n := n + 1 /* a;b */ }
+    action Words() { s := "a;b" }
+    action Nest() { if n > 0 { n := n } }
+    next: Go | NotedAct | Inside | Words | Nest
+}
+speck B {
+    state { y: Nat }
+    init { y := 0 }
+    invariant Two { true }
+}
+`, 'keep.speckdl');
+    expect(ast.specks.map(s => s.name)).toEqual(['A', 'B']);
+    const a = ast.specks[0];
+    const expr = (name: string) => (a.members.find(m => m.type === 'invariant' && m.name === name) as { expr: string }).expr;
+    expect(expr('Mono')).toBe('false');
+    expect(expr('Quoted')).toBe('s = "}"');
+    expect(expr('Noted')).toBe('false');
+    expect(expr('Mono')).not.toContain('stays');
+    const stmts = (name: string) => (a.members.find(m => m.type === 'action' && m.name === name) as { statements: { type: string; expr?: string; raw?: string }[] }).statements;
+    expect(stmts('Go').map(s => s.expr)).toEqual(['"}"']);
+    expect(stmts('NotedAct').map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n + 1']);
+    expect(stmts('Inside').map(s => `${s.type}:${s.expr}`)).toEqual(['assign:n + 1']);
+    expect(stmts('Words').map(s => s.expr)).toEqual(['"a;b"']);
+    expect(stmts('Nest')[0].type).toBe('ifblock');
+    const b = ast.specks[1];
+    expect((b.members.find(m => m.type === 'invariant') as { name: string; expr: string }).expr).toBe('true');
+    expect(b.members.some(m => m.type === 'action')).toBe(false);
+  });
+
+  it('rejects a declaration after the closing brace', () => {
+    const multi = `speck A {
+    invariant Mono {
+        false } invariant Two { true }
+}
+`;
+    expect(() => parseSpeckContent(multi, 'trail.speckdl')).toThrow(/Parse error at trail\.speckdl:3: text after closing '\}'/);
+    const one = `speck A {
+    invariant Mono { false } invariant Two { true }
+}
+`;
+    expect(() => parseSpeckContent(one, 'trail.speckdl')).toThrow(/Parse error at trail\.speckdl:2: text after closing '\}'/);
+    const commented = `speck A {
+    invariant Mono {
+        false } invariant Two { true } // no
+}
+`;
+    expect(() => parseSpeckContent(commented, 'trail.speckdl')).toThrow(/text after closing '\}'/);
+  });
+
+  it('rejects a speck closer on the member\'s last line', () => {
+    const src = `speck A {
+    invariant Mono {
+        false } }
+speck B {
+    state { y: Nat }
+    init { y := 0 }
+    action Go() { y := y + 1 }
+}
+`;
+    expect(() => parseSpeckContent(src, 'bound.speckdl')).toThrow(/Parse error at bound\.speckdl:3: text after closing '\}'/);
+    const noted = `speck A {
+    invariant Mono {
+        false } } // still closed here
+}
+`;
+    expect(() => parseSpeckContent(noted, 'bound.speckdl')).toThrow(/Parse error at bound\.speckdl:3: text after closing '\}'/);
+    const inString = `speck A {
+    invariant Mono {
+        s = "}" } }
+}
+`;
+    expect(() => parseSpeckContent(inString, 'bound.speckdl')).toThrow(/Parse error at bound\.speckdl:3: text after closing '\}'/);
+  });
+
+  it('rejects a semicolon in a one-line action', () => {
+    const src = `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    action Go() { require n > 5; n := n + 1 }
+}
+`;
+    expect(() => parseSpeckContent(src, 'semi.speckdl')).toThrow(/Parse error at semi\.speckdl:4: ';' is not allowed in an action/);
+    const multi = `speck A {
+    action Go() {
+        require n > 5; n := n + 1
+    }
+}
+`;
+    expect(() => parseSpeckContent(multi, 'semi.speckdl')).toThrow(/Parse error at semi\.speckdl:3: ';' is not allowed in an action/);
+  });
+});

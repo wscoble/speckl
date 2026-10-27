@@ -105,7 +105,12 @@ comment is not structure: a `}` inside one does not close a block, including
 when the comment spans lines. `'` is post-state notation, not a string quote.
 An unterminated block comment or string, or a `*/` that does not close one,
 is a parse error naming the file and line. A trailing `//` comment is not
-part of a `require`, `let`, or invariant expression.
+part of a `require`, `let`, or invariant expression. The `}` that closes a
+block is the last code on that line: `false } // note` is fine, and so is a
+`}` inside a string, but `false } invariant Two` or `false } }` is a parse
+error naming the file and line (the following declaration is not dropped,
+and the next speck is not merged). Actions have no `;`. A semicolon in an
+action is a parse error; one inside a string or a comment is not.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
