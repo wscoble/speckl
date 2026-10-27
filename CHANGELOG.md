@@ -20,8 +20,13 @@ alias.
   specks into a bounded context (`IRDomain`) and a PROV-O collection linked
   to those specks. A duplicate member or a speck in two domains is a
   compile error. `speckl doctor` fails when a domain member's `act` tool
-  is not mapped in its harness block. Brace counting ignores strings and
-  comments, so a `{` there cannot hide a later speck or a property. An
+  is not mapped in its harness block. One scanner handles `"` strings,
+  `//` comments, and `/* */` block comments, and that state carries across
+  lines, so a `}` inside a comment does not end a block. `'` is post-state
+  notation, not a string quote. An unterminated block comment or string, or
+  a stray `*/`, is a parse error naming the file and line. Code after
+  `/* ... */` on the same line is kept. A trailing `//` comment is not part
+  of a `require`, `let`, or invariant expression. An
   import that declares no specks and no domains is an error. `sha256:`
   is case-insensitive; an empty hash is a parse error. Contracts, cost,
   budgets, and runtime routing are not yet implemented.
@@ -181,6 +186,12 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Trailing comments are not part of the expression.** A `//` comment after
+  a `require`, a `let`, or an invariant is dropped before generators run.
+  Go guard errors no longer repeat that comment. SQLiteWAL's Go, Elm, and
+  AST SMT output, and OAuth's Rust invariant text and Elm machine, change
+  for that reason. Other bundled examples are unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
