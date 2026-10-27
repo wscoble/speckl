@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseSpeckContent } from '../parser.js';
 import { compileSpec } from '../compile.js';
-import { lexStart, scanLine, setParseFile } from '../lex.js';
+import { assertLexClosed, lexStart, rejectTextAfterClose, scanLine, setParseFile } from '../lex.js';
 // @ts-ignore plain ESM helper shared with scripts/verify-z3.mjs
 import { judge } from '../../scripts/lib/obligations.mjs';
 
@@ -47,6 +47,15 @@ describe('unterminated comments and strings fail closed', () => {
   it('names a stray closer by line when no file is set', () => {
     setParseFile(undefined);
     expect(() => scanLine('*/')).toThrow(/Parse error at line 1: stray \*\//);
+    expect(() => assertLexClosed({ ...lexStart(), kind: 'block', openLine: 3 })).toThrow(
+      /Parse error at line 3: unterminated block comment/,
+    );
+    expect(() => assertLexClosed({ ...lexStart(), kind: 'string', openLine: 2 })).toThrow(
+      /Parse error at line 2: unterminated string$/,
+    );
+    expect(() => assertLexClosed({ ...lexStart(), kind: 'string', openLine: 4, commentClosedInString: 4 })).toThrow(
+      /Parse error at line 4: unterminated string: a block comment closed inside a string/,
+    );
   });
 
   it('n3: an unterminated block comment names the file and the line', () => {
@@ -336,18 +345,15 @@ describe('scanner paths used by the other block forms', () => {
     expect(iface.methods.map(m => m.name)).toEqual(['Get']);
   });
 
-  it('joins an init value that stays open onto the next assignment', () => {
-    const ast = parseSpeckContent(`speck S {
+  it('an init value that is still open at EOF is an unterminated block', () => {
+    expect(() => parseSpeckContent(`speck S {
     state { n: Nat }
     init {
         n := Rec {
         m := 1
     }
 }
-`, 'init.speckdl');
-    const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
-    expect(init.assignments[0].expr).toContain('Rec {');
-    expect(init.assignments[0].expr).toContain('m := 1');
+`, 'init.speckdl')).toThrow(/Parse error at init\.speckdl:\d+: unterminated block/);
   });
 
   it('a brace inside a block comment does not close a for or an if', () => {
@@ -631,8 +637,9 @@ describe('code before the closing brace is part of the body', () => {
     expect(() => parseSpeckContent('speck S {\n    invariant Mono {\n        // note\n    }\n}\n', 'empty.speckdl')).toThrow(/empty invariant body/);
     expect(() => parseSpeckContent('speck S {\n    verify "p" {\n        // note\n    }\n}\n', 'empty.speckdl')).toThrow(/empty verify body/);
     expect(() => parseSpeckContent('speck S {\n    constraint Bound: {\n    }\n}\n', 'empty.speckdl')).toThrow(/empty constraint body/);
-    const open = parseSpeckContent('speck S {\n    invariant Mono {\n        n >= 0\n', 'open.speckdl');
-    expect((open.specks[0].members.find(m => m.type === 'invariant') as { expr: string }).expr).toBe('n >= 0');
+    expect(() => parseSpeckContent('speck S {\n    invariant Mono {\n        n >= 0\n', 'open.speckdl')).toThrow(
+      /Parse error at open\.speckdl:2: unterminated block/,
+    );
   });
 
   it('a false invariant on the closing line is a counterexample', () => {
@@ -862,18 +869,25 @@ describe('a one-line block cannot open the next block on the same line', () => {
 
   it('rejects a speck closer after a member, and allows a nested closer, in the scanner', () => {
     setParseFile('direct.speckdl');
-    const member = { ...lexStart(), closeFloor: 1, braceDepth: 2, braceKinds: ['block', 'block'] as ('block' | 'expr' | 'if')[] };
-    expect(() => scanLine('        false } }', member, 3)).toThrow(
+    const closer = '        false } }';
+    expect(() => rejectTextAfterClose(closer, closer.indexOf('}'), 3)).toThrow(
       /Parse error at direct\.speckdl:3: text after closing '\}'/,
     );
-    const nested = { ...lexStart(), closeFloor: 1, braceDepth: 3, braceKinds: ['block', 'block', 'block'] as ('block' | 'expr' | 'if')[] };
-    expect(scanLine('        n := n - 1 } }', nested, 4).code).toContain('n := n - 1');
-    const deeper = { ...lexStart(), closeFloor: 1, braceDepth: 4, braceKinds: ['block', 'block', 'block', 'block'] as ('block' | 'expr' | 'if')[] };
-    expect(scanLine('        n := n - 1 } } }', deeper, 5).code).toContain('}');
     expect(() => scanLine('require { type: "Prepared", rm: rm } in msgs', lexStart(), 1)).not.toThrow();
     const armed = { ...lexStart(), closeFloor: 1 };
     expect(() => scanLine('require { type: "Prepared", rm: rm } in msgs', armed, 1)).not.toThrow();
     expect(() => scanLine('}', armed, 1)).not.toThrow();
+    const nested = parseSpeckContent(`speck S {
+    state { n: Nat }
+    init { n := 0 }
+    action Nested() {
+        if n > 0 {
+            n := n - 1 } }
+}
+`, 'nested.speckdl');
+    const raw = (nested.specks[0].members.find(m => m.type === 'action') as { statements: { raw?: string }[] }).statements[0].raw ?? '';
+    expect(raw).toContain('n := n - 1');
+    expect(raw).toContain('}');
   });
 });
 
@@ -1047,4 +1061,408 @@ describe('else only continues an if, and a set or a record is not a block', () =
       );
     });
   }
+});
+
+describe('tokenizer brace match: round 5-8 probes', () => {
+  function lines(body: string[], nl: string): string {
+    return body.join(nl);
+  }
+
+  for (const nl of ['\n', '\r\n'] as const) {
+    const ending = nl === '\n' ? 'LF' : 'CRLF';
+
+    it(`r29 header brace on the next line is an error (${ending})`, () => {
+      const src = lines([
+        'speck A {',
+        '    state { n: Nat }',
+        '    init { n := 0 }',
+        '    action Go() { n := n + 1 }',
+        '    invariant Mono',
+        '    {',
+        '        false',
+        '    }',
+        '}',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(src, 'r29.speckdl')).toThrow(
+        /Parse error at r29\.speckdl:6: header brace is on the next line/,
+      );
+    });
+
+    it(`r10 unterminated speck at EOF is an error (${ending})`, () => {
+      const src = lines([
+        'speck A {',
+        '    state { n: Nat }',
+        '    init { n := 0 }',
+        '    action Go() { n := n + 1 }',
+        '    invariant Mono { false }',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(src, 'r10.speckdl')).toThrow(
+        /Parse error at r10\.speckdl:1: unterminated block/,
+      );
+    });
+
+    it(`r44 unterminated invariant at EOF is an error (${ending})`, () => {
+      const src = lines([
+        'speck A {',
+        '    state { n: Nat }',
+        '    init { n := 0 }',
+        '    action Go() { n := n + 1 }',
+        '    next: Go',
+        '    invariant Mono {',
+        '        n >= 0',
+        '',
+      ], nl);
+      expect(() => parseSpeckContent(src, 'r44.speckdl')).toThrow(
+        /Parse error at r44\.speckdl:6: unterminated block/,
+      );
+    });
+
+    const splitElse: { title: string; file: string; line: number; src: string[] }[] = [
+      {
+        title: 'else on the line after an invariant',
+        file: 'f-inv.speckdl',
+        line: 8,
+        src: [
+          'speck A {',
+          '    state { n: Nat }',
+          '    init { n := 0 }',
+          '    action Go() { n := n + 1 }',
+          '    invariant Mono {',
+          '        false',
+          '    }',
+          '    else {',
+          '        invariant Two { false }',
+          '    }',
+          '}',
+        ],
+      },
+      {
+        title: 'else on the line after an action',
+        file: 'f-act.speckdl',
+        line: 7,
+        src: [
+          'speck A {',
+          '    state { n: Nat }',
+          '    init { n := 0 }',
+          '    action Two {',
+          '        n := 1',
+          '    }',
+          '    else {',
+          '        n := 0',
+          '    }',
+          '}',
+        ],
+      },
+      {
+        title: 'else on the line after an event',
+        file: 'f-ev.speckdl',
+        line: 8,
+        src: [
+          'speck A {',
+          '    state { n: Nat }',
+          '    init { n := 0 }',
+          '    action Go() { n := n + 1 }',
+          '    event E {',
+          '        x: Nat',
+          '    }',
+          '    else event F {',
+          '        y: Nat',
+          '    }',
+          '}',
+        ],
+      },
+      {
+        title: 'else on the line after a for',
+        file: 'f-for.speckdl',
+        line: 8,
+        src: [
+          'speck A {',
+          '    state { n: Nat }',
+          '    init { n := 0 }',
+          '    action Go() {',
+          '        for x in xs {',
+          '            n := n + 1',
+          '        }',
+          '        else {',
+          '            n := 2',
+          '        }',
+          '    }',
+          '}',
+        ],
+      },
+      {
+        title: 'else after a line comment on an invariant closer',
+        file: 'f-slash.speckdl',
+        line: 8,
+        src: [
+          'speck A {',
+          '    state { n: Nat }',
+          '    init { n := 0 }',
+          '    action Go() { n := n + 1 }',
+          '    invariant Mono {',
+          '        false',
+          '    } // note',
+          '    else {',
+          '        invariant Two { false }',
+          '    }',
+          '}',
+        ],
+      },
+      {
+        title: 'else after a block comment on an invariant closer',
+        file: 'f-block.speckdl',
+        line: 10,
+        src: [
+          'speck A {',
+          '    state { n: Nat }',
+          '    init { n := 0 }',
+          '    action Go() { n := n + 1 }',
+          '    invariant Mono {',
+          '        false',
+          '    }',
+          '    /* note',
+          '    */',
+          '    else invariant Two {',
+          '        false',
+          '    }',
+          '}',
+        ],
+      },
+    ];
+
+    for (const repro of splitElse) {
+      it(`rejects ${repro.title} (${ending})`, () => {
+        expect(() => parseSpeckContent(lines(repro.src, nl), repro.file)).toThrow(
+          new RegExp(`Parse error at ${repro.file.replace('.', '\\.')}:${repro.line}: text after closing '\\}'`),
+        );
+      });
+    }
+
+    it(`keeps a record parameter, an if-expression, and else after an if (${ending})`, () => {
+      const src = lines([
+        'speck Gate {',
+        '    state { n: Nat }',
+        '    init { n := 0 }',
+        '    action Two(p: {a: Nat}) {',
+        '        require p.a >= 0',
+        '        n := p.a',
+        '    }',
+        '    action Expr() {',
+        '        let p := if n > 0: {a: 1} else {a: 2}',
+        '    }',
+        '    action Nested() {',
+        '        if n > 0 { if n > 1 { n := 1 } } else { n := 3 }',
+        '    }',
+        '    action Split() {',
+        '        if n > 0 {',
+        '            n := 1',
+        '        }',
+        '        else {',
+        '            n := 2',
+        '        }',
+        '    }',
+        '    action Noted() {',
+        '        if n > 0 {',
+        '            n := 1',
+        '        } // note',
+        '        else {',
+        '            n := 4',
+        '        }',
+        '    }',
+        '}',
+        '',
+      ], nl);
+      const ast = parseSpeckContent(src, 'kept-brace.speckdl');
+      const gate = ast.specks[0];
+      const action = (name: string) => gate.members.find(m => m.type === 'action' && m.name === name) as {
+        params: { name: string }[];
+        statements: { type: string; expr?: string; raw?: string }[];
+      };
+      const two = action('Two');
+      expect(two.params.map(p => p.name)).toEqual(['p']);
+      expect(two.statements.map(s => s.type)).toEqual(['require', 'assign']);
+      expect(two.statements[0].expr).toContain('p.a >= 0');
+      expect(two.statements[1].expr).toContain('p.a');
+      expect(action('Expr').statements[0].expr).toContain('else {a: 2}');
+      const nested = action('Nested').statements[0].raw ?? '';
+      expect(nested).toContain('} } else');
+      expect(nested).toContain('n := 1');
+      expect(nested).toContain('n := 3');
+      const split = action('Split').statements[0].raw ?? '';
+      expect(split).toContain('else');
+      expect(split).toContain('n := 1');
+      expect(split).toContain('n := 2');
+      const noted = action('Noted').statements[0].raw ?? '';
+      expect(noted).toContain('else');
+      expect(noted).toContain('n := 4');
+    });
+  }
+});
+
+describe('named probes k25 k26 m43 v10 v12 v13 v15 v18 compile', () => {
+  function scaffold(mid: string[], nl: string): string {
+    return [
+      'speck A {',
+      '    state {',
+      '        n: Nat',
+      '    }',
+      '    init {',
+      '        n := 0',
+      '    }',
+      '    action Go() {',
+      '        n := n + 1',
+      '    }',
+      ...mid,
+      '    next: Go',
+      '}',
+      '',
+      'speck B {',
+      '    state {',
+      '        y: Nat',
+      '    }',
+      '    init {',
+      '        y := 0',
+      '    }',
+      '    action Bump() {',
+      '        y := y + 1',
+      '    }',
+      '    next: Bump',
+      '}',
+      '',
+    ].join(nl);
+  }
+
+  function member(ast: ReturnType<typeof parseSpeckContent>, speck: string, kind: string, name?: string) {
+    const s = ast.specks.find(sp => sp.name === speck)!;
+    return s.members.find(m => m.type === kind && (name === undefined || ('name' in m && m.name === name)));
+  }
+
+  const probes: { id: string; mid: string[]; assert: (ast: ReturnType<typeof parseSpeckContent>, ts: string) => void }[] = [
+    {
+      id: 'k25',
+      mid: ['    action Sum() {', '        for x in {1, 2} {', '            n := n + x', '        }', '    }'],
+      assert: (ast, ts) => {
+        const sum = member(ast, 'A', 'action', 'Sum') as { statements: { raw?: string }[] };
+        expect(sum.statements[0].raw).toContain('for x in {1, 2}');
+        expect(sum.statements[0].raw).toContain('n := n + x');
+        expect(ts).toContain('Sum()');
+        expect(ts).toContain('this.n = this.n + 1');
+      },
+    },
+    {
+      id: 'k26',
+      mid: ['    invariant Mono { {1, 2} = {1, 2} and false }'],
+      assert: (ast) => {
+        expect((member(ast, 'A', 'invariant', 'Mono') as { expr: string }).expr).toBe('{1, 2} = {1, 2} and false');
+      },
+    },
+    {
+      id: 'm43',
+      mid: ['    invariant Mono { n in {1, 2} and false } // }'],
+      assert: (ast) => {
+        expect((member(ast, 'A', 'invariant', 'Mono') as { expr: string }).expr).toBe('n in {1, 2} and false');
+      },
+    },
+    {
+      id: 'v10',
+      mid: ['    invariant Mono { n in {0, 1} or n >= 0 }'],
+      assert: (ast) => {
+        expect((member(ast, 'A', 'invariant', 'Mono') as { expr: string }).expr).toBe('n in {0, 1} or n >= 0');
+      },
+    },
+    {
+      id: 'v12',
+      mid: ['    action Two() {', '        if n in {1, 2} {', '            n := 0', '        }', '    }'],
+      assert: (ast, ts) => {
+        const two = member(ast, 'A', 'action', 'Two') as { statements: { raw?: string }[] };
+        expect(two.statements[0].raw).toContain('if n in {1, 2} { n := 0 }');
+        expect(ts).toContain('TODO: SpeckDL conditional block');
+      },
+    },
+    {
+      id: 'v13',
+      mid: ['    action Two() { if n in {1, 2} { n := 0 } }'],
+      assert: (ast, ts) => {
+        const two = member(ast, 'A', 'action', 'Two') as { statements: { raw?: string }[] };
+        expect(two.statements[0].raw).toContain('if n in {1, 2} { n := 0 }');
+        expect(ts).toContain('TODO: SpeckDL conditional block');
+      },
+    },
+    {
+      id: 'v15',
+      mid: ['    action Two() {', '        if n > 0 { emit Log { msg: "a" } } else { n := 2 }', '    }'],
+      assert: (ast, ts) => {
+        const two = member(ast, 'A', 'action', 'Two') as { statements: { raw?: string }[] };
+        expect(two.statements[0].raw).toContain('emit Log { msg: "a" }');
+        expect(two.statements[0].raw).toContain('else { n := 2 }');
+        expect(ts).toContain('TODO: SpeckDL conditional block');
+      },
+    },
+    {
+      id: 'v18',
+      mid: ['    invariant Mono { n >= 0 and {a: 1} = {a: 1} }'],
+      assert: (ast) => {
+        expect((member(ast, 'A', 'invariant', 'Mono') as { expr: string }).expr).toBe('n >= 0 and {a: 1} = {a: 1}');
+      },
+    },
+  ];
+
+  for (const nl of ['\n', '\r\n'] as const) {
+    const ending = nl === '\n' ? 'LF' : 'CRLF';
+    for (const probe of probes) {
+      it(`${probe.id} compiles (${ending})`, () => {
+        const src = scaffold(probe.mid, nl);
+        const ast = parseSpeckContent(src, `${probe.id}.speckdl`);
+        expect(ast.specks.map(s => s.name)).toEqual(['A', 'B']);
+        const dir = mkdtempSync(join(tmpdir(), `speckl-${probe.id}-`));
+        const file = join(dir, `${probe.id}.speckdl`);
+        writeFileSync(file, src);
+        const out = join(dir, 'out');
+        compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'cdx', verifyDepth: 3 });
+        const ts = readFileSync(join(out, 'A.ts'), 'utf-8');
+        const bts = readFileSync(join(out, 'B.ts'), 'utf-8');
+        expect(ts).toContain('this.n = this.n + 1');
+        expect(bts).toContain('this.y = this.y + 1');
+        probe.assert(ast, ts);
+      });
+    }
+  }
+
+  it('m43 keeps and false in the SMT invariant (LF and CRLF)', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = scaffold(['    invariant Mono { n in {1, 2} and false } // }'], nl);
+      const dir = mkdtempSync(join(tmpdir(), 'speckl-m43-'));
+      const file = join(dir, 'm43.speckdl');
+      writeFileSync(file, src);
+      const out = join(dir, 'out');
+      compileSpec(file, { outputDir: out, target: 'z3', bomFormat: 'cdx', verifyDepth: 3 });
+      const smt = readFileSync(join(out, 'A.smt2'), 'utf-8');
+      expect(smt).toContain('(define-fun Mono () Bool');
+      expect(smt).toContain('false');
+      expect(smt).toContain('(assert Mono)');
+      expect(smt).not.toContain('next');
+    }
+  });
+
+  it('a record parameter action compiles to the guard and the assignment (LF and CRLF)', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = scaffold([
+        '    action Two(p: {a: Nat}) {',
+        '        require p.a >= 0',
+        '        n := p.a',
+        '    }',
+      ], nl);
+      const dir = mkdtempSync(join(tmpdir(), 'speckl-rec-'));
+      const file = join(dir, 'rec.speckdl');
+      writeFileSync(file, src);
+      const out = join(dir, 'out');
+      compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'cdx', verifyDepth: 3 });
+      const ts = readFileSync(join(out, 'A.ts'), 'utf-8');
+      expect(ts).toContain('Two(p: { a: number })');
+      expect(ts).toContain('Guard failed: p.a >= 0');
+      expect(ts).toContain('this.n = p.a');
+    }
+  });
 });

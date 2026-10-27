@@ -63,7 +63,7 @@ speck ToggleSwitch {
 - `:=` is assignment
 - `return` makes the result observable
 - statements are separated by newlines, not `;`
-- the `}` that closes a block is the last code on that line; a `//` comment or a `/* */` comment may follow it, and `else` may follow only the `}` that closes an `if` or an `else if`. A set or a record (`n in {true, false}`, `{a: 1}`) is an expression
+- the `}` that closes a block is the last code on that line; a `//` comment or a `/* */` comment may follow it. `else` may follow the `}` that closes an `if` or an `else if`, including when `else` is on the next line or the last of several `}` closes that `if`. A set or a record (`n in {true, false}`, `{a: 1}`, `if n > 0: {a: 1} else {a: 2}`) is an expression. `else` after any other closer is a parse error
 
 **Next** defines which actions can fire. `TurnOn | TurnOff` means either can happen at any time — it's nondeterministic. The model checker explores all interleavings.
 

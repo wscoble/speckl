@@ -45,68 +45,384 @@ export function lexStart(): LexState {
 }
 
 /**
- * What the `{` that follows `maskBefore` opens, from the header still in
- * front of it. Balanced `()`, `[]`, and `{}` are values, so a keyword
- * earlier on the line does not make a set or a record into a block.
- * `n in {1, 2}`, `{a: 1}`, `:= { ... }`, `ballots[{ ... }]`, and
- * `if cond: a else {record}` are expressions. `type Name = { ... }` is too.
- * `if` / `else if` bodies are `if`, so only their `}` may be followed by `else`.
+ * Whole-file tokens. Brace roles come from this stream, not from a regex
+ * over the text in front of `{` on one line.
  */
-function isBlockOpen(maskBefore: string): 'expr' | 'block' | 'if' {
-  let s = maskBefore.replace(/"[^"]*"/g, ' STR ');
-  for (;;) {
-    const n = s
-      .replace(/\{[^{}]*\}/g, ' BRACE ')
-      .replace(/\([^()]*\)/g, ' PAREN ')
-      .replace(/\[[^\[\]]*\]/g, ' BRACK ');
-    if (n === s) break;
-    s = n;
+interface Tok {
+  kind: 'ident' | 'punct' | 'comment' | 'nl';
+  text: string;
+  line: number;
+  /** 0-based index in the line the parser sees (`split('\\n')`). */
+  col: number;
+}
+
+type BraceRole = 'block' | 'expr' | 'if';
+type FrameKind = 'members' | 'domain' | 'stmts' | 'agent' | 'expr' | 'fields';
+
+interface Pend {
+  kw: string;
+  line: number;
+  kind: 'block' | 'if' | 'for';
+  /** Stack depth when the keyword was seen. The body `{` sits at this depth. */
+  depth: number;
+  colon: boolean;
+}
+
+interface OpenFrame {
+  role: BraceRole;
+  header: string;
+  line: number;
+  col: number;
+  kind: FrameKind;
+  closeLine: number;
+  closeCol: number;
+}
+
+export interface BraceSite {
+  line: number;
+  col: number;
+  closeLine: number;
+  closeCol: number;
+  role: BraceRole;
+  header: string;
+}
+
+interface FileStructure {
+  errors: Map<number, string>;
+  unclosedLine: number;
+  sites: BraceSite[];
+}
+
+const fileStructures: FileStructure[] = [];
+
+const MEMBER_HEADERS = new Set([
+  'state', 'init', 'action', 'event', 'invariant', 'verify', 'constraint',
+  'agent', 'interface', 'service', 'bom', 'provenance', 'input', 'output',
+  'transition', 'component', 'oneof', 'type', 'next',
+]);
+const AGENT_HEADERS = new Set(['stages', 'await', 'harness']);
+const COLON_BRACE = new Set(['input', 'output', 'state', 'verify', 'constraint', 'next']);
+const DECL_AFTER = new Set([
+  ...MEMBER_HEADERS,
+  ...AGENT_HEADERS,
+  'speck', 'domain', 'map', 'if', 'for',
+]);
+
+/** `{` is the operand of the token before it (a set or a record). */
+function braceIntroducer(text: string | undefined): boolean {
+  if (!text) return false;
+  return text === ':' || text === '=' || text === ':=' || text === ','
+    || text === 'in' || text === 'and' || text === 'or' || text === 'not'
+    || text === 'implies' || text === 'union' || text === '->' || text === '{'
+    || text === '(' || text === '['
+    || text === '==' || text === '!=' || text === '>=' || text === '<='
+    || text === '&&' || text === '||' || text === '+' || text === '-'
+    || text === '*' || text === '/' || text === '%' || text === '<'
+    || text === '>' || text === '!' || text === '&' || text === '|'
+    || text === '^' || text === '\\' || text === '~' || text === '?';
+}
+
+function frameKindFor(header: string, role: BraceRole): FrameKind {
+  if (role === 'expr') return 'expr';
+  if (role === 'if' || header === 'action' || header === 'init' || header === 'for' || header === 'else') {
+    return 'stmts';
   }
-  // Still inside a call or an index: `Map(ClientId, {` and `ballots[{`.
-  if (s.includes('[') || s.includes('(')) return 'expr';
-  const cut = s.lastIndexOf('{');
-  const clause = (cut >= 0 ? s.slice(cut + 1) : s).trim();
-  if (!clause) return 'expr';
-  // `input: {` / `output: {` keep the colon. `status: {` and `msg: {` do not.
-  if (/^(?:input|output|state|verify|constraint)\s*:$/.test(clause)) return 'block';
-  // The `{` is the operand, not the body: `in {`, `= {`, `if {1}`, `for x in {`.
-  if (/(?:\b(?:in|and|or|not|implies|union|if|for)\b|&&|\|\||==|!=|>=|<=|:=|->|[+\-*/%<>=!&|^\\([,:.~?])\s*$/.test(clause)) {
-    return 'expr';
+  if (header === 'speck') return 'members';
+  if (header === 'domain') return 'domain';
+  if (header === 'agent' || header === 'harness' || header === 'stages' || header === 'await') return 'agent';
+  if (header === 'invariant' || header === 'verify' || header === 'constraint') return 'expr';
+  return 'fields';
+}
+
+function acceptsHeader(frame: FrameKind | 'file', kw: string): 'block' | 'if' | 'for' | null {
+  if ((frame === 'file' || frame === 'members') && (kw === 'speck' || kw === 'domain')) return 'block';
+  if (frame === 'members' && MEMBER_HEADERS.has(kw)) return 'block';
+  if ((frame === 'stmts' || frame === 'agent') && kw === 'if') return 'if';
+  if ((frame === 'stmts' || frame === 'agent') && kw === 'for') return 'for';
+  if (frame === 'agent' && AGENT_HEADERS.has(kw)) return 'block';
+  if (frame === 'expr' && kw === 'if') return 'if';
+  return null;
+}
+
+/** Tokenize one file. Comment and string rules match `scanLine`. */
+function tokenize(source: string): Tok[] {
+  const out: Tok[] = [];
+  let kind: 'code' | 'block' | 'string' = 'code';
+  let openLine = 0;
+  let commentClosedInString = 0;
+  let line = 1;
+  let col = 0;
+  const push = (tokKind: Tok['kind'], text: string, atLine: number, atCol: number) => {
+    out.push({ kind: tokKind, text, line: atLine, col: atCol });
+  };
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (ch === '\r' && next === '\n') continue;
+    if (ch === '\n') {
+      if (kind === 'code') push('nl', '\n', line, col);
+      line++;
+      col = 0;
+      continue;
+    }
+    if (kind === 'string') {
+      if (ch === '\\' && next !== undefined && next !== '\n') {
+        col += 2;
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        // A finished string is a value, so `if name == "access" {` is an if.
+        push('punct', 'str', line, col);
+        commentClosedInString = 0;
+        kind = 'code';
+      }
+      col++;
+      continue;
+    }
+    if (kind === 'block') {
+      if (ch === '*' && next === '/') {
+        const closedInsideString = source[i - 1] === '"' && source[i + 2] === '"';
+        kind = 'code';
+        if (closedInsideString) commentClosedInString = line;
+        col += 2;
+        i++;
+        continue;
+      }
+      col++;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const at = col;
+      while (i < source.length && source[i] !== '\n') {
+        i++;
+        col++;
+      }
+      i--;
+      push('comment', '//', line, at);
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      push('comment', '/*', line, col);
+      kind = 'block';
+      openLine = line;
+      col += 2;
+      i++;
+      continue;
+    }
+    if (ch === '*' && next === '/') throw lexProblem(line, 'stray */');
+    if (ch === '"') {
+      kind = 'string';
+      openLine = commentClosedInString ? commentClosedInString : line;
+      if (!commentClosedInString) openLine = line;
+      col++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      const at = col;
+      let text = ch;
+      col++;
+      while (i + 1 < source.length && /[A-Za-z0-9_]/.test(source[i + 1])) {
+        text += source[i + 1];
+        i++;
+        col++;
+      }
+      while (source[i + 1] === "'") {
+        text += "'";
+        i++;
+        col++;
+      }
+      push('ident', text, line, at);
+      continue;
+    }
+    if (ch === ':' && next === '=') {
+      push('punct', ':=', line, col);
+      col += 2;
+      i++;
+      continue;
+    }
+    if (ch === '-' && next === '>') {
+      push('punct', '->', line, col);
+      col += 2;
+      i++;
+      continue;
+    }
+    if ((ch === '=' || ch === '!' || ch === '<' || ch === '>') && next === '=') {
+      push('punct', ch + '=', line, col);
+      col += 2;
+      i++;
+      continue;
+    }
+    if ((ch === '&' && next === '&') || (ch === '|' && next === '|')) {
+      push('punct', ch + next, line, col);
+      col += 2;
+      i++;
+      continue;
+    }
+    if (!/\s/.test(ch)) push('punct', ch, line, col);
+    col++;
   }
-  if (/\belse\s+if\b/.test(clause)) return 'if';
-  if (/^[}\s]*else$/.test(clause) || /\bBRACE\s+else$/.test(clause)) return 'block';
-  if (/\belse$/.test(clause)) return 'expr';
-  if (/^if\b/.test(clause)) return 'if';
-  if (/^for\b/.test(clause)) return 'block';
-  if (/^(?:speck|domain|state|init|action|event|invariant|verify|constraint|agent|interface|service|bom|provenance|input|output|transition|component|oneof|type|stages|await|next|harness)\b/.test(clause)) {
-    return 'block';
+  if (kind === 'block') throw lexProblem(openLine, 'unterminated block comment');
+  if (kind === 'string') {
+    const why = commentClosedInString ? ': a block comment closed inside a string' : '';
+    throw lexProblem(openLine, `unterminated string${why}`);
   }
-  return 'expr';
+  return out;
+}
+
+function lineRest(source: string, line: number, col: number): string {
+  const lines = source.split('\n');
+  return (lines[line - 1] ?? '').slice(col).replace(/\r$/, '').trim();
 }
 
 /**
- * `else` continues an `if` or `else if` only. A run of `}` may close blocks
- * that are still inside the speck (`n := n - 1 } }`). A `}` that steps out
- * of the speck (`false } }`) is not that run.
+ * Classify every `{` and record structural errors.
+ * `else` is legal when the closer before it (comments and newlines skipped)
+ * is an `if` or `else if` body, including `} } else` and a newline before
+ * `else`. A colon-`if` (`if cond: a else b`) is an expression.
  */
-function blockCloseRestAllowed(rest: string, depthAfter: number, kind: 'block' | 'if'): boolean {
-  if (/^else\b/.test(rest)) return kind === 'if';
-  if (!/^\}(?:\s*\})*$/.test(rest)) return false;
-  let depth = depthAfter;
-  for (const ch of rest) {
-    if (ch !== '}') continue;
-    depth--;
-    if (depth < 1) return false;
+function analyze(source: string): FileStructure {
+  const tokens = tokenize(source);
+  const errors = new Map<number, string>();
+  const sites: BraceSite[] = [];
+  const stack: OpenFrame[] = [];
+  let pend: Pend | null = null;
+  let paren = 0;
+  let bracket = 0;
+  let colonIf = 0;
+  let stmtElse = false;
+  let exprElse = false;
+  let lastPop: OpenFrame | null = null;
+  let blockClosesOnLine = 0;
+  let prev: Tok | null = null;
+  const record = (line: number, detail: string) => {
+    if (!errors.has(line)) errors.set(line, detail);
+  };
+  const frameNow = (): FrameKind | 'file' => stack.length ? stack[stack.length - 1].kind : 'file';
+  for (const tok of tokens) {
+    if (tok.kind === 'nl') {
+      blockClosesOnLine = 0;
+      continue;
+    }
+    if (tok.kind === 'comment') continue;
+    if (tok.text === '{') {
+      let role: BraceRole = 'expr';
+      let header = '';
+      if (paren > 0 || bracket > 0 || exprElse) {
+        role = 'expr';
+      } else if (stmtElse && prev?.text === 'else') {
+        role = 'block';
+        header = 'else';
+        stmtElse = false;
+      } else if (braceIntroducer(prev?.text) && !(pend && !pend.colon && prev?.text === ':' && COLON_BRACE.has(pend.kw))) {
+        role = 'expr';
+      } else if (pend && !pend.colon && stack.length === pend.depth) {
+        role = pend.kind === 'if' ? 'if' : 'block';
+        header = pend.kw;
+        // A member header's `{` belongs on its line (`invariant Mono` / `{`).
+        // An `if` or `for` condition may break before its body brace (Raft).
+        if (pend.line !== tok.line && pend.kind === 'block') record(tok.line, 'header brace is on the next line');
+        pend = null;
+      }
+      exprElse = false;
+      stack.push({
+        role, header, line: tok.line, col: tok.col,
+        kind: frameKindFor(header, role), closeLine: 0, closeCol: 0,
+      });
+      prev = tok;
+      continue;
+    }
+    if (tok.text === '}') {
+      const frame = stack.pop();
+      if (frame) {
+        frame.closeLine = tok.line;
+        frame.closeCol = tok.col;
+        sites.push({
+          line: frame.line, col: frame.col, closeLine: tok.line, closeCol: tok.col,
+          role: frame.role, header: frame.header,
+        });
+        if (frame.role === 'block' || frame.role === 'if') {
+          if (blockClosesOnLine > 0 && stack.length === 0) {
+            record(tok.line, `text after closing '}': ${JSON.stringify(lineRest(source, tok.line, tok.col))}`);
+          }
+          blockClosesOnLine++;
+        }
+        lastPop = frame;
+      }
+      prev = tok;
+      continue;
+    }
+    if (tok.text === '(') paren++;
+    else if (tok.text === ')') paren = Math.max(0, paren - 1);
+    else if (tok.text === '[') bracket++;
+    else if (tok.text === ']') bracket = Math.max(0, bracket - 1);
+    if (tok.kind === 'ident' && tok.text === 'else') {
+      // Statement `else` only follows an if-body closer. A colon-if's `else`
+      // follows an expression (`if cond: {a: 1} else {a: 2}`).
+      if (lastPop?.role === 'if') stmtElse = true;
+      else if (lastPop?.role !== 'block' && colonIf > 0) {
+        colonIf--;
+        exprElse = true;
+      } else {
+        record(tok.line, `text after closing '}': ${JSON.stringify(lineRest(source, tok.line, tok.col))}`);
+      }
+      lastPop = null;
+      prev = tok;
+      continue;
+    }
+    if (lastPop && (lastPop.role === 'block' || lastPop.role === 'if') && tok.line === lastPop.closeLine) {
+      record(tok.line, `text after closing '}': ${JSON.stringify(lineRest(source, tok.line, tok.col))}`);
+    } else if (lastPop?.role === 'expr' && tok.line === lastPop.closeLine && tok.kind === 'ident' && DECL_AFTER.has(tok.text)) {
+      record(tok.line, `text after closing '}': ${JSON.stringify(lineRest(source, tok.line, tok.col))}`);
+    }
+    lastPop = null;
+    if (tok.text === ':' && pend && stack.length === pend.depth && paren === 0 && bracket === 0) {
+      if (pend.kind === 'if' && !pend.colon) {
+        pend.colon = true;
+        colonIf++;
+        pend = null;
+      } else if (pend.kind === 'for' && !pend.colon) {
+        pend = null;
+      }
+    }
+    if (tok.kind === 'ident' && paren === 0 && bracket === 0) {
+      const armed = acceptsHeader(frameNow(), tok.text);
+      if (armed && tok.text !== 'else') {
+        if (stmtElse && tok.text === 'if') stmtElse = false;
+        pend = { kw: tok.text, line: tok.line, kind: armed, depth: stack.length, colon: false };
+      }
+    }
+    if (tok.text === '=' && pend?.kw === 'type') pend = null;
+    prev = tok;
   }
-  return true;
+  const open = stack[stack.length - 1];
+  return { errors, unclosedLine: open ? open.line : 0, sites };
 }
 
-/**
- * A finished set or record is not a block. Another block on that same line
- * is still a parse error (`status: { phase: n } invariant`,
- * `emit Log { ... } invariant`, `map M { a -> b } invariant`).
- */
-const HEADER_AFTER_EXPR = /^(?:speck|domain|state|init|action|event|invariant|verify|constraint|agent|interface|service|bom|provenance|input|output|transition|component|oneof|type|stages|await|if|for|else|next|harness|map)\b/;
+/** Tokenize and match braces for `source`. Nested parses stack. */
+export function pushFileStructure(source: string): void {
+  fileStructures.push(analyze(source));
+}
+
+export function popFileStructure(): void {
+  fileStructures.pop();
+}
+
+export function structureErrorOnLine(lineNo: number): Error | undefined {
+  const detail = fileStructures[fileStructures.length - 1]?.errors.get(lineNo);
+  return detail ? lexProblem(lineNo, detail) : undefined;
+}
+
+export function throwIfUnclosed(): void {
+  const line = fileStructures[fileStructures.length - 1]?.unclosedLine ?? 0;
+  if (line) throw lexProblem(line, 'unterminated block');
+}
+
+/** The `{` that opens `header` on this source line, when the file structure is active. */
+export function blockBodyAt(line: number, header: string): BraceSite | undefined {
+  const sites = fileStructures[fileStructures.length - 1]?.sites;
+  return sites?.find(s => s.line === line && s.header === header && s.role !== 'expr');
+}
 
 /** Code after the `}` that closes a block. Comments are already blank. */
 export function rejectTextAfterClose(code: string, closeAt: number, lineNo: number): void {
@@ -156,8 +472,6 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
   let depth = state.braceDepth;
   const kinds = state.braceKinds.slice();
   const closeFloor = state.closeFloor;
-  const blockCloses: { at: number; depth: number; kind: 'block' | 'if' }[] = [];
-  const exprCloses: number[] = [];
   let mask = '';
   let code = '';
   const open = (next: 'block' | 'string') => {
@@ -226,33 +540,20 @@ export function scanLine(input: string, state: LexState = lexStart(), lineNo = 1
       continue;
     }
     if (ch === '{') {
-      kinds.push(isBlockOpen(mask));
+      kinds.push('block');
       depth++;
     } else if (ch === '}') {
-      const opened = kinds.pop();
+      kinds.pop();
       depth--;
-      // Record the closer. The rest of the line is checked after comments
-      // on this line have been blanked, so a trailing line comment is empty.
-      if (closeFloor >= 0 && (opened === 'block' || opened === 'if')) {
-        blockCloses.push({ at: i, depth, kind: opened });
-      } else if (closeFloor >= 0 && opened === 'expr') {
-        exprCloses.push(i);
-      }
     }
     mask += ch;
     code += ch;
   }
+  // Structural errors come from the whole-file brace match. Fragment scans
+  // leave closeFloor at -1 and do not consult it.
   if (closeFloor >= 0) {
-    for (const hit of blockCloses) {
-      const rest = code.slice(hit.at + 1).trim();
-      if (!rest || blockCloseRestAllowed(rest, hit.depth, hit.kind)) continue;
-      throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
-    }
-    for (const at of exprCloses) {
-      const rest = code.slice(at + 1).trim();
-      if (!rest || !HEADER_AFTER_EXPR.test(rest)) continue;
-      throw lexProblem(lineNo, `text after closing '}': ${JSON.stringify(rest)}`);
-    }
+    const structural = structureErrorOnLine(lineNo);
+    if (structural) throw structural;
   }
   return {
     mask,

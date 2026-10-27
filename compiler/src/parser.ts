@@ -2,13 +2,17 @@ import fs from 'fs';
 import path from 'path';
 import {
   assertLexClosed,
+  blockBodyAt,
   inlineBlockInner,
   lexProblem,
   lexStart,
+  popFileStructure,
+  pushFileStructure,
   rejectTextAfterClose,
   scanLine,
   setParseFile,
   stripComments,
+  throwIfUnclosed,
   type LexState,
 } from './lex.js';
 
@@ -451,6 +455,17 @@ export function parseSpeckFile(filePath: string): AST {
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
   setParseFile(filePath);
+  let structured = false;
+  try {
+    pushFileStructure(content);
+    structured = true;
+    return parseSpeckContentBody(content);
+  } finally {
+    if (structured) popFileStructure();
+  }
+}
+
+function parseSpeckContentBody(content: string): AST {
   const specks: SpeckNode[] = [];
   const imports: ImportNode[] = [];
   const domains: DomainNode[] = [];
@@ -509,6 +524,7 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   }
 
   assertLexClosed(lex);
+  throwIfUnclosed();
   return { specks, imports, domains };
 }
 
@@ -2072,12 +2088,14 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const header = parseActionHeader(firstLine);
   if (!header) return null;
 
-  // `action Inc() { require false // note` with `}` on the next line keeps
-  // the statement. `action X { n := n + 2 }` keeps that statement too, and
-  // does not read the next member. `n := n - 1 }` on the closing line is a
-  // statement. The closing-line prefix is already comment-stripped, so it
-  // is not scanned again with the block-comment state.
-  const inline = inlineBlockInner(firstLine);
+  // The body `{` is the one the brace match classified as the action, so a
+  // record parameter (`action Two(p: {a: Nat}) {`) is not the body. A `}`
+  // on a later line still keeps the statement that shares the opening line.
+  const rawHeader = lines[startIndex];
+  const bodySite = blockBodyAt(startIndex + 1, 'action');
+  const inline = bodySite && bodySite.closeLine === bodySite.line
+    ? scanLine(rawHeader).code.slice(bodySite.col + 1, bodySite.closeCol).trim()
+    : (bodySite ? null : inlineBlockInner(firstLine));
   // Keep blank lines as null to separate statements. A line is blank when
   // the shared scanner says it has no code, so a block comment that opened
   // on an earlier line still hides a lone `}` and `/* c */ x := x + 8`
@@ -2093,8 +2111,14 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     rejectActionSemicolon(inline, startIndex + 1);
     bodyEntries.push({ text: inline, raw: inline, indent: indentOf(lines[startIndex]) });
   } else {
-    const head = headerAfterBrace(firstLine, startIndex + 1);
-    const span = readBraceBlock(lines, startIndex + 1, startBraceCount, head.state);
+    // `startBraceCount` counts every `{` on the header, including a record
+    // parameter. The body is one open brace; the match already paired it.
+    const opened = bodySite ? scanLine(rawHeader, lexStart(), startIndex + 1) : null;
+    const head = opened && bodySite
+      ? { code: opened.code.slice(bodySite.col + 1).trim(), state: opened.state }
+      : headerAfterBrace(firstLine, startIndex + 1);
+    const depth = bodySite ? 1 : startBraceCount;
+    const span = readBraceBlock(lines, startIndex + 1, depth, head.state);
     if (head.code) {
       rejectActionSemicolon(head.code, startIndex + 1);
       bodyEntries.push({ text: head.code, raw: head.code, indent: indentOf(lines[startIndex]) });
@@ -2313,7 +2337,15 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         }
         if (bodyLines[j]) blockLines.push(line);
         j++;
-        if (braceDepth === 0) break;
+        if (braceDepth === 0) {
+          // `}` and `else` may be on different lines. Comments between them
+          // are not statements. `else` still belongs to this if.
+          let k = j;
+          while (k < bodyLines.length && !bodyLines[k]) k++;
+          const next = bodyLines[k];
+          if (next && /^else\b/.test(next.trim())) continue;
+          break;
+        }
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
       statements.push({ type: 'ifblock', raw: blockLines.join(' ') });

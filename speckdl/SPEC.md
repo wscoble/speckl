@@ -108,26 +108,25 @@ is a parse error naming the file and line. A trailing `//` comment is not
 part of a `require`, `let`, or invariant expression. The `}` that closes a
 block is the last code on that line. A `//` comment or a `/* */` comment may
 follow it, and the block comment may continue on later lines. A `}` inside a
-string or a comment does not close the block. `else` may follow only the `}`
-that closes an `if` or an `else if`. Further `}` may follow when they close
-blocks that are still inside the speck (`n := n - 1 } }`). A set or a record
-is an expression, including when a keyword appears earlier on the line
-(`n in {0, 1}`, `{1, 2} = {1, 2}`, `{a: 1}`, `for x in {1, 2} {`,
-`if n in {1, 2} {`, `if cond: a else {record}`, `emit Log { msg: "a" }`).
-Any other text after a block-closing `}` is a parse error naming the file
-and line, including another block on that line (`invariant A0 { true } invariant Mono {`,
+string or a comment does not close the block. The file is tokenized once.
+Each `{` is classified from the tokens in front of it: a block header, an
+`if` or `else if` body, or a set, record, or other expression. A `{` inside
+`()` or `[]` is an expression, so a record parameter
+(`action Two(p: {a: Nat}) {`) is not the action body. `else` is legal when
+the token before it, skipping comments and newlines, closes an `if` or
+`else if` body. That includes `} } else` when the last `}` closes an `if`,
+and `else` on the next line. A colon-if (`if n > 0: {a: 1} else {a: 2}`) is
+an expression. `else` after any other closer is a parse error naming the
+file and line, whether or not a comment or a newline is in between
+(`invariant`, `action`, `event`, and `for`). A declaration on the same line
+as a closing `}` is the same kind of error (`invariant A0 { true } invariant Mono {`,
 `action Two { n := 1 } invariant Mono {`, `event E { x: Nat } invariant Mono {`,
-`invariant Mono { false } action Two {`), `else` after a closer that is not
-an `if` (`invariant A0 { true } else invariant Mono {`, `invariant A0 { true } else {`,
-`invariant Mono { n >= 0 } else {`, `action Two { n := 1 } else {`), a
-declaration after the closer (`false } invariant Two`), a speck closer on
-the member's last line (`false } }`), and a speck opened on the line that
-closed the previous one (`} speck D {`). A block keyword after the `}` of a
-set, a record, or a `map` on that same line is the same error
-(`status: { phase: n } invariant Mono {`, `emit Log { msg: "a" } invariant Mono {`,
-`map M { a -> b } invariant Mono {`). The following block is not dropped, and
-the next speck is not merged. A header whose `{` is on the next line, and a
-`{` that is still open at the end of the file, are not rejected by this check.
+`false } }`, `} speck D {`, and a set, record, or `map` followed by a block:
+`status: { phase: n } invariant Mono {`, `emit Log { ... } invariant Mono {`,
+`map M { a -> b } invariant Mono {`). A `{` still open at the end of the
+file is an error. A member header whose `{` is on the next line is an error
+(`invariant Mono` then `{`). An `if` or `for` condition may break before its
+body `{`. A member header with no `{` on any line is not that error.
 Actions have no `;`. A semicolon in an action is a parse error;
 one inside a string or a comment is not.
 
