@@ -167,16 +167,27 @@ stored, and `hash` is checked); rewriting expressions that name an imported
 speck.
 
 A brace inside a finished string or a comment does not hide the next
-speck. An unclosed `{` before the next speck is a parse error naming the
-file and line (`unbalanced braces`). At the end of the file that error is
-reported when the raw brace count is not 0 as well. `domain` is not
-parsed; a speck inside a domain's braces is that error. A string
-does not cross lines: an unclosed `"` is an error on that line. An
-unclosed block comment, a nested `/*`, and a stray `*/` are parse errors
-naming the file and line. `/* */` before `speck` on the same line is
-parsed as that speck. `hash ""`, a mistyped import clause, and a `/* */`
-comment on an import line fail with `Failed to parse import statement`.
-A trailing `//` on an import is accepted.
+speck. An unclosed `{` before the next speck, or a file whose
+comment-aware depth is not 0 at the end, is a parse error naming the
+file and line (`unbalanced braces`). A `}` in a `//` comment, a block
+comment, or a string does not close a brace, and a `{` in a comment does
+not balance a stray `}`. `domain` is not parsed; a speck inside a domain's
+braces is that error. An `import` inside a domain or any other block that
+is not a speck is `import is inside a block`. An import inside one speck
+is attached to that speck. A string does not cross lines: an unclosed `"`
+is an error on that line. An unclosed block comment, a nested `/*`, and a
+stray `*/` are parse errors naming the file and line. A speck header is
+matched on the trimmed line with comments masked: an indent, a tab,
+`speck /* c */ Name {`, `speck Name /* c */ {`, and `speck Name` with `{`
+on the next line are that speck. `/* */` before `speck` on the same line
+is parsed as that speck. A line that starts with `speck` but is not
+`speck Name` or `speck Name {` is `expected "speck <Name> {"`. `hash ""`,
+a mistyped import clause, and a `/* */` comment on an import line fail
+with `Failed to parse import statement`. A trailing `//` on an import is
+accepted. Inside a member, a brace in a string is still counted. That is
+unchanged: `description: "{ } }}"` can drop that speck's members, and
+`log := "}"` in an action can drop the action's statements and a following
+invariant.
 
 ## Documentation
 

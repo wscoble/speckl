@@ -449,8 +449,9 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   // structure. `'` is prime notation, not a string quote. A string ends on its
   // own line. A `domain` line is not a construct: its braces count, and a
   // speck header while depth is not 0 is an error, so the speck is not dropped.
-  // At end of file, both this depth and the raw brace count must be non-zero
-  // to be an error. A `}` that a `//` comment covers can balance the raw count.
+  // At end of file this depth must be 0. A `}` in a comment or a string does
+  // not close a brace that the mask left open, and a `{` in a comment does not
+  // balance a stray `}`.
   const masks: string[] = [];
   let lex = fileLexStart();
   for (let n = 0; n < lines.length; n++) {
@@ -462,31 +463,44 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
 
   let i = 0;
   let depth = 0;
-  let raw = 0;
   let lostAt = 0;
+  const speckSpans: { start: number; end: number }[] = [];
   while (i < lines.length) {
     const line = lines[i].trim();
     const code = masks[i].trim();
+    const header = speckHeader(code);
 
-    if (code.startsWith('speck ')) {
+    if (header === 'bad') {
+      throw parseProblem(filePath, i + 1, 'expected "speck <Name> {"');
+    } else if (header !== 'no') {
       if (depth !== 0) throw parseProblem(filePath, i + 1, 'unbalanced braces');
-      const speck = parseSpeck(lines, i);
-      if (speck) specks.push(speck);
-    } else if (depth === 0 && code.startsWith('import ')) {
-      const node = parseImportStatement(line);
-      imports.push({ ...node, startLine: i + 1, endLine: i + 1 });
+      let bodyIndex = i + 1;
+      if (!header.opened) {
+        const braceLine = openingBraceLine(masks, i);
+        if (braceLine === null) throw parseProblem(filePath, i + 1, 'expected "speck <Name> {"');
+        bodyIndex = braceLine + 1;
+      }
+      const speck = parseSpeck(lines, i, header.name, bodyIndex, 1);
+      specks.push(speck);
+      speckSpans.push({ start: speck.startLine ?? i + 1, end: speck.endLine ?? i + 1 });
+    } else if (/^import(?:\s|$)/.test(code)) {
+      const lineNo = i + 1;
+      const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
+      if (depth === 0) {
+        const node = parseImportStatement(line);
+        imports.push({ ...node, startLine: lineNo, endLine: lineNo });
+      } else if (!insideSpeck) {
+        throw parseProblem(filePath, lineNo, 'import is inside a block');
+      }
     }
 
     const next = depth + maskDelta(masks[i]);
     if (depth === 0 && next > 0) lostAt = i + 1;
     else if (depth >= 0 && next < 0) lostAt = i + 1;
     depth = next;
-    raw += braceDelta(lines[i]);
     i++;
   }
-  // A `//` comment can cover a `}` that the member parser still counts.
-  // That file is not missing a brace. Error only when both counts are open.
-  if (depth !== 0 && raw !== 0) throw parseProblem(filePath, lostAt || 1, 'unbalanced braces');
+  if (depth !== 0) throw parseProblem(filePath, lostAt || 1, 'unbalanced braces');
 
   return { specks, imports, domains };
 }
@@ -585,19 +599,33 @@ function maskDelta(mask: string): number {
   return delta;
 }
 
-function braceDelta(rawLine: string): number {
-  const opens = (rawLine.match(/{/g) || []).length;
-  const closes = (rawLine.match(/}/g) || []).length;
-  return opens - closes;
+/**
+ * A trimmed, comment-masked line. `speck Name` and `speck Name {` are
+ * headers (a `{` may also be the next non-comment line). Anything else
+ * that starts with the keyword `speck` is `bad`. `speckled` is `no`.
+ */
+function speckHeader(code: string): { name: string; opened: boolean } | 'no' | 'bad' {
+  if (!/^speck(?:\s|$)/.test(code)) return 'no';
+  const match = code.match(/^speck\s+([\w-]+)\s*(\{)?\s*$/);
+  if (!match) return 'bad';
+  return { name: match[1], opened: match[2] === '{' };
 }
 
-function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
-  // A block comment may sit on the same line before the header. The header
-  // itself stays at the start of the line when there is no comment.
-  const headerMatch = lines[startIndex].match(/^(?:\/\*[\s\S]*?\*\/\s*)?speck\s+([\w-]+)\s*{/);
-  if (!headerMatch) return null;
+/** Line index of a `{` that opens a speck whose header had no brace. */
+function openingBraceLine(masks: string[], headerIndex: number): number | null {
+  let j = headerIndex + 1;
+  while (j < masks.length && masks[j].trim() === '') j++;
+  if (j < masks.length && masks[j].trim() === '{') return j;
+  return null;
+}
 
-  const name = headerMatch[1];
+function parseSpeck(
+  lines: string[],
+  startIndex: number,
+  name: string,
+  bodyIndex: number,
+  braceCount: number,
+): SpeckNode {
   const members: MemberNode[] = [];
 
   // Cycle 73: refactored from static-field hack to local-object pattern.
@@ -617,8 +645,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     k8sVersion?: string;
   } = {};
 
-  let i = startIndex + 1;
-  let braceCount = 1;
+  let i = bodyIndex;
   let speckEndLine = Math.min(lines.length, startIndex + 1);
 
   while (i < lines.length && braceCount > 0) {
@@ -1766,43 +1793,60 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const prePass: (string | null)[] = [];
   {
     let i = 0;
+    // Brace depth of lines already queued. A colon `if`/`for` that sits
+    // inside a brace block (a reprinted for/if, whose lines are separate)
+    // stays as text. Rewriting it would change the block on the next parse.
+    let queuedDepth = 0;
+    const queue = (text: string | null) => {
+      prePass.push(text);
+      if (text === null) return;
+      for (const ch of text) {
+        if (ch === '{') queuedDepth++;
+        else if (ch === '}') queuedDepth--;
+      }
+    };
     while (i < bodyEntries.length) {
       const cur = bodyEntries[i];
+      if (queuedDepth > 0) {
+        queue(cur ? cur.text : null);
+        i++;
+        continue;
+      }
       if (cur && /^for\b[^{]*:\s*$/.test(cur.text)) {
         // colon-form for loop: `for v in coll:` - brace it; go.ts lowers the
         // range and body
         const forIndent = cur.indent;
-        prePass.push(cur.text.replace(/:\s*$/, ' {'));
+        queue(cur.text.replace(/:\s*$/, ' {'));
         i++;
         while (i < bodyEntries.length) {
           const l2 = bodyEntries[i];
-          if (l2 === null) { prePass.push(null); i++; continue; }
+          if (l2 === null) { queue(null); i++; continue; }
           if (l2.indent <= forIndent) break;
-          prePass.push(l2.text);
+          queue(l2.text);
           i++;
         }
-        prePass.push('}');
+        queue('}');
         continue;
       }
       if (!cur || !/^if\b[^{]*:\s*$/.test(cur.text) || cur.text.includes('{')) {
-        prePass.push(cur ? cur.text : null);
+        queue(cur ? cur.text : null);
         i++;
         continue;
       }
       const ifIndent = cur.indent;
-      prePass.push(cur.text.replace(/:\s*$/, ' {'));
+      queue(cur.text.replace(/:\s*$/, ' {'));
       i++;
       while (i < bodyEntries.length) {
         const l2 = bodyEntries[i];
-        if (l2 === null) { prePass.push(null); i++; continue; }
+        if (l2 === null) { queue(null); i++; continue; }
         if (l2.indent <= ifIndent) {
-          if (/^else\s*:\s*$/.test(l2.text)) { prePass.push('} else {'); i++; continue; }
+          if (/^else\s*:\s*$/.test(l2.text)) { queue('} else {'); i++; continue; }
           break;
         }
-        prePass.push(l2.text);
+        queue(l2.text);
         i++;
       }
-      prePass.push('}');
+      queue('}');
     }
   }
   // Collapse consecutive nulls and strip trailing nulls
@@ -1913,7 +1957,10 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         j++;
         if (braceDepth === 0) break;
       }
-      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
+      // Newlines, not spaces: a `//` comment must stay at the end of its own
+      // line. Joining with a space puts the comment in front of later `}`
+      // characters, and a reprint then looks unclosed to the file scan.
+      statements.push({ type: 'forblock', raw: blockLines2.join('\n') } as any);
       i = j - 1;
       continue;
     }
@@ -1936,7 +1983,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (braceDepth === 0) break;
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
-      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
+      statements.push({ type: 'ifblock', raw: blockLines.join('\n') });
       i = j - 1; // skip to end of if block
       continue;
     }

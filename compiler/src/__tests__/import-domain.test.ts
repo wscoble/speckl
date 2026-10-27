@@ -557,6 +557,165 @@ describe('compile entry', () => {
     }
   });
 
+  it('e05 e03 e04 e06: a non-structural } does not balance an open file, on LF and CRLF', () => {
+    const head = [
+      'speck A {',
+      '  state { x: Nat }',
+      '  init { x := 0 }',
+      '  invariant Pos { x >= 0',
+      '  invariant Canary { false }',
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      const e05 = [...head, '}', '// }', ''].join(nl);
+      expect(() => parseSpeckContent(e05, 'e05.speckdl')).toThrow(/Parse error at e05\.speckdl:1: unbalanced braces/);
+      expect(() => parseSpeckContent(e05)).toThrow(/Parse error at line 1: unbalanced braces/);
+
+      const e03 = [...head, '  description: "}"', '}', ''].join(nl);
+      expect(() => parseSpeckContent(e03, 'e03.speckdl')).toThrow(/Parse error at e03\.speckdl:1: unbalanced braces/);
+
+      const e04 = [...head, '  /* } */', '}', ''].join(nl);
+      expect(() => parseSpeckContent(e04, 'e04.speckdl')).toThrow(/Parse error at e04\.speckdl:1: unbalanced braces/);
+
+      const e06 = [
+        'speck A {',
+        '  description: "}"',
+        '  state { x: Nat }',
+        '  init { x := 0 }',
+        '  invariant Pos { x >= 0 }',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(e06, 'e06.speckdl')).toThrow(/Parse error at e06\.speckdl:1: unbalanced braces/);
+
+      // A closed speck may still be followed by a comment that contains a brace.
+      const closed = [
+        'speck A {',
+        '  state { x: Nat }',
+        '  init { x := 0 }',
+        '}',
+        '// }',
+        '',
+      ].join(nl);
+      expect(parseSpeckContent(closed, 'closed.speckdl').specks.map(s => s.name)).toEqual(['A']);
+    }
+  });
+
+  it('speck headers match the trimmed masked line, on LF and CRLF', () => {
+    const speckA = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '}',
+    ];
+    const canary = [
+      '    invariant Canary {',
+      '        false',
+      '    }',
+      '}',
+    ];
+    const headers = [
+      ['  speck B {'],
+      ['speck /* c */ B {'],
+      ['speck B /* c */ {'],
+      ['speck\tB {'],
+      ['speck B', '{'],
+      ['speck B', '', '{'],
+      ['speck B', '// note', '{'],
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      for (const header of headers) {
+        const src = [...speckA, ...header, ...canary, ''].join(nl);
+        const ast = parseSpeckContent(src, 'hdr.speckdl');
+        expect(ast.specks.map(s => s.name), header.join(' ')).toEqual(['A', 'B']);
+        const inv = ast.specks[1].members.find(m => m.type === 'invariant') as { name: string; expr: string };
+        expect(inv.name, header.join(' ')).toBe('Canary');
+        expect(inv.expr, header.join(' ')).toBe('false');
+      }
+      for (const bad of ['speck', 'speck {', 'speck B extra', 'speck B { trailing', 'speck B']) {
+        const src = [...speckA, bad, ...canary, ''].join(nl);
+        expect(() => parseSpeckContent(src, 'bad.speckdl'), bad).toThrow(
+          /Parse error at bad\.speckdl:\d+: expected "speck <Name> \{"/,
+        );
+        expect(() => parseSpeckContent(src), bad).toThrow(/Parse error at line \d+: expected "speck <Name> \{"/);
+      }
+    }
+  });
+
+  it('an import inside a block that is not a speck is a parse error, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const domain = [
+        'domain D {',
+        '  import "missing.speckdl"',
+        '}',
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(domain, 'e19.speckdl')).toThrow(
+        /Parse error at e19\.speckdl:2: import is inside a block/,
+      );
+      expect(() => parseSpeckContent(domain)).toThrow(/Parse error at line 2: import is inside a block/);
+
+      const bare = [
+        '{',
+        '  import "missing.speckdl"',
+        '}',
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(bare, 'blk.speckdl')).toThrow(
+        /Parse error at blk\.speckdl:2: import is inside a block/,
+      );
+    }
+  });
+
+  it('e11: a stray } that a later comment brace balances is a parse error, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        '}',
+        '// {',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(src, 'e11.speckdl')).toThrow(/Parse error at e11\.speckdl:5: unbalanced braces/);
+      expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 5: unbalanced braces/);
+    }
+  });
+
+  it('a for or if block with a trailing comment round-trips without hiding a brace', () => {
+    const src = [
+      'speck A {',
+      '    state {',
+      '        x: Nat',
+      '    }',
+      '    init {',
+      '        x := 0',
+      '    }',
+      '    action Go {',
+      '        for i from 1 to 2:',
+      '            let replicated := 1  // leader counts itself',
+      '            x := x + 1',
+      '        if x > 0:',
+      '            x := x + 1  // note',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const printed = printAST(parseSpeckContent(src, 'raftish.speckdl'));
+    expect(printed).toMatch(/\/\/ leader counts itself\n/);
+    expect(printed).not.toMatch(/\/\/ leader counts itself[^\n]*\}/);
+    expect(printed).toMatch(/\/\/ note\n/);
+    expect(printed).not.toMatch(/\/\/ note[^\n]*\}/);
+    expect(printAST(parseSpeckContent(printed))).toBe(printed);
+  });
+
   it('main compiles a file', async () => {
     const root = mkdtempSync(join(tmpdir(), 'speckl-main-'));
     const file = join(root, 'Tiny.speckdl');

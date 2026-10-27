@@ -225,13 +225,27 @@ comment are parse errors naming the file and the line.
 
 If that depth is not 0 when the next line is a speck header, the parse
 error is `unbalanced braces`, naming the file and the line. At the end of
-the file the same error is reported when the raw `{` `}` count is not 0
-either. A `}` that a `//` comment covers, while the raw text still
-balances, is not this error. A `domain` block is not parsed in this
-version. A speck written inside `domain D { ... }` hits that error. It is
-not omitted.
-A `/* */` comment on the same line before `speck Name {` is part of the
-header. The speck is parsed.
+the file the same error is reported whenever that depth is not 0. A `}`
+inside a `//` comment, a `/* */` comment, or a string does not close a
+brace, and a `{` inside a comment does not balance a stray `}`. A `domain`
+block is not parsed in this version. A speck written inside
+`domain D { ... }` hits that error. It is not omitted. An `import` line
+inside a block that is not a speck is `import is inside a block`, naming
+the file and the line. An import written inside one speck is attached to
+that speck.
+
+A speck header is the trimmed line with comments masked. These are the
+same header: an indent before `speck`, a tab between `speck` and the name,
+`speck /* c */ Name {`, `speck Name /* c */ {`, and `speck Name` with `{`
+alone on a following line. A `/* */` comment on the same line before
+`speck Name {` is also that header. A line that starts with the keyword
+`speck` but is not one of those forms is
+`expected "speck <Name> {"`.
+
+Inside a member, `{` and `}` are still counted in the raw text, including
+inside a string. That is unchanged. `description: "{ } }}"` can drop the
+members of that speck, and `log := "}"` in an action can drop the action's
+statements and a following invariant.
 
 An import line is `import`, a quoted path, then optional `as`, `version`,
 and `hash` clauses, then an optional `//` comment. `hash ""`, a mistyped

@@ -874,8 +874,9 @@ function emitSpeck(speck: SpeckNode): string {
         : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
       ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
       if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
-        ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
-        const cm2 = String((st as any).raw ?? '').match(/^if\s+(.+?)\s*\{/);
+        const blockText = String((st as any).raw ?? '').replace(/\n/g, ' ');
+        ctxExprs.push({ text: blockText, ctx: 'value' });
+        const cm2 = blockText.match(/^if\s+(.+?)\s*\{/);
         if (cm2) ctxExprs.push({ text: cm2[1].trim(), ctx: 'guard' });
       }
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
@@ -887,7 +888,7 @@ function emitSpeck(speck: SpeckNode): string {
         if (m && !builtin.has(m[1])) letVarFn.set(String((st as any).name), m[1]);
       }
       if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
-        const raw = String((st as any).raw ?? '');
+        const raw = String((st as any).raw ?? '').replace(/\n/g, ' ');
         for (const lm of raw.matchAll(/let\s+(\w+)\s*:=\s*([a-z_]\w*)\s*\(/g)) {
           if (!builtin.has(lm[2])) letVarFn.set(lm[1], lm[2]);
         }
@@ -1507,9 +1508,9 @@ function emitAction(
     } else if (s.type === 'assign') {
       bodyLines.push(emitAssign(s));
     } else if (s.type === 'ifblock') {
-      bodyLines.push(emitIfBlock(String((s as any).raw ?? '')));
+      bodyLines.push(emitIfBlock(String((s as any).raw ?? '').replace(/\n/g, ' ')));
     } else if (s.type === 'forblock') {
-      bodyLines.push(emitForBlock(String((s as any).raw ?? '')));
+      bodyLines.push(emitForBlock(String((s as any).raw ?? '').replace(/\n/g, ' ')));
     } else if (s.type === 'emit') {
       const fields = ((s.fields ?? []) as any[])
         .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`)
