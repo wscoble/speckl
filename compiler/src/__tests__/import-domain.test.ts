@@ -9,6 +9,7 @@ import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
+import { generateGo } from '../generators/go.js';
 import { lower } from '../ir/lower.js';
 import { canonical } from '../ir/resolve-imports.js';
 import { generateProvenanceFromIR } from '../generators/provenance-from-ir.js';
@@ -630,13 +631,97 @@ describe('compile entry', () => {
         expect(inv.name, header.join(' ')).toBe('Canary');
         expect(inv.expr, header.join(' ')).toBe('false');
       }
-      for (const bad of ['speck', 'speck {', 'speck B extra', 'speck B { trailing', 'speck B']) {
+      for (const bad of ['speck', 'speck {', 'speck B extra', 'speck B { trailing']) {
         const src = [...speckA, bad, ...canary, ''].join(nl);
         expect(() => parseSpeckContent(src, 'bad.speckdl'), bad).toThrow(
-          /Parse error at bad\.speckdl:\d+: expected "speck <Name> \{"/,
+          /Parse error at bad\.speckdl:\d+: "speck" is a reserved keyword/,
         );
-        expect(() => parseSpeckContent(src), bad).toThrow(/Parse error at line \d+: expected "speck <Name> \{"/);
+        expect(() => parseSpeckContent(src), bad).toThrow(/Parse error at line \d+: "speck" is a reserved keyword/);
       }
+      const missingBrace = [...speckA, 'speck B', ...canary, ''].join(nl);
+      expect(() => parseSpeckContent(missingBrace, 'bad.speckdl')).toThrow(
+        /Parse error at bad\.speckdl:\d+: expected "speck <Name> \{"/,
+      );
+    }
+  });
+
+  it('speck L { } is an empty speck, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      for (const header of ['speck L { }', 'speck L {}']) {
+        const src = [
+          header,
+          'speck M {',
+          '    invariant Canary {',
+          '        false',
+          '    }',
+          '}',
+          '',
+        ].join(nl);
+        const ast = parseSpeckContent(src, 'empty.speckdl');
+        expect(ast.specks.map(s => s.name), header).toEqual(['L', 'M']);
+        expect(ast.specks[0].members, header).toEqual([]);
+        const inv = ast.specks[1].members.find(m => m.type === 'invariant') as { expr: string };
+        expect(inv.expr, header).toBe('false');
+      }
+    }
+  });
+
+  it('f02 and f08: speck used as a name is a reserved keyword, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const f02 = [
+        'speck A {',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
+        '    action Go {',
+        '        speck := speck + 1',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(f02, 'f02.speckdl')).toThrow(
+        /Parse error at f02\.speckdl:9: "speck" is a reserved keyword/,
+      );
+      expect(() => parseSpeckContent(f02)).toThrow(/Parse error at line 9: "speck" is a reserved keyword/);
+
+      const f08 = [
+        'speck A {',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
+        '    invariant Pos {',
+        '        speck >= 0',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(f08, 'f08.speckdl')).toThrow(
+        /Parse error at f08\.speckdl:9: "speck" is a reserved keyword/,
+      );
+
+      const kept = [
+        'speck A {',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
+        '    action Go {',
+        '        x := speck + 1',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      const ast = parseSpeckContent(kept, 'name.speckdl');
+      const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { type: string; expr?: string }[] };
+      expect(action.statements.some(s => s.type === 'assign' && s.expr === 'speck + 1')).toBe(true);
     }
   });
 
@@ -670,6 +755,58 @@ describe('compile entry', () => {
       expect(() => parseSpeckContent(bare, 'blk.speckdl')).toThrow(
         /Parse error at blk\.speckdl:2: import is inside a block/,
       );
+
+      const inAction = [
+        'speck A {',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
+        '    action Go {',
+        '        import "missing.speckdl"',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(inAction, 'f42.speckdl')).toThrow(
+        /Parse error at f42\.speckdl:9: import is inside a block/,
+      );
+
+      const inIf = [
+        'speck A {',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
+        '    action Go {',
+        '        if x > 0 {',
+        '            import "missing.speckdl"',
+        '        }',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(inIf, 'f43.speckdl')).toThrow(
+        /Parse error at f43\.speckdl:10: import is inside a block/,
+      );
+
+      const inState = [
+        'speck A {',
+        '    state {',
+        '        import "missing.speckdl"',
+        '        x: Nat',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(inState, 'f44.speckdl')).toThrow(
+        /Parse error at f44\.speckdl:3: import is inside a block/,
+      );
+      expect(() => parseSpeckContent(inState)).toThrow(/Parse error at line 3: import is inside a block/);
     }
   });
 
@@ -714,6 +851,61 @@ describe('compile entry', () => {
     expect(printed).toMatch(/\/\/ note\n/);
     expect(printed).not.toMatch(/\/\/ note[^\n]*\}/);
     expect(printAST(parseSpeckContent(printed))).toBe(printed);
+
+    const quoted = [
+      'speck A {',
+      '    state {',
+      '        x: Nat',
+      '    }',
+      '    init {',
+      '        x := 0',
+      '    }',
+      '    action Go {',
+      '        for i from 1 to 2:',
+      '            let s := "a // b" /* c */ 1  // real',
+      '            x := x + 1',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const quotedPrint = printAST(parseSpeckContent(quoted));
+    expect(quotedPrint).toMatch(/\/\/ real\n/);
+    expect(printAST(parseSpeckContent(quotedPrint))).toBe(quotedPrint);
+  });
+
+  it('f54: a colon-form if inside a brace if does not run its body unconditionally', () => {
+    const src = [
+      'speck A {',
+      '    state {',
+      '        x: Nat',
+      '    }',
+      '    init {',
+      '        x := 0',
+      '    }',
+      '    action Go {',
+      '        if x > 5 {',
+      '            if x > 9:',
+      '                x := 0',
+      '            x := x + 1',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'f54.speckdl');
+    const action = ast.specks[0].members.find(m => m.type === 'action') as {
+      statements: { type: string; target?: string; raw?: string }[];
+    };
+    expect(action.statements.map(s => s.type)).toEqual(['ifblock']);
+    expect(action.statements[0].raw).toContain('if x > 9');
+    expect(action.statements[0].raw).not.toContain('\n');
+    const out = mkdtempSync(join(tmpdir(), 'speckl-f54-'));
+    generateGo(ast, out);
+    const go = readFileSync(join(out, 'a', 'a.go'), 'utf8');
+    const method = go.slice(go.indexOf('func (m *AMachine) Go()'));
+    expect(method).toContain('if m.X > 5 {');
+    expect(method).toContain('m.X = m.X + 1');
+    expect(method).not.toContain('m.X = 0');
   });
 
   it('main compiles a file', async () => {

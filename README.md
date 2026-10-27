@@ -166,28 +166,35 @@ import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
 stored, and `hash` is checked); rewriting expressions that name an imported
 speck.
 
-A brace inside a finished string or a comment does not hide the next
-speck. An unclosed `{` before the next speck, or a file whose
-comment-aware depth is not 0 at the end, is a parse error naming the
-file and line (`unbalanced braces`). A `}` in a `//` comment, a block
-comment, or a string does not close a brace, and a `{` in a comment does
-not balance a stray `}`. `domain` is not parsed; a speck inside a domain's
-braces is that error. An `import` inside a domain or any other block that
-is not a speck is `import is inside a block`. An import inside one speck
-is attached to that speck. A string does not cross lines: an unclosed `"`
-is an error on that line. An unclosed block comment, a nested `/*`, and a
-stray `*/` are parse errors naming the file and line. A speck header is
-matched on the trimmed line with comments masked: an indent, a tab,
-`speck /* c */ Name {`, `speck Name /* c */ {`, and `speck Name` with `{`
-on the next line are that speck. `/* */` before `speck` on the same line
-is parsed as that speck. A line that starts with `speck` but is not
-`speck Name` or `speck Name {` is `expected "speck <Name> {"`. `hash ""`,
-a mistyped import clause, and a `/* */` comment on an import line fail
-with `Failed to parse import statement`. A trailing `//` on an import is
-accepted. Inside a member, a brace in a string is still counted. That is
-unchanged: `description: "{ } }}"` can drop that speck's members, and
-`log := "}"` in an action can drop the action's statements and a following
-invariant.
+The file-level scan that finds the next speck skips a brace inside a
+finished string or a comment. An unclosed `{` before the next speck, or a
+file whose depth on that scan is not 0 at the end, is a parse error naming
+the file and line (`unbalanced braces`). A stray `}` is that error even
+when a later comment contains a `{`. `domain` is not parsed; a speck
+inside a domain's braces is that error. An `import` inside an action, an
+`if` inside an action, a state block, a domain, or any other brace block
+that is not the speck itself is `import is inside a block`. An import that
+is a direct member of a speck is attached to that speck. A string does not
+cross lines: an unclosed `"` is an error on that line. An unclosed block
+comment, a nested `/*`, and a stray `*/` are parse errors naming the file
+and line. A speck header is matched on the trimmed line with comments
+masked: an indent, a tab, `speck /* c */ Name {`, `speck Name /* c */ {`,
+`speck Name { }`, `speck Name {}`, and `speck Name` with `{` on the next
+line are that speck. `/* */` before `speck` on the same line is parsed as
+that speck. `speck` is a reserved keyword. On main, `speck := speck + 1`
+and `speck >= 0` were accepted. They are now
+`"speck" is a reserved keyword`. `x := speck + 1` is still an expression.
+A header `speck Name` whose `{` never appears is
+`expected "speck <Name> {"`. `hash ""`, a mistyped import clause, and a
+`/* */` comment on an import line fail with
+`Failed to parse import statement`. A trailing `//` on an import is
+accepted. Inside a member, a `{` or `}` in a `//` comment, a `/* */`
+comment, or a string can still decide where the member ends. That is the
+same as main. `if x > 5 { // }` can run the following statements
+unconditionally and drop invariant Canary. `description: "{ } }}"` can
+drop that speck's members, and `log := "}"` in an action can drop the
+action's statements and a following invariant. Comment braces inside
+member blocks are a known gap, fixed in #47, not here.
 
 ## Documentation
 

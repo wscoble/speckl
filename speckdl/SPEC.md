@@ -215,37 +215,45 @@ and it does not rewrite expressions that mention an imported name. That
 name resolution is **not yet implemented**. Each merged speck stays one
 speck.
 
-A `{` or `}` inside a finished `"` string, a `//` comment, or a `/* */`
-comment does not count toward the depth that finds the next speck. `'` is
-prime notation, not a string quote. A `"` string ends on the line it
-starts: an unclosed `"` is a parse error on that line (`unterminated
-string`), so a `"` on a later line does not close it. An unclosed `/*`,
-a `/*` inside a block comment, and a `*/` that is not closing a block
-comment are parse errors naming the file and the line.
+The file-level scan that finds the next speck skips a `{` or `}` inside a
+finished `"` string, a `//` comment, or a `/* */` comment. `'` is prime
+notation, not a string quote. A `"` string ends on the line it starts: an
+unclosed `"` is a parse error on that line (`unterminated string`), so a
+`"` on a later line does not close it. An unclosed `/*`, a `/*` inside a
+block comment, and a `*/` that is not closing a block comment are parse
+errors naming the file and the line.
 
 If that depth is not 0 when the next line is a speck header, the parse
 error is `unbalanced braces`, naming the file and the line. At the end of
-the file the same error is reported whenever that depth is not 0. A `}`
-inside a `//` comment, a `/* */` comment, or a string does not close a
-brace, and a `{` inside a comment does not balance a stray `}`. A `domain`
+the file the same error is reported whenever that depth is not 0. A stray
+`}` is that error even when a later comment contains a `{`. A `domain`
 block is not parsed in this version. A speck written inside
-`domain D { ... }` hits that error. It is not omitted. An `import` line
-inside a block that is not a speck is `import is inside a block`, naming
-the file and the line. An import written inside one speck is attached to
-that speck.
+`domain D { ... }` hits that error. It is not omitted. An `import` inside
+an action, an `if` inside an action, a multi-line state block, a `domain`
+block, or any other brace block that is not the speck itself is
+`import is inside a block`, naming the file and the line. An import that
+is a direct member of a speck is attached to that speck.
 
 A speck header is the trimmed line with comments masked. These are the
 same header: an indent before `speck`, a tab between `speck` and the name,
-`speck /* c */ Name {`, `speck Name /* c */ {`, and `speck Name` with `{`
-alone on a following line. A `/* */` comment on the same line before
-`speck Name {` is also that header. A line that starts with the keyword
-`speck` but is not one of those forms is
-`expected "speck <Name> {"`.
+`speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
+`speck Name {}`, and `speck Name` with `{` alone on a following line. A
+`/* */` comment on the same line before `speck Name {` is also that
+header. `speck` is a reserved keyword. On main, a line such as
+`speck := speck + 1` or `speck >= 0` was accepted. It is now
+`"speck" is a reserved keyword`, naming the file and the line.
+`x := speck + 1` is still an expression. A header `speck Name` whose `{`
+never appears is `expected "speck <Name> {"`.
 
 Inside a member, `{` and `}` are still counted in the raw text, including
-inside a string. That is unchanged. `description: "{ } }}"` can drop the
-members of that speck, and `log := "}"` in an action can drop the action's
-statements and a following invariant.
+inside a `//` comment, a `/* */` comment, and a string. That walk is
+unchanged, and it is the same as main. A comment brace can decide where
+the member ends: `if x > 5 { // }` and `if x > 5 { /* } */` can run the
+following statements unconditionally and drop a following invariant
+Canary. `description: "{ } }}"` can drop the members of that speck, and
+`log := "}"` in an action can drop the action's statements and a following
+invariant. Comment braces inside member blocks are a known gap. They are
+fixed in #47, not in this version.
 
 An import line is `import`, a quoted path, then optional `as`, `version`,
 and `hash` clauses, then an optional `//` comment. `hash ""`, a mistyped

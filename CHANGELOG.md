@@ -18,31 +18,40 @@ alias.
   merged, with cycle detection, hash checks, and errors that name the file.
   `version` is stored and not looked up. A package registry, rewriting
   expressions that name an imported speck, contracts, cost, budgets, and
-  runtime routing are not yet implemented. File-level `{` `}` depth ignores
-  a brace inside a finished `"` string, a `//` comment, or a `/* */` comment.
-  Depth that is not 0 before the next speck, or at the end of the file, is
-  a parse error (`unbalanced braces`) naming the file and line. A `}` in a
-  `//` comment, a `/* */` comment, or a string does not close an open brace,
-  and a `{` in a comment does not balance a stray `}`. `domain` is not parsed;
-  a speck inside its braces is that error, not a dropped speck. An `import`
-  written inside a block that is not a speck (`domain D { import "..." }`,
-  or any other brace block) is `import is inside a block`. An import written
-  inside one speck is still attached to that speck.
+  runtime routing are not yet implemented. The file-level scan that finds
+  the next speck skips a brace inside a finished `"` string, a `//` comment,
+  or a `/* */` comment. Depth that is not 0 before the next speck, or at
+  the end of the file, is a parse error (`unbalanced braces`) naming the
+  file and line. A stray `}` is that error even when a later comment
+  contains a `{`. `domain` is not parsed; a speck inside its braces is
+  that error, not a dropped speck. An `import` inside an action, an `if`
+  inside an action, a multi-line state block, a `domain` block, or any
+  other brace block that is not the speck itself is
+  `import is inside a block`, naming the file and line. An import that is
+  a direct member of a speck is still attached to that speck.
   A string does not continue onto the next line: an unclosed `"` is
   `unterminated string` on that line. An unclosed block comment, a nested
   `/*`, and a stray `*/` are parse errors naming the file and line. A speck
   header is read from the trimmed line with comments masked, so an indent,
-  a tab, `speck /* c */ Name {`, `speck Name /* c */ {`, and `speck Name`
-  with `{` on the next line are that speck. A `/* */` comment may also
-  precede `speck` on the same line. A line that starts with the keyword
-  `speck` but is not `speck Name` or `speck Name {` is
+  a tab, `speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
+  `speck Name {}`, and `speck Name` with `{` on the next line are that
+  speck. A `/* */` comment may also precede `speck` on the same line.
+  `speck` is a reserved keyword. On main, `speck := speck + 1` and
+  `speck >= 0` were accepted. They are now
+  `"speck" is a reserved keyword`, naming the file and line. `x := speck + 1`
+  is still an expression. A header `speck Name` whose `{` never appears is
   `expected "speck <Name> {"`. `'` is not a string quote. An empty `hash ""`,
   a mistyped clause, and a `/* */` comment on an import line are
   `Failed to parse import statement`. A trailing `//` on an import is
-  accepted. The member walk is unchanged: a `{` or `}` inside a string on a
-  member line is still counted there. `description: "{ } }}"` can drop the
-  members of that speck, and `log := "}"` inside an action can drop that
-  action's statements and a following invariant. That gap is not fixed here.
+  accepted. The member walk is unchanged, and it is the same as main.
+  A `{` or `}` inside a `//` comment, a `/* */` comment, or a string on a
+  member line can still decide where that member ends. `if x > 5 { // }`
+  and `if x > 5 { /* } */` can run the following statements unconditionally
+  and drop a following invariant Canary. `description: "{ } }}"` can drop
+  the members of that speck, and `log := "}"` inside an action can drop
+  that action's statements and a following invariant. Comment braces inside
+  member blocks are a known gap, the same as main, and are fixed in #47,
+  not here.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
