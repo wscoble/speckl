@@ -109,10 +109,11 @@ including at file level, after the last speck, and inside domain text. An
 unclosed `/*` is `unterminated block comment` on the line where it opened,
 in those same places. A comment that opens on a speck's closing line and
 closes on a later line is closed. A `/*` inside an already-open block
-comment is more comment text. A `speck`, `action`, `invariant`, `state`,
-or `init` header on the line that closes a block comment is `header is not
-at the start of the line`. A speck written inside a block comment is not
-a speck.
+comment is more comment text. When `*/` is the first text on a line and
+the code after it is a `speck`, `action`, `invariant`, `state`, or `init`
+header, that header is `header is not at the start of the line`. A header
+later on the line is outside this scan. A speck written entirely inside a
+block comment is not a speck.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
