@@ -56,7 +56,7 @@ function tokenizeCode(code: string, line: number, out: SrcTok[]): void {
   let i = 0;
   while (i < code.length) {
     const ch = code[i];
-    if (ch === ' ' || ch === '\t' || ch === '\r') { i++; continue; }
+    if (/\s/u.test(ch)) { i++; continue; }
     if (ch === '"') {
       let j = i + 1;
       while (j < code.length) {
@@ -189,10 +189,42 @@ class Account {
     }
   }
 
+  /** `action Name(params) {` — a punctuated name is unparsed, not a parameter error. */
+  private parseActionMember(): void {
+    this.take();
+    this.skipNl();
+    if (this.toks[this.i]?.kind === 'ident') this.take();
+    this.skipNl();
+    if (this.toks[this.i]?.text === '(') {
+      let depth = 0;
+      while (this.i < this.toks.length) {
+        const t = this.toks[this.i];
+        if (t.kind === 'nl') { this.take(); continue; }
+        if (t.text === '(') depth++;
+        else if (t.text === ')') {
+          if (depth === 0) throw unparsed(t);
+          depth--;
+          this.take();
+          if (depth === 0) break;
+          continue;
+        }
+        this.take();
+      }
+    }
+    this.skipNl();
+    const brace = this.toks[this.i];
+    if (!brace || brace.text !== '{') throw unparsed(brace ?? this.toks[this.i - 1]);
+    this.consumeBrace(true);
+  }
+
   /** A direct child of a speck. A block `{` here needs an allowlisted header. */
   private parseMember(): void {
     const start = this.i;
     const first = this.toks[this.i]?.kind === 'ident' ? this.toks[this.i].text : undefined;
+    if (first === 'action') {
+      this.parseActionMember();
+      return;
+    }
     let paren = 0;
     let bracket = 0;
     let brace = 0;

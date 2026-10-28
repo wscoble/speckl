@@ -14,6 +14,64 @@ alias.
 
 ### Added
 
+- **`import` resolution.** `import "file.speckdl"` is read, lowered, and merged.
+  A missing file, a cycle, a hash mismatch, and the same speck declared in
+  two files are errors that name the file. `version` is stored and not looked
+  up. There is no package registry, and expressions that name an imported
+  speck are not rewritten. Contracts, cost, budgets, and runtime routing are
+  not implemented. An empty `hash ""`, a mistyped clause (`hsh`, `verison`),
+  and a `/* */` comment on the import line fail the parse. A trailing `//`
+  comment is allowed. An `import` that is a direct member of a speck is
+  attached to that speck. An `import` inside an action, an `if`, a multi-line
+  state block, a `domain`, or any other brace block that is not the speck
+  itself is `import is inside a block`.
+- **Header and brace checks on scanner tokens.** After `lex.ts` masks
+  comments and strings, those tokens decide where a speck starts and ends.
+  A `speck` that is not a well-formed header is a parse error naming the file
+  and line: `speck must be a header at the start of the line`,
+  `expected "speck <Name> {"`, `speck name must be on the same line as "speck"`,
+  `one speck per line: put members on their own lines`, or
+  `"speck" is a reserved keyword`. A header at nonzero depth, depth below 0,
+  or depth that is not 0 at the end of the file is `unbalanced braces`. A
+  stray `}` is that error even when a later comment contains a `{`. A `{` or
+  `}` inside a comment or a string does not count, so the next speck stays a
+  separate speck. An extra `}` on a one-line member
+  (`action Go { x := x + 1 } }`, `state { x: Nat } }`,
+  `invariant P { x >= 0 } }`) closes that speck. The next speck is not
+  absorbed. Non-comment text after the `}` that brings file depth to 0, or
+  after a member's `}` while the speck stays open, is
+  `text after a closing brace`. A `}` inside `(...)` or `[...]` is not that
+  error, so `action Pay(p: {amount: Nat}) {` parses. `})`, `},`, and
+  `} else` / `} else if` are not that error. A Unicode Cf character outside
+  a string or a comment is `invisible format character`, except a BOM at the
+  start of the file. Other file-level text is
+  `text outside a speck, domain, or import`. A string does not continue onto
+  the next line. A `/*` on a later line while a comment is still open is
+  `nested block comment`. A `/*` on the same line, inside that comment, is
+  comment text. `domain` is
+  recognized so its braces count, and the members inside it are not parsed.
+  A speck written inside a domain is `unbalanced braces`. An unknown block
+  inside a speck (`thing B {`, `Speck B {`, `conditions {`, `enum {`,
+  `input {`, `output {`, `next {`, `status {`, a lookalike of `speck`,
+  and `thing {` or `iff` inside an action) is `unknown block`. It is not
+  merged into the enclosing speck. That includes a name whose `{` is on the
+  following line (`Speck B` then `{`) and a call-shaped header
+  (`thing(p: {a: Nat}) {`). A known member whose `{` is on the following
+  line is that member (`invariant P` then `{`, `action Two(p: {a: Nat})`
+  then `{`). `while` and `forall` are not lowered; a block in either is
+  `unknown block`, so its body does not run unconditionally. `state{` and
+  `init{` with no space are the same blocks as `state {` and `init {`. A
+  `;` between action statements is `semicolon between statements`. A `type`
+  line that is not `type Name = ...` is `unknown block`. `type Name = { ... }`
+  is parsed. An action whose parameter list does not close on its line,
+  including `action Pay(` and `action Pay(p: {`, is
+  `action parameters must close on the action line`. A one-line action keeps
+  its statement. A multi-line invariant keeps the expression on its closing
+  line. A
+  statement or `require` on the closing line of a multi-line action is
+  `statement before the closing brace`. A colon-form `if` nested inside another
+  colon-form `if` is never rewritten. One-line specks with members and two
+  specks on one line stay errors until a later whole-file tokenizer.
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
   that brace cannot end a speck, a member, an `if`, or a `for`, and it
@@ -25,8 +83,9 @@ alias.
   `unterminated string` on the line where it opened, at file level, after
   the last speck, or inside domain text. An unclosed `/*` is
   `unterminated block comment` on the line where it opened, in those same
-  places. A `/*` written inside an already-open block comment is comment
-  text, not a nested comment. A speck written inside a block comment is not
+  places. A `/*` on a later line, while a block comment is already open,
+  is `nested block comment`. A `/*` on the same line, already inside that
+  comment, is comment text. A speck written inside a block comment is not
   a speck.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
   count uses. Whitespace and comments are not tokens. Every other token is

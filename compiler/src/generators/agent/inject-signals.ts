@@ -24,6 +24,8 @@ export function signalActionName(signal: string, outcome: string): string {
 export function injectSignalActions(ast: AST): AST {
   return {
     specks: ast.specks.map(injectSpeck),
+    imports: ast.imports ?? [],
+    domains: ast.domains ?? [],
   };
 }
 
