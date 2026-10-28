@@ -73,7 +73,8 @@ export function exitProcess(code: number): never {
 }
 
 export function reportFatal(err: unknown): never {
-  console.error('Compilation failed:', err);
+  const text = err instanceof Error ? err.message : String(err);
+  console.error(`Compilation failed: ${text}`);
   process.exit(1);
 }
 

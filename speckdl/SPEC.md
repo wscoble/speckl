@@ -102,11 +102,12 @@ yet lowered to Z3 (see §3.5).
 
 **Comments** — `//` line comments and `/* ... */` block comments. A finished
 comment is not structure: a `}` inside one does not close a block, including
-when the comment spans lines. `'` is post-state notation, not a string quote.
-An unterminated block comment or string, or a `*/` that does not close one,
-is a parse error naming the file and line. A trailing `//` comment is not
-part of a `require`, `let`, or invariant expression. A `"` string does not
-continue onto the next line. A nested `/*` is `nested block comment`.
+when the comment spans lines and when Go emits an `if` or a `for`. `'` is
+post-state notation, not a string quote. A block comment may continue onto
+the next line. A `"` string may not: an unclosed `"` is `unterminated string`
+on the line where it opened. An unclosed `/*`, a nested `/*`, or a `*/` that
+does not close one, is a parse error naming the file and line. A trailing
+`//` comment is not part of a `require`, `let`, or invariant expression.
 
 Header and brace checks use those same tokens. A `speck` that is not a
 well-formed header (`speck`, a name, then `{`, at depth 0) is a parse error
@@ -115,11 +116,13 @@ Depth below 0, or depth that is not 0 at the end of the file, is
 `unbalanced braces`, including a stray `}` that a later comment brace would
 appear to balance. An extra `}` on a one-line member closes that speck.
 Text after the `}` that returns file depth to 0, or after a member's `}`
-while the speck stays open, is `text after a closing brace`. `})`, `},`,
-and `} else` are not that error. A Unicode format character outside a string
-or a comment is `invisible format character`, except a BOM at the start of
-the file. Other text at file level is
-`text outside a speck, domain, or import`.
+while the speck stays open, is `text after a closing brace`. A `}` inside
+`(...)` or `[...]` is not that error, so `action Pay(p: {amount: Nat}) {`
+parses. `})`, `},`, and `} else` are not that error. A block whose first
+word is not a member (`thing`, `Speck`, or a lookalike of `speck`) is
+`unknown block`. A Unicode format character outside a string or a comment
+is `invisible format character`, except a BOM at the start of the file.
+Other text at file level is `text outside a speck, domain, or import`.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
@@ -222,8 +225,8 @@ is `import is inside a block`.
 
 `domain Name { ... }` is not parsed. Its braces count, and the members
 written inside it are dropped. A `speck` inside those braces is
-`unbalanced braces`. An unknown block on its own line inside a speck
-(`thing B {`) is not a member and is not an error.
+`unbalanced braces`. An unknown block inside a speck (`thing B {`,
+`Speck B {`, or a lookalike of `speck`) is `unknown block`.
 
 Version pinning is optional for local development and required for Specks
 with `review: manual` or `review: hybrid`.
@@ -318,8 +321,13 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
 - **Domain blocks.** `domain` is recognized so its braces are counted. The
   members inside a domain are not parsed.
 - **Unknown blocks inside a speck.** A block that is not a known member
-  (`thing B {`, `Speck B {`) is not attached and is not reported. Text after
-  a member's closing `}` on that same line is `text after a closing brace`.
+  (`thing B {`, `Speck B {`, a lookalike of `speck`) is `unknown block`.
+  Text after a member's closing `}` on that same line is
+  `text after a closing brace`. A `}` inside a parameter type is not.
+- **Statement on an action's closing line.** A statement or `require` that
+  shares the line of a multi-line action's closing `}` is not captured.
+  A one-line action (`action Go { x := x + 1 }`) is captured. Real support
+  for code before a closing brace belongs to a later change.
 
 ---
 

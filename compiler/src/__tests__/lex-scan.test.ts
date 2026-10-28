@@ -421,4 +421,39 @@ ${tail}`));
     const inc = ast[0].members.find(m => 'action' in m && m.action === 'Inc') as { stmts: string[] };
     expect(inc.stmts).toEqual(['assign:x + 1', 'assign:x + 8']);
   });
+
+});
+
+describe('a block comment opened on a member header', () => {
+  it('is not a stray closer, and a later line is still the member', () => {
+    const src = [
+      'speck A {',
+      '    invariant Mono { /* a',
+      '        b */ }',
+      '    state { /* c',
+      '        d */',
+      '        y: Nat',
+      '    }',
+      '    init { /* e',
+      '        f */',
+      '        x := 1',
+      '    }',
+      '    action Go { /* g',
+      '        h */',
+      '        x := x + 1',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'span.speckdl');
+    const members = ast.specks[0].members;
+    const inv = members.find(m => m.type === 'invariant') as { name: string };
+    expect(inv.name).toBe('Mono');
+    const state = members.find(m => m.type === 'state') as { variables: { name: string }[] };
+    expect(state.variables.map(v => v.name)).toEqual(['y']);
+    const init = members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
+    expect(init.assignments.map(a => `${a.name}=${a.expr}`)).toEqual(['x=1']);
+    const action = members.find(m => m.type === 'action') as { statements: { type: string; expr?: string }[] };
+    expect(action.statements.map(s => s.type)).toContain('assign');
+  });
 });

@@ -1357,22 +1357,23 @@ function emitAction(
   // Lower a brace-form conditional captured by the parser pre-pass:
   //   "if <cond> { <stmts> } [else { <stmts> }]"
   const emitIfBlock = (raw: string): string => {
-    const open = raw.indexOf('{');
+    const open = firstCodeBrace(raw);
     if (open < 0) return `\t// TODO: conditional not lowered: ${raw.replace(/\n/g, ' ')}`;
     const cond = raw.slice(3, open).trim().replace(/:\s*$/, '');
     // find the top-level '} else {' (if any) and the final top-level '}'
+    // A brace inside a string or a comment is not structural.
     let depth = 0, elseSplit = -1, closeIdx = -1;
-    for (let i = open; i < raw.length; i++) {
-      const ch = raw[i];
+    forEachCodeIndex(raw, (i, ch) => {
+      if (i < open) return;
       if (ch === '{') depth++;
       else if (ch === '}') {
         depth--;
         if (depth === 0) {
-          if (raw.startsWith('} else {', i)) { elseSplit = i; continue; }
-          closeIdx = i; break;
+          if (raw.startsWith('} else {', i)) { elseSplit = i; return; }
+          closeIdx = i; return false;
         }
       }
-    }
+    });
     if (closeIdx < 0) return `\t// TODO: conditional not lowered (unbalanced): ${raw.replace(/\n/g, ' ')}`;
     const thenPart = raw.slice(open + 1, elseSplit >= 0 ? elseSplit : closeIdx);
     const elsePart = elseSplit >= 0 ? raw.slice(elseSplit + '} else {'.length, closeIdx) : null;
@@ -1454,7 +1455,7 @@ function emitAction(
   // Lower a brace-form range loop captured by the parser pre-pass:
   //   "for v in coll { <stmts> }"
   const emitForBlock = (raw: string): string => {
-    const open = raw.indexOf('{');
+    const open = firstCodeBrace(raw);
     if (open < 0) return `\t// TODO: for-loop not lowered: ${raw.replace(/\n/g, ' ')}`;
     const header = raw.slice(4, open).trim();   // "v in coll"
     const hm = header.match(/^(\w+)\s+in\s+([\s\S]+)$/);
@@ -1462,7 +1463,17 @@ function emitAction(
     let v = hm[1];
     if (v === 'm' || nameMap.has(v)) v = `${v}Iter`;   // receiver/state-name collision
     const collGo = rewriteGoExpr(hm[2].trim(), nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords);
-    const bodyText2 = raw.slice(open + 1, raw.lastIndexOf('}'));
+    let depth = 0;
+    let closeAt = -1;
+    forEachCodeIndex(raw, (i, ch) => {
+      if (i < open) return;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { closeAt = i; return false; }
+      }
+    });
+    const bodyText2 = raw.slice(open + 1, closeAt < 0 ? raw.length : closeAt);
     const saved = localNames.has(v);
     localNames.add(v);
     const lines = emitStmts(bodyText2.trim());
@@ -1508,9 +1519,9 @@ function emitAction(
     } else if (s.type === 'assign') {
       bodyLines.push(emitAssign(s));
     } else if (s.type === 'ifblock') {
-      bodyLines.push(emitIfBlock(String((s as any).raw ?? '').replace(/\n/g, ' ')));
+      bodyLines.push(emitIfBlock(String((s as any).raw ?? '')));
     } else if (s.type === 'forblock') {
-      bodyLines.push(emitForBlock(String((s as any).raw ?? '').replace(/\n/g, ' ')));
+      bodyLines.push(emitForBlock(String((s as any).raw ?? '')));
     } else if (s.type === 'emit') {
       const fields = ((s.fields ?? []) as any[])
         .map((f: any) => `${goName(f.name)}: ${rewriteGoExpr(f.value, nameMap, mapVarOrigNames, localNames, stateEnumName, knownStateValues, localRecords)}`)
@@ -1793,14 +1804,44 @@ function escapeRegex(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g
 // starts at each depth-0 `:=` (walking back to the lvalue token start, or
 // to a `let` keyword). Record-literal `field:` pairs sit inside braces and
 // are never statement boundaries.
+/** Code characters only. Strings, `//` comments, and block comments are skipped. `'` is prime, not a quote. */
+function forEachCodeIndex(text: string, fn: (i: number, ch: string) => boolean | void): void {
+  let quote = false;
+  let block = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (quote) {
+      if (ch === '\\' && next !== undefined) { i++; continue; }
+      if (ch === '"') quote = false;
+      continue;
+    }
+    if (block) {
+      if (ch === '*' && next === '/') { block = false; i++; }
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') { block = true; i++; continue; }
+    if (ch === '"') { quote = true; continue; }
+    if (fn(i, ch) === false) return;
+  }
+}
+
+function firstCodeBrace(raw: string): number {
+  let found = -1;
+  forEachCodeIndex(raw, (i, ch) => {
+    if (ch === '{') { found = i; return false; }
+  });
+  return found;
+}
+
 function splitAssignStmts(text: string): string[] {
   const starts: number[] = [];
   let depth = 0;
-  let inStr = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '"') inStr = !inStr;
-    if (inStr) continue;
+  forEachCodeIndex(text, (i, ch) => {
     if (ch === '{' || ch === '[' || ch === '(') depth++;
     else if (ch === '}' || ch === ']' || ch === ')') depth--;
     else if (ch === ':' && depth === 0 && text[i + 1] === '=') {
@@ -1808,14 +1849,14 @@ function splitAssignStmts(text: string): string[] {
       while (j >= 0 && text[j] === ' ') j--;
       while (j >= 0 && /[\w\]\[.]/.test(text[j])) j--;
       const before = text.slice(0, j + 1).trimEnd();
-      if (before.endsWith('let')) { starts.push(before.length - 3); continue; }
+      if (before.endsWith('let')) { starts.push(before.length - 3); return; }
       starts.push(j + 1);
     }
     else if (depth === 0 && (text.startsWith('emit ', i) || text.startsWith('return ', i))
              && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1]))) {
       starts.push(i);
     }
-  }
+  });
   const stmts: string[] = [];
   for (let k = 0; k < starts.length; k++) {
     const end = k + 1 < starts.length ? starts[k + 1] : text.length;

@@ -446,6 +446,7 @@ export function parseSpeckFile(filePath: string): AST {
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
   setParseFile(filePath);
+  try {
   const specks: SpeckNode[] = [];
   const imports: ImportNode[] = [];
   const lines = content.split('\n');
@@ -491,10 +492,12 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       openBraceAt = -1;
     } else if (textAfterClose(toks, depth) || memberTextAfterClose(toks, depth)) {
       throw lexProblem(lineNo, 'text after a closing brace');
+    } else if (unknownMemberBlock(toks, depth)) {
+      throw lexProblem(lineNo, 'unknown block');
     } else if (toks[0]?.t === 'ident' && toks[0].s === 'import') {
       const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
       if (depth === 0) {
-        const node = parseImportStatement(lines[i].trim());
+        const node = parseImportStatement(lines[i].trim(), lineNo);
         imports.push({ ...node, startLine: lineNo, endLine: lineNo });
       } else if (!(depth === 1 && insideSpeck)) {
         throw lexProblem(lineNo, 'import is inside a block');
@@ -510,15 +513,22 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   }
   if (depth !== 0) throw lexProblem(lostAt || 1, 'unbalanced braces');
   return { specks, imports, domains: [] };
+  } finally {
+    setParseFile(undefined);
+  }
 }
 
 /**
  * Brace counts go through `scanLine`. `text` is the structural mask.
  * `code` keeps string contents and drops comments, for statement text.
  * `'` is post-state prime notation, not a string quote.
+ * A `"` that is still open at the end of the line it opened on is an error.
  */
 function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { text: string; code: string; state: LexState } {
   const scanned = scanLine(input, state, lineNo);
+  if (scanned.state.kind === 'string' && scanned.state.openLine === lineNo) {
+    throw lexProblem(lineNo, 'unterminated string');
+  }
   return { text: scanned.mask, code: scanned.code, state: scanned.state };
 }
 
@@ -551,6 +561,7 @@ function codeLines(lines: string[], from: number, to: number, lex: LexState = le
   return out;
 }
 
+
 function braceCounts(text: string, state?: LexState): { open: number; close: number; state: LexState } {
   const masked = maskCode(text, state ?? lexStart());
   let open = 0;
@@ -567,6 +578,11 @@ function lexAfter(lines: string[], endInclusive: number, from = 0): LexState {
   let lex = lexStart();
   for (let k = from; k <= endInclusive && k < lines.length; k++) lex = maskCode(lines[k], lex, k + 1).state;
   return lex;
+}
+
+/** Lex state after a member header, so a comment it opens stays open on the next line. */
+function lexAfterHeader(lines: string[], startIndex: number): LexState {
+  return scanLine(lines[startIndex] ?? '', lexStart(), startIndex + 1).state;
 }
 
 type MaskTok =
@@ -703,14 +719,49 @@ function textAfterClose(toks: MaskTok[], depth: number): boolean {
 function memberTextAfterClose(toks: MaskTok[], depth: number): boolean {
   if (depth !== 1) return false;
   let d = depth;
+  let paren = 0;
+  let bracket = 0;
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
+    if (t.t === 'punct' && (t.s === '(' || t.s === ')')) { paren += t.s === '(' ? 1 : -1; continue; }
+    if (t.t === 'punct' && (t.s === '[' || t.s === ']')) { bracket += t.s === '[' ? 1 : -1; continue; }
     if (t.t !== 'brace') continue;
     if (t.s === '{') { d++; continue; }
     d--;
+    // A `}` inside `(...)` or `[...]` closes a type or a subscript, not the member.
+    if (paren > 0 || bracket > 0) continue;
     if (d === 1 && i < toks.length - 1 && !closesSpeckOnly(toks, i + 1, d)) return true;
   }
   return false;
+}
+
+const MEMBER_WORDS = new Set([
+  'state', 'init', 'action', 'event', 'provenance', 'bom', 'interface', 'verify',
+  'constraint', 'input', 'output', 'service', 'oneof', 'transition', 'component',
+  'invariant', 'agent', 'type', 'next', 'import', 'author', 'version', 'license',
+  'description', 'proto_package', 'go_package', 'event_suffix', 'k8s_group',
+  'k8s_version', 'conditions', 'finalizers', 'ownerReferences', 'status', 'enum',
+]);
+
+/** A `{` at speck-member depth whose first word is not a member. */
+function unknownMemberBlock(toks: MaskTok[], depth: number): boolean {
+  if (depth !== 1) return false;
+  let d = depth;
+  let paren = 0;
+  let bracket = 0;
+  let opened = false;
+  for (const t of toks) {
+    if (t.t === 'punct' && (t.s === '(' || t.s === ')')) { paren += t.s === '(' ? 1 : -1; continue; }
+    if (t.t === 'punct' && (t.s === '[' || t.s === ']')) { bracket += t.s === '[' ? 1 : -1; continue; }
+    if (t.t !== 'brace' || paren > 0 || bracket > 0) continue;
+    if (t.s === '{') {
+      d++;
+      if (d === depth + 1) opened = true;
+    } else d--;
+  }
+  if (!opened) return false;
+  const first = toks.find(t => t.t === 'ident');
+  return !first || !MEMBER_WORDS.has(first.s);
 }
 
 function closesSpeckOnly(toks: MaskTok[], from: number, depth: number): boolean {
@@ -785,7 +836,7 @@ function parseSpeck(
 
     const codeLine = masked.code.trim();
     if (codeLine === 'import' || codeLine.startsWith('import ')) {
-      const node = parseImportStatement(line);
+      const node = parseImportStatement(line, i + 1);
       members.push(Object.assign(node, { startLine: i + 1, endLine: i + 1 }));
       i++;
       continue;
@@ -1447,13 +1498,13 @@ function parseActionHeader(line: string): ActionNode | null {
   return { type: 'action', name, params, statements: [] };
 }
 
-function parseImportStatement(line: string): ImportNode {
+function parseImportStatement(line: string, lineNo = 1): ImportNode {
   // The path, version, and hash stop at the closing quote. A leftover clause
-  // (`hash ""`, `hsh "abc"`, a `/* */` comment) does not become part of the
+  // (`hash ""`, `hsh "abc"`, a block comment) does not become part of the
   // path. A trailing `//` comment is allowed.
   const match = line.match(/^import\s+(['"])([^'"]+)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])([^'"]+)\4)?(?:\s+hash\s+(['"])([^'"]+)\6)?\s*(?:\/\/.*)?$/);
   if (!match) {
-    throw new Error(`Failed to parse import statement: ${line}`);
+    throw lexProblem(lineNo, `Failed to parse import statement: ${line}`);
   }
   return {
     type: 'import',
@@ -1818,8 +1869,9 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     return result;
   }
 
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex);
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
+  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
   // State blocks separate fields with commas or newlines/semicolons.
   // Strip trailing commas (they are field separators, not continuations)
   // then join with semicolons between complete variable declarations.
@@ -1877,8 +1929,9 @@ function exprIncomplete(text: string): boolean {
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
   const inline = inlineBlockInner(lines[startIndex].trim());
   if (inline !== null) return parseInitBlock(inline);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex);
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
+  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
   // Group lines into statements: a `name := ...` line starts a new
   // assignment; anything else (record/map literal field lines) continues
   // the current one. Only declaration lines have their trailing comma
@@ -1909,8 +1962,9 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   // string, so the `}` is structural. A trailing `//` is not part of the expr.
   const inline = inlineBlockInner(firstLine);
   if (inline !== null) return { type: 'invariant', name, expr: stripComments(inline) };
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const body = codeLines(lines, startIndex + 1, endIndex).filter(l => l !== '}').join(' ');
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
+  const body = codeLines(lines, startIndex + 1, endIndex, carried).filter(l => l !== '}').join(' ');
   return { type: 'invariant', name, expr: body.trim() };
 }
 
@@ -1954,12 +2008,32 @@ function lastLineHasLineComment(text: string): boolean {
   return false;
 }
 
+/** Text of an action body that opens and closes on this line, outside `(...)`. */
+function actionBodyInline(line: string): string | null {
+  const scanned = scanLine(line);
+  let paren = 0;
+  let depth = 0;
+  let started = -1;
+  for (let i = 0; i < scanned.mask.length; i++) {
+    const ch = scanned.mask[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (paren === 0 && ch === '{') {
+      if (depth === 0) started = i;
+      depth++;
+    } else if (paren === 0 && ch === '}') {
+      depth--;
+      if (depth === 0 && started >= 0) return scanned.code.slice(started + 1, i);
+    }
+  }
+  return null;
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
   if (!header) return null;
 
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   // A line is blank when the scanner says it has no code, so a block comment
   // that opened on an earlier line hides a lone `}` and `/* c */ x := x + 8`
   // keeps the assignment. `text` is that code. `raw` keeps the source line
@@ -1967,8 +2041,15 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   // bounds colon-form if/else regions.
   type BodyEntry = { text: string; raw: string; indent: number } | null;
   const bodyEntries: BodyEntry[] = [];
+  const inline = actionBodyInline(firstLine);
+  if (inline !== null) {
+    const text = inline.trim();
+    if (text) bodyEntries.push({ text, raw: text, indent: 0 });
+  } else {
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
   {
-    let bodyLex = lexStart();
+    let bodyLex = carried;
     const bodyLinesRaw = lines.slice(startIndex + 1, endIndex);
     for (let b = 0; b < bodyLinesRaw.length; b++) {
       const l = bodyLinesRaw[b];
@@ -1980,6 +2061,15 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         continue;
       }
       bodyEntries.push({ text: code, raw: l.trim(), indent: l.length - l.trimStart().length });
+    }
+  }
+    if (endIndex < lines.length) {
+      const entering = lexAfter(lines, endIndex - 1, startIndex);
+      const closeMask = maskCode(lines[endIndex], entering, endIndex + 1);
+      const braceAt = closeMask.text.indexOf('}');
+      if (braceAt > 0 && closeMask.code.slice(0, braceAt).trim()) {
+        throw lexProblem(endIndex + 1, 'statement before the closing brace');
+      }
     }
   }
 

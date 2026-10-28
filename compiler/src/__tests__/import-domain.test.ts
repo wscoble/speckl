@@ -1654,8 +1654,7 @@ describe('compile entry', () => {
         '',
       ]), 'adv10.speckdl', 2, 'unbalanced braces');
 
-      // An unknown block on its own line is not a member and is not an error.
-      expect(shape(join([
+      expectLineError(join([
         'speck A {',
         '    state { x: Nat }',
         '    init { x := 0 }',
@@ -1663,8 +1662,71 @@ describe('compile entry', () => {
         '    invariant Canary { false }',
         '}',
         '',
-      ]))).toEqual([{ name: 'A', members: ['state', 'init', 'invariant:Canary'] }]);
+      ]), 'adv10.speckdl', 4, 'unknown block');
+      expectLineError(join([
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    Speck B {',
+        '        invariant Canary { false }',
+        '    }',
+        '}',
+        '',
+      ]), 'adv10.speckdl', 4, 'unknown block');
+      expectLineError(join([
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    \u0455peck B {',
+        '        invariant Canary { false }',
+        '    }',
+        '}',
+        '',
+      ]), 'adv10.speckdl', 4, 'unknown block');
     }
+  });
+
+  it('a record parameter is not text after a brace, and a one-line action keeps its statement', () => {
+    const pay = parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    action Pay(p: {amount: Nat}) { x := p.amount }',
+      '}',
+      '',
+    ].join('\n'), 'pay.speckdl');
+    const payAction = pay.specks[0].members.find(m => m.type === 'action') as {
+      name: string; statements: { type: string; expr?: string }[];
+    };
+    expect(payAction.name).toBe('Pay');
+    expect(payAction.statements).toEqual([{ type: 'assign', target: 'x', expr: 'p.amount' }]);
+
+    const one = parseSpeckContent([
+      'speck A {',
+      '    state { issued: Bool }',
+      '    init { issued := false }',
+      '    action Issue { issued := true }',
+      '}',
+      '',
+    ].join('\n'), 'one.speckdl');
+    const issue = one.specks[0].members.find(m => m.type === 'action') as {
+      statements: { type: string; expr?: string }[];
+    };
+    expect(issue.statements).toEqual([{ type: 'assign', target: 'issued', expr: 'true' }]);
+
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    action Go {',
+      '        x := x + 1 }',
+      '}',
+      '',
+    ].join('\n'), 'close.speckdl')).toThrow(/Parse error at close\.speckdl:5: statement before the closing brace/);
+
+    expect(() => parseSpeckContent('import nope\n', 'imp.speckdl')).toThrow(
+      /Parse error at imp\.speckdl:1: Failed to parse import statement: import nope/,
+    );
   });
 
   it('main compiles a file', async () => {

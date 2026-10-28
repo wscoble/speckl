@@ -40,27 +40,35 @@ alias.
   `invariant P { x >= 0 } }`) closes that speck. The next speck is not
   absorbed. Non-comment text after the `}` that brings file depth to 0, or
   after a member's `}` while the speck stays open, is
-  `text after a closing brace`. `})`, `},`, and `} else` / `} else if` are
-  not that error. A Unicode Cf character outside a string or a comment is
-  `invisible format character`, except a BOM at the start of the file. Other
-  file-level text is `text outside a speck, domain, or import`. A string does
-  not continue onto the next line. A nested `/*` is `nested block comment`.
-  `domain` is recognized so its braces count, and the members inside it are
-  not parsed. A speck written inside a domain is `unbalanced braces`. An
-  unknown block on its own line inside a speck (`thing B {`, `Speck B {`) is
-  not a member and is not an error. A colon-form `if` nested inside another
+  `text after a closing brace`. A `}` inside `(...)` or `[...]` is not that
+  error, so `action Pay(p: {amount: Nat}) {` parses. `})`, `},`, and
+  `} else` / `} else if` are not that error. A Unicode Cf character outside
+  a string or a comment is `invisible format character`, except a BOM at the
+  start of the file. Other file-level text is
+  `text outside a speck, domain, or import`. A string does not continue onto
+  the next line. A nested `/*` is `nested block comment`. `domain` is
+  recognized so its braces count, and the members inside it are not parsed.
+  A speck written inside a domain is `unbalanced braces`. An unknown block
+  inside a speck (`thing B {`, `Speck B {`, a lookalike of `speck`) is
+  `unknown block`. A one-line action keeps the statement on that line. A
+  statement or `require` on the closing line of a multi-line action is
+  `statement before the closing brace`. A colon-form `if` nested inside another
   colon-form `if` is never rewritten. One-line specks with members, a name
   on the next line, and two specks on one line stay errors until a later
   whole-file tokenizer.
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
-  that brace cannot end a speck or a member or hide the next speck.
+  that brace cannot end a speck, a member, an `if`, or a `for`, and it
+  cannot hide the next speck. The same skip is used when Go emits an `if`
+  or a `for`, so a brace in a comment or a string does not drop that body.
   `'` is post-state prime notation, not a string quote.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
-  count uses. An unterminated block comment or string, or a stray `*/`, is
-  a parse error naming the file and line. Code after `/* ... */` on the same
-  line is kept. A trailing `//` comment is not part of a `require`, `let`,
-  or invariant expression.
+  count uses. A block comment may continue onto the next line, including
+  one opened on a member header. A `"` string may not: an unclosed `"` is
+  `unterminated string` on the line where it opened. An unclosed `/*`, or
+  a stray `*/`, is a parse error naming the file and line. Code after
+  `/* ... */` on the same line is kept. A trailing `//` comment is not part
+  of a `require`, `let`, or invariant expression.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
@@ -220,9 +228,15 @@ alias.
 
 - **Trailing comments are not part of the expression.** A `//` comment after
   a `require`, a `let`, or an invariant is dropped before generators run.
-  Go guard errors no longer repeat that comment. SQLiteWAL's Go, Elm, and
-  AST SMT output, and OAuth's Rust invariant text and Elm machine, change
-  for that reason. Other bundled examples are unchanged.
+  Go guard errors no longer repeat that comment. SQLiteWAL's Go errors and
+  its AST SMT skip text lose those comment words. OAuth's Rust invariant
+  text and Elm machine lose the same kind of comment. SQLiteWAL's Elm
+  machine is different in kind: ten guards that were only
+  `-- guard checked server-side` comments are now real `|> guard` checks.
+  That is a stronger check. The order of those guards follows the order
+  the Elm translator emits, which is not the source order, so the first
+  guard that fails can differ from the order in the spec. Other bundled
+  examples are unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
