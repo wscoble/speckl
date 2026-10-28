@@ -304,15 +304,6 @@ export class Tokenizer {
         continue;
       }
 
-      // Line comments: //
-      if (ch === '/' && this.peek() === '/') {
-        this.pos += 2; this.col += 2;
-        while (this.pos < this.src.length && this.src[this.pos] !== '\n') {
-          this.pos++; this.col++;
-        }
-        continue;
-      }
-
       // Block comments: /* ... */
       if (ch === '/' && this.peek() === '*') {
         this.pos += 2; this.col += 2;

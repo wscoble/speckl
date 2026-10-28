@@ -88,16 +88,18 @@ alias.
   comment, is comment text. A speck written inside a block comment is not
   a speck.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
-  count uses. Comments are removed character by character, so code before
-  a `/*` and code after the `*/` that closes it on a later line both stay.
-  That includes an invariant, state, init, action, constraint, and verify
-  header. State and init keep the comment-stripped line, so a field or
-  assignment after a comment that closes on a later line stays, and the
-  closer is not a `stray */`. A comment between an `if` condition and its
-  `{` stays part of that `if`, so the body is not unconditional. A `*/`
-  that does not close a comment is `stray */`. A header that
-  begins after a `*/` which closed a comment from an earlier line
-  (`*/ speck B {`, `*/ action Evil {`) is
+  count uses. Whitespace and comments are not tokens. Every other token is
+  consumed by one construct, or the parse is `unparsed text at
+  <file>:<line>:<col>`. A `{` is a block only when that statement's first
+  word is an allowlisted header (`speck`, `action` with balanced
+  parameters, `state`, `init`, `invariant`, `if`, `else`, `for`, and the
+  other member keywords). Any other block `{` is `unknown block`. A newline
+  is not a token, so `state` and `{` are the same header across a line
+  break, a tab, or a comment. State and init keep the comment-stripped
+  line. A comment between an `if` condition and its `{` stays part of that
+  `if`. An `else` or `for` whose `{` is on the next line stays in that
+  statement. A `*/` that does not close a comment is `stray */`. When `*/`
+  is the first text on a line and a header follows, that header is
   `header is not at the start of the line`. A trailing `//` comment is not
   part of a `require`, `let`, or invariant expression.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on

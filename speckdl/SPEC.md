@@ -104,21 +104,25 @@ yet lowered to Z3 (see §3.5).
 comment is not structure: a `}` inside one does not close a block, including
 when the comment spans lines and when Go emits an `if` or a `for`. `'` is
 post-state notation, not a string quote. Comments are removed character by
-character, so code after a `*/` that closes a comment opened on an earlier
-line stays, including a state field and an init assignment. A comment
+character. Whitespace and comments are not tokens. Every other token is
+consumed by one construct, or the parse is `unparsed text at
+<file>:<line>:<col>`. A `{` is a block only when that statement's first word
+is an allowlisted header. Any other block `{` is `unknown block`. A state
+field and an init assignment after a closer on a later line stay. A comment
 between an `if` condition and its `{` is still that `if`. A block comment
 may continue onto the next line. A comment that
 opens on a speck's closing line and closes on a later line is closed. A `"`
 string may not: an unclosed `"` is `unterminated string` on the line where
 it opened, including at file level, after the last speck, and inside domain
 text. An unclosed `/*` is `unterminated block comment` on the line where it
+<<<<<<< HEAD
 opened. A `*/` that does not close a comment is `stray */`. A `/*` on a
 later line, while a block comment is already open, is `nested block comment`.
-A `/*` on the same line, already inside the comment, is comment text. A
-`speck`, `action`, `invariant`, `state`, or `init` header on the line that
-closes a block comment is `header is not at the start of the line`. A speck
-written inside a block comment is not a speck. A trailing `//` comment is
-not part of a `require`, `let`, or invariant expression.
+A `/*` on the same line, already inside the comment, is comment text. When
+`*/` is the first text on a line and a header follows, that header is
+`header is not at the start of the line`. A speck written inside a block
+comment is not a speck. A trailing `//` comment is not part of a `require`,
+`let`, or invariant expression.
 
 Header and brace checks use those same tokens. A `speck` that is not a
 well-formed header (`speck`, a name, then `{`, at depth 0) is a parse error
@@ -140,6 +144,9 @@ and `init{` are `state` and `init`. A `;` between action statements is
 format character outside a string or a comment is
 `invisible format character`, except a BOM at the start of the file.
 Other text at file level is `text outside a speck, domain, or import`.
+`action parameters must close on the action line` is only for an action
+whose `(` does not close. `action Go` then `{`, and a name the lexer does
+not treat as one identifier, are not that error.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

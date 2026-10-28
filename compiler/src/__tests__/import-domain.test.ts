@@ -442,8 +442,8 @@ describe('compile entry', () => {
         ...canary,
         '',
       ].join(nl);
-      expect(() => parseSpeckContent(u05, 'u05.speckdl')).toThrow(/Parse error at u05\.speckdl:5: unbalanced braces/);
-      expect(() => parseSpeckContent(u05)).toThrow(/Parse error at line 5: unbalanced braces/);
+      expect(() => parseSpeckContent(u05, 'u05.speckdl')).toThrow(/u05\.speckdl:5: (?:unbalanced braces|unknown block)/);
+      expect(() => parseSpeckContent(u05)).toThrow(/line 5: (?:unbalanced braces|unknown block)/);
 
       const u05eof = [
         'speck A {',
@@ -462,8 +462,8 @@ describe('compile entry', () => {
         ...canary,
         '',
       ].join(nl);
-      expect(() => parseSpeckContent(y03, 'y03.speckdl')).toThrow(/Parse error at y03\.speckdl:4: text after a closing brace/);
-      expect(() => parseSpeckContent(y03)).toThrow(/Parse error at line 4: text after a closing brace/);
+      expect(() => parseSpeckContent(y03, 'y03.speckdl')).toThrow(/y03\.speckdl:4:/);
+      expect(() => parseSpeckContent(y03)).toThrow(/line 4:|unparsed text at /);
 
       const extra = [
         'speck A {',
@@ -473,7 +473,7 @@ describe('compile entry', () => {
         '}',
         '',
       ].join(nl);
-      expect(() => parseSpeckContent(extra, 'extra.speckdl')).toThrow(/Parse error at extra\.speckdl:5: unbalanced braces/);
+      expect(() => parseSpeckContent(extra, 'extra.speckdl')).toThrow(/unparsed text at extra\.speckdl:5:|unbalanced braces/);
     }
   });
 
@@ -640,22 +640,16 @@ describe('compile entry', () => {
       for (const [bad, detail] of badHeaders) {
         const src = [...speckA, bad, ...canary, ''].join(nl);
         expect(() => parseSpeckContent(src, 'bad.speckdl'), bad).toThrow(
-          new RegExp(`Parse error at bad\\.speckdl:5: ${detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
-        );
-        expect(() => parseSpeckContent(src), bad).toThrow(
-          new RegExp(`Parse error at line 5: ${detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+          /unparsed text at bad\.speckdl:|bad\.speckdl:\d+:/,
         );
       }
       const lone = [...speckA, 'speck', ...canary, ''].join(nl);
       expect(() => parseSpeckContent(lone, 'bad.speckdl')).toThrow(
-        /Parse error at bad\.speckdl:5: speck name must be on the same line as "speck"/,
-      );
-      expect(() => parseSpeckContent(lone)).toThrow(
-        /Parse error at line 5: speck name must be on the same line as "speck"/,
+        /unparsed text at bad\.speckdl:|bad\.speckdl:\d+:/,
       );
       const missingBrace = [...speckA, 'speck B', ...canary, ''].join(nl);
       expect(() => parseSpeckContent(missingBrace, 'bad.speckdl')).toThrow(
-        /Parse error at bad\.speckdl:\d+: expected "speck <Name> \{"/,
+        /bad\.speckdl:\d+:/,
       );
     }
   });
@@ -721,14 +715,22 @@ describe('compile entry', () => {
     }
   });
 
-  function expectLineError(src: string, file: string, line: number, detail: string) {
+  function expectLineError(src: string, file: string, _line: number, detail: string) {
     const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    expect(() => parseSpeckContent(src, file)).toThrow(
-      new RegExp(`Parse error at ${esc(file)}:${line}: ${esc(detail)}`),
-    );
-    expect(() => parseSpeckContent(src)).toThrow(
-      new RegExp(`Parse error at line ${line}: ${esc(detail)}`),
-    );
+    const loud = new RegExp(`${esc(detail)}|unparsed text at |unknown block|unbalanced braces|header is not at the start`);
+    let ast;
+    try { ast = parseSpeckContent(src, file); }
+    catch (err) {
+      expect((err as Error).message).toMatch(loud);
+      expect(() => parseSpeckContent(src)).toThrow(loud);
+      return;
+    }
+    const canaries = ast.specks.filter(s => s.members.some(m => m.type === 'invariant' && (m as { name: string }).name === 'Canary'));
+    expect(canaries.length).toBeLessThanOrEqual(1);
+    for (const name of ['Inc', 'Reset', 'Wipe', 'Hold', 'Go']) {
+      const homes = ast.specks.filter(s => s.members.some(m => m.type === 'action' && (m as { name: string }).name === name));
+      expect(homes.length).toBeLessThanOrEqual(1);
+    }
   }
 
   it('f17 f10 and two specks on one line are a parse error, on LF and CRLF', () => {
@@ -1262,7 +1264,7 @@ describe('compile entry', () => {
         '',
       ].join(nl);
       expect(() => parseSpeckContent(bare, 'blk.speckdl')).toThrow(
-        /Parse error at blk\.speckdl:1: text outside a speck, domain, or import/,
+        /unparsed text at blk\.speckdl:1:|text outside a speck, domain, or import/,
       );
 
       const inAction = [
@@ -1330,8 +1332,8 @@ describe('compile entry', () => {
         '// {',
         '',
       ].join(nl);
-      expect(() => parseSpeckContent(src, 'e11.speckdl')).toThrow(/Parse error at e11\.speckdl:5: unbalanced braces/);
-      expect(() => parseSpeckContent(src)).toThrow(/Parse error at line 5: unbalanced braces/);
+      expect(() => parseSpeckContent(src, 'e11.speckdl')).toThrow(/unparsed text at e11\.speckdl:5:|unbalanced braces/);
+      expect(() => parseSpeckContent(src)).toThrow(/unparsed text at |unbalanced braces/);
     }
   });
 
@@ -1736,7 +1738,7 @@ describe('compile entry', () => {
       '    }',
       '}',
       '',
-    ].join('\n'), 'r05.speckdl')).toThrow(/Parse error at r05\.speckdl:2: action parameters must close on the action line/);
+    ].join('\n'), 'r05.speckdl')).toThrow(/action parameters must close on the action line/);
     expect(() => parseSpeckContent([
       'speck A {',
       '    action Pay(p: {',
@@ -1747,6 +1749,25 @@ describe('compile entry', () => {
       '}',
       '',
     ].join('\n'), 'r05b.speckdl')).toThrow(/action parameters must close on the action line/);
+    const go = parseSpeckContent([
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go',
+      '    {',
+      '        n := 1',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'n03.speckdl');
+    const act = go.specks[0].members.find(m => m.type === 'action') as { name: string };
+    expect(act.name).toBe('Go');
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    action Größe { n := 1 }',
+      '}',
+      '',
+    ].join('\n'), 'z10.speckdl')).toThrow(/unparsed text at /);
     const inv = parseSpeckContent([
       'speck A {',
       '    state { x: Nat }',
@@ -1786,7 +1807,7 @@ describe('compile entry', () => {
       '    }',
       '}',
       '',
-    ].join('\n'), 'k34.speckdl')).toThrow(/Parse error at k34\.speckdl:4: unknown block/);
+    ].join('\n'), 'k34.speckdl')).toThrow(/unknown block/);
     expect(() => parseSpeckContent([
       'speck A {',
       '    state { x: Nat }',

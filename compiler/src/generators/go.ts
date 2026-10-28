@@ -217,19 +217,6 @@ function goType(t: any, speckName: string, enumMap: Map<string, string[]>): stri
 
 // ─── expression rewriting ───────────────────────────────────────────
 
-// strip a trailing // comment (outside string literals) from an expression
-function stripComment(expr: string): string {
-  let inStr = false; let esc = false;
-  for (let i = 0; i < expr.length - 1; i++) {
-    const ch = expr[i];
-    if (esc) { esc = false; continue; }
-    if (ch === '\\') { esc = true; continue; }
-    if (ch === '"') inStr = !inStr;
-    if (!inStr && ch === '/' && expr[i + 1] === '/') return expr.slice(0, i).trim();
-  }
-  return expr;
-}
-
 function rewriteGoExpr(
   expr: string,
   nameMap: Map<string, string>,
@@ -239,7 +226,6 @@ function rewriteGoExpr(
   knownStateValues: string[],
   localRecords: Map<string, string> = new Map()
 ): string {
-  expr = stripComment(expr);
   // existential quantifier: (not) exists v in coll(.values())?: pred
   const em = expr.match(/(not\s+)?exists\s+(\w+)\s+in\s+([\w.]+?)(?:\.values(?:\(\))?)?:\s*([\s\S]+)$/);
   if (em) {
