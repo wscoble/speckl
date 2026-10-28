@@ -431,11 +431,22 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   if (scan.block) throw lexProblem(scan.openLine, 'unterminated block comment');
 
   let i = 0;
+  let lex = lexStart();
   while (i < lines.length) {
+    const masked = maskLine(lines[i], lex, i + 1);
+    lex = masked.state;
     const line = lines[i].trim();
-    
+    const code = masked.text.trim();
+    // The line that closes a comment is code from the closer on. A header
+    // there does not start the line; treating it as absent drops the speck
+    // or the action. A `speck` still inside the comment has no code, so it
+    // is not a speck.
+    if (line.startsWith('*/') && /^(speck|action|invariant|state|init)\b/.test(code)) {
+      throw lexProblem(i + 1, 'header is not at the start of the line');
+    }
+
     // Skip empty lines and comments
-    if (!line || line.startsWith('//') || line.startsWith('/*')) {
+    if (!line || !code || line.startsWith('//') || line.startsWith('/*')) {
       i++;
       continue;
     }
@@ -449,8 +460,9 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       continue;
     }
     
-    // Handle speck definitions
-    if (line.startsWith('speck ')) {
+    // Handle speck definitions. The masked line has to start with `speck`
+    // too, so a header that is still inside a block comment is not one.
+    if (line.startsWith('speck ') && code.startsWith('speck ')) {
       const speck = parseSpeck(lines, i);
       if (speck) {
         specks.push(speck);

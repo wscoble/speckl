@@ -274,6 +274,71 @@ describe('braces in comments and strings', () => {
     }
   });
 
+  it('a header on the line that closes a comment is an error, on LF and CRLF', () => {
+    const prefix = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    /* hide',
+    ];
+    const headers = [
+      '    */ speck B {',
+      '    */ action Evil { x := 99 }',
+      '    */ invariant P { false }',
+      '    */ state { y: Nat }',
+      '    */ init { y := 0 }',
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      for (const header of headers) {
+        const src = [...prefix, header, '}'].join(nl);
+        expect(() => parseSpeckContent(src, 'mid.speckdl'), header).toThrow(
+          /Parse error at mid\.speckdl:5: header is not at the start of the line/,
+        );
+        expect(() => parseSpeckContent(src), header).toThrow(
+          /Parse error at line 5: header is not at the start of the line/,
+        );
+      }
+      const afterClose = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '} /*',
+        'comment',
+        '*/ speck B {',
+        '    state { y: Nat }',
+        '    init { y := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      expect(() => parseSpeckContent(afterClose, 'p09.speckdl')).toThrow(
+        /Parse error at p09\.speckdl:6: header is not at the start of the line/,
+      );
+    }
+  });
+
+  it('a speck inside a file-level block comment is not a speck, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '}',
+        '/*',
+        'speck Evil {',
+        '    action Bad { z := 99 }',
+        '}',
+        '*/',
+        'speck B {',
+        '    state { y: Nat }',
+        '    init { y := 0 }',
+        '}',
+        '',
+      ].join(nl);
+      const ast = parseSpeckContent(src, 's15.speckdl');
+      expect(ast.specks.map(s => s.name)).toEqual(['A', 'B']);
+    }
+  });
+
   it('a /* inside an open block comment is comment text', () => {
     const src = [
       'speck A {',

@@ -26,7 +26,10 @@ alias.
   the last speck, or inside domain text. An unclosed `/*` is
   `unterminated block comment` on the line where it opened, in those same
   places. A `/*` written inside an already-open block comment is comment
-  text, not a nested comment. There is no shared scanner module yet.
+  text, not a nested comment. A `speck`, `action`, `invariant`, `state`, or
+  `init` header on the line that closes a block comment is `header is not
+  at the start of the line`. A speck written inside a block comment is not
+  a speck. There is no shared scanner module yet.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
