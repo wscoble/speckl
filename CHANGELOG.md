@@ -54,17 +54,24 @@ alias.
   inside a speck (`thing B {`, `Speck B {`, `conditions {`, `enum {`,
   `input {`, `output {`, `next {`, `status {`, a lookalike of `speck`,
   and `thing {` or `iff` inside an action) is `unknown block`. It is not
-  merged into the enclosing speck. A `type` line that is not `type Name = ...`
-  is the same error. `type Name = { ... }` is parsed. An action whose
-  parameter list does not close on its line is
+  merged into the enclosing speck. That includes a name whose `{` is on the
+  following line (`Speck B` then `{`) and a call-shaped header
+  (`thing(p: {a: Nat}) {`). A known member whose `{` is on the following
+  line is that member (`invariant P` then `{`, `action Two(p: {a: Nat})`
+  then `{`). `while` and `forall` are not lowered; a block in either is
+  `unknown block`, so its body does not run unconditionally. `state{` and
+  `init{` with no space are the same blocks as `state {` and `init {`. A
+  `;` between action statements is `semicolon between statements`. A `type`
+  line that is not `type Name = ...` is `unknown block`. `type Name = { ... }`
+  is parsed. An action whose parameter list does not close on its line,
+  including `action Pay(` and `action Pay(p: {`, is
   `action parameters must close on the action line`. A one-line action keeps
   its statement. A multi-line invariant keeps the expression on its closing
   line. A
   statement or `require` on the closing line of a multi-line action is
   `statement before the closing brace`. A colon-form `if` nested inside another
-  colon-form `if` is never rewritten. One-line specks with members, a name
-  on the next line, and two specks on one line stay errors until a later
-  whole-file tokenizer.
+  colon-form `if` is never rewritten. One-line specks with members and two
+  specks on one line stay errors until a later whole-file tokenizer.
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
   that brace cannot end a speck, a member, an `if`, or a `for`, and it
@@ -76,13 +83,19 @@ alias.
   `unterminated string` on the line where it opened, at file level, after
   the last speck, or inside domain text. An unclosed `/*` is
   `unterminated block comment` on the line where it opened, in those same
-  places. A `/*` written inside an already-open block comment is comment
-  text, not a nested comment.
+  places. A `/*` on a later line, while a block comment is already open,
+  is `nested block comment`. A `/*` on the same line, already inside that
+  comment, is comment text. A speck written inside a block comment is not
+  a speck.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
   count uses. Comments are removed character by character, so code before
   a `/*` and code after the `*/` that closes it on a later line both stay.
   That includes an invariant, state, init, action, constraint, and verify
-  header. A `*/` that does not close a comment is `stray */`. A header that
+  header. State and init keep the comment-stripped line, so a field or
+  assignment after a comment that closes on a later line stays, and the
+  closer is not a `stray */`. A comment between an `if` condition and its
+  `{` stays part of that `if`, so the body is not unconditional. A `*/`
+  that does not close a comment is `stray */`. A header that
   begins after a `*/` which closed a comment from an earlier line
   (`*/ speck B {`, `*/ action Evil {`) is
   `header is not at the start of the line`. A trailing `//` comment is not

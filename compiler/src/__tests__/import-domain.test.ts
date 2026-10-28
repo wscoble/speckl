@@ -1737,6 +1737,16 @@ describe('compile entry', () => {
       '}',
       '',
     ].join('\n'), 'r05.speckdl')).toThrow(/Parse error at r05\.speckdl:2: action parameters must close on the action line/);
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    action Pay(p: {',
+      '        a: Nat',
+      '    }) {',
+      '        x := 1',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'r05b.speckdl')).toThrow(/action parameters must close on the action line/);
     const inv = parseSpeckContent([
       'speck A {',
       '    state { x: Nat }',
@@ -1761,6 +1771,137 @@ describe('compile entry', () => {
       '',
     ].join('\n'), 'alias.speckdl');
     expect(alias.specks[0].members.some(m => m.type === 'interface')).toBe(true);
+  });
+
+  it('an unknown name whose brace is on the next line is not merged', () => {
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    Speck B',
+      '    {',
+      '        state { y: Nat }',
+      '        init { y := 0 }',
+      '        action Go { y := 1 }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'k34.speckdl')).toThrow(/Parse error at k34\.speckdl:4: unknown block/);
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    action Go {',
+      '        thing(p: {a: Nat}) {',
+      '            x := 1',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'k39.speckdl')).toThrow(/Parse error at k39\.speckdl:5: unknown block/);
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    invariant P { true }',
+      '    else',
+      '    { false }',
+      '}',
+      '',
+    ].join('\n'), 'f08.speckdl')).toThrow(/unknown block/);
+  });
+
+  it('a known member whose brace is on the next line is that member', () => {
+    const inv = parseSpeckContent([
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    invariant P',
+      '    {',
+      '        n >= 0',
+      '    }',
+      '    invariant Pos /* a',
+      '    b */ { n >= 0 }',
+      '    invariant Mono // c',
+      '    { false }',
+      '}',
+      '',
+    ].join('\n'), 'k35.speckdl');
+    const exprs = inv.specks[0].members.filter(m => m.type === 'invariant').map(m => (m as { expr: string }).expr.replace(/\s+/g, ' '));
+    expect(exprs.some(e => e.includes('n >= 0'))).toBe(true);
+    expect(exprs.some(e => e.includes('false'))).toBe(true);
+    expect(inv.specks).toHaveLength(1);
+    const act = parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    action Two(p: {a: Nat})',
+      '    {',
+      '        x := p.a',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'k13.speckdl');
+    const action = act.specks[0].members.find(m => m.type === 'action') as { name: string; statements: { expr?: string }[] };
+    expect(action.name).toBe('Two');
+    expect(action.statements.some(s => String(s.expr).includes('p.a'))).toBe(true);
+  });
+
+  it('while and forall blocks are errors, and state{ with no space is state', () => {
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        while n < 3 {',
+      '            n := n + 1',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'k12.speckdl')).toThrow(/unknown block/);
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        forall i in xs {',
+      '            n := i',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'k13b.speckdl')).toThrow(/unknown block/);
+    const ast = parseSpeckContent([
+      'speck A {',
+      '    state{ n: Nat }',
+      '    init{ n := 0 }',
+      '}',
+      '',
+    ].join('\n'), 'k01.speckdl');
+    const state = ast.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+    const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string }[] };
+    expect(state.variables.map(v => v.name)).toEqual(['n']);
+    expect(init.assignments.map(a => a.name)).toEqual(['n']);
+  });
+
+  it('a semicolon between action statements is a parse error', () => {
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    action Go { require x < 3; x := x + 1 }',
+      '}',
+      '',
+    ].join('\n'), 'o02.speckdl')).toThrow(/semicolon between statements/);
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    action Go { x := 1; x := x + 1 }',
+      '}',
+      '',
+    ].join('\n'), 'o03.speckdl')).toThrow(/semicolon between statements/);
   });
 
   it('a record parameter is not text after a brace, and a one-line action keeps its statement', () => {

@@ -498,9 +498,10 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       openBraceAt = -1;
     } else if (textAfterClose(toks, depth) || memberTextAfterClose(toks, depth)) {
       throw lexProblem(lineNo, 'text after a closing brace');
-    } else if (depth >= 1 && toks[0]?.t === 'ident' && toks[0].s === 'action' && toks[1]?.t === 'ident' && !toks.some(t => t.t === 'brace' && t.s === '{')) {
+    } else if (actionParamsMustClose(toks, masks, i, depth)) {
       throw lexProblem(lineNo, 'action parameters must close on the action line');
-    } else if (unknownMemberBlock(toks, depth, actionDepth > 0 && depth >= actionDepth)) {
+    } else if (unknownMemberBlock(toks, depth, actionDepth > 0 && depth >= actionDepth)
+        || unopenedBlock(toks, masks, i, depth, actionDepth > 0 && depth >= actionDepth)) {
       throw lexProblem(lineNo, 'unknown block');
     } else if (toks[0]?.t === 'ident' && toks[0].s === 'import') {
       const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
@@ -542,22 +543,10 @@ function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { te
   return { text: scanned.mask, code: scanned.code, state: scanned.state };
 }
 
-/** Lines in `[from, to)` that still have code after the scanner. The original
- * trimmed source is kept, so a trailing `//` on a field stays put. A line
- * inside a block comment or a string is omitted. */
-function visibleLines(lines: string[], from: number, to: number, lex: LexState = lexStart()): string[] {
-  const out: string[] = [];
-  const end = Math.min(to, lines.length);
-  let state = lex;
-  for (let k = Math.max(0, from); k < end; k++) {
-    const scanned = maskCode(lines[k], state, k + 1);
-    state = scanned.state;
-    if (scanned.code.trim()) out.push(lines[k].trim());
-  }
-  return out;
-}
-
-/** Same walk as `visibleLines`, but the comment-stripped code is what is kept. */
+/** Lines in `[from, to)` that still have code after the scanner. Comments are
+ * already gone, so a block-comment closer on a field or assignment line is
+ * not scanned again as code. A line inside a block comment or a string is
+ * omitted. */
 function codeLines(lines: string[], from: number, to: number, lex: LexState = lexStart()): string[] {
   const out: string[] = [];
   const end = Math.min(to, lines.length);
@@ -754,7 +743,7 @@ const MEMBER_WORDS = new Set([
 ]);
 
 const INNER_BLOCK_WORDS = new Set([
-  'if', 'for', 'else', 'forall', 'while', 'emit', 'require', 'let', 'return',
+  'if', 'for', 'else', 'emit', 'require', 'let', 'return',
   'precondition', 'postcondition', 'stages', 'tool', 'await', 'harness', 'map',
   'bind', 'signal', 'outcome',
 ]);
@@ -807,11 +796,128 @@ function unknownMemberBlock(toks: MaskTok[], depth: number, inAction = false): b
 function looksLikeBlockHeader(toks: MaskTok[]): boolean {
   if (toks[0]?.t === 'brace') return false;
   if (hasAssignBeforeBrace(toks)) return false;
+  const first = toks.find(t => t.t === 'ident');
+  let paren = 0;
+  let bracket = 0;
   for (const t of toks) {
-    if (t.t === 'brace' && t.s === '{') return true;
-    if (t.t === 'punct' && (t.s === '.' || t.s === '[' || t.s === '=' || t.s === ':' || t.s === '(')) return false;
+    if (t.t === 'punct' && t.s === '(') { paren++; continue; }
+    if (t.t === 'punct' && t.s === ')') { paren = Math.max(0, paren - 1); continue; }
+    if (t.t === 'punct' && t.s === '[') { bracket++; continue; }
+    if (t.t === 'punct' && t.s === ']') { bracket = Math.max(0, bracket - 1); continue; }
+    if (paren > 0 || bracket > 0) continue;
+    if (t.t === 'brace' && t.s === '{') {
+      // `forall s in servers \ {server}:` is a set, not a block. The block
+      // form ends with `{` and is rejected in `unopenedBlock`.
+      if (first?.s === 'forall' || first?.s === 'while') return false;
+      return true;
+    }
+    // A value brace (`== {`, `field: Type {`, `a.b {`) is not a block header.
+    if (t.t === 'punct' && (t.s === '.' || t.s === '=' || t.s === ':')) return false;
   }
   return false;
+}
+
+/** `{` at paren and bracket depth 0. A `{` inside `(...)` is a type, not the block. */
+function blockBraceAtDepth0(toks: MaskTok[]): boolean {
+  let paren = 0;
+  let bracket = 0;
+  for (const t of toks) {
+    if (t.t === 'punct' && t.s === '(') paren++;
+    else if (t.t === 'punct' && t.s === ')') paren--;
+    else if (t.t === 'punct' && t.s === '[') bracket++;
+    else if (t.t === 'punct' && t.s === ']') bracket--;
+    else if (paren === 0 && bracket === 0 && t.t === 'brace' && t.s === '{') return true;
+  }
+  return false;
+}
+
+function nextMaskIsBrace(masks: string[], index: number): boolean {
+  for (let k = index + 1; k < masks.length; k++) {
+    const code = masks[k].trim();
+    if (!code) continue;
+    return code.startsWith('{');
+  }
+  return false;
+}
+
+/** The next code line opens a block. `{leader}:` is a set that continues an expression. */
+function nextLineOpensBlock(masks: string[], index: number): boolean {
+  for (let k = index + 1; k < masks.length; k++) {
+    const code = masks[k].trim();
+    if (!code) continue;
+    if (!code.startsWith('{')) return false;
+    let depth = 0;
+    let i = 0;
+    for (; i < code.length; i++) {
+      if (code[i] === '{') depth++;
+      else if (code[i] === '}') {
+        depth--;
+        if (depth === 0) { i++; break; }
+      }
+    }
+    if (depth !== 0) return true;
+    return !code.slice(i).trim().startsWith(':');
+  }
+  return false;
+}
+
+/** `Name`, `Name Name`, or `name(...)` with no block `{` yet. */
+function nameThenBrace(toks: MaskTok[]): boolean {
+  if (toks[0]?.t !== 'ident') return false;
+  if (blockBraceAtDepth0(toks)) return false;
+  let paren = 0;
+  let bracket = 0;
+  let idents = 0;
+  for (const t of toks) {
+    if (t.t === 'punct' && t.s === '(') { paren++; continue; }
+    if (t.t === 'punct' && t.s === ')') { paren--; continue; }
+    if (t.t === 'punct' && t.s === '[') { bracket++; continue; }
+    if (t.t === 'punct' && t.s === ']') { bracket--; continue; }
+    if (paren > 0 || bracket > 0) continue;
+    if (t.t === 'ident') { idents++; continue; }
+    return false;
+  }
+  return paren === 0 && idents >= 1 && idents <= 4;
+}
+
+/**
+ * A block whose `{` is on the next line, or a `while` / `forall` block.
+ * A known member is parsed, not rejected. `while` and `forall` are not lowered.
+ */
+function unopenedBlock(toks: MaskTok[], masks: string[], index: number, depth: number, inAction: boolean): boolean {
+  if (depth < 1) return false;
+  if (depth > 1 && !inAction) return false;
+  const first = toks.find(t => t.t === 'ident');
+  if (!first) return false;
+  const opensLater = nextLineOpensBlock(masks, index);
+  if (first.s === 'while' || first.s === 'forall') {
+    if (opensLater) return true;
+    // A set in the condition (`servers \ {server}:`) is not a block.
+    const code = masks[index].trim();
+    return code.endsWith('{');
+  }
+  if (!opensLater || !nameThenBrace(toks)) return false;
+  return !knownBlockWord(toks, depth);
+}
+
+/** `action Pay(` or `action Pay(p: {` — the `(` is still open, so the `{` is not a body. */
+function actionParamsMustClose(toks: MaskTok[], masks: string[], index: number, depth: number): boolean {
+  if (depth < 1) return false;
+  if (toks[0]?.t !== 'ident' || toks[0].s !== 'action') return false;
+  if (toks[1]?.t !== 'ident') return false;
+  let paren = 0;
+  let sawParen = false;
+  let body = false;
+  for (const t of toks) {
+    if (t.t === 'punct' && t.s === '(') { paren++; sawParen = true; }
+    else if (t.t === 'punct' && t.s === ')') paren = Math.max(0, paren - 1);
+    else if (t.t === 'brace' && t.s === '{' && paren === 0) body = true;
+  }
+  if (paren > 0) return true;
+  if (body) return false;
+  // Params closed, no body brace. A `{` on the next line is the body.
+  if (sawParen && nextMaskIsBrace(masks, index)) return false;
+  return true;
 }
 
 function braceIsValue(toks: MaskTok[]): boolean {
@@ -857,6 +963,69 @@ function openingBraceLine(masks: string[], headerIndex: number): number | null {
   return null;
 }
 
+function countStructuralBraces(mask: string): { open: number; close: number } {
+  let open = 0;
+  let close = 0;
+  let paren = 0;
+  let bracket = 0;
+  for (const ch of mask) {
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (ch === '[') bracket++;
+    else if (ch === ']') bracket--;
+    else if (paren === 0 && bracket === 0 && ch === '{') open++;
+    else if (paren === 0 && bracket === 0 && ch === '}') close++;
+  }
+  return { open, close };
+}
+
+/** First later line whose code starts with `{`, or -1 when the next code is not a brace. */
+function braceLineAfter(lines: string[], index: number, lex: LexState): number {
+  let state = lex;
+  for (let k = index + 1; k < lines.length; k++) {
+    const scanned = maskCode(lines[k], state, k + 1);
+    const code = scanned.code.trim();
+    if (!code) { state = scanned.state; continue; }
+    return code.startsWith('{') ? k : -1;
+  }
+  return -1;
+}
+
+/** Put `{` on the header, before a trailing comment, and drop the later opening brace. */
+function withOpeningBrace(lines: string[], header: number, braceAt: number, lexAtHeader: LexState): string[] {
+  const copy = lines.slice();
+  let state = lexAtHeader;
+  for (let k = header + 1; k < braceAt; k++) state = maskCode(copy[k], state, k + 1).state;
+  copy[braceAt] = stripFirstBrace(copy[braceAt], state, braceAt + 1);
+  copy[header] = openHeader(copy[header]);
+  return copy;
+}
+
+function openHeader(raw: string): string {
+  const nl = raw.endsWith('\r') ? '\r' : '';
+  const body = nl ? raw.slice(0, -1) : raw;
+  const comment = body.search(/\/[*/]/);
+  if (comment >= 0) return body.slice(0, comment).replace(/\s*$/, '') + ' { ' + body.slice(comment) + nl;
+  return body.replace(/\s*$/, '') + ' {' + nl;
+}
+
+function stripFirstBrace(raw: string, state: LexState, lineNo: number): string {
+  const scanned = maskCode(raw, state, lineNo);
+  let paren = 0;
+  let bracket = 0;
+  for (let i = 0; i < scanned.text.length; i++) {
+    const ch = scanned.text[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (ch === '[') bracket++;
+    else if (ch === ']') bracket--;
+    else if (paren === 0 && bracket === 0 && ch === '{') {
+      return raw.slice(0, i) + ' ' + raw.slice(i + 1);
+    }
+  }
+  return raw;
+}
+
 function parseSpeck(
   lines: string[],
   startIndex: number,
@@ -891,9 +1060,13 @@ function parseSpeck(
     const rawLine = lines[i];
     const masked = maskCode(rawLine, lex, i + 1);
     lex = masked.state;
-    const line = rawLine.trim();
-    const openCount = (masked.text.match(/{/g) || []).length;
-    const closeCount = (masked.text.match(/}/g) || []).length;
+    if (/^(state|init)\{/.test(rawLine.trim())) {
+      lines[i] = rawLine.replace(/(state|init)\{/, '$1 {');
+    }
+    const line = lines[i].trim();
+    const structural = countStructuralBraces(masked.text);
+    const openCount = structural.open;
+    const closeCount = structural.close;
 
     if (!line || !masked.text.trim() || line.startsWith('//') || line.startsWith('/*')) {
       i++;
@@ -1000,6 +1173,25 @@ function parseSpeck(
         }
         members.push({ type: 'lifecycle_metadata', key, value: parsed } as any);
         i++;
+        continue;
+      }
+    }
+
+    if (isBlockStarter && openCount === 0) {
+      const braceAt = braceLineAfter(lines, i, lex);
+      if (braceAt >= 0) {
+        const view = withOpeningBrace(lines, i, braceAt, lex);
+        const blockStartLine = i + 1;
+        const member = parseMemberBlock(view, i);
+        if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
+        const carried = lexAfterHeader(view, i);
+        const endIdx = findBlockEnd(view, i + 1, braceCount + 1, carried);
+        if (member) {
+          members.push(Object.assign(member, { startLine: blockStartLine, endLine: endIdx + 1 }));
+        }
+        speckEndLine = endIdx + 1;
+        lex = lexAfter(lines, endIdx, startIndex);
+        i = endIdx + 1;
         continue;
       }
     }
@@ -2010,7 +2202,7 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
 
   const carried = lexAfterHeader(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
+  const innerLines = codeLines(lines, startIndex + 1, endIndex, carried);
   const head = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1).trim();
   if (head) innerLines.unshift(head);
   if (endIndex < lines.length) {
@@ -2076,7 +2268,7 @@ function parseInitBlockMultiline(lines: string[], startIndex: number, startBrace
   if (inline !== null) return parseInitBlock(inline);
   const carried = lexAfterHeader(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
+  const innerLines = codeLines(lines, startIndex + 1, endIndex, carried);
   const head = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1).trim();
   if (head) innerLines.unshift(head);
   if (endIndex < lines.length) {
@@ -2157,6 +2349,33 @@ function lastLineHasLineComment(text: string): boolean {
   return false;
 }
 
+/** A `;` between action statements is a parse error. Strings may contain one. */
+function rejectStatementSemicolon(code: string, lineNo: number): void {
+  let quote = false;
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    const next = code[i + 1];
+    if (quote) {
+      if (ch === '\\' && next !== undefined) { i++; continue; }
+      if (ch === '"') quote = false;
+      continue;
+    }
+    if (ch === '"') { quote = true; continue; }
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (ch === '[') bracket++;
+    else if (ch === ']') bracket--;
+    else if (ch === '{') brace++;
+    else if (ch === '}') brace--;
+    else if (ch === ';' && paren === 0 && bracket === 0 && brace === 0) {
+      throw lexProblem(lineNo, 'semicolon between statements');
+    }
+  }
+}
+
 /** Text of an action body that opens and closes on this line, outside `(...)`. */
 function actionBodyInline(line: string): string | null {
   const scanned = scanLine(line);
@@ -2182,7 +2401,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
   if (!header) {
-    if (firstLine.startsWith('action ') && !firstLine.includes('{')) {
+    if (firstLine.startsWith('action ')) {
       throw lexProblem(startIndex + 1, 'action parameters must close on the action line');
     }
     return null;
@@ -2200,12 +2419,18 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   let endIndex = startIndex;
   if (inline !== null) {
     const text = inline.trim();
-    if (text) bodyEntries.push({ text, raw: text, indent: 0 });
+    if (text) {
+      rejectStatementSemicolon(text, startIndex + 1);
+      bodyEntries.push({ text, raw: text, indent: 0 });
+    }
   } else {
   const carried = lexAfterHeader(lines, startIndex);
   endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
   const headerTail = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1);
-  if (headerTail.trim()) bodyEntries.push({ text: headerTail.trim(), raw: headerTail.trim(), indent: 0 });
+  if (headerTail.trim()) {
+    rejectStatementSemicolon(headerTail.trim(), startIndex + 1);
+    bodyEntries.push({ text: headerTail.trim(), raw: headerTail.trim(), indent: 0 });
+  }
   bodyLex = carried;
   {
     const bodyLinesRaw = lines.slice(startIndex + 1, endIndex);
@@ -2222,6 +2447,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
           : null);
         continue;
       }
+      rejectStatementSemicolon(code, startIndex + 2 + b);
       bodyEntries.push({ text: code, raw: l.trim(), indent: l.length - l.trimStart().length });
     }
   }
@@ -2403,23 +2629,31 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     // if condition { ... } else if condition { ... } else { ... }
     // SpeckDL conditional blocks - parse as a special statement type
     if (stmt.startsWith('if ')) {
-      // Find matching } for this if block (may span multiple bodyLines entries)
+      // Find matching } for this if block (may span multiple bodyLines entries).
+      // A block comment may sit between the condition and `{`. Until that
+      // brace opens, a later statement is not part of this if.
       let braceDepth = 0;
+      let opened = false;
       let j = i;
       let ifLex = lexStart();
       const blockLines: string[] = [];
       while (j < bodyLines.length) {
         const line = rawLines[j];
         if (line === null) { j++; continue; }
+        const before = ifLex;
         const masked = maskCode(line, ifLex);
         ifLex = masked.state;
+        const code = masked.code.trim();
+        if (!opened && j !== i && before.kind !== 'block' && !code.startsWith('{')) break;
         for (const ch of masked.text) {
-          if (ch === '{') braceDepth++;
+          if (ch === '{') { braceDepth++; opened = true; }
           else if (ch === '}') braceDepth--;
         }
-        if (bodyLines[j]) blockLines.push(line);
+        if (bodyLines[j] || (!opened && (before.kind === 'block' || ifLex.kind === 'block'))) {
+          blockLines.push(line);
+        }
         j++;
-        if (braceDepth === 0) break;
+        if (opened && braceDepth <= 0) break;
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
       statements.push({ type: 'ifblock', raw: joinBlockLines(blockLines) });

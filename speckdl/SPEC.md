@@ -105,14 +105,20 @@ comment is not structure: a `}` inside one does not close a block, including
 when the comment spans lines and when Go emits an `if` or a `for`. `'` is
 post-state notation, not a string quote. Comments are removed character by
 character, so code after a `*/` that closes a comment opened on an earlier
-line stays. A block comment may continue onto the next line. A `"` string
-may not: an unclosed `"` is `unterminated string` on the line where it
-opened, including at file level, after the last speck, and inside domain
+line stays, including a state field and an init assignment. A comment
+between an `if` condition and its `{` is still that `if`. A block comment
+may continue onto the next line. A comment that
+opens on a speck's closing line and closes on a later line is closed. A `"`
+string may not: an unclosed `"` is `unterminated string` on the line where
+it opened, including at file level, after the last speck, and inside domain
 text. An unclosed `/*` is `unterminated block comment` on the line where it
-opened. A `*/` that does not close a comment is `stray */`. A `/*` inside
-an already-open block comment is more comment text, not a nested-comment
-error. A trailing `//` comment is not part of a `require`, `let`, or
-invariant expression.
+opened. A `*/` that does not close a comment is `stray */`. A `/*` on a
+later line, while a block comment is already open, is `nested block comment`.
+A `/*` on the same line, already inside the comment, is comment text. A
+`speck`, `action`, `invariant`, `state`, or `init` header on the line that
+closes a block comment is `header is not at the start of the line`. A speck
+written inside a block comment is not a speck. A trailing `//` comment is
+not part of a `require`, `let`, or invariant expression.
 
 Header and brace checks use those same tokens. A `speck` that is not a
 well-formed header (`speck`, a name, then `{`, at depth 0) is a parse error
@@ -125,7 +131,12 @@ while the speck stays open, is `text after a closing brace`. A `}` inside
 `(...)` or `[...]` is not that error, so `action Pay(p: {amount: Nat}) {`
 parses. `})`, `},`, and `} else` are not that error. A block whose first
 word is not a known member keyword is `unknown block`, including inside an
-action (`thing {`, `iff x > 5 {`, `conditions {`, `enum {`). A Unicode
+action (`thing {`, `iff x > 5 {`, `conditions {`, `enum {`), including
+when the `{` is on the following line and when the header is
+`thing(p: {a: Nat}) {`. A known member whose `{` is on the following line
+is that member. `while` and `forall` blocks are `unknown block`. `state{`
+and `init{` are `state` and `init`. A `;` between action statements is
+`semicolon between statements`. A Unicode
 format character outside a string or a comment is
 `invisible format character`, except a BOM at the start of the file.
 Other text at file level is `text outside a speck, domain, or import`.
