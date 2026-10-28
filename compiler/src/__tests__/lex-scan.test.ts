@@ -308,6 +308,7 @@ describe('scanner paths used by the other block forms', () => {
     init {
         n := Rec {
         m := 1
+        }
     }
 }
 `, 'init.speckdl');

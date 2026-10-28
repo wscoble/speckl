@@ -105,7 +105,21 @@ comment is not structure: a `}` inside one does not close a block, including
 when the comment spans lines. `'` is post-state notation, not a string quote.
 An unterminated block comment or string, or a `*/` that does not close one,
 is a parse error naming the file and line. A trailing `//` comment is not
-part of a `require`, `let`, or invariant expression.
+part of a `require`, `let`, or invariant expression. A `"` string does not
+continue onto the next line. A nested `/*` is `nested block comment`.
+
+Header and brace checks use those same tokens. A `speck` that is not a
+well-formed header (`speck`, a name, then `{`, at depth 0) is a parse error
+naming the file and line. `{` alone on the next line still opens that speck.
+Depth below 0, or depth that is not 0 at the end of the file, is
+`unbalanced braces`, including a stray `}` that a later comment brace would
+appear to balance. An extra `}` on a one-line member closes that speck.
+Text after the `}` that returns file depth to 0, or after a member's `}`
+while the speck stays open, is `text after a closing brace`. `})`, `},`,
+and `} else` are not that error. A Unicode format character outside a string
+or a comment is `invisible format character`, except a BOM at the start of
+the file. Other text at file level is
+`text outside a speck, domain, or import`.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
@@ -194,6 +208,22 @@ transition Transition { prior_state: String }
 import "common.speckdl" as common
 import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 ```
+
+An `import` at file level, or as a direct member of a speck, names a
+`.speckdl` file. The compiler reads that file, lowers it, and merges its
+specks. A missing file, a cycle, a hash that does not match the file bytes,
+and the same speck declared in two files are errors that name the file.
+`version` is stored and not looked up. There is no package registry, and an
+expression that names an imported speck is not rewritten. An empty hash, a
+mistyped clause, or a block comment on the import line is a parse error. A
+trailing `//` comment is allowed. An `import` inside an action, an `if`, a
+state block, a domain, or any other brace block that is not the speck itself
+is `import is inside a block`.
+
+`domain Name { ... }` is not parsed. Its braces count, and the members
+written inside it are dropped. A `speck` inside those braces is
+`unbalanced braces`. An unknown block on its own line inside a speck
+(`thing B {`) is not a member and is not an error.
 
 Version pinning is optional for local development and required for Specks
 with `review: manual` or `review: hybrid`.
@@ -285,6 +315,11 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
   pending IR quantifier support.
 - **Free-form temporal expressions** other than `Always(InvariantName)` /
   `Eventually(InvariantName)` are not yet unrolled.
+- **Domain blocks.** `domain` is recognized so its braces are counted. The
+  members inside a domain are not parsed.
+- **Unknown blocks inside a speck.** A block that is not a known member
+  (`thing B {`, `Speck B {`) is not attached and is not reported. Text after
+  a member's closing `}` on that same line is `text after a closing brace`.
 
 ---
 

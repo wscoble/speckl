@@ -14,6 +14,44 @@ alias.
 
 ### Added
 
+- **`import` resolution.** `import "file.speckdl"` is read, lowered, and merged.
+  A missing file, a cycle, a hash mismatch, and the same speck declared in
+  two files are errors that name the file. `version` is stored and not looked
+  up. There is no package registry, and expressions that name an imported
+  speck are not rewritten. Contracts, cost, budgets, and runtime routing are
+  not implemented. An empty `hash ""`, a mistyped clause (`hsh`, `verison`),
+  and a `/* */` comment on the import line fail the parse. A trailing `//`
+  comment is allowed. An `import` that is a direct member of a speck is
+  attached to that speck. An `import` inside an action, an `if`, a multi-line
+  state block, a `domain`, or any other brace block that is not the speck
+  itself is `import is inside a block`.
+- **Header and brace checks on scanner tokens.** After `lex.ts` masks
+  comments and strings, those tokens decide where a speck starts and ends.
+  A `speck` that is not a well-formed header is a parse error naming the file
+  and line: `speck must be a header at the start of the line`,
+  `expected "speck <Name> {"`, `speck name must be on the same line as "speck"`,
+  `one speck per line: put members on their own lines`, or
+  `"speck" is a reserved keyword`. A header at nonzero depth, depth below 0,
+  or depth that is not 0 at the end of the file is `unbalanced braces`. A
+  stray `}` is that error even when a later comment contains a `{`. A `{` or
+  `}` inside a comment or a string does not count, so the next speck stays a
+  separate speck. An extra `}` on a one-line member
+  (`action Go { x := x + 1 } }`, `state { x: Nat } }`,
+  `invariant P { x >= 0 } }`) closes that speck. The next speck is not
+  absorbed. Non-comment text after the `}` that brings file depth to 0, or
+  after a member's `}` while the speck stays open, is
+  `text after a closing brace`. `})`, `},`, and `} else` / `} else if` are
+  not that error. A Unicode Cf character outside a string or a comment is
+  `invisible format character`, except a BOM at the start of the file. Other
+  file-level text is `text outside a speck, domain, or import`. A string does
+  not continue onto the next line. A nested `/*` is `nested block comment`.
+  `domain` is recognized so its braces count, and the members inside it are
+  not parsed. A speck written inside a domain is `unbalanced braces`. An
+  unknown block on its own line inside a speck (`thing B {`, `Speck B {`) is
+  not a member and is not an error. A colon-form `if` nested inside another
+  colon-form `if` is never rewritten. One-line specks with members, a name
+  on the next line, and two specks on one line stay errors until a later
+  whole-file tokenizer.
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
   that brace cannot end a speck or a member or hide the next speck.

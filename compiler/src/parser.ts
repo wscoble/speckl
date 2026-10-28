@@ -3,6 +3,7 @@ import path from 'path';
 import {
   assertLexClosed,
   inlineBlockInner,
+  lexProblem,
   lexStart,
   scanLine,
   setParseFile,
@@ -49,6 +50,18 @@ export interface ImportNode {
   alias?: string;
   version?: string;
   hash?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/** File-level group of speck names. Domain blocks are not parsed yet. */
+export interface DomainNode {
+  type: 'domain';
+  name: string;
+  members: string[];
+  language?: string;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface InputNode {
@@ -414,6 +427,10 @@ export interface TypeExpr {
 
 export interface AST {
   specks: SpeckNode[];
+  /** File-level `import` statements, in source order. Empty when there are none. */
+  imports: ImportNode[];
+  /** Always empty. Domain blocks are not parsed. */
+  domains: DomainNode[];
 }
 
 /**
@@ -430,48 +447,69 @@ export function parseSpeckFile(filePath: string): AST {
 export function parseSpeckContent(content: string, filePath?: string): AST {
   setParseFile(filePath);
   const specks: SpeckNode[] = [];
+  const imports: ImportNode[] = [];
   const lines = content.split('\n');
-  
-  let i = 0;
+  const masks: string[] = [];
   let lex = lexStart();
-  while (i < lines.length) {
-    const masked = maskCode(lines[i], lex, i + 1);
-    lex = masked.state;
-    const line = lines[i].trim();
-    
-    // Skip empty lines and comments
-    if (!line || line.startsWith('//') || line.startsWith('/*')) {
-      i++;
-      continue;
-    }
-    
-    // Handle import statements
-    if (line.startsWith('import ')) {
-      const importNode = parseImportStatement(line);
-      // Import is a special case - it's not part of a speck
-      // We'll handle it separately in a future update
-      i++;
-      continue;
-    }
-    
-    // Handle speck definitions
-    if (line.startsWith('speck ')) {
-      const speck = parseSpeck(lines, i);
-      if (speck) {
-        specks.push(speck);
-        // Move index past the speck we just parsed
-        i++; // Increment by 1, the loop will continue from next line
-      } else {
-        i++;
-      }
-      continue;
-    }
-    
-    i++;
+  for (let n = 0; n < lines.length; n++) {
+    const lineNo = n + 1;
+    if (lex.kind === 'block') rejectNestedComment(lines[n], lineNo);
+    const scanned = scanLine(lines[n], lex, lineNo);
+    lex = scanned.state;
+    if (lex.kind === 'string') throw lexProblem(lex.openLine, 'unterminated string');
+    rejectVisibleFormat(lines[n], scanned.mask, lineNo);
+    masks.push(scanned.mask);
   }
-
   assertLexClosed(lex);
-  return { specks };
+
+  let depth = 0;
+  let lostAt = 0;
+  let openBraceAt = -1;
+  const speckSpans: { start: number; end: number }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const lineNo = i + 1;
+    const toks = tokenize(masks[i]);
+    const shape = rejectMisplacedSpeck(toks, depth, lineNo);
+    if (shape === 'open' || shape === 'empty' || shape === 'pending') {
+      const name = (toks[1] as { s: string }).s;
+      let bodyIndex = i + 1;
+      let braceCount = 1;
+      if (shape === 'empty') {
+        bodyIndex = lines.length;
+        braceCount = 0;
+      } else if (shape === 'pending') {
+        const braceLine = openingBraceLine(masks, i);
+        if (braceLine === null) throw lexProblem(lineNo, 'expected "speck <Name> {"');
+        bodyIndex = braceLine + 1;
+        openBraceAt = braceLine;
+      }
+      const speckLines = shape === 'empty' ? lines : lines.slice(0, speckCloseLine(masks, i) + 1);
+      const speck = parseSpeck(speckLines, i, { name, bodyIndex, braceCount });
+      specks.push(speck);
+      speckSpans.push({ start: speck.startLine ?? lineNo, end: speck.endLine ?? lineNo });
+    } else if (i === openBraceAt) {
+      openBraceAt = -1;
+    } else if (textAfterClose(toks, depth) || memberTextAfterClose(toks, depth)) {
+      throw lexProblem(lineNo, 'text after a closing brace');
+    } else if (toks[0]?.t === 'ident' && toks[0].s === 'import') {
+      const insideSpeck = speckSpans.some(s => lineNo >= s.start && lineNo <= s.end);
+      if (depth === 0) {
+        const node = parseImportStatement(lines[i].trim());
+        imports.push({ ...node, startLine: lineNo, endLine: lineNo });
+      } else if (!(depth === 1 && insideSpeck)) {
+        throw lexProblem(lineNo, 'import is inside a block');
+      }
+    } else if (depth === 0 && strayFileText(toks)) {
+      throw lexProblem(lineNo, 'text outside a speck, domain, or import');
+    }
+
+    const next = depth + maskDelta(masks[i]);
+    if (next < 0) throw lexProblem(lineNo, 'unbalanced braces');
+    if (depth === 0 && next > 0) lostAt = lineNo;
+    depth = next;
+  }
+  if (depth !== 0) throw lexProblem(lostAt || 1, 'unbalanced braces');
+  return { specks, imports, domains: [] };
 }
 
 /**
@@ -531,11 +569,183 @@ function lexAfter(lines: string[], endInclusive: number, from = 0): LexState {
   return lex;
 }
 
-function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
-  const headerMatch = lines[startIndex].match(/^speck\s+([\w-]+)\s*{/);
-  if (!headerMatch) return null;
+type MaskTok =
+  | { t: 'ident'; s: string }
+  | { t: 'brace'; s: '{' | '}' }
+  | { t: 'punct'; s: string };
 
-  const name = headerMatch[1];
+/** Tokens of a structural mask. Comments and string interiors are already spaces. */
+function tokenize(mask: string): MaskTok[] {
+  const out: MaskTok[] = [];
+  let i = 0;
+  while (i < mask.length) {
+    const ch = mask[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    if (ch === '{' || ch === '}') { out.push({ t: 'brace', s: ch }); i++; continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      let s = ch;
+      i++;
+      while (i < mask.length && /[\w-]/.test(mask[i])) { s += mask[i]; i++; }
+      out.push({ t: 'ident', s });
+      continue;
+    }
+    out.push({ t: 'punct', s: ch });
+    i++;
+  }
+  return out;
+}
+
+function maskDelta(mask: string): number {
+  let delta = 0;
+  for (const ch of mask) {
+    if (ch === '{') delta++;
+    else if (ch === '}') delta--;
+  }
+  return delta;
+}
+
+function isFormatChar(ch: string): boolean {
+  return /\p{Cf}/u.test(ch);
+}
+
+/** A Cf that the mask left visible. A leading BOM is the one exception. */
+function rejectVisibleFormat(input: string, mask: string, lineNo: number): void {
+  for (let i = 0; i < input.length; ) {
+    const cp = input.codePointAt(i)!;
+    const ch = String.fromCodePoint(cp);
+    if (isFormatChar(ch)) {
+      const visible = mask.slice(i, i + ch.length) === input.slice(i, i + ch.length);
+      if (visible && !(lineNo === 1 && i === 0 && cp === 0xfeff)) {
+        throw lexProblem(lineNo, 'invisible format character');
+      }
+    }
+    i += ch.length;
+  }
+}
+
+/** `/*` while a block comment is already open. A closer on this line ends it first. */
+function rejectNestedComment(input: string, lineNo: number): void {
+  for (let i = 0; i < input.length - 1; i++) {
+    if (input[i] === '*' && input[i + 1] === '/') return;
+    if (input[i] === '/' && input[i + 1] === '*') throw lexProblem(lineNo, 'nested block comment');
+  }
+}
+
+function headerShape(toks: MaskTok[]): 'open' | 'empty' | 'pending' | 'bad' | 'no' {
+  if (toks[0]?.t !== 'ident' || toks[0].s !== 'speck') return 'no';
+  if (toks[1]?.t !== 'ident') return 'bad';
+  if (toks.length === 2) return 'pending';
+  const open = toks[2]?.t === 'brace' && toks[2].s === '{';
+  const close = toks[3]?.t === 'brace' && toks[3].s === '}';
+  if (toks.length === 3 && open) return 'open';
+  if (toks.length === 4 && open && close) return 'empty';
+  return 'bad';
+}
+
+function badSpeckDetail(toks: MaskTok[]): string {
+  const name = toks[1]?.t === 'ident';
+  const hasBrace = toks.some(t => t.t === 'brace');
+  if (!name) {
+    if (toks.length === 1 || (toks[1]?.t === 'brace' && toks[1].s === '{')) {
+      return 'speck name must be on the same line as "speck"';
+    }
+    if (hasBrace) return 'expected "speck <Name> {"';
+    return '"speck" is a reserved keyword';
+  }
+  if (hasBrace) return 'one speck per line: put members on their own lines';
+  return 'expected "speck <Name> {"';
+}
+
+function rejectMisplacedSpeck(toks: MaskTok[], depth: number, lineNo: number): 'open' | 'empty' | 'pending' | 'no' {
+  const shape = headerShape(toks);
+  const words = toks.filter(t => t.t === 'ident' && t.s === 'speck');
+  if (words.length === 0) return 'no';
+  if ((shape === 'open' || shape === 'empty' || shape === 'pending') && depth === 0) return shape;
+  if (shape === 'open' || shape === 'empty' || shape === 'pending') {
+    throw lexProblem(lineNo, 'unbalanced braces');
+  }
+  if (shape === 'bad') throw lexProblem(lineNo, badSpeckDetail(toks));
+  throw lexProblem(lineNo, 'speck must be a header at the start of the line');
+}
+
+/** The line that brings a speck opened at `start` back to depth 0. */
+function speckCloseLine(masks: string[], start: number): number {
+  let depth = 0;
+  let opened = false;
+  for (let i = start; i < masks.length; i++) {
+    const next = depth + maskDelta(masks[i]);
+    if (next > 0) opened = true;
+    if (opened && next <= 0) return i;
+    depth = next;
+  }
+  return Math.max(start, masks.length - 1);
+}
+
+function textAfterClose(toks: MaskTok[], depth: number): boolean {
+  let d = depth;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t.t !== 'brace') continue;
+    if (t.s === '{') d++;
+    else {
+      d--;
+      if (d === 0 && i < toks.length - 1) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A `}` that returns to speck-member depth, with more than the speck's own
+ * closing braces after it. `})`, `},`, and `} else` sit deeper than that,
+ * inside the member, so they are not this error.
+ */
+function memberTextAfterClose(toks: MaskTok[], depth: number): boolean {
+  if (depth !== 1) return false;
+  let d = depth;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t.t !== 'brace') continue;
+    if (t.s === '{') { d++; continue; }
+    d--;
+    if (d === 1 && i < toks.length - 1 && !closesSpeckOnly(toks, i + 1, d)) return true;
+  }
+  return false;
+}
+
+function closesSpeckOnly(toks: MaskTok[], from: number, depth: number): boolean {
+  let d = depth;
+  for (let i = from; i < toks.length; i++) {
+    const t = toks[i];
+    if (t.t !== 'brace' || t.s !== '}') return false;
+    d--;
+    if (d === 0) return i === toks.length - 1;
+    if (d < 0) return false;
+  }
+  return false;
+}
+
+function strayFileText(toks: MaskTok[]): boolean {
+  if (toks.length === 0) return false;
+  if (toks.length === 1 && toks[0].t === 'brace' && toks[0].s === '}') return false;
+  if (toks[0].t === 'ident' && toks[0].s === 'domain') return false;
+  return true;
+}
+
+function openingBraceLine(masks: string[], headerIndex: number): number | null {
+  let j = headerIndex + 1;
+  while (j < masks.length && tokenize(masks[j]).length === 0) j++;
+  const toks = j < masks.length ? tokenize(masks[j]) : [];
+  if (toks.length === 1 && toks[0].t === 'brace' && toks[0].s === '{') return j;
+  return null;
+}
+
+function parseSpeck(
+  lines: string[],
+  startIndex: number,
+  forced: { name: string; bodyIndex: number; braceCount: number },
+): SpeckNode {
+  const name = forced.name;
   const members: MemberNode[] = [];
 
   // Cycle 73: refactored from static-field hack to local-object pattern.
@@ -555,10 +765,10 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     k8sVersion?: string;
   } = {};
 
-  let i = startIndex + 1;
-  let braceCount = 1;
+  let i = forced.bodyIndex;
+  let braceCount = forced.braceCount;
   let speckEndLine = Math.min(lines.length, startIndex + 1);
-  let lex = lexAfter(lines, startIndex, startIndex);
+  let lex = braceCount > 0 ? lexAfter(lines, Math.max(startIndex, i - 1), startIndex) : lexStart();
 
   while (i < lines.length && braceCount > 0) {
     const rawLine = lines[i];
@@ -569,6 +779,14 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     const closeCount = (masked.text.match(/}/g) || []).length;
 
     if (!line || !masked.text.trim() || line.startsWith('//') || line.startsWith('/*')) {
+      i++;
+      continue;
+    }
+
+    const codeLine = masked.code.trim();
+    if (codeLine === 'import' || codeLine.startsWith('import ')) {
+      const node = parseImportStatement(line);
+      members.push(Object.assign(node, { startLine: i + 1, endLine: i + 1 }));
       i++;
       continue;
     }
@@ -1230,19 +1448,19 @@ function parseActionHeader(line: string): ActionNode | null {
 }
 
 function parseImportStatement(line: string): ImportNode {
-  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?/);
+  // The path, version, and hash stop at the closing quote. A leftover clause
+  // (`hash ""`, `hsh "abc"`, a `/* */` comment) does not become part of the
+  // path. A trailing `//` comment is allowed.
+  const match = line.match(/^import\s+(['"])([^'"]+)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])([^'"]+)\4)?(?:\s+hash\s+(['"])([^'"]+)\6)?\s*(?:\/\/.*)?$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
   }
-  
-  const [, , path, , alias, , version, , hash] = match;
-  
   return {
     type: 'import',
-    path,
-    alias,
-    version: version || undefined,
-    hash: hash || undefined,
+    path: match[2],
+    alias: match[3] || undefined,
+    version: match[5] || undefined,
+    hash: match[7] || undefined,
   };
 }
 
@@ -1696,6 +1914,46 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   return { type: 'invariant', name, expr: body.trim() };
 }
 
+/** Keep a line break after a `//` comment so the next statement is not commented out. */
+function joinBlockLines(lines: string[]): string {
+  let out = '';
+  for (const line of lines) {
+    if (!out) {
+      out = line;
+      continue;
+    }
+    out += (lastLineHasLineComment(out) ? '\n' : ' ') + line;
+  }
+  return out;
+}
+
+function lastLineHasLineComment(text: string): boolean {
+  const line = text.slice(text.lastIndexOf('\n') + 1);
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (ch === '"') {
+      i++;
+      while (i < line.length) {
+        if (line[i] === '\\') { i += 2; continue; }
+        if (line[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '/') return true;
+    if (ch === '/' && next === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+      continue;
+    }
+    i++;
+  }
+  return false;
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
@@ -1890,7 +2148,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         j++;
         if (braceDepth === 0) break;
       }
-      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
+      statements.push({ type: 'forblock', raw: joinBlockLines(blockLines2) } as any);
       i = j - 1;
       continue;
     }
@@ -1916,7 +2174,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (braceDepth === 0) break;
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
-      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
+      statements.push({ type: 'ifblock', raw: joinBlockLines(blockLines) });
       i = j - 1; // skip to end of if block
       continue;
     }

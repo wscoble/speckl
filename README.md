@@ -18,6 +18,11 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
 
 No LLMs in the compilation path. Same spec, same output, every time.
 
+`import "file.speckdl"` is read and merged. A missing file, a cycle, a bad
+hash, or the same speck declared twice is an error. `domain` blocks are not
+parsed: the braces count, and the members inside are dropped. Header and
+brace checks run on the comment-and-string scanner's tokens.
+
 ## Install
 
 Speckl is not published to npm. Build it from this repository. `compiler/package.json` `engines` declares Node.js `>=20`. These steps were run on Node 20.20.2 and Node 22.23.4.
