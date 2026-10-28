@@ -1686,6 +1686,83 @@ describe('compile entry', () => {
     }
   });
 
+  it('an unknown block name is an error, including inside an action', () => {
+    const wrap = (line: string) => [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      line,
+      '        invariant Canary { false }',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    for (const line of ['    conditions {', '    enum Status {', '    input {', '    output {', '    next {', '    status {']) {
+      expect(() => parseSpeckContent(wrap(line), 'wrap.speckdl'), line).toThrow(/unknown block/);
+    }
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        thing {',
+      '            n := 1',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'k31.speckdl')).toThrow(/Parse error at k31\.speckdl:5: unknown block/);
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        iff n > 5 {',
+      '            n := 0',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'k32.speckdl')).toThrow(/Parse error at k32\.speckdl:5: unknown block/);
+  });
+
+  it('a multi-line action signature is an error, and a multi-line invariant keeps its expr', () => {
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    action Pay(',
+      '        p: {amount: Nat}',
+      '    ) {',
+      '        x := 1',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), 'r05.speckdl')).toThrow(/Parse error at r05\.speckdl:2: action parameters must close on the action line/);
+    const inv = parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    invariant Pos {',
+      '        x >= 0 }',
+      '}',
+      '',
+    ].join('\n'), 'c06.speckdl');
+    const node = inv.specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(node.expr.replace(/\s+/g, ' ')).toContain('x >= 0');
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    type Foo { x: Nat }',
+      '}',
+      '',
+    ].join('\n'), 'type.speckdl')).toThrow(/unknown block/);
+    const alias = parseSpeckContent([
+      'speck A {',
+      '    type Foo = { x: Nat }',
+      '}',
+      '',
+    ].join('\n'), 'alias.speckdl');
+    expect(alias.specks[0].members.some(m => m.type === 'interface')).toBe(true);
+  });
+
   it('a record parameter is not text after a brace, and a one-line action keeps its statement', () => {
     const pay = parseSpeckContent([
       'speck A {',

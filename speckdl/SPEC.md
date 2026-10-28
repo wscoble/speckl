@@ -103,11 +103,16 @@ yet lowered to Z3 (see §3.5).
 **Comments** — `//` line comments and `/* ... */` block comments. A finished
 comment is not structure: a `}` inside one does not close a block, including
 when the comment spans lines and when Go emits an `if` or a `for`. `'` is
-post-state notation, not a string quote. A block comment may continue onto
-the next line. A `"` string may not: an unclosed `"` is `unterminated string`
-on the line where it opened. An unclosed `/*`, a nested `/*`, or a `*/` that
-does not close one, is a parse error naming the file and line. A trailing
-`//` comment is not part of a `require`, `let`, or invariant expression.
+post-state notation, not a string quote. Comments are removed character by
+character, so code after a `*/` that closes a comment opened on an earlier
+line stays. A block comment may continue onto the next line. A `"` string
+may not: an unclosed `"` is `unterminated string` on the line where it
+opened, including at file level, after the last speck, and inside domain
+text. An unclosed `/*` is `unterminated block comment` on the line where it
+opened. A `*/` that does not close a comment is `stray */`. A `/*` inside
+an already-open block comment is more comment text, not a nested-comment
+error. A trailing `//` comment is not part of a `require`, `let`, or
+invariant expression.
 
 Header and brace checks use those same tokens. A `speck` that is not a
 well-formed header (`speck`, a name, then `{`, at depth 0) is a parse error
@@ -119,9 +124,10 @@ Text after the `}` that returns file depth to 0, or after a member's `}`
 while the speck stays open, is `text after a closing brace`. A `}` inside
 `(...)` or `[...]` is not that error, so `action Pay(p: {amount: Nat}) {`
 parses. `})`, `},`, and `} else` are not that error. A block whose first
-word is not a member (`thing`, `Speck`, or a lookalike of `speck`) is
-`unknown block`. A Unicode format character outside a string or a comment
-is `invisible format character`, except a BOM at the start of the file.
+word is not a known member keyword is `unknown block`, including inside an
+action (`thing {`, `iff x > 5 {`, `conditions {`, `enum {`). A Unicode
+format character outside a string or a comment is
+`invisible format character`, except a BOM at the start of the file.
 Other text at file level is `text outside a speck, domain, or import`.
 
 ### 2.3 Declarative Form (v0.2, still supported)
@@ -325,9 +331,9 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
   Text after a member's closing `}` on that same line is
   `text after a closing brace`. A `}` inside a parameter type is not.
 - **Statement on an action's closing line.** A statement or `require` that
-  shares the line of a multi-line action's closing `}` is not captured.
-  A one-line action (`action Go { x := x + 1 }`) is captured. Real support
-  for code before a closing brace belongs to a later change.
+  shares the line of a multi-line action's closing `}` is
+  `statement before the closing brace`. A one-line action
+  (`action Go { x := x + 1 }`) is captured.
 
 ---
 

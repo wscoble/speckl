@@ -46,11 +46,20 @@ alias.
   a string or a comment is `invisible format character`, except a BOM at the
   start of the file. Other file-level text is
   `text outside a speck, domain, or import`. A string does not continue onto
-  the next line. A nested `/*` is `nested block comment`. `domain` is
+  the next line. A `/*` on a later line while a comment is still open is
+  `nested block comment`. A `/*` on the same line, inside that comment, is
+  comment text. `domain` is
   recognized so its braces count, and the members inside it are not parsed.
   A speck written inside a domain is `unbalanced braces`. An unknown block
-  inside a speck (`thing B {`, `Speck B {`, a lookalike of `speck`) is
-  `unknown block`. A one-line action keeps the statement on that line. A
+  inside a speck (`thing B {`, `Speck B {`, `conditions {`, `enum {`,
+  `input {`, `output {`, `next {`, `status {`, a lookalike of `speck`,
+  and `thing {` or `iff` inside an action) is `unknown block`. It is not
+  merged into the enclosing speck. A `type` line that is not `type Name = ...`
+  is the same error. `type Name = { ... }` is parsed. An action whose
+  parameter list does not close on its line is
+  `action parameters must close on the action line`. A one-line action keeps
+  its statement. A multi-line invariant keeps the expression on its closing
+  line. A
   statement or `require` on the closing line of a multi-line action is
   `statement before the closing brace`. A colon-form `if` nested inside another
   colon-form `if` is never rewritten. One-line specks with members, a name
@@ -61,14 +70,23 @@ alias.
   that brace cannot end a speck, a member, an `if`, or a `for`, and it
   cannot hide the next speck. The same skip is used when Go emits an `if`
   or a `for`, so a brace in a comment or a string does not drop that body.
-  `'` is post-state prime notation, not a string quote.
+  `'` is post-state prime notation, not a string quote. A block comment may
+  continue onto the next line, including one that opens on a speck's closing
+  line and closes later. A `"` string may not: an unclosed `"` is
+  `unterminated string` on the line where it opened, at file level, after
+  the last speck, or inside domain text. An unclosed `/*` is
+  `unterminated block comment` on the line where it opened, in those same
+  places. A `/*` written inside an already-open block comment is comment
+  text, not a nested comment.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
-  count uses. A block comment may continue onto the next line, including
-  one opened on a member header. A `"` string may not: an unclosed `"` is
-  `unterminated string` on the line where it opened. An unclosed `/*`, or
-  a stray `*/`, is a parse error naming the file and line. Code after
-  `/* ... */` on the same line is kept. A trailing `//` comment is not part
-  of a `require`, `let`, or invariant expression.
+  count uses. Comments are removed character by character, so code before
+  a `/*` and code after the `*/` that closes it on a later line both stay.
+  That includes an invariant, state, init, action, constraint, and verify
+  header. A `*/` that does not close a comment is `stray */`. A header that
+  begins after a `*/` which closed a comment from an earlier line
+  (`*/ speck B {`, `*/ action Evil {`) is
+  `header is not at the start of the line`. A trailing `//` comment is not
+  part of a `require`, `let`, or invariant expression.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
