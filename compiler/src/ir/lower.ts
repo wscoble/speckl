@@ -21,7 +21,7 @@
 import { exprToSource } from '../expr/print.js';
 import { readFileSync } from 'fs';
 import {
-  AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode,
+  AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, inlineActionBody,
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
   ProvenanceNode, ReviewNode, AuthorNode, SourceNode, DerivesNode,
   SatisfiesNode, BOMNode, TypeExpr, OneofNode, TransitionNode,
@@ -184,9 +184,11 @@ function actionBodyLines(lines: string[], startLine: number, endLine: number): s
   while (open < endLine - 1 && !lines[open].includes('{')) open++;
   const close = endLine - 1;
   if (open >= close) {
-    // Single-line action: `action Name { stmt }`.
+    // Single-line action: `action Name { stmt }`. A `}` in a trailing
+    // `//` comment is not the close.
     const l = lines[open] ?? '';
-    const body = l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
+    const inline = inlineActionBody(l);
+    const body = inline !== null ? inline : l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
     return body.trim() ? [body] : [];
   }
   const body = lines.slice(open + 1, close);
