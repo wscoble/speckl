@@ -16,9 +16,14 @@ alias.
 
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
-  that brace cannot end a speck or a member or hide the next speck.
-  `'` is post-state prime notation, not a string quote. An unclosed `/*`
-  or `"` is not yet a parse error. There is no shared scanner module yet.
+  that brace cannot end a speck, a member, an `if`, or a `for`, and it
+  cannot hide the next speck. The same skip is used when Go emits an `if`
+  or a `for`, so a brace in a comment or a string does not drop that body.
+  `'` is post-state prime notation, not a string quote. A block comment may
+  continue onto the next line. A `"` string may not: an unclosed `"` is
+  `unterminated string` on the line where it opened, and an unclosed `/*`
+  is `unterminated block comment` on the line where it opened. There is no
+  shared scanner module yet.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

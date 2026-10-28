@@ -101,10 +101,11 @@ speck ToggleSwitch {
 yet lowered to Z3 (see §3.5).
 
 **Comments** — `//` line comments and `/* ... */` block comments. A `{` or `}`
-inside a comment or a `"` string is not a structural brace. `'` is
-post-state prime notation, not a string quote. An unclosed `/*` or `"`
-is not yet a parse error; the comment or string stays open onto the
-next line.
+inside a comment or a `"` string is not a structural brace, including when
+Go emits an `if` or a `for`. `'` is post-state prime notation, not a string
+quote. A block comment may continue onto the next line. A `"` string may
+not: an unclosed `"` is `unterminated string` on the line where it opened.
+An unclosed `/*` is `unterminated block comment` on the line where it opened.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

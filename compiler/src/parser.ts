@@ -419,6 +419,8 @@ export function parseSpeckFile(filePath: string): AST {
  * Parse SpeckDL content and return the AST
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
+  parseFile = filePath ?? '';
+  try {
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
   
@@ -458,13 +460,16 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   }
   
   return { specks };
+  } finally {
+    parseFile = '';
+  }
 }
 
 /**
  * Lexer carry for brace counting. Strings and comments are not structure:
  * a `{` inside `"..."`, a `//` comment, or a block comment must not open
- * or close a speck, action, or verify block. Block comments and quotes may
- * span lines, so callers that walk a file keep this state.
+ * or close a speck, action, or verify block. A block comment may span
+ * lines. A `"` string may not: it has to close on the line where it opened.
  *
  * `'` is post-state prime notation (`log'`, `stage'`), not a string quote.
  * Treating it as one swallows every later brace until the next prime.
@@ -472,10 +477,19 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
 interface LexState {
   block: boolean;
   quote: '"' | null;
+  /** 1-based line where the open block comment or string began. 0 when closed. */
+  openLine: number;
 }
 
+let parseFile = '';
+
 function lexStart(): LexState {
-  return { block: false, quote: null };
+  return { block: false, quote: null, openLine: 0 };
+}
+
+function lexProblem(line: number, detail: string): Error {
+  const where = parseFile ? `${parseFile}:${line}` : `line ${line}`;
+  return new Error(`Parse error at ${where}: ${detail}`);
 }
 
 /**
@@ -483,9 +497,10 @@ function lexStart(): LexState {
  * so `{` `}` `(` `)` `[` `]` in the result are structural. Quote marks
  * themselves are kept. Backslash escapes a quote inside a string.
  */
-function maskCode(input: string, state: LexState = lexStart()): { text: string; state: LexState } {
+function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { text: string; state: LexState } {
   let block = state.block;
   let quote = state.quote;
+  let openLine = state.openLine;
   let text = '';
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
@@ -497,7 +512,7 @@ function maskCode(input: string, state: LexState = lexStart()): { text: string; 
         continue;
       }
       text += ch === quote ? ch : ' ';
-      if (ch === quote) quote = null;
+      if (ch === quote) { quote = null; openLine = 0; }
       continue;
     }
     if (block) {
@@ -506,6 +521,7 @@ function maskCode(input: string, state: LexState = lexStart()): { text: string; 
         text += ' ';
         i++;
         block = false;
+        openLine = 0;
       }
       continue;
     }
@@ -517,16 +533,25 @@ function maskCode(input: string, state: LexState = lexStart()): { text: string; 
       text += '  ';
       i++;
       block = true;
+      openLine = lineNo;
       continue;
     }
     if (ch === '"') {
       text += ch;
       quote = ch;
+      openLine = lineNo;
       continue;
     }
     text += ch;
   }
-  return { text, state: { block, quote } };
+  return { text, state: { block, quote, openLine } };
+}
+
+/** A `"` that is still open at the end of the line is an error on that line. */
+function maskLine(input: string, state: LexState, lineNo: number): { text: string; state: LexState } {
+  const masked = maskCode(input, state, lineNo);
+  if (masked.state.quote) throw lexProblem(masked.state.openLine, 'unterminated string');
+  return masked;
 }
 
 function braceCounts(text: string, state?: LexState): { open: number; close: number; state: LexState } {
@@ -543,7 +568,7 @@ function braceCounts(text: string, state?: LexState): { open: number; close: num
 /** Lex state after consuming lines[from..endInclusive]. */
 function lexAfter(lines: string[], endInclusive: number, from = 0): LexState {
   let lex = lexStart();
-  for (let k = from; k <= endInclusive && k < lines.length; k++) lex = maskCode(lines[k], lex).state;
+  for (let k = from; k <= endInclusive && k < lines.length; k++) lex = maskLine(lines[k], lex, k + 1).state;
   return lex;
 }
 
@@ -578,7 +603,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
 
   while (i < lines.length && braceCount > 0) {
     const rawLine = lines[i];
-    const masked = maskCode(rawLine, lex);
+    const masked = maskLine(rawLine, lex, i + 1);
     lex = masked.state;
     const line = rawLine.trim();
     const openCount = (masked.text.match(/{/g) || []).length;
@@ -756,6 +781,8 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     i++;
   }
 
+  if (lex.block) throw lexProblem(lex.openLine, 'unterminated block comment');
+
   return { type: 'speck', name, members,
            startLine: startIndex + 1,
            endLine: speckEndLine,
@@ -783,7 +810,7 @@ function findBlockEnd(lines: string[], startIndex: number, startBraceCount: numb
   let braceCount = startBraceCount;
   let i = startIndex;
   while (i < lines.length) {
-    const masked = maskCode(lines[i], lex);
+    const masked = maskLine(lines[i], lex, i + 1);
     lex = masked.state;
     for (const ch of masked.text) {
       if (ch === '{') braceCount++;
@@ -796,6 +823,7 @@ function findBlockEnd(lines: string[], startIndex: number, startBraceCount: numb
     }
     i++;
   }
+  if (lex.block) throw lexProblem(lex.openLine, 'unterminated block comment');
   return i;
 }
 
@@ -1698,6 +1726,43 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   return { type: 'invariant', name, expr: body.trim() };
 }
 
+/** Keep a line break after a `//` comment so the next statement is not commented out. */
+function joinBlockLines(lines: string[]): string {
+  let out = '';
+  for (const line of lines) {
+    if (!out) { out = line; continue; }
+    out += (lastLineHasLineComment(out) ? '\n' : ' ') + line;
+  }
+  return out;
+}
+
+function lastLineHasLineComment(text: string): boolean {
+  const line = text.slice(text.lastIndexOf('\n') + 1);
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (ch === '"') {
+      i++;
+      while (i < line.length) {
+        if (line[i] === '\\') { i += 2; continue; }
+        if (line[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '/') return true;
+    if (ch === '/' && next === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+      continue;
+    }
+    i++;
+  }
+  return false;
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
@@ -1868,7 +1933,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         j++;
         if (braceDepth === 0) break;
       }
-      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
+      statements.push({ type: 'forblock', raw: joinBlockLines(blockLines2) } as any);
       i = j - 1;
       continue;
     }
@@ -1891,7 +1956,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (braceDepth === 0) break;
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
-      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
+      statements.push({ type: 'ifblock', raw: joinBlockLines(blockLines) });
       i = j - 1; // skip to end of if block
       continue;
     }

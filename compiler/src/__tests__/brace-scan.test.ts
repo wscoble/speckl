@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseSpeckContent } from '../parser.js';
 import { printAST } from '../printer.js';
+import { generateGo } from '../generators/go.js';
 
 describe('braces in comments and strings', () => {
   const second = [
@@ -155,5 +159,84 @@ describe('braces in comments and strings', () => {
     const action = again.specks[0].members.find(m => m.type === 'action') as { statements?: { type: string; raw?: string }[] };
     const raw = action.statements?.find(s => s.type === 'ifblock')?.raw ?? '';
     expect(raw).toContain('x := 1');
+  });
+
+  it('an unclosed string or block comment is an error and does not drop later members', () => {
+    const head = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+    ];
+    const tail = [
+      '    invariant Canary { false }',
+      '}',
+      '',
+    ];
+    const cases: [string, number, string][] = [
+      ['    action Go { log := "abc', 4, 'unterminated string'],
+      ['    action Go { log := "abc\\', 4, 'unterminated string'],
+      ['    action Go { log := "abc\\"', 4, 'unterminated string'],
+      ['    description: "oops', 4, 'unterminated string'],
+      ['    description: "oops {', 4, 'unterminated string'],
+      ['    action Go {\n        log := "a {\n        b }"\n    }', 5, 'unterminated string'],
+      ['    action Go { x := 1 /* oops', 4, 'unterminated block comment'],
+      ['    /* oops', 4, 'unterminated block comment'],
+    ];
+    for (const nl of ['\n', '\r\n'] as const) {
+      for (const [bad, line, detail] of cases) {
+        const src = [...head, ...bad.split('\n'), ...tail].join(nl);
+        expect(() => parseSpeckContent(src, 'open.speckdl'), bad).toThrow(
+          new RegExp(`Parse error at open\\.speckdl:${line}: ${detail}`),
+        );
+        expect(() => parseSpeckContent(src), bad).toThrow(
+          new RegExp(`Parse error at line ${line}: ${detail}`),
+        );
+      }
+    }
+  });
+
+  it('a brace in a comment or a string does not drop an if or for body in Go', () => {
+    const goOf = (actionLines: string[]) => {
+      const src = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action Go {',
+        ...actionLines,
+        '    }',
+        '}',
+        '',
+      ].join('\n');
+      const ast = parseSpeckContent(src, 'go.speckdl');
+      const out = mkdtempSync(join(tmpdir(), 'speckl-brace-'));
+      generateGo(ast, out);
+      return readFileSync(join(out, 'a', 'a.go'), 'utf8');
+    };
+    for (const body of [
+      ['        if x > 5 { // }', '            x := 1', '        }'],
+      ['        if x > 5 { /* } */', '            x := 1', '        }'],
+      ['        if x > 5 {', '            log := "}"', '            x := 1', '        }'],
+      ['        if x > 0 {', '            x := 1', '        } else { // b', '            x := 2', '        }'],
+      ['        for i in xs { // }', '            x := 1', '        }'],
+    ]) {
+      const go = goOf(body);
+      expect(go, body[0]).toContain('m.x = 1');
+      if (body.some(l => l.includes('else'))) expect(go).toContain('m.x = 2');
+    }
+  });
+
+  it('a block comment that opens on a member header and closes on the next line is that member', () => {
+    const src = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    invariant Mono { /* a',
+      '        b */ }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'span.speckdl');
+    const inv = ast.specks[0].members.find(m => m.type === 'invariant') as { name: string };
+    expect(inv.name).toBe('Mono');
   });
 });

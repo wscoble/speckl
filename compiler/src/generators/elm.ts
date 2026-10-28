@@ -388,7 +388,11 @@ function translateAction(action: ActionNode, ctx: ExprCtx, recordTypes: Map<stri
       // events are mirrored client-side as an event-log entry; server is authoritative
       out.bodyElm.push(`            |> logEvent "${(stmt as any).event}"`);
     } else {
-      out.unhandledBody.push(JSON.stringify(stmt));
+      // A newline in block raw only separates a line comment from later
+      // braces. The comment emitted here is the space-joined form.
+      const raw = (stmt as { raw?: string }).raw;
+      const flat = typeof raw === 'string' ? { ...stmt, raw: raw.replace(/\n/g, ' ') } : stmt;
+      out.unhandledBody.push(JSON.stringify(flat));
     }
   }
   return out;
