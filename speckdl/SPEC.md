@@ -102,9 +102,11 @@ yet lowered to Z3 (see §3.5).
 
 **Comments** — `//` line comments and `/* ... */` block comments. A finished
 comment is not structure: a `}` inside one does not close a block, including
-when the comment spans lines. `'` is post-state notation, not a string quote.
-An unterminated block comment or string, or a `*/` that does not close one,
-is a parse error naming the file and line. A trailing `//` comment is not
+when the comment spans lines and when Go emits an `if` or a `for`. `'` is
+post-state notation, not a string quote. A block comment may continue onto
+the next line. A `"` string may not: an unclosed `"` is `unterminated string`
+on the line where it opened. An unclosed `/*`, or a `*/` that does not close
+one, is a parse error naming the file and line. A trailing `//` comment is not
 part of a `require`, `let`, or invariant expression.
 
 ### 2.3 Declarative Form (v0.2, still supported)

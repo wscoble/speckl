@@ -3,6 +3,7 @@ import path from 'path';
 import {
   assertLexClosed,
   inlineBlockInner,
+  lexProblem,
   lexStart,
   scanLine,
   setParseFile,
@@ -429,6 +430,7 @@ export function parseSpeckFile(filePath: string): AST {
  */
 export function parseSpeckContent(content: string, filePath?: string): AST {
   setParseFile(filePath);
+  try {
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
   
@@ -472,15 +474,22 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
 
   assertLexClosed(lex);
   return { specks };
+  } finally {
+    setParseFile(undefined);
+  }
 }
 
 /**
  * Brace counts go through `scanLine`. `text` is the structural mask.
  * `code` keeps string contents and drops comments, for statement text.
  * `'` is post-state prime notation, not a string quote.
+ * A `"` that is still open at the end of the line it opened on is an error.
  */
 function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { text: string; code: string; state: LexState } {
   const scanned = scanLine(input, state, lineNo);
+  if (scanned.state.kind === 'string' && scanned.state.openLine === lineNo) {
+    throw lexProblem(lineNo, 'unterminated string');
+  }
   return { text: scanned.mask, code: scanned.code, state: scanned.state };
 }
 
@@ -513,6 +522,7 @@ function codeLines(lines: string[], from: number, to: number, lex: LexState = le
   return out;
 }
 
+
 function braceCounts(text: string, state?: LexState): { open: number; close: number; state: LexState } {
   const masked = maskCode(text, state ?? lexStart());
   let open = 0;
@@ -529,6 +539,11 @@ function lexAfter(lines: string[], endInclusive: number, from = 0): LexState {
   let lex = lexStart();
   for (let k = from; k <= endInclusive && k < lines.length; k++) lex = maskCode(lines[k], lex, k + 1).state;
   return lex;
+}
+
+/** Lex state after a member header, so a comment it opens stays open on the next line. */
+function lexAfterHeader(lines: string[], startIndex: number): LexState {
+  return scanLine(lines[startIndex] ?? '', lexStart(), startIndex + 1).state;
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
@@ -1600,8 +1615,9 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     return result;
   }
 
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex);
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
+  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
   // State blocks separate fields with commas or newlines/semicolons.
   // Strip trailing commas (they are field separators, not continuations)
   // then join with semicolons between complete variable declarations.
@@ -1659,8 +1675,9 @@ function exprIncomplete(text: string): boolean {
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
   const inline = inlineBlockInner(lines[startIndex].trim());
   if (inline !== null) return parseInitBlock(inline);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex);
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
+  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
   // Group lines into statements: a `name := ...` line starts a new
   // assignment; anything else (record/map literal field lines) continues
   // the current one. Only declaration lines have their trailing comma
@@ -1691,9 +1708,47 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   // string, so the `}` is structural. A trailing `//` is not part of the expr.
   const inline = inlineBlockInner(firstLine);
   if (inline !== null) return { type: 'invariant', name, expr: stripComments(inline) };
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const body = codeLines(lines, startIndex + 1, endIndex).filter(l => l !== '}').join(' ');
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
+  const body = codeLines(lines, startIndex + 1, endIndex, carried).filter(l => l !== '}').join(' ');
   return { type: 'invariant', name, expr: body.trim() };
+}
+
+/** Keep a line break after a `//` comment so the next statement is not commented out. */
+function joinBlockLines(lines: string[]): string {
+  let out = '';
+  for (const line of lines) {
+    if (!out) { out = line; continue; }
+    out += (lastLineHasLineComment(out) ? '\n' : ' ') + line;
+  }
+  return out;
+}
+
+function lastLineHasLineComment(text: string): boolean {
+  const line = text.slice(text.lastIndexOf('\n') + 1);
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (ch === '"') {
+      i++;
+      while (i < line.length) {
+        if (line[i] === '\\') { i += 2; continue; }
+        if (line[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '/') return true;
+    if (ch === '/' && next === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+      continue;
+    }
+    i++;
+  }
+  return false;
 }
 
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
@@ -1701,7 +1756,8 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   const header = parseActionHeader(firstLine);
   if (!header) return null;
 
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
+  const carried = lexAfterHeader(lines, startIndex);
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
   // A line is blank when the scanner says it has no code, so a block comment
   // that opened on an earlier line hides a lone `}` and `/* c */ x := x + 8`
   // keeps the assignment. `text` is that code. `raw` keeps the source line
@@ -1710,7 +1766,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   type BodyEntry = { text: string; raw: string; indent: number } | null;
   const bodyEntries: BodyEntry[] = [];
   {
-    let bodyLex = lexStart();
+    let bodyLex = carried;
     const bodyLinesRaw = lines.slice(startIndex + 1, endIndex);
     for (let b = 0; b < bodyLinesRaw.length; b++) {
       const l = bodyLinesRaw[b];
@@ -1890,7 +1946,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         j++;
         if (braceDepth === 0) break;
       }
-      statements.push({ type: 'forblock', raw: blockLines2.join(' ') } as any);
+      statements.push({ type: 'forblock', raw: joinBlockLines(blockLines2) } as any);
       i = j - 1;
       continue;
     }
@@ -1916,7 +1972,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         if (braceDepth === 0) break;
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
-      statements.push({ type: 'ifblock', raw: blockLines.join(' ') });
+      statements.push({ type: 'ifblock', raw: joinBlockLines(blockLines) });
       i = j - 1; // skip to end of if block
       continue;
     }

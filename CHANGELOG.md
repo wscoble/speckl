@@ -16,13 +16,17 @@ alias.
 
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
-  that brace cannot end a speck or a member or hide the next speck.
+  that brace cannot end a speck, a member, an `if`, or a `for`, and it
+  cannot hide the next speck. The same skip is used when Go emits an `if`
+  or a `for`, so a brace in a comment or a string does not drop that body.
   `'` is post-state prime notation, not a string quote.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
-  count uses. An unterminated block comment or string, or a stray `*/`, is
-  a parse error naming the file and line. Code after `/* ... */` on the same
-  line is kept. A trailing `//` comment is not part of a `require`, `let`,
-  or invariant expression.
+  count uses. A block comment may continue onto the next line, including
+  one opened on a member header. A `"` string may not: an unclosed `"` is
+  `unterminated string` on the line where it opened. An unclosed `/*`, or
+  a stray `*/`, is a parse error naming the file and line. Code after
+  `/* ... */` on the same line is kept. A trailing `//` comment is not part
+  of a `require`, `let`, or invariant expression.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
@@ -182,9 +186,15 @@ alias.
 
 - **Trailing comments are not part of the expression.** A `//` comment after
   a `require`, a `let`, or an invariant is dropped before generators run.
-  Go guard errors no longer repeat that comment. SQLiteWAL's Go, Elm, and
-  AST SMT output, and OAuth's Rust invariant text and Elm machine, change
-  for that reason. Other bundled examples are unchanged.
+  Go guard errors no longer repeat that comment. SQLiteWAL's Go errors and
+  its AST SMT skip text lose those comment words. OAuth's Rust invariant
+  text and Elm machine lose the same kind of comment. SQLiteWAL's Elm
+  machine is different in kind: ten guards that were only
+  `-- guard checked server-side` comments are now real `|> guard` checks.
+  That is a stronger check. The order of those guards follows the order
+  the Elm translator emits, which is not the source order, so the first
+  guard that fails can differ from the order in the spec. Other bundled
+  examples are unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
