@@ -433,13 +433,22 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   try {
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
-  
+  // A `"` must close on its line, and a `/*` must close before the file ends,
+  // including at file level, after the last speck, and inside domain text.
+  // A comment that opens on a speck's closing line and closes later is fine.
+  let scan = lexStart();
+  for (let n = 0; n < lines.length; n++) scan = maskCode(lines[n], scan, n + 1).state;
+  if (scan.kind === 'block') throw lexProblem(scan.openLine, 'unterminated block comment');
+
   let i = 0;
   let lex = lexStart();
   while (i < lines.length) {
     const masked = maskCode(lines[i], lex, i + 1);
     lex = masked.state;
     const line = lines[i].trim();
+    if (line.startsWith('*/') && /^\s*(speck|action|invariant|state|init)\b/.test(masked.code)) {
+      throw lexProblem(i + 1, 'header is not at the start of the line');
+    }
     
     // Skip empty lines and comments
     if (!line || line.startsWith('//') || line.startsWith('/*')) {
@@ -1598,6 +1607,78 @@ function parseSource(line: string): SourceNode {
   };
 }
 
+/**
+ * Code inside a brace block, with comments removed character by character.
+ * Code before a block comment and code after its closer on a later line both stay.
+ */
+function memberBlockCode(lines: string[], startIndex: number): { text: string; endIndex: number } {
+  let state = lexStart();
+  let depth = 0;
+  let started = false;
+  const parts: string[] = [];
+  for (let i = startIndex; i < lines.length; i++) {
+    const scanned = scanLine(lines[i], state, i + 1);
+    if (scanned.state.kind === 'string' && scanned.state.openLine === i + 1) {
+      throw lexProblem(i + 1, 'unterminated string');
+    }
+    state = scanned.state;
+    let chunk = '';
+    for (let c = 0; c < scanned.mask.length; c++) {
+      const ch = scanned.mask[c];
+      if (!started) {
+        if (ch === '{') { started = true; depth = 1; }
+        continue;
+      }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          parts.push(chunk);
+          return { text: parts.join('\n'), endIndex: i };
+        }
+      }
+      chunk += scanned.code[c];
+    }
+    if (started) parts.push(chunk);
+  }
+  if (state.kind === 'block') throw lexProblem(state.openLine, 'unterminated block comment');
+  return { text: parts.join('\n'), endIndex: Math.max(startIndex, lines.length - 1) };
+}
+
+/** Code after the member's `{` on this line. Empty when that `{` also closes here. */
+function codeAfterOpenBrace(line: string, lineNo: number): string {
+  const scanned = scanLine(line, lexStart(), lineNo);
+  let paren = 0;
+  let depth = 0;
+  let on = false;
+  let out = '';
+  for (let i = 0; i < scanned.mask.length; i++) {
+    const ch = scanned.mask[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (paren === 0 && ch === '{') {
+      if (!on) { on = true; depth = 1; continue; }
+      depth++;
+    } else if (paren === 0 && ch === '}' && on) {
+      depth--;
+      if (depth === 0) return '';
+    }
+    if (on) out += scanned.code[i];
+  }
+  return on ? out : '';
+}
+
+/** Code before the first structural `}` , comments already blank in `code`. */
+function codeBeforeFirstClose(line: string, state: LexState, lineNo: number): string {
+  const scanned = scanLine(line, state, lineNo);
+  let out = '';
+  for (let i = 0; i < scanned.mask.length; i++) {
+    if (scanned.mask[i] === '}') return out;
+    out += scanned.code[i];
+  }
+  return out;
+}
+
 function parseStateBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): StateNode {
   // Cycle 59: support `state as <MessageName> { ... }` to override the
   // generated .proto message name. Default (no `as`) keeps the existing
@@ -1618,6 +1699,12 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   const carried = lexAfterHeader(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
   const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
+  const head = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1).trim();
+  if (head) innerLines.unshift(head);
+  if (endIndex < lines.length) {
+    const closeCode = codeBeforeFirstClose(lines[endIndex], lexAfter(lines, endIndex - 1, startIndex), endIndex + 1).trim();
+    if (closeCode) innerLines.push(closeCode);
+  }
   // State blocks separate fields with commas or newlines/semicolons.
   // Strip trailing commas (they are field separators, not continuations)
   // then join with semicolons between complete variable declarations.
@@ -1678,6 +1765,12 @@ function parseInitBlockMultiline(lines: string[], startIndex: number, startBrace
   const carried = lexAfterHeader(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
   const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
+  const head = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1).trim();
+  if (head) innerLines.unshift(head);
+  if (endIndex < lines.length) {
+    const closeCode = codeBeforeFirstClose(lines[endIndex], lexAfter(lines, endIndex - 1, startIndex), endIndex + 1).trim();
+    if (closeCode) innerLines.push(closeCode);
+  }
   // Group lines into statements: a `name := ...` line starts a new
   // assignment; anything else (record/map literal field lines) continues
   // the current one. Only declaration lines have their trailing comma
@@ -1708,10 +1801,8 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   // string, so the `}` is structural. A trailing `//` is not part of the expr.
   const inline = inlineBlockInner(firstLine);
   if (inline !== null) return { type: 'invariant', name, expr: stripComments(inline) };
-  const carried = lexAfterHeader(lines, startIndex);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const body = codeLines(lines, startIndex + 1, endIndex, carried).filter(l => l !== '}').join(' ');
-  return { type: 'invariant', name, expr: body.trim() };
+  const block = memberBlockCode(lines, startIndex);
+  return { type: 'invariant', name, expr: block.text.replace(/\s+/g, ' ').trim() };
 }
 
 /** Keep a line break after a `//` comment so the next statement is not commented out. */
@@ -1758,6 +1849,7 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
 
   const carried = lexAfterHeader(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
+  const headerTail = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1);
   // A line is blank when the scanner says it has no code, so a block comment
   // that opened on an earlier line hides a lone `}` and `/* c */ x := x + 8`
   // keeps the assignment. `text` is that code. `raw` keeps the source line
@@ -1765,8 +1857,9 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
   // bounds colon-form if/else regions.
   type BodyEntry = { text: string; raw: string; indent: number } | null;
   const bodyEntries: BodyEntry[] = [];
+  if (headerTail.trim()) bodyEntries.push({ text: headerTail.trim(), raw: headerTail.trim(), indent: 0 });
+  let bodyLex = carried;
   {
-    let bodyLex = carried;
     const bodyLinesRaw = lines.slice(startIndex + 1, endIndex);
     for (let b = 0; b < bodyLinesRaw.length; b++) {
       const l = bodyLinesRaw[b];
@@ -1774,11 +1867,19 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
       bodyLex = scanned.state;
       const code = scanned.code.trim();
       if (!code) {
-        bodyEntries.push(null);
+        // A comment-only line still has to be scanned later so a closer is not stray.
+        // Its indent must not end a colon-form region.
+        bodyEntries.push(l.includes('/*') || l.includes('*/')
+          ? { text: '', raw: l.trim(), indent: 100000 }
+          : null);
         continue;
       }
       bodyEntries.push({ text: code, raw: l.trim(), indent: l.length - l.trimStart().length });
     }
+  }
+  if (endIndex < lines.length) {
+    const before = codeBeforeFirstClose(lines[endIndex], bodyLex, endIndex + 1).trim();
+    if (before) bodyEntries.push({ text: before, raw: lines[endIndex].trim(), indent: 0 });
   }
 
   // Pre-pass: lower colon-form if/else regions (`if cond:` / `else:`) into
@@ -2512,12 +2613,7 @@ function parseConstraintAnyForm(lines: string[], startIndex: number): Constraint
   // If opens a brace, treat as block
   if (exprFollows === 'brace' || expr.startsWith('{')) {
     // Strip the leading '{' from expr if it was passed in via the colon form
-    if (expr.startsWith('{')) expr = expr.substring(1).trim();
-    const openCount = braceCounts(line).open;
-    const endIdx = findBlockEnd(lines, startIndex + 1, openCount);
-    const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
-    const inner = innerLines.join(' ');
-    expr = (expr + ' ' + inner).trim();
+    expr = memberBlockCode(lines, startIndex).text.replace(/\s+/g, ' ').trim();
   } else {
     // No braces — but might span multiple lines (forall continuation)
     const continuationLines: string[] = [];
@@ -2630,11 +2726,8 @@ function parseVerifyBlockMultiline(lines: string[], startIndex: number, startBra
       return { type: 'verify', name, temporalExpr: body, depth: actualDepth };
     }
     
-    // Multi-line: collect body from subsequent lines
-    const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-    const afterBrace = firstLine.substring(firstLine.indexOf('{') + 1).trim();
-    const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-    let body = (afterBrace + ' ' + innerLines.join(' ')).trim();
+    // Multi-line: comments are stripped per character, so code after `*/` stays.
+    let body = memberBlockCode(lines, startIndex).text.replace(/\s+/g, ' ').trim();
     
     // Check for "depth N" inside body
     const depthInBody = body.match(/^\s*depth\s+(\d+)\s*,?\s*/);
@@ -2668,16 +2761,10 @@ function parseVerifyBlockMultiline(lines: string[], startIndex: number, startBra
     return { type: 'verify', name, temporalExpr, depth };
   }
   
-  // Multi-line block
+  // Multi-line block. Code after a comment closer on a later line stays.
   let depth: number | undefined;
-  const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  
-  const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-  const inner = innerLines.join(' ');
-  
-  const afterBrace = firstLine.substring(firstLine.indexOf('{') + 1).trim();
-  
-  const depthMatch = (afterBrace + ' ' + inner).match(/\bdepth\s+(\d+)\b/);
+  const inner = memberBlockCode(lines, startIndex).text.replace(/\s+/g, ' ').trim();
+  const depthMatch = inner.match(/\bdepth\s+(\d+)\b/);
   if (depthMatch) {
     depth = parseInt(depthMatch[1], 10);
   }
@@ -2703,12 +2790,7 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
     
     // If the expression opens a brace, collect the block
     if (expr.startsWith('{')) {
-      const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-      const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-      const inner = innerLines.join(' ');
-      // Combine: content after { on first line + content from inner lines
-      const afterBrace = expr.substring(1).trim();
-      expr = (afterBrace + ' ' + inner).trim();
+      expr = memberBlockCode(lines, startIndex).text.replace(/\s+/g, ' ').trim();
     } else {
       // No braces, but might still be multiline (forall spanning multiple lines)
       // Check if next line(s) continue the expression
@@ -2735,10 +2817,7 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
       if (firstLine.endsWith('}')) {
         return { type: 'constraint', name, expr: expr.replace(/}\s*$/, '').trim() };
       }
-      const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-      const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
-      const inner = innerLines.join(' ');
-      expr = (expr + ' ' + inner).trim();
+      expr = memberBlockCode(lines, startIndex).text.replace(/\s+/g, ' ').trim();
     }
     return { type: 'constraint', name, expr: expr.trim() };
   }

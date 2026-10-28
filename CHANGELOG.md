@@ -19,14 +19,23 @@ alias.
   that brace cannot end a speck, a member, an `if`, or a `for`, and it
   cannot hide the next speck. The same skip is used when Go emits an `if`
   or a `for`, so a brace in a comment or a string does not drop that body.
-  `'` is post-state prime notation, not a string quote.
+  `'` is post-state prime notation, not a string quote. A block comment may
+  continue onto the next line, including one that opens on a speck's closing
+  line and closes later. A `"` string may not: an unclosed `"` is
+  `unterminated string` on the line where it opened, at file level, after
+  the last speck, or inside domain text. An unclosed `/*` is
+  `unterminated block comment` on the line where it opened, in those same
+  places. A `/*` written inside an already-open block comment is comment
+  text, not a nested comment.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
-  count uses. A block comment may continue onto the next line, including
-  one opened on a member header. A `"` string may not: an unclosed `"` is
-  `unterminated string` on the line where it opened. An unclosed `/*`, or
-  a stray `*/`, is a parse error naming the file and line. Code after
-  `/* ... */` on the same line is kept. A trailing `//` comment is not part
-  of a `require`, `let`, or invariant expression.
+  count uses. Comments are removed character by character, so code before
+  a `/*` and code after the `*/` that closes it on a later line both stay.
+  That includes an invariant, state, init, action, constraint, and verify
+  header. A `*/` that does not close a comment is `stray */`. A header that
+  begins after a `*/` which closed a comment from an earlier line
+  (`*/ speck B {`, `*/ action Evil {`) is
+  `header is not at the start of the line`. A trailing `//` comment is not
+  part of a `require`, `let`, or invariant expression.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

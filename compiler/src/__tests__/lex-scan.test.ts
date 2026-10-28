@@ -423,6 +423,93 @@ ${tail}`));
 
 });
 
+describe('code after a comment that closed on a later line', () => {
+  it('keeps an invariant, a field, an init, and an action statement', () => {
+    const src = [
+      'speck A {',
+      '    invariant Pos { /* a',
+      '        b */ n >= 0 }',
+      '    state { /* a',
+      '        b */ n: Nat }',
+      '    init { /* a',
+      '        b */ n := 0 }',
+      '    action Go { n := n + 1 /* a',
+      '        b */ }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'keep.speckdl');
+    const inv = ast.specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(inv.expr.replace(/\s+/g, ' ')).toContain('n >= 0');
+    const state = ast.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+    expect(state.variables.map(v => v.name)).toContain('n');
+    const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
+    expect(init.assignments.map(a => a.name)).toContain('n');
+    const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { type: string; expr?: string }[] };
+    expect(action.statements.some(s => s.type === 'assign' && String(s.expr).includes('n + 1'))).toBe(true);
+  });
+
+  it('keeps a constraint and a verify whose comment closes on the next line', () => {
+    const src = [
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    constraint Bound: { /* a',
+      '        b */ n >= 0 }',
+      '    verify Always(Bound) { /* a',
+      '        b */ depth 2 }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 's12.speckdl');
+    const c = ast.specks[0].members.find(m => m.type === 'constraint') as { expr: string };
+    expect(c.expr).toContain('n >= 0');
+    const v = ast.specks[0].members.find(m => m.type === 'verify') as { depth?: number };
+    expect(v.depth).toBe(2);
+  });
+
+  it('rejects a header that follows a comment closer from an earlier line', () => {
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '} /*',
+      '*/ speck B {',
+      '    invariant Canary { false }',
+      '}',
+      '',
+    ].join('\n'), 'p09.speckdl')).toThrow(/Parse error at p09\.speckdl:5: header is not at the start of the line/);
+    expect(() => parseSpeckContent([
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    /*',
+      '    */ action Evil { x := 99 }',
+      '}',
+      '',
+    ].join('\n'), 'b02.speckdl')).toThrow(/Parse error at b02\.speckdl:5: header is not at the start of the line/);
+  });
+
+  it('keeps an if body when a comment closes on the line with the statement', () => {
+    const src = [
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        if n > 5 {',
+      '            /* a',
+      '            b */ n := 0',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'h11.speckdl');
+    const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { raw?: string }[] };
+    expect(action.statements[0].raw).toContain('n := 0');
+  });
+});
+
 describe('a block comment opened on a member header', () => {
   it('is not a stray closer, and a later line is still the member', () => {
     const src = [
