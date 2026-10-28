@@ -423,7 +423,13 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   try {
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
-  
+  // A `"` must close on its line, and a `/*` must close before the file ends,
+  // including at file level, after the last speck, and inside domain text.
+  // A comment that opens on a speck's closing line and closes later is fine.
+  let scan = lexStart();
+  for (let n = 0; n < lines.length; n++) scan = maskLine(lines[n], scan, n + 1).state;
+  if (scan.block) throw lexProblem(scan.openLine, 'unterminated block comment');
+
   let i = 0;
   while (i < lines.length) {
     const line = lines[i].trim();
@@ -780,8 +786,6 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     }
     i++;
   }
-
-  if (lex.block) throw lexProblem(lex.openLine, 'unterminated block comment');
 
   return { type: 'speck', name, members,
            startLine: startIndex + 1,

@@ -104,8 +104,12 @@ yet lowered to Z3 (see §3.5).
 inside a comment or a `"` string is not a structural brace, including when
 Go emits an `if` or a `for`. `'` is post-state prime notation, not a string
 quote. A block comment may continue onto the next line. A `"` string may
-not: an unclosed `"` is `unterminated string` on the line where it opened.
-An unclosed `/*` is `unterminated block comment` on the line where it opened.
+not: an unclosed `"` is `unterminated string` on the line where it opened,
+including at file level, after the last speck, and inside domain text. An
+unclosed `/*` is `unterminated block comment` on the line where it opened,
+in those same places. A comment that opens on a speck's closing line and
+closes on a later line is closed. A `/*` inside an already-open block
+comment is more comment text.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

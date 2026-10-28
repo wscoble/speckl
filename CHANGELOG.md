@@ -20,10 +20,13 @@ alias.
   cannot hide the next speck. The same skip is used when Go emits an `if`
   or a `for`, so a brace in a comment or a string does not drop that body.
   `'` is post-state prime notation, not a string quote. A block comment may
-  continue onto the next line. A `"` string may not: an unclosed `"` is
-  `unterminated string` on the line where it opened, and an unclosed `/*`
-  is `unterminated block comment` on the line where it opened. There is no
-  shared scanner module yet.
+  continue onto the next line, including one that opens on a speck's closing
+  line and closes later. A `"` string may not: an unclosed `"` is
+  `unterminated string` on the line where it opened, at file level, after
+  the last speck, or inside domain text. An unclosed `/*` is
+  `unterminated block comment` on the line where it opened, in those same
+  places. A `/*` written inside an already-open block comment is comment
+  text, not a nested comment. There is no shared scanner module yet.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

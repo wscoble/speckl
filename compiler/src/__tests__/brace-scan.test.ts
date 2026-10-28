@@ -239,4 +239,53 @@ describe('braces in comments and strings', () => {
     const inv = ast.specks[0].members.find(m => m.type === 'invariant') as { name: string };
     expect(inv.name).toBe('Mono');
   });
+
+  it('a comment that opens on a speck close and closes later is closed', () => {
+    const src = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '} /* trailing',
+      'still in the comment',
+      '*/',
+      'speck B {',
+      '    state { y: Nat }',
+      '    init { y := 0 }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'a08.speckdl');
+    expect(ast.specks.map(s => s.name)).toEqual(['A', 'B']);
+  });
+
+  it('an unclosed string or comment at file level, at EOF, or in domain text is an error', () => {
+    const cases: [string, string][] = [
+      ['"\n', 'unterminated string'],
+      ['/*\n', 'unterminated block comment'],
+      ['speck A " {\n}\n', 'unterminated string'],
+      ['speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n"\n', 'unterminated string'],
+      ['speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n/*\n', 'unterminated block comment'],
+      ['domain D {\n    "\n}\n', 'unterminated string'],
+      ['domain D {\n    /*\n}\n', 'unterminated block comment'],
+    ];
+    for (const [src, detail] of cases) {
+      expect(() => parseSpeckContent(src, 'open.speckdl'), src).toThrow(new RegExp(detail));
+      expect(() => parseSpeckContent(src, 'open.speckdl'), src).toThrow(/Parse error at open\.speckdl:\d+:/);
+    }
+  });
+
+  it('a /* inside an open block comment is comment text', () => {
+    const src = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    /* outer /* still comment */',
+      '    invariant Canary { false }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'nest.speckdl');
+    const inv = ast.specks[0].members.find(m => m.type === 'invariant') as { name: string };
+    expect(inv.name).toBe('Canary');
+  });
 });
