@@ -10,6 +10,7 @@ import {
   stripComments,
   type LexState,
 } from './lex.js';
+import { accountSource, normalizeSource } from './account.js';
 
 // AST node types for SpeckDL
 export interface SpeckNode {
@@ -431,6 +432,8 @@ export function parseSpeckFile(filePath: string): AST {
 export function parseSpeckContent(content: string, filePath?: string): AST {
   setParseFile(filePath);
   try {
+  accountSource(content);
+  content = normalizeSource(content);
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
   // A `"` must close on its line, and a `/*` must close before the file ends,
@@ -2039,7 +2042,13 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
         }
         if (bodyLines[j]) blockLines2.push(line);
         j++;
-        if (braceDepth === 0) break;
+        if (braceDepth === 0) {
+          // `for i in {1, 2}` then `{` on the next line is still this for.
+          let k = j;
+          while (k < bodyLines.length && (rawLines[k] == null || !String(bodyLines[k] ?? '').trim())) k++;
+          const nxt = String(bodyLines[k] ?? '').trim();
+          if (!nxt.startsWith('{')) break;
+        }
       }
       statements.push({ type: 'forblock', raw: joinBlockLines(blockLines2) } as any);
       i = j - 1;
@@ -2072,7 +2081,17 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
           blockLines.push(line);
         }
         j++;
-        if (opened && braceDepth <= 0) break;
+        if (opened && braceDepth <= 0) {
+          // `}` then `else` then `{` is still this if. The else body is not
+          // a statement that runs on its own.
+          let k = j;
+          while (k < bodyLines.length && (rawLines[k] == null || !String(bodyLines[k] ?? '').trim())) k++;
+          const nxt = String(bodyLines[k] ?? '').trim();
+          const cur = String(bodyLines[j - 1] ?? '').trim();
+          const isElse = nxt === 'else' || nxt.startsWith('else ') || nxt.startsWith('else{');
+          const elseBrace = (cur === 'else' || cur.startsWith('else ') || cur.startsWith('else{')) && nxt.startsWith('{');
+          if (!isElse && !elseBrace) break;
+        }
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
       statements.push({ type: 'ifblock', raw: joinBlockLines(blockLines) });
