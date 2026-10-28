@@ -115,7 +115,6 @@ opens on a speck's closing line and closes on a later line is closed. A `"`
 string may not: an unclosed `"` is `unterminated string` on the line where
 it opened, including at file level, after the last speck, and inside domain
 text. An unclosed `/*` is `unterminated block comment` on the line where it
-<<<<<<< HEAD
 opened. A `*/` that does not close a comment is `stray */`. A `/*` on a
 later line, while a block comment is already open, is `nested block comment`.
 A `/*` on the same line, already inside the comment, is comment text. When
