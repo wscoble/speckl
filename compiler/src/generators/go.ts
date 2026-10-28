@@ -217,19 +217,6 @@ function goType(t: any, speckName: string, enumMap: Map<string, string[]>): stri
 
 // ─── expression rewriting ───────────────────────────────────────────
 
-// strip a trailing // comment (outside string literals) from an expression
-function stripComment(expr: string): string {
-  let inStr = false; let esc = false;
-  for (let i = 0; i < expr.length - 1; i++) {
-    const ch = expr[i];
-    if (esc) { esc = false; continue; }
-    if (ch === '\\') { esc = true; continue; }
-    if (ch === '"') inStr = !inStr;
-    if (!inStr && ch === '/' && expr[i + 1] === '/') return expr.slice(0, i).trim();
-  }
-  return expr;
-}
-
 function rewriteGoExpr(
   expr: string,
   nameMap: Map<string, string>,
@@ -239,7 +226,6 @@ function rewriteGoExpr(
   knownStateValues: string[],
   localRecords: Map<string, string> = new Map()
 ): string {
-  expr = stripComment(expr);
   // existential quantifier: (not) exists v in coll(.values())?: pred
   const em = expr.match(/(not\s+)?exists\s+(\w+)\s+in\s+([\w.]+?)(?:\.values(?:\(\))?)?:\s*([\s\S]+)$/);
   if (em) {
@@ -1358,7 +1344,36 @@ function emitAction(
   const emitIfBlock = (raw: string): string => {
     const open = firstCodeBrace(raw);
     if (open < 0) return `\t// TODO: conditional not lowered: ${raw.replace(/\n/g, ' ')}`;
-    const cond = raw.slice(3, open).trim().replace(/:\s*$/, '');
+    // Drop a comment between the condition and `{`. String contents stay.
+    let cond = '';
+    {
+      const src = raw.slice(3, open);
+      let quote = false;
+      let block = false;
+      for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        const next = src[i + 1];
+        if (quote) {
+          cond += ch;
+          if (ch === '\\' && next !== undefined) { cond += next; i++; continue; }
+          if (ch === '"') quote = false;
+          continue;
+        }
+        if (block) {
+          if (ch === '*' && next === '/') { block = false; i++; }
+          continue;
+        }
+        if (ch === '/' && next === '/') {
+          while (i < src.length && src[i] !== '\n') i++;
+          if (i < src.length) cond += '\n';
+          continue;
+        }
+        if (ch === '/' && next === '*') { block = true; i++; continue; }
+        if (ch === '"') { quote = true; cond += ch; continue; }
+        cond += ch;
+      }
+    }
+    cond = cond.trim().replace(/:\s*$/, '');
     // find the top-level '} else {' (if any) and the final top-level '}'
     // A brace inside a string or a comment is not structural.
     let depth = 0, elseSplit = -1, closeIdx = -1;

@@ -26,12 +26,23 @@ alias.
   the last speck, or inside domain text. An unclosed `/*` is
   `unterminated block comment` on the line where it opened, in those same
   places. A `/*` written inside an already-open block comment is comment
-  text, not a nested comment. When `*/` is the first text on a line and the
-  code after it is a `speck`, `action`, `invariant`, `state`, or `init`
-  header, that header is `header is not at the start of the line`. A header
-  later on the line, after other text or after `/* ... */`, is outside this
-  scan. A speck written entirely inside a block comment is not a speck.
-  There is no shared scanner module yet.
+  text, not a nested comment. A speck written inside a block comment is not
+  a speck.
+- **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
+  count uses. Whitespace and comments are not tokens. Every other token is
+  consumed by one construct, or the parse is `unparsed text at
+  <file>:<line>:<col>`. A `{` is a block only when that statement's first
+  word is an allowlisted header (`speck`, `action` with balanced
+  parameters, `state`, `init`, `invariant`, `if`, `else`, `for`, and the
+  other member keywords). Any other block `{` is `unknown block`. A newline
+  is not a token, so `state` and `{` are the same header across a line
+  break, a tab, or a comment. State and init keep the comment-stripped
+  line. A comment between an `if` condition and its `{` stays part of that
+  `if`. An `else` or `for` whose `{` is on the next line stays in that
+  statement. A `*/` that does not close a comment is `stray */`. When `*/`
+  is the first text on a line and a header follows, that header is
+  `header is not at the start of the line`. A trailing `//` comment is not
+  part of a `require`, `let`, or invariant expression.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
@@ -188,6 +199,18 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Trailing comments are not part of the expression.** A `//` comment after
+  a `require`, a `let`, or an invariant is dropped before generators run.
+  Go guard errors no longer repeat that comment. SQLiteWAL's Go errors and
+  its AST SMT skip text lose those comment words. OAuth's Rust invariant
+  text and Elm machine lose the same kind of comment. SQLiteWAL's Elm
+  machine is different in kind: ten guards that were only
+  `-- guard checked server-side` comments are now real `|> guard` checks.
+  That is a stronger check. The order of those guards follows the order
+  the Elm translator emits, which is not the source order, so the first
+  guard that fails can differ from the order in the spec. Other bundled
+  examples are unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as

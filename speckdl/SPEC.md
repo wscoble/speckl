@@ -100,20 +100,27 @@ speck ToggleSwitch {
 `var.values`, or a range. This sugar is recognized by the language but not
 yet lowered to Z3 (see §3.5).
 
-**Comments** — `//` line comments and `/* ... */` block comments. A `{` or `}`
-inside a comment or a `"` string is not a structural brace, including when
-Go emits an `if` or a `for`. `'` is post-state prime notation, not a string
-quote. A block comment may continue onto the next line. A `"` string may
-not: an unclosed `"` is `unterminated string` on the line where it opened,
-including at file level, after the last speck, and inside domain text. An
-unclosed `/*` is `unterminated block comment` on the line where it opened,
-in those same places. A comment that opens on a speck's closing line and
-closes on a later line is closed. A `/*` inside an already-open block
-comment is more comment text. When `*/` is the first text on a line and
-the code after it is a `speck`, `action`, `invariant`, `state`, or `init`
-header, that header is `header is not at the start of the line`. A header
-later on the line is outside this scan. A speck written entirely inside a
-block comment is not a speck.
+**Comments** — `//` line comments and `/* ... */` block comments. A finished
+comment is not structure: a `}` inside one does not close a block, including
+when the comment spans lines and when Go emits an `if` or a `for`. `'` is
+post-state notation, not a string quote. Comments are removed character by
+character. Whitespace and comments are not tokens. Every other token is
+consumed by one construct, or the parse is `unparsed text at
+<file>:<line>:<col>`. A `{` is a block only when that statement's first word
+is an allowlisted header. Any other block `{` is `unknown block`. A state
+field and an init assignment after a closer on a later line stay. A comment
+between an `if` condition and its `{` is still that `if`. A block comment
+may continue onto the next line. A comment that
+opens on a speck's closing line and closes on a later line is closed. A `"`
+string may not: an unclosed `"` is `unterminated string` on the line where
+it opened, including at file level, after the last speck, and inside domain
+text. An unclosed `/*` is `unterminated block comment` on the line where it
+opened. A `*/` that does not close a comment is `stray */`. A `/*` inside
+an already-open block comment is more comment text. When `*/` is the first
+text on a line and a header follows, that header is `header is not at the
+start of the line`. A speck written inside a block comment is not a speck.
+A trailing `//` comment is not part of a `require`, `let`, or invariant
+expression.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
