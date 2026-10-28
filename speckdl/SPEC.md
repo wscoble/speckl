@@ -105,13 +105,19 @@ comment is not structure: a `}` inside one does not close a block, including
 when the comment spans lines and when Go emits an `if` or a `for`. `'` is
 post-state notation, not a string quote. Comments are removed character by
 character, so code after a `*/` that closes a comment opened on an earlier
-line stays. A block comment may continue onto the next line. A `"` string
-may not: an unclosed `"` is `unterminated string` on the line where it
-opened, including at file level, after the last speck, and inside domain
+line stays, including a state field and an init assignment. A comment
+between an `if` condition and its `{` is still that `if`. A block comment
+may continue onto the next line. A comment that
+opens on a speck's closing line and closes on a later line is closed. A `"`
+string may not: an unclosed `"` is `unterminated string` on the line where
+it opened, including at file level, after the last speck, and inside domain
 text. An unclosed `/*` is `unterminated block comment` on the line where it
 opened. A `*/` that does not close a comment is `stray */`. A `/*` inside
-an already-open block comment is more comment text. A trailing `//` comment
-is not part of a `require`, `let`, or invariant expression.
+an already-open block comment is more comment text. A `speck`, `action`,
+`invariant`, `state`, or `init` header on the line that closes a block
+comment is `header is not at the start of the line`. A speck written inside
+a block comment is not a speck. A trailing `//` comment is not part of a
+`require`, `let`, or invariant expression.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

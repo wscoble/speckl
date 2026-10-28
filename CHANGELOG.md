@@ -26,12 +26,17 @@ alias.
   the last speck, or inside domain text. An unclosed `/*` is
   `unterminated block comment` on the line where it opened, in those same
   places. A `/*` written inside an already-open block comment is comment
-  text, not a nested comment.
+  text, not a nested comment. A speck written inside a block comment is not
+  a speck.
 - **One shared scanner.** `compiler/src/lex.ts` is the scanner every brace
   count uses. Comments are removed character by character, so code before
   a `/*` and code after the `*/` that closes it on a later line both stay.
   That includes an invariant, state, init, action, constraint, and verify
-  header. A `*/` that does not close a comment is `stray */`. A header that
+  header. State and init keep the comment-stripped line, so a field or
+  assignment after a comment that closes on a later line stays, and the
+  closer is not a `stray */`. A comment between an `if` condition and its
+  `{` stays part of that `if`, so the body is not unconditional. A `*/`
+  that does not close a comment is `stray */`. A header that
   begins after a `*/` which closed a comment from an earlier line
   (`*/ speck B {`, `*/ action Evil {`) is
   `header is not at the start of the line`. A trailing `//` comment is not

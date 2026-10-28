@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { parseSpeckContent } from '../parser.js';
 import { compileSpec } from '../compile.js';
 import { scanLine, setParseFile } from '../lex.js';
+import { generateGo } from '../generators/go.js';
 
 beforeAll(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -507,6 +508,59 @@ describe('code after a comment that closed on a later line', () => {
     const ast = parseSpeckContent(src, 'h11.speckdl');
     const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { raw?: string }[] };
     expect(action.statements[0].raw).toContain('n := 0');
+  });
+
+  it('keeps a field or assignment that follows a comment on the next line', () => {
+    const src = [
+      'speck A {',
+      '    state {',
+      '        /* a',
+      '        b */ n: Nat',
+      '        m: Nat /* a',
+      '        b */ p: Nat',
+      '    }',
+      '    init {',
+      '        /* a',
+      '        b */ n := 0',
+      '        m := 0 /* a',
+      '        b */ q := 7',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'fields.speckdl');
+    const state = ast.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+    expect(state.variables.map(v => v.name)).toEqual(['n', 'm', 'p']);
+    const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
+    expect(init.assignments.map(a => `${a.name}=${a.expr}`)).toEqual(['n=0', 'm=0', 'q=7']);
+  });
+
+  it('keeps the if body when a comment sits between the condition and the brace', () => {
+    const src = [
+      'speck A {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        if n > 3 /* a',
+      '        b */ {',
+      '            n := 0',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'x09.speckdl');
+    const action = ast.specks[0].members.find(m => m.type === 'action') as {
+      statements: { type: string; raw?: string }[];
+    };
+    expect(action.statements.map(s => s.type)).toEqual(['ifblock']);
+    expect(action.statements[0].raw).toContain('n := 0');
+    expect(action.statements[0].raw).toContain('{');
+    const out = mkdtempSync(join(tmpdir(), 'speckl-x09-'));
+    generateGo(ast, out);
+    const go = readFileSync(join(out, 'a', 'a.go'), 'utf8');
+    expect(go).not.toContain('TODO: conditional not lowered');
+    expect(go).toMatch(/if .*> 3[\s\S]*m\.N = 0/);
   });
 });
 

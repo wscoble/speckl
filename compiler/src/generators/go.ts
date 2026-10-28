@@ -1358,7 +1358,36 @@ function emitAction(
   const emitIfBlock = (raw: string): string => {
     const open = firstCodeBrace(raw);
     if (open < 0) return `\t// TODO: conditional not lowered: ${raw.replace(/\n/g, ' ')}`;
-    const cond = raw.slice(3, open).trim().replace(/:\s*$/, '');
+    // Drop a comment between the condition and `{`. String contents stay.
+    let cond = '';
+    {
+      const src = raw.slice(3, open);
+      let quote = false;
+      let block = false;
+      for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        const next = src[i + 1];
+        if (quote) {
+          cond += ch;
+          if (ch === '\\' && next !== undefined) { cond += next; i++; continue; }
+          if (ch === '"') quote = false;
+          continue;
+        }
+        if (block) {
+          if (ch === '*' && next === '/') { block = false; i++; }
+          continue;
+        }
+        if (ch === '/' && next === '/') {
+          while (i < src.length && src[i] !== '\n') i++;
+          if (i < src.length) cond += '\n';
+          continue;
+        }
+        if (ch === '/' && next === '*') { block = true; i++; continue; }
+        if (ch === '"') { quote = true; cond += ch; continue; }
+        cond += ch;
+      }
+    }
+    cond = cond.trim().replace(/:\s*$/, '');
     // find the top-level '} else {' (if any) and the final top-level '}'
     // A brace inside a string or a comment is not structural.
     let depth = 0, elseSplit = -1, closeIdx = -1;

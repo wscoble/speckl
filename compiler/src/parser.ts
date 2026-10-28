@@ -446,12 +446,17 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     const masked = maskCode(lines[i], lex, i + 1);
     lex = masked.state;
     const line = lines[i].trim();
-    if (line.startsWith('*/') && /^\s*(speck|action|invariant|state|init)\b/.test(masked.code)) {
+    const code = masked.code.trim();
+    // The line that closes a comment is code from the closer on. A header
+    // there does not start the line; treating it as absent drops the speck
+    // or the action. A `speck` still inside the comment has no code, so it
+    // is not a speck.
+    if (line.startsWith('*/') && /^(speck|action|invariant|state|init)\b/.test(code)) {
       throw lexProblem(i + 1, 'header is not at the start of the line');
     }
-    
+
     // Skip empty lines and comments
-    if (!line || line.startsWith('//') || line.startsWith('/*')) {
+    if (!line || !code || line.startsWith('//') || line.startsWith('/*')) {
       i++;
       continue;
     }
@@ -465,8 +470,9 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       continue;
     }
     
-    // Handle speck definitions
-    if (line.startsWith('speck ')) {
+    // Handle speck definitions. The masked line has to start with `speck`
+    // too, so a header that is still inside a block comment is not one.
+    if (line.startsWith('speck ') && code.startsWith('speck ')) {
       const speck = parseSpeck(lines, i);
       if (speck) {
         specks.push(speck);
@@ -502,22 +508,10 @@ function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { te
   return { text: scanned.mask, code: scanned.code, state: scanned.state };
 }
 
-/** Lines in `[from, to)` that still have code after the scanner. The original
- * trimmed source is kept, so a trailing `//` on a field stays put. A line
- * inside a block comment or a string is omitted. */
-function visibleLines(lines: string[], from: number, to: number, lex: LexState = lexStart()): string[] {
-  const out: string[] = [];
-  const end = Math.min(to, lines.length);
-  let state = lex;
-  for (let k = Math.max(0, from); k < end; k++) {
-    const scanned = maskCode(lines[k], state, k + 1);
-    state = scanned.state;
-    if (scanned.code.trim()) out.push(lines[k].trim());
-  }
-  return out;
-}
-
-/** Same walk as `visibleLines`, but the comment-stripped code is what is kept. */
+/** Lines in `[from, to)` that still have code after the scanner. Comments are
+ * already gone, so a block-comment closer on a field or assignment line is
+ * not scanned again as code. A line inside a block comment or a string is
+ * omitted. */
 function codeLines(lines: string[], from: number, to: number, lex: LexState = lexStart()): string[] {
   const out: string[] = [];
   const end = Math.min(to, lines.length);
@@ -1698,7 +1692,7 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
 
   const carried = lexAfterHeader(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
+  const innerLines = codeLines(lines, startIndex + 1, endIndex, carried);
   const head = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1).trim();
   if (head) innerLines.unshift(head);
   if (endIndex < lines.length) {
@@ -1764,7 +1758,7 @@ function parseInitBlockMultiline(lines: string[], startIndex: number, startBrace
   if (inline !== null) return parseInitBlock(inline);
   const carried = lexAfterHeader(lines, startIndex);
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount, carried);
-  const innerLines = visibleLines(lines, startIndex + 1, endIndex, carried);
+  const innerLines = codeLines(lines, startIndex + 1, endIndex, carried);
   const head = codeAfterOpenBrace(lines[startIndex] ?? '', startIndex + 1).trim();
   if (head) innerLines.unshift(head);
   if (endIndex < lines.length) {
@@ -2054,23 +2048,31 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     // if condition { ... } else if condition { ... } else { ... }
     // SpeckDL conditional blocks - parse as a special statement type
     if (stmt.startsWith('if ')) {
-      // Find matching } for this if block (may span multiple bodyLines entries)
+      // Find matching } for this if block (may span multiple bodyLines entries).
+      // A block comment may sit between the condition and `{`. Until that
+      // brace opens, a later statement is not part of this if.
       let braceDepth = 0;
+      let opened = false;
       let j = i;
       let ifLex = lexStart();
       const blockLines: string[] = [];
       while (j < bodyLines.length) {
         const line = rawLines[j];
         if (line === null) { j++; continue; }
+        const before = ifLex;
         const masked = maskCode(line, ifLex);
         ifLex = masked.state;
+        const code = masked.code.trim();
+        if (!opened && j !== i && before.kind !== 'block' && !code.startsWith('{')) break;
         for (const ch of masked.text) {
-          if (ch === '{') braceDepth++;
+          if (ch === '{') { braceDepth++; opened = true; }
           else if (ch === '}') braceDepth--;
         }
-        if (bodyLines[j]) blockLines.push(line);
+        if (bodyLines[j] || (!opened && (before.kind === 'block' || ifLex.kind === 'block'))) {
+          blockLines.push(line);
+        }
         j++;
-        if (braceDepth === 0) break;
+        if (opened && braceDepth <= 0) break;
       }
       // For now, treat as a raw 'ifblock' statement that the generator can handle
       statements.push({ type: 'ifblock', raw: joinBlockLines(blockLines) });
