@@ -460,6 +460,12 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       continue;
     }
     
+    // `speck` on its own line, with `Name {` later, used to be skipped.
+    // The name belongs on the `speck` line.
+    if (code === 'speck' && nextCodeIsNamedBlock(lines, i + 1, lex)) {
+      throw lexProblem(i + 1, 'speck name must be on the same line as "speck"');
+    }
+
     // Handle speck definitions. The masked line has to start with `speck`
     // too, so a header that is still inside a block comment is not one.
     if (line.startsWith('speck ') && code.startsWith('speck ')) {
@@ -588,6 +594,20 @@ function lexAfter(lines: string[], endInclusive: number, from = 0): LexState {
   let lex = lexStart();
   for (let k = from; k <= endInclusive && k < lines.length; k++) lex = maskLine(lines[k], lex, k + 1).state;
   return lex;
+}
+
+/** True when the next line that has code is `Name {`. Comments and blanks are skipped. */
+function nextCodeIsNamedBlock(lines: string[], from: number, lex: LexState): boolean {
+  let state = lex;
+  for (let j = from; j < lines.length; j++) {
+    const masked = maskLine(lines[j], state, j + 1);
+    state = masked.state;
+    const raw = lines[j].trim();
+    const code = masked.text.trim();
+    if (!raw || !code || raw.startsWith('//') || raw.startsWith('/*')) continue;
+    return /^[\w-]+\s*\{/.test(code);
+  }
+  return false;
 }
 
 function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
@@ -1779,16 +1799,49 @@ function lastLineHasLineComment(text: string): boolean {
   return false;
 }
 
+/**
+ * Body of an action that opens and closes on this line.
+ * A brace in a comment, a string, or a parenthesized parameter is not the
+ * body's brace. A trailing `// }` stays outside the body. Null when the
+ * body does not close on this line.
+ */
+export function inlineActionBody(line: string): string | null {
+  const masked = maskCode(line).text;
+  let paren = 0;
+  let depth = 0;
+  let started = -1;
+  for (let i = 0; i < masked.length; i++) {
+    const ch = masked[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (paren === 0 && ch === '{') {
+      if (depth === 0) started = i;
+      depth++;
+    } else if (paren === 0 && ch === '}') {
+      depth--;
+      if (depth === 0 && started >= 0) return line.slice(started + 1, i);
+    }
+  }
+  return null;
+}
+
 function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
   if (!header) return null;
 
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
+  // The header's own `}` is not on a later line. Scanning forward from the
+  // next line used to take the following action's statements, and a `}`
+  // inside `//` was not what stopped that scan.
+  const inline = inlineActionBody(firstLine);
+  const endIndex = inline !== null ? startIndex : findBlockEnd(lines, startIndex + 1, startBraceCount);
+  const bodySource = inline !== null
+    ? (inline.trim() ? [inline] : [])
+    : lines.slice(startIndex + 1, endIndex);
   // Keep blank lines as null to separate statements, filter only comments.
   // Preserve indentation: it bounds colon-form if/else regions.
   type BodyEntry = { text: string; indent: number } | null;
-  const bodyEntries: BodyEntry[] = lines.slice(startIndex + 1, endIndex).map(l => {
+  const bodyEntries: BodyEntry[] = bodySource.map(l => {
     const trimmed = l.trim();
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) return null;
     return { text: trimmed, indent: l.length - l.trimStart().length };

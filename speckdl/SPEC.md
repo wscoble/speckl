@@ -102,7 +102,12 @@ yet lowered to Z3 (see §3.5).
 
 **Comments** — `//` line comments and `/* ... */` block comments. A `{` or `}`
 inside a comment or a `"` string is not a structural brace, including when
-Go emits an `if` or a `for`. `'` is post-state prime notation, not a string
+Go emits an `if` or a `for`, and including a trailing `// }` after a one-line
+action. That action closes on its own structural `}`. A brace in a comment
+or a string does not hide the next speck. A one-line speck that packs its
+members on the header line can still absorb the next speck. A line that is
+only `speck`, with `Name {` on a later line, is `speck name must be on the
+same line as "speck"`. `'` is post-state prime notation, not a string
 quote. A block comment may continue onto the next line. A `"` string may
 not: an unclosed `"` is `unterminated string` on the line where it opened,
 including at file level, after the last speck, and inside domain text. An

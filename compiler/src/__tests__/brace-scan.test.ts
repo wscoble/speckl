@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseSpeckContent } from '../parser.js';
 import { printAST } from '../printer.js';
 import { generateGo } from '../generators/go.js';
+import { lower } from '../ir/lower.js';
 
 describe('braces in comments and strings', () => {
   const second = [
@@ -336,6 +337,111 @@ describe('braces in comments and strings', () => {
       ].join(nl);
       const ast = parseSpeckContent(src, 's15.speckdl');
       expect(ast.specks.map(s => s.name)).toEqual(['A', 'B']);
+    }
+  });
+
+  it('n1: a one-line action keeps its own statement when a later comment has a brace, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action One { x := x + 3 }',
+        '    action Two { x := x + 2 } // }',
+        '    x := x + 3',
+        '    // }',
+        '    x := x + 1',
+        '}',
+        '',
+      ].join(nl);
+      const ast = parseSpeckContent(src, 'n1.speckdl');
+      const exprs = (name: string) => {
+        const action = ast.specks[0].members.find(m => m.type === 'action' && (m as { name: string }).name === name) as { statements: { expr?: string }[] };
+        return (action.statements ?? []).map(s => s.expr);
+      };
+      expect(exprs('One'), nl).toEqual(['x + 3']);
+      expect(exprs('Two'), nl).toEqual(['x + 2']);
+      expect(exprs('Two').join(' '), nl).not.toContain('x + 1');
+
+      const dir = mkdtempSync(join(tmpdir(), 'speckl-n1-'));
+      const file = join(dir, 'n1.speckdl');
+      writeFileSync(file, src);
+      const ir = lower(ast, { filePath: file, resolveImports: false });
+      const two = ir.specks[0].facets.behavior.actions.find(a => a.name === 'Two')!;
+      expect(two.statements[0].value, nl).toEqual({
+        kind: 'binop', op: '+',
+        left: { kind: 'ident', name: 'x' },
+        right: { kind: 'int_lit', value: 2 },
+      });
+
+      // A `// }` inside a still-open action is a comment, not a close.
+      const open = [
+        'speck A {',
+        '    state { x: Nat }',
+        '    init { x := 0 }',
+        '    action Two {',
+        '        x := x + 3',
+        '        // }',
+        '        x := x + 1',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      const kept = parseSpeckContent(open, 'n1-open.speckdl');
+      const body = kept.specks[0].members.find(m => m.type === 'action') as { statements: { expr?: string }[] };
+      expect(body.statements.map(s => s.expr), nl).toEqual(['x + 3', 'x + 1']);
+    }
+  });
+
+  it('p11: a one-line action keeps its guard when a trailing comment has a brace, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = [
+        'speck A {',
+        '    state { n: Nat }',
+        '    init { n := 0 }',
+        '    action Inc { require n < 3 } // } trailing',
+        '    action Dec {',
+        '        require n > 0',
+        '        n := n - 1',
+        '    }',
+        '}',
+        '',
+      ].join(nl);
+      const ast = parseSpeckContent(src, 'p11.speckdl');
+      const action = (name: string) => ast.specks[0].members.find(m => m.type === 'action' && (m as { name: string }).name === name) as { statements: { type: string; expr?: string; target?: string }[] };
+      const inc = action('Inc').statements;
+      const dec = action('Dec').statements;
+      expect(inc, nl).toEqual([{ type: 'require', expr: 'n < 3' }]);
+      expect(dec.map(s => s.type), nl).toEqual(['require', 'assign']);
+      expect(dec[0].expr, nl).toBe('n > 0');
+      expect(dec[1].target, nl).toBe('n');
+      expect(dec[1].expr, nl).toBe('n - 1');
+
+      const dir = mkdtempSync(join(tmpdir(), 'speckl-p11-'));
+      const file = join(dir, 'p11.speckdl');
+      writeFileSync(file, src);
+      const ir = lower(ast, { filePath: file, resolveImports: false });
+      const incIr = ir.specks[0].facets.behavior.actions.find(a => a.name === 'Inc')!;
+      expect(incIr.statements[0].value, nl).toEqual({
+        kind: 'binop', op: '<',
+        left: { kind: 'ident', name: 'n' },
+        right: { kind: 'int_lit', value: 3 },
+      });
+    }
+  });
+
+  it('speck with Name { on the next line is an error, on LF and CRLF', () => {
+    for (const nl of ['\n', '\r\n'] as const) {
+      const src = ['speck', 'Name {', '    state { x: Nat }', '    init { x := 0 }', '}', ''].join(nl);
+      expect(() => parseSpeckContent(src, 'split.speckdl'), nl).toThrow(
+        /Parse error at split\.speckdl:1: speck name must be on the same line as "speck"/,
+      );
+      const blank = ['speck', '', '// later', 'Name {', '    state { x: Nat }', '}'].join(nl);
+      expect(() => parseSpeckContent(blank, 'split.speckdl'), nl).toThrow(
+        /Parse error at split\.speckdl:1: speck name must be on the same line as "speck"/,
+      );
+      const same = ['speck Name {', '    state { x: Nat }', '    init { x := 0 }', '}', ''].join(nl);
+      expect(parseSpeckContent(same, 'ok.speckdl').specks.map(s => s.name), nl).toEqual(['Name']);
     }
   });
 

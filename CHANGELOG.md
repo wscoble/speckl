@@ -16,8 +16,14 @@ alias.
 
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
-  that brace cannot end a speck, a member, an `if`, or a `for`, and it
-  cannot hide the next speck. The same skip is used when Go emits an `if`
+  that brace cannot end a speck, a member, an `if`, or a `for`. A brace in
+  a comment or a string does not hide the next speck. A one-line speck that
+  packs its members on the header line can still absorb the next speck;
+  that is the same on `main` and is not this scan. A one-line action closes
+  on the structural `}` of its header line, so a trailing `// }` is not a
+  brace and does not take the next action's statements. A line that is only
+  `speck`, with `Name {` on a later line, is `speck name must be on the same
+  line as "speck"`. The same skip is used when Go emits an `if`
   or a `for`, so a brace in a comment or a string does not drop that body.
   `'` is post-state prime notation, not a string quote. A block comment may
   continue onto the next line, including one that opens on a speck's closing
