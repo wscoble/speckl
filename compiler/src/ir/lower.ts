@@ -19,9 +19,10 @@
 //   - Provenance is always populated.
 
 import { exprToSource } from '../expr/print.js';
+import { inlineActionBody } from '../lex.js';
 import { readFileSync } from 'fs';
 import {
-  AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, inlineActionBody,
+  AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode,
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
   ProvenanceNode, ReviewNode, AuthorNode, SourceNode, DerivesNode,
   SatisfiesNode, BOMNode, TypeExpr, OneofNode, TransitionNode,
