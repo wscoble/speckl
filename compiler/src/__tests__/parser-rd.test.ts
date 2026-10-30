@@ -277,6 +277,59 @@ describe('token parser', () => {
     expect(parseSpeckContent('speck A {\n    type State = Follower | Candidate | Leader\n    state { x: Nat }\n}\n').specks[0].name).toBe('A');
   });
 
+  it('never drops later state fields without an error', () => {
+    const bodies = [
+      '    x: Nat // a |',
+      '    s: "open" | "closed" // TODO: add |',
+      '    s: "/*" | "b"',
+      '    s: "/*"\n      | "b"',
+      '    s: "a//b" |\n      "c"',
+      '    u: "https://example.com" | "b"',
+      '    u: "http://x" | "b"',
+      '    s: "a\\"//b" | "c"',
+      '    m: Map<\n            String, Nat\n        >',
+      '    m: Map<String,\n            Nat>',
+      '    m: "a"\n            | "b"',
+      '    s: "a" |\n      // more\n      "b"',
+      '    m: Map<String,\n      // key\n      Nat>',
+      '    m: Map< // c\n      String, Nat>',
+      '    r: { // c\n      a: Nat\n    }',
+      '    x: Nat // note\n    s: "a" |\n      "b"',
+      '    x: Nat /* a |\n    b */',
+      '    x: Nat /* a <\n    b */',
+      '    // only a comment\n    x: Nat',
+    ];
+    for (const body of bodies) {
+      for (const nl of ['\n', '\r\n']) {
+        const src = `speck A {${nl}  state {${nl}${body.split('\n').join(nl)}${nl}    y: Nat${nl}    z: Nat${nl}  }${nl}}${nl}`;
+        let names: string[] | undefined;
+        try {
+          const state = parseSpeckContent(src).specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+          names = state.variables.map(v => v.name);
+        } catch {
+          continue;
+        }
+        expect(names, body).toEqual(expect.arrayContaining(['y', 'z']));
+      }
+    }
+    const kept = parseSpeckContent('speck A {\n  state {\n    s: "/*" | "b"\n    y: Nat\n    z: Nat\n    u: "https://example.com"\n    v: "a//b"\n  }\n}\n');
+    const state = kept.specks[0].members.find(m => m.type === 'state') as { variables: { name: string; typeExpr: { name?: string } }[] };
+    expect(state.variables.map(v => v.name)).toEqual(['s', 'y', 'z', 'u', 'v']);
+    expect(state.variables[0].typeExpr.name).toContain('/*');
+    expect(state.variables[0].typeExpr.name).toContain('"b"');
+    expect(state.variables.find(v => v.name === 'u')?.typeExpr.name).toBe('"https://example.com"');
+    expect(state.variables.find(v => v.name === 'v')?.typeExpr.name).toBe('"a//b"');
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-r6-'));
+    const file = join(dir, 'Counter.speckdl');
+    writeFileSync(file, 'speck Counter {\n  state {\n    s: "/*" | "b"\n    y: Nat\n    z: Nat\n  }\n  init { s := "b"; y := 0; z := 0 }\n}\n');
+    const out = join(dir, 'out');
+    compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'cdx', verifyDepth: 0 });
+    const ts = readFileSync(join(out, 'Counter.ts'), 'utf8');
+    expect(ts).toContain('y');
+    expect(ts).toContain('z');
+    expect(ts).not.toContain('s!: ";');
+  });
+
   it('keeps later fields when a comment sits inside a multi-line state type', () => {
     const cases = [
       'speck Counter {\n  state {\n    s: "a" |\n      // more\n      "b"\n    y: Nat\n  }\n  init { s := "a"; y := 0 }\n}\n',
@@ -326,7 +379,7 @@ describe('token parser', () => {
   });
 
   it('accepts alias right-hand sides that are valid field types', () => {
-    for (const t of ['Map<String, Set<Nat>>', '"a" | "b"', '0..10', 'Nat[]', '(Nat, Nat)', 'Map<String, String> | null', 'Map(String, Nat)', 'Follower | Candidate | Leader']) {
+    for (const t of ['Map<String, Set<Nat>>', '"a" | "b"', '0..10', 'Nat[]', '(Nat, Nat)', 'Map<String, String> | null', 'Map(String, Nat)', 'Follower | Candidate | Leader', '"a//b"', '"https://example.com"']) {
       expect(() => parseSpeckContent(`speck A {\n    state { m: ${t} }\n}\n`), 'field ' + t).not.toThrow();
       expect(() => parseSpeckContent(`speck A {\n    state { x: Nat }\n    type T = ${t}\n}\n`), 'alias ' + t).not.toThrow();
     }
