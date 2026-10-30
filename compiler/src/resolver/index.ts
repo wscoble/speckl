@@ -18,7 +18,8 @@
  * } from './resolver/index.js';
  * ```
  *
- * From an installed package the entry is `speckl/resolver`:
+ * Speckl is not published to the npm registry. The export name
+ * `speckl/resolver` is for an install from a checkout or a packed tarball:
  *
  * ```ts
  * import {
@@ -51,10 +52,12 @@
  *
  * `exists(id)` is the compile-time query and returns a boolean.
  * `lookup(id)` is the runtime query and returns a `RecordShape` or null.
- * An unknown id is `false` / `null`, not an exception. A broken backend may
- * throw. The registry reports that as `ResolverError` with code
- * `backend_error` and preserves the original error as `cause`. A
- * `ResolverError` thrown by the backend is rethrown as-is.
+ * Both are synchronous. An unknown but well-formed id is `false` / `null`.
+ * A malformed id, including a leading `&` or a non-string, is `malformed`.
+ * A Promise, a non-boolean `exists`, or a `lookup` shape that does not
+ * match the query is `backend_error`. A foreign throw is `backend_error`
+ * with the original error as `cause`. A backend may throw `malformed` for
+ * its own store. It cannot forge `unknown_backend` in another backend's name.
  *
  * Reference backends in this package:
  *

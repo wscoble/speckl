@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,8 +88,8 @@ describe('static-manifest backend', () => {
     expect(backend.lookup('incident/exampleco-quill')).toBeNull();
     expect(backend.exists('../../etc/passwd')).toBe(false);
     expect(backend.lookup('../../etc/passwd')).toBeNull();
-    expect(backend.exists('')).toBe(false);
-    expect(backend.lookup('')).toBeNull();
+    expect(() => backend.exists('')).toThrow(ResolverError);
+    expect(() => backend.lookup('')).toThrow(ResolverError);
   });
 
   it('accepts an empty manifest', () => {
@@ -197,7 +197,7 @@ measurement_class: "  sync.configuration  "
     expect(backend.lookup('../../etc/passwd')).toBeNull();
   });
 
-  it('ignores a symlink instead of following it out of the tree', () => {
+  it('refuses a symlink instead of following it or skipping the record', () => {
     const outside = tempDir();
     writeRecord(outside, 'secret.md', `---
 id: incident/outside-the-tree
@@ -206,9 +206,7 @@ measurement_class: sync.upstream
 `);
     const dir = tempDir();
     symlinkSync(path.join(outside, 'secret.md'), path.join(dir, 'linked.md'));
-    const backend = filesystemBackend(dir);
-    expect(backend.exists('incident/outside-the-tree')).toBe(false);
-    expect(backend.lookup('incident/outside-the-tree')).toBeNull();
+    expectMalformed(() => filesystemBackend(dir), /symlink/);
   });
 
   it('rejects a missing directory and a file used as the root', () => {
@@ -375,7 +373,7 @@ describe('registry', () => {
     expectMalformed(() => registry.register(null as unknown as ResolverBackend), /must be an object/);
     expectMalformed(
       () => registry.register({ name: '   ', exists: () => false, lookup: () => null }),
-      /non-empty name/,
+      /non-empty token/,
     );
     expectMalformed(
       () => registry.register({ name: 'half', exists: () => false } as unknown as ResolverBackend),
@@ -412,12 +410,34 @@ describe('record ids', () => {
   });
 });
 
-describe('parser and IR stay unwired', () => {
-  for (const rel of ['parser.ts', 'compile.ts', 'index.ts', 'ir/lower.ts', 'ir/types.ts']) {
-    it(`${rel} does not import the resolver`, () => {
-      const text = readFileSync(path.join(srcDir, rel), 'utf8');
-      expect(text).not.toMatch(/from ['"][^'"]*resolver/);
-      expect(text).not.toContain('speckl/resolver');
+describe('the rest of the compiler stays unwired', () => {
+  const files = sourceFiles(srcDir).filter((file) => !file.includes(`${path.sep}resolver${path.sep}`));
+
+  it('scans the compiler sources outside the resolver', () => {
+    expect(files.length).toBeGreaterThan(20);
+    expect(files.some((file) => file.endsWith(`${path.sep}generators${path.sep}z3.ts`))).toBe(true);
+    expect(files.some((file) => file.endsWith(`${path.sep}parser.ts`))).toBe(true);
+  });
+
+  it('no compiler source outside the resolver imports it', () => {
+    const hits = files.filter((file) => {
+      const text = readFileSync(file, 'utf8');
+      return /from ['"][^'"]*resolver/.test(text) || text.includes('speckl/resolver');
     });
-  }
+    expect(hits).toEqual([]);
+  });
 });
+
+function sourceFiles(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const child = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      found.push(...sourceFiles(child));
+    } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+      found.push(child);
+    }
+  }
+  return found;
+}

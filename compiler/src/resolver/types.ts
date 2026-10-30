@@ -50,7 +50,7 @@ export interface RecordShape {
   measurementClass: string;
   /**
    * Other fields the backend knows. Static manifests have none.
-   * Callers receive a shallow copy.
+   * Callers receive a deep copy. Nested values are not shared with the store.
    */
   attributes: Record<string, unknown>;
 }
@@ -58,11 +58,17 @@ export interface RecordShape {
 /**
  * One record store. `name` is the key the registry uses.
  *
- * `exists` and `lookup` must not throw for an unknown id. They return
- * `false` and `null`. Throw `ResolverError` with code `malformed` when the
- * store itself is unreadable, or any other error when the store fails.
- * The registry wraps a foreign error as `backend_error` and rethrows a
- * `ResolverError` unchanged.
+ * `exists` and `lookup` are synchronous. They must not throw for an unknown
+ * id. They return `false` and `null`. A Promise is not a result: the
+ * registry rejects it with `backend_error` so a truthy Promise cannot pass
+ * an existence check. A non-boolean `exists` result, or a `lookup` shape
+ * whose id or measurement class does not match the query, is also
+ * `backend_error`.
+ *
+ * Throw `ResolverError` with code `malformed` when the store itself is
+ * unreadable. The registry lets that through when it names this backend or
+ * names none. Any other error, including a forged `unknown_backend`, is
+ * wrapped as `backend_error` attributed to this backend.
  */
 export interface ResolverBackend {
   readonly name: string;
