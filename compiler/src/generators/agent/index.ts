@@ -10,6 +10,7 @@ import {
   AST, SpeckNode, ActionNode, AgentMemberNode, StateNode,
 } from '../../parser.js';
 import { generateTypeScriptStateMachine } from '../typescript-state-machine.js';
+import { guardAst } from '../../conservation.js';
 import { injectSignalActions, isSignalActionName, signalActionName } from './inject-signals.js';
 import { emitHookMjs } from './hook-template.js';
 import { emitSignalMjs } from './signal-template.js';
@@ -30,6 +31,7 @@ export interface AgentGenerateOptions {
 }
 
 export function generateAgent(ast: AST, options: AgentGenerateOptions): void {
+  guardAst('agent', ast);
   const injected = injectSignalActions(ast);
   for (const speck of injected.specks) {
     const agent = speck.members.find((m): m is AgentMemberNode => m.type === 'agent');

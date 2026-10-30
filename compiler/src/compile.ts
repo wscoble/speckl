@@ -17,6 +17,7 @@ import { lower } from './ir/lower.js';
 import { generateCamel } from './generators/camel.js';
 import { OpenAPITarget } from './generators/openapi.js';
 import { generateAgent } from './generators/agent/index.js';
+import { conservationLog } from './conservation.js';
 import { injectSignalActions } from './generators/agent/inject-signals.js';
 import fs from 'fs';
 import path from 'path';
@@ -30,6 +31,7 @@ export interface CompileOptions {
 
 /** Compile one SpeckDL file to the requested target(s). Throws on invalid input. */
 export function compileSpec(file: string, options: CompileOptions): void {
+  conservationLog.length = 0;
   console.log(`Compiling ${file}...`);
   
   const ast = parseSpeckFile(file);

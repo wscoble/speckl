@@ -1,4 +1,5 @@
 import { AST, SpeckNode, MemberNode, StateNode, ActionNode, ConstraintNode, EventNode } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -654,6 +655,7 @@ function metaExprFor(f: any, asHeading: boolean): string {
 // ─── main generator ─────────────────────────────────────────────────
 
 export function generateElm(ast: AST, outputDir: string): void {
+  guardAst('elm', ast);
   for (const speck of ast.specks) {
     const pkg = snakeCase(speck.name);
     const dir = path.join(outputDir, `${pkg}-elm`);

@@ -116,6 +116,7 @@ function lowerSpeck(
   return {
     name: speck.name,
     sourcePath: options.filePath,
+    sourceMemberTypes: speck.members.map(m => m.type),
     imports,
     facets: {
       typed_schema,
