@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { sanitizeSMT } from './smt-sanitize.js';
 import { obligationKey } from './obligation-key.js';
+import { guardAst } from '../conservation.js';
 
 /**
  * Z3 SMT-LIB2 backend for SpeckDL.
@@ -62,6 +63,7 @@ const SMT_RESERVED_WORDS = new Set([
  * Generate Z3 SMT-LIB2 from a SpeckDL AST.
  */
 export function generateZ3(ast: AST, outputDir: string, options: Z3Options = DEFAULT_OPTIONS): void {
+  guardAst('z3', ast);
   for (const speck of ast.specks) {
     const code = emitZ3(speck, options);
     const filename = `${speck.name}.smt2`;

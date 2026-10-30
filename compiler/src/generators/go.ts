@@ -1,4 +1,5 @@
 import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ConstraintNode, EventNode } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -17,6 +18,7 @@ import path from 'path';
  */
 
 export function generateGo(ast: AST, outputDir: string): void {
+  guardAst('go', ast);
   for (const speck of ast.specks) {
     const pkg = snakeCase(speck.name);
     const speckDir = path.join(outputDir, pkg);

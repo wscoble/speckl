@@ -37,7 +37,14 @@ alias.
   header, that header is `header is not at the start of the line`. A header
   later on the line, after other text or after `/* ... */`, is outside this
   scan. A speck written entirely inside a block comment is not a speck.
-  There is no shared scanner module yet.
+  The file lexer is `compiler/src/speck-lex.ts`. A recursive-descent parser
+  in `compiler/src/rd-parser.ts` consumes those tokens and builds the AST.
+  Identifiers are ASCII: a non-ASCII identifier is `identifier must be ASCII`
+  with line and column. An unclosed string or block comment includes the
+  column of the opener. Every AST member type is emitted or rejected by
+  every backend (`compiler/src/conservation.ts`); a new member type that is
+  not listed fails the conservation test. File-level `import` lines are
+  checked and not yet attached to a speck.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.

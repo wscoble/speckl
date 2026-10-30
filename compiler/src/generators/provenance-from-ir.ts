@@ -21,8 +21,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { IR, IRSpeck, ProvenanceClause, Author, Source, SourceKind } from '../ir/types.js';
+import { guardIr } from '../conservation.js';
 
 export function generateProvenanceFromIR(ir: IR, outputDir: string): void {
+  guardIr('provenance', ir);
   for (const speck of ir.specks) {
     const graph = renderProvGraph(speck);
     const filename = path.join(outputDir, `${speck.name}.prov.jsonld`);

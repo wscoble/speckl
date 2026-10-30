@@ -29,6 +29,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AST, InvariantMemberNode } from '../parser.js';
+import { guardAst, guardIr } from '../conservation.js';
 import { parseStringToIRExpr } from '../ir/lower.js';
 import type {
   IR,
@@ -46,6 +47,8 @@ import type {
  * invariant blocks, which the IR does not carry yet.
  */
 export function generateRust(ir: IR, outputDir: string, ast?: AST): void {
+  if (ast) guardAst('rust', ast);
+  else guardIr('rust', ir);
   for (const speck of ir.specks) {
     const astSpeck = ast?.specks.find((s) => s.name === speck.name);
     const invariants = (astSpeck?.members ?? []).filter(

@@ -1,4 +1,5 @@
 import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ConstraintNode, VerifyNode, EventNode, TypeExpr } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -14,6 +15,7 @@ import path from 'path';
  */
 
 export function generateTypeScriptStateMachine(ast: AST, outputDir: string): void {
+  guardAst('typescript', ast);
   for (const speck of ast.specks) {
     const code = emitSpeck(speck);
     const filename = `${speck.name}.ts`;

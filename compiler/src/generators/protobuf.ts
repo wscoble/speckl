@@ -23,6 +23,7 @@
  */
 
 import { AST, SpeckNode, MemberNode, StateNode, EventNode, InterfaceNode, TypeExpr, ServiceNode, TransitionNode, OneofNode } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -174,6 +175,7 @@ function classifyInterfaces(members: MemberNode[]): Map<string, InterfaceKind> {
 }
 
 export function generateProtobuf(ast: AST, outputDir: string, packageName?: string): void {
+  guardAst('protobuf', ast);
   for (const speck of ast.specks) {
     const code = emitSpeck(speck, packageName);
     const filename = `${snakeCase(speck.name)}.proto`;
