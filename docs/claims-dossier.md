@@ -175,7 +175,7 @@ speck ExampleCoBackup {
     evidence &backup/exampleco/2026-09-19
     provenance ExampleCoAgreement2026
     ensured RestoreWithinWindow: ageHours <= 24
-    except &outage/exampleco/2026-09-12 -> ageHours <= 48
+    except RestoreWithinWindow: &outage/exampleco/2026-09-12 -> ageHours <= 48
     coupling wan at global
     coupling local at sync-host
     covers &incident/exampleco-mirror-404
@@ -227,14 +227,19 @@ not a pointer. The evidence pointer names the measurement. The `ensured`
 line is the obligation over the speck's `state`. In the example, `ageHours`
 and `failures` are that state. They are not free identifiers.
 
-`except <condition> -> <consequence>` is the default-logic boundary.
-`<condition>` is an `&` record reference or a boolean expression in the
-existing expression language. An `&` condition is a resolver check (Task 2).
-`<consequence>` is a boolean expression in that same language, not an
-unbound name. It is the refinement that replaces the `ensured` expression
-when the condition holds. In the example the consequence is `ageHours <= 48`.
-That expression is RTOx2: the 24-hour window doubled. The name RTOx2 is
-prose for that expression. The expression is what lowers to SMT.
+`except <EnsuredName>: <condition> -> <consequence>` is the default-logic
+boundary. `<EnsuredName>` is the `ensured` line this exception replaces.
+A claim may have several `ensured` lines. The exception names one of them.
+It does not replace the others. `<condition>` is an `&` record reference or
+a boolean expression in the existing expression language. An `&` condition
+is a resolver check (Task 2). In SMT that condition is an opaque boolean.
+The resolver result fixes the boolean for a given check. The record is not
+expanded into the formula. `<consequence>` is a boolean expression in that
+same language, not an unbound name. It replaces the named `ensured`
+expression when the boolean is true. In the example the named line is
+`RestoreWithinWindow` and the consequence is `ageHours <= 48`. That
+expression is RTOx2: the 24-hour window doubled. The name RTOx2 is prose
+for that expression. The expression is what lowers to SMT.
 
 `root` members are `authority`, `basis`, and `trust`. `trust` is required.
 See §2.4.
@@ -257,6 +262,11 @@ its cap of `Verified`. `BackupWithinRTO` still stops at `Corrected`, because
 it couples `at global`. That cap is below the root's trust, so the cap is
 what binds. A root trusted only at `CorpusConsistent` would make both caps
 unreachable.
+
+Every `&` in this speck must resolve. The Task 4.2 test fixture provides
+these five records: `backup/exampleco/2026-09-19`,
+`backup/exampleco/restore-probe`, `outage/exampleco/2026-09-12`,
+`record/horizon-global`, and `record/horizon-sync-host`.
 
 ### 2.3 Claims surface
 
@@ -289,7 +299,7 @@ speck ExampleCoBackup
     evidence &backup/exampleco/2026-09-19
     provenance *ExampleCoAgreement2026*
     ensured RestoreWithinWindow: ageHours <= 24
-    except &outage/exampleco/2026-09-12 -> ageHours <= 48
+    except RestoreWithinWindow: &outage/exampleco/2026-09-12 -> ageHours <= 48
     coupling wan at global
     coupling local at sync-host
     covers &incident/exampleco-mirror-404
@@ -327,7 +337,12 @@ claim BackupWithinRTO {
   evidence: [&backup/exampleco/2026-09-19]
   provenance: [ExampleCoAgreement2026]          // internal, the root
   ensured: [{ name: RestoreWithinWindow, expr: "ageHours <= 24" }]
-  except: [{ condition: &outage/exampleco/2026-09-12, consequence: "ageHours <= 48" }]
+  except: [{
+    replaces: RestoreWithinWindow,
+    condition: &outage/exampleco/2026-09-12,
+    conditionBool: opaque,          // fixed by the resolver result, not expanded
+    consequence: "ageHours <= 48"
+  }]
   coupling: [{ term: wan, layer: global }, { term: local, layer: sync-host }]
   covers: [&incident/exampleco-mirror-404]
   verdictCap: Corrected
