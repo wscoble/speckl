@@ -1,8 +1,8 @@
 import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, parse as parsePath, resolve, sep } from 'node:path';
 import * as yaml from 'js-yaml';
 import { plainCopy, plainRecord } from './plain.js';
-import { assertRecordId } from './record-id.js';
+import { assertMeasurementClass, assertRecordId } from './record-id.js';
 import {
   ResolverError,
   type RecordShape,
@@ -42,13 +42,17 @@ interface StoredRecord {
  * file path. A file that is not Markdown, and a Markdown file with no
  * frontmatter, is skipped. A Markdown file that has frontmatter but is
  * missing an id or a measurement class fails the whole load (`malformed`).
- * A symlink, a file over {@link MAX_RECORD_BYTES}, or a directory nested
- * deeper than {@link MAX_DIRECTORY_DEPTH} also fails the load. Those cases
- * are not skipped.
+ * A symlink anywhere in the root's path, a symlink entry under the root, a
+ * file over {@link MAX_RECORD_BYTES}, a directory nested deeper than
+ * {@link MAX_DIRECTORY_DEPTH}, or YAML anchors and aliases also fail the
+ * load. Those cases are not skipped. A hard link is an ordinary file: the
+ * kernel does not say it has another name, so containment cannot see it,
+ * and the record loads.
  *
  * Symlinks are not followed. Record ids are map keys, never paths.
  * `lookup` returns a deep copy. Nested attributes are not shared with the
- * stored record, and a `__proto__` key stays an own property.
+ * stored record, and a `__proto__` key stays an own property. A YAML alias
+ * is rejected before the copy, so a shared document is not expanded into a tree.
  */
 export function filesystemBackend(
   rootDir: string,
@@ -75,6 +79,7 @@ export function filesystemBackend(
 }
 
 function loadRecords(rootDir: string): Map<string, StoredRecord> {
+  assertNoSymlinkInPath(rootDir);
   let rootStat;
   try {
     rootStat = lstatSync(rootDir);
@@ -189,7 +194,7 @@ function readRecord(file: string): { id: string; record: StoredRecord } | undefi
     throw new ResolverError(`${file}: id must be a non-empty string`, { code: 'malformed' });
   }
   const id = assertRecordId(idValue, file);
-  const measurementClass = measurementClassOf(data, file);
+  const measurementClass = assertMeasurementClass(measurementClassOf(data, file), file);
   delete data.id;
   delete data.measurement_class;
   delete data.measurementClass;
@@ -207,9 +212,11 @@ function frontmatter(text: string, file: string): Record<string, unknown> | unde
       code: 'malformed',
     });
   }
+  const body = match[1] ?? '';
+  assertNoYamlAliases(body, file);
   let parsed: unknown;
   try {
-    parsed = yaml.load(match[1] ?? '');
+    parsed = yaml.load(body);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new ResolverError(`${file}: frontmatter is not valid YAML: ${detail}`, {
@@ -223,7 +230,69 @@ function frontmatter(text: string, file: string): Record<string, unknown> | unde
   if (typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new ResolverError(`${file}: frontmatter must be a YAML mapping`, { code: 'malformed' });
   }
-  return plainRecord(parsed);
+  try {
+    return plainRecord(parsed);
+  } catch (err) {
+    if (err instanceof ResolverError) throw err;
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`${file}: frontmatter cannot be copied: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
+  }
+}
+
+function assertNoYamlAliases(text: string, file: string): void {
+  let i = 0;
+  let quote: '"' | "'" | null = null;
+  while (i < text.length) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'" && text[i + 1] === "'") { i += 2; continue; }
+      if (c === "'") quote = null;
+      i += 1;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '\\') { i += 2; continue; }
+      if (c === '"') quote = null;
+      i += 1;
+      continue;
+    }
+    if (c === '#') {
+      while (i < text.length && text[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; i += 1; continue; }
+    if ((c === '&' || c === '*') && i + 1 < text.length && /[A-Za-z0-9_]/.test(text[i + 1]!)) {
+      throw new ResolverError(`${file}: YAML anchors and aliases are not allowed`, {
+        code: 'malformed',
+      });
+    }
+    i += 1;
+  }
+}
+
+function assertNoSymlinkInPath(rootDir: string): void {
+  const abs = resolve(rootDir);
+  const parts = abs.split(sep).filter((part) => part.length > 0);
+  let cur = parsePath(abs).root;
+  for (const part of parts) {
+    cur = join(cur, part);
+    let st;
+    try {
+      st = lstatSync(cur);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new ResolverError(`cannot read record directory ${rootDir}: ${detail}`, {
+        code: 'malformed',
+        cause: err,
+      });
+    }
+    if (st.isSymbolicLink()) {
+      throw new ResolverError(`record path contains a symlink: ${cur}`, { code: 'malformed' });
+    }
+  }
 }
 
 function measurementClassOf(data: Record<string, unknown>, file: string): string {

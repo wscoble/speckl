@@ -14,8 +14,22 @@ class Registry implements ResolverRegistry {
     if (backend === null || typeof backend !== 'object') {
       throw new ResolverError('resolver backend must be an object', { code: 'malformed' });
     }
-    const name = assertBackendName(backend.name);
-    if (typeof backend.exists !== 'function' || typeof backend.lookup !== 'function') {
+    let name: string;
+    let exists: unknown;
+    let lookup: unknown;
+    try {
+      name = assertBackendName(backend.name);
+      exists = backend.exists;
+      lookup = backend.lookup;
+    } catch (err) {
+      if (err instanceof ResolverError) throw err;
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new ResolverError(`resolver backend registration failed: ${detail}`, {
+        code: 'malformed',
+        cause: err,
+      });
+    }
+    if (typeof exists !== 'function' || typeof lookup !== 'function') {
       throw new ResolverError(
         `resolver backend ${name} must implement exists and lookup`,
         { code: 'malformed', backendName: name },
@@ -37,57 +51,35 @@ class Registry implements ResolverRegistry {
   exists(backendName: string, id: string): boolean {
     const name = assertBackendName(backendName);
     const recordId = assertRecordId(id, 'query');
-    const value = this.call(name, recordId, (backend) => backend.exists(recordId));
-    if (typeof value !== 'boolean') {
-      this.refuseForeign(value, name, recordId, 'exists() must return a boolean');
+    const backend = this.backend(name, recordId);
+    try {
+      const value = backend.exists(recordId);
+      if (isThenable(value)) {
+        settleQuietly(value);
+        throw new Error('exists() returned a Promise; the SPI is synchronous');
+      }
+      if (typeof value !== 'boolean') {
+        throw new Error('exists() must return a boolean');
+      }
+      return value;
+    } catch (err) {
+      throw this.wrap(err, name, recordId);
     }
-    return value;
   }
 
   lookup(backendName: string, id: string): RecordShape | null {
     const name = assertBackendName(backendName);
     const recordId = assertRecordId(id, 'query');
-    const value = this.call(name, recordId, (backend) => backend.lookup(recordId));
-    if (value === null) return null;
-    if (isThenable(value) || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
-      this.refuseForeign(value, name, recordId, 'lookup() must return a record shape or null');
+    const backend = this.backend(name, recordId);
+    try {
+      const value = backend.lookup(recordId);
+      return this.shapeOf(value, recordId);
+    } catch (err) {
+      throw this.wrap(err, name, recordId);
     }
-    const shape = value as RecordShape;
-    if (shape.id !== recordId) {
-      throw new ResolverError(
-        `resolver backend ${name} returned id "${String(shape.id)}" for "${recordId}"`,
-        { code: 'backend_error', backendName: name, recordId },
-      );
-    }
-    if (typeof shape.measurementClass !== 'string' || shape.measurementClass.trim() === '') {
-      throw new ResolverError(
-        `resolver backend ${name} returned an empty measurement class for "${recordId}"`,
-        { code: 'backend_error', backendName: name, recordId },
-      );
-    }
-    const attributes = shape.attributes === undefined ? {} : shape.attributes;
-    if (attributes === null || typeof attributes !== 'object' || Array.isArray(attributes)) {
-      throw new ResolverError(
-        `resolver backend ${name} returned attributes that are not a mapping for "${recordId}"`,
-        { code: 'backend_error', backendName: name, recordId },
-      );
-    }
-    return {
-      id: recordId,
-      measurementClass: shape.measurementClass.trim(),
-      attributes: plainCopy(attributes) as Record<string, unknown>,
-    };
   }
 
-  private refuseForeign(value: unknown, backendName: string, recordId: string, why: string): never {
-    if (isThenable(value)) settleQuietly(value);
-    throw new ResolverError(
-      `resolver backend ${backendName} failed for "${recordId}": ${why}`,
-      { code: 'backend_error', backendName, recordId },
-    );
-  }
-
-  private call<T>(backendName: string, id: string, fn: (backend: ResolverBackend) => T): T {
+  private backend(backendName: string, id: string): ResolverBackend {
     const backend = this.byName.get(backendName);
     if (!backend) {
       throw new ResolverError(`no resolver backend registered: ${backendName}`, {
@@ -96,11 +88,41 @@ class Registry implements ResolverRegistry {
         recordId: id,
       });
     }
-    try {
-      return fn(backend);
-    } catch (err) {
-      throw this.wrap(err, backendName, id);
+    return backend;
+  }
+
+  private shapeOf(value: unknown, recordId: string): RecordShape | null {
+    if (isThenable(value)) {
+      settleQuietly(value);
+      throw new Error('lookup() returned a Promise; the SPI is synchronous');
     }
+    if (value === null) return null;
+    if (value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('lookup() must return a record shape or null');
+    }
+    const shape = value;
+    if (!Object.hasOwn(shape, 'id') || !Object.hasOwn(shape, 'measurementClass')) {
+      throw new Error('lookup() must return own id and measurementClass properties');
+    }
+    const id = (shape as { id: unknown }).id;
+    const measurementClass = (shape as { measurementClass: unknown }).measurementClass;
+    if (id !== recordId) {
+      throw new Error(`lookup() returned id "${String(id)}" for "${recordId}"`);
+    }
+    if (typeof measurementClass !== 'string' || measurementClass.trim() === '') {
+      throw new Error(`lookup() returned an empty measurement class for "${recordId}"`);
+    }
+    const attributes = Object.hasOwn(shape, 'attributes')
+      ? (shape as { attributes: unknown }).attributes
+      : {};
+    if (attributes === null || typeof attributes !== 'object' || Array.isArray(attributes)) {
+      throw new Error(`lookup() returned attributes that are not a mapping for "${recordId}"`);
+    }
+    return {
+      id: recordId,
+      measurementClass: measurementClass.trim(),
+      attributes: plainCopy(attributes) as Record<string, unknown>,
+    };
   }
 
   /**

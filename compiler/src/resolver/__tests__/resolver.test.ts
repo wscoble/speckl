@@ -86,8 +86,8 @@ describe('static-manifest backend', () => {
     const backend = staticManifestBackend(manifest);
     expect(backend.exists('incident/exampleco-quill')).toBe(false);
     expect(backend.lookup('incident/exampleco-quill')).toBeNull();
-    expect(backend.exists('../../etc/passwd')).toBe(false);
-    expect(backend.lookup('../../etc/passwd')).toBeNull();
+    expect(() => backend.exists('../../etc/passwd')).toThrow(ResolverError);
+    expect(() => backend.lookup('../../etc/passwd')).toThrow(ResolverError);
     expect(() => backend.exists('')).toThrow(ResolverError);
     expect(() => backend.lookup('')).toThrow(ResolverError);
   });
@@ -193,8 +193,8 @@ measurement_class: "  sync.configuration  "
     const backend = filesystemBackend(dir);
     expect(backend.exists('incident/does-not-exist')).toBe(false);
     expect(backend.lookup('incident/does-not-exist')).toBeNull();
-    expect(backend.exists('../../etc/passwd')).toBe(false);
-    expect(backend.lookup('../../etc/passwd')).toBeNull();
+    expect(() => backend.exists('../../etc/passwd')).toThrow(ResolverError);
+    expect(() => backend.lookup('../../etc/passwd')).toThrow(ResolverError);
   });
 
   it('refuses a symlink instead of following it or skipping the record', () => {

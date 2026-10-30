@@ -66,7 +66,9 @@
  * - `filesystemBackend` — a directory of Markdown files with YAML frontmatter
  *   (`id`, `measurement_class` or `measurementClass`).
  *
- * Record ids do not include the `&` sigil.
+ * Record ids do not include the `&` sigil. The canonical form is NFKC plus
+ * a small homoglyph fold. Empty segments and `.` / `..` segments are rejected.
+ * See `record-id.ts`.
  */
 
 export { assertRecordId } from './record-id.js';

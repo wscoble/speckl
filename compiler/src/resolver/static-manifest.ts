@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { assertRecordId } from './record-id.js';
+import { assertMeasurementClass, assertRecordId } from './record-id.js';
 import {
   ResolverError,
   type RecordShape,
@@ -81,13 +81,16 @@ function parseManifest(manifest: string | Record<string, unknown>): Map<string, 
         recordId: id,
       });
     }
-    if (typeof klass !== 'string' || klass.trim() === '') {
-      throw new ResolverError(
-        `manifest: measurement class for "${id}" must be a non-empty string`,
-        { code: 'malformed', recordId: id },
-      );
+    let measurementClass: string;
+    try {
+      measurementClass = assertMeasurementClass(klass, 'manifest');
+    } catch (err) {
+      if (err instanceof ResolverError) {
+        throw new ResolverError(err.message, { code: err.code, recordId: id, cause: err });
+      }
+      throw err;
     }
-    records.set(id, klass.trim());
+    records.set(id, measurementClass);
   }
   return records;
 }
