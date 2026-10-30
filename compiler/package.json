@@ -33,7 +33,11 @@
     "speckl-compile": "./dist/index.js"
   },
   "exports": {
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./resolver": {
+      "types": "./dist/resolver/index.d.ts",
+      "default": "./dist/resolver/index.js"
+    }
   },
   "files": [
     "dist/",

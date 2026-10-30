@@ -41,13 +41,20 @@ describe('local package tarball', () => {
   it('is named speckl, with both bins, an exports map and an engines floor', () => {
     expect(pkg.name).toBe('speckl');
     expect(pkg.bin).toEqual({ speckl: './dist/index.js', 'speckl-compile': './dist/index.js' });
-    expect(pkg.exports).toEqual({ './package.json': './package.json' });
+    expect(pkg.exports).toEqual({
+      './package.json': './package.json',
+      './resolver': {
+        types: './dist/resolver/index.d.ts',
+        default: './dist/resolver/index.js',
+      },
+    });
     expect(pkg.engines.node).toBe('>=20');
     expect(pkg.scripts.prepack).toBe('npm run build');
   });
 
   it('ships dist, the verifier, README and LICENSE; not sources or tests', () => {
     for (const f of ['package.json', 'README.md', 'LICENSE', 'dist/index.js', 'dist/generators/agent/harness-runtime.js',
+      'dist/resolver/index.js', 'dist/resolver/index.d.ts',
       'scripts/verify-z3.mjs', 'scripts/lib/obligations.mjs']) {
       expect(files, f).toContain(f);
     }
