@@ -277,6 +277,27 @@ describe('token parser', () => {
     expect(parseSpeckContent('speck A {\n    type State = Follower | Candidate | Leader\n    state { x: Nat }\n}\n').specks[0].name).toBe('A');
   });
 
+  it('keeps a state field type that continues onto the next line', () => {
+    const specs = [
+      'speck A {\n    state {\n        m: Map<\n            String, Nat\n        >\n        x: Nat\n    }\n}\n',
+      'speck A {\n    state {\n        m: Map<String,\n            Nat>\n        x: Nat\n    }\n}\n',
+      'speck A {\n    state {\n        m: "a"\n            | "b"\n        x: Nat\n    }\n}\n',
+    ];
+    for (const src of specs) {
+      const state = parseSpeckContent(src).specks[0].members.find(m => m.type === 'state') as { variables: { name: string; typeExpr: { type: string } }[] };
+      expect(state.variables.map(v => v.name), src).toEqual(['m', 'x']);
+      expect(state.variables[0].typeExpr.type, src).not.toBeUndefined();
+    }
+  });
+
+  it('accepts alias right-hand sides that are valid field types', () => {
+    for (const t of ['Map<String, Set<Nat>>', '"a" | "b"', '0..10', 'Nat[]', '(Nat, Nat)', 'Map<String, String> | null', 'Map(String, Nat)', 'Follower | Candidate | Leader']) {
+      expect(() => parseSpeckContent(`speck A {\n    state { m: ${t} }\n}\n`), 'field ' + t).not.toThrow();
+      expect(() => parseSpeckContent(`speck A {\n    state { x: Nat }\n    type T = ${t}\n}\n`), 'alias ' + t).not.toThrow();
+    }
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    type T = Nat // c\n}\n')).not.toThrow();
+  });
+
   it('reports a brace on the next line after a block comment', () => {
     expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    invariant P\n    /* c\n    still */\n    { x >= 0 }\n}\n', 'br.speckdl')).toThrow(/same line/);
   });
