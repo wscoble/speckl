@@ -14,7 +14,7 @@
 import {
   AST, SpeckNode, MemberNode,
   lexStart, maskLine, lexProblem,
-  parseImportStatement, parseMember, parseMemberBlock,
+  parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr,
   parseMultiLineConstraintVerify, unsupportedVerify, parseNextRelation,
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
@@ -70,8 +70,8 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
       throw lexProblem(i + 1, 'speck name must be on the same line as "speck"');
     }
 
-    if (line.startsWith('speck ') && code.startsWith('speck ')) {
-      const speck = parseSpeck(lines, byLine, i);
+    if (/^speck\s+\S/.test(line) && /^speck\s+\S/.test(code)) {
+      const speck = parseSpeck(content, lines, lexed.tokens, byLine, i, filePath);
       if (speck) specks.push(speck);
       i++;
       continue;
@@ -88,7 +88,7 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
  * Parse the speck whose header is `lines[start]`. Member boundaries come
  * from the token stream. Returns null when the header is not `speck Name {`.
  */
-function parseSpeck(lines: string[], byLine: SpeckToken[][], start: number): SpeckNode | null {
+function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLine: SpeckToken[][], start: number, filePath?: string): SpeckNode | null {
   const headerMatch = lines[start].match(/^speck\s+([\w-]+)\s*{/);
   if (!headerMatch) return null;
 
@@ -181,7 +181,20 @@ function parseSpeck(lines: string[], byLine: SpeckToken[][], start: number): Spe
 
     if (isBlockStarter && openCount > 0) {
       const blockStartLine = i + 1;
+      const open = (byLine[i + 1] ?? []).find(t => t.kind === '{');
+      const close = open ? matchingClose(tokens, open) : undefined;
+      if (close) {
+        const after = (byLine[close.line] ?? []).filter(t => t.start >= close.end);
+        if (after.length > 0) {
+          throw parseErrorAt(filePath, after[0].line, after[0].column, 'text after a member\'s "}"');
+        }
+      }
       const member = parseMemberAt(lines, i);
+      if (member && member.type === 'invariant' && open && close) {
+        const expr = stripInvariantExpr(content.slice(open.end, close.start));
+        if (!expr) throw parseErrorAt(filePath, open.line, open.column, 'invariant expression is empty');
+        member.expr = expr;
+      }
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (closeCount < openCount) {
         const endIdx = blockEndLine(byLine, i + 1, braceCount + openCount, lines.length);
@@ -270,6 +283,29 @@ function bucketByLine(tokens: SpeckToken[]): SpeckToken[][] {
   const byLine: SpeckToken[][] = [];
   for (const t of tokens) (byLine[t.line] ??= []).push(t);
   return byLine;
+}
+
+function matchingClose(tokens: SpeckToken[], open: SpeckToken): SpeckToken | undefined {
+  let lo = 0;
+  let hi = tokens.length - 1;
+  let at = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (tokens[mid].start === open.start) { at = mid; break; }
+    if (tokens[mid].start < open.start) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  if (at < 0) return undefined;
+  let depth = 1;
+  for (let i = at + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.kind === '{') depth++;
+    else if (t.kind === '}') {
+      depth--;
+      if (depth === 0) return t;
+    }
+  }
+  return undefined;
 }
 
 function bracesOnLine(byLine: SpeckToken[][], line: number): { open: number; close: number } {

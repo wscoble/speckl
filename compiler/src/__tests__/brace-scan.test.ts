@@ -232,7 +232,7 @@ describe('braces in comments and strings', () => {
       '    state { x: Nat }',
       '    init { x := 0 }',
       '    invariant Mono { /* a',
-      '        b */ }',
+      '        b */ true }',
       '}',
       '',
     ].join('\n');

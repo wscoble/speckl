@@ -156,6 +156,11 @@ export function lexSpeck(src: string, file?: string): SpeckLex {
         bump(1);
         while (i < src.length && isDigit(src[i])) bump(1);
       }
+      // `9A` is an identifier that starts with a digit. `24h` and `500ms` are
+      // duration suffixes and stay a number followed by a unit.
+      if (isIdentStart(src[i]) && !isDurationUnit(src, i)) {
+        throw parseErrorAt(file, ln, col, 'identifier must not start with a digit');
+      }
       tokens.push({ kind: 'number', text: src.slice(start, i), line: ln, column: col, start, end: i });
       continue;
     }
@@ -191,6 +196,12 @@ export function lexSpeck(src: string, file?: string): SpeckLex {
 
   if (block) throw parseErrorAt(file, blockLine, blockCol, 'unterminated block comment');
   return { tokens, headerAfterComment };
+}
+
+function isDurationUnit(src: string, i: number): boolean {
+  if (src.startsWith('ms', i) && !isIdentPart(src[i + 2])) return true;
+  const ch = src[i];
+  return (ch === 'h' || ch === 'm' || ch === 's' || ch === 'd') && !isIdentPart(src[i + 1]);
 }
 
 function isDigit(ch: string | undefined): boolean {

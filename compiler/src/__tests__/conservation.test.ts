@@ -147,8 +147,8 @@ speck MarkerSpeck {
     interface MarkerKindSpec { markerSpecField: Nat }
     interface MarkerKindStatus { markerStatusField: String }
     interface MarkerKind { markerKindField: String }
-    event MarkerEvent { markerEventField: String }
-    oneof MarkerOneof { markerTick: MarkerEvent }
+    event OnlyEvent { onlyEventField: String }
+    oneof MarkerOneof { markerTick: MarkerReq }
     transition MarkerTransition { payload: MarkerOneof }
     provenance {
         regulation "MarkerRegulation" :: "note"
@@ -163,13 +163,16 @@ speck MarkerSpeck {
         compiler { name: "MarkerBom", version: "1.2.3" }
         license: "MarkerLicense"
     }
-    state { markerState: Nat }
+    state { markerState: Nat; onlyStateField: Nat }
     init { markerState := 4242 }
+    action OnlyAction {
+        markerState := markerState + 1
+    }
     action MarkerAction {
         markerState := markerState + 1
     }
     service MarkerService {
-        rpc MarkerRpc(MarkerEvent) returns (MarkerEvent);
+        rpc MarkerRpc(MarkerReq) returns (MarkerReq);
     }
     conditions: ["MarkerCondition"]
     finalizers: ["MarkerFinalizer"]
@@ -193,7 +196,7 @@ const MARKERS: Record<MemberNodeType, string[]> = {
   constraint: ['MarkerConstraint'],
   verify: ['MarkerVerify'],
   interface: ['MarkerInterface', 'markerSpecField'],
-  event: ['MarkerEvent'],
+  event: ['OnlyEvent'],
   oneof: ['markerTick'],
   transition: ['MarkerTransition'],
   provenance: ['MarkerRegulation', 'MarkerDecision'],
@@ -203,9 +206,9 @@ const MARKERS: Record<MemberNodeType, string[]> = {
   author: ['MarkerAuthor'],
   source: ['MarkerSource'],
   bom: ['MarkerBom', 'MarkerLicense'],
-  state: ['markerState'],
+  state: ['onlyStateField'],
   init: ['4242'],
-  action: ['MarkerAction'],
+  action: ['OnlyAction'],
   service: ['MarkerService'],
   lifecycle_metadata: ['MarkerCondition', 'MarkerFinalizer'],
   invariant: ['MarkerInvariant'],
@@ -243,6 +246,13 @@ describe('conservation markers', () => {
 
   it('compiles one fixture of every member type and finds each emit marker', () => {
     const parsed = parseSpeckContent(FIXTURE, 'MarkerSpeck.speckdl');
+    for (const type of ['state', 'event', 'action'] as const) {
+      const marker = MARKERS[type][0];
+      for (const member of parsed.specks[0].members) {
+        if (member.type === type) continue;
+        expect(JSON.stringify(member), `${type} marker ${marker}`).not.toContain(marker);
+      }
+    }
     const present = new Set(parsed.specks[0].members.map(m => m.type));
     for (const type of MEMBER_NODE_TYPES) {
       if (type === 'import') continue;

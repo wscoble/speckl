@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { parseSpeckContent } from '../parser.js';
 import { lexSpeck } from '../speck-lex.js';
 import { compileSpec } from '../compile.js';
+
+const hasZ3 = spawnSync('z3', ['--version']).status === 0;
 
 function firstNonAsciiColumn(line: string): number {
   for (let i = 0; i < line.length; i++) {
@@ -165,10 +168,72 @@ describe('token parser', () => {
     expect(state.variables.map(v => v.name)).toEqual(['x']);
   });
 
-  it('rejects a speck header separated by a unicode space', () => {
-    expect(() => parseSpeckContent('speck\u3000A {\n    state { x: Nat }\n}\n', 'sp.speckdl')).toThrow(
-      /speck header was not parsed/,
-    );
+  it('treats an ideographic space after speck as a space and parses the name', () => {
+    expect(parseSpeckContent('speck\u3000A {\n    state { x: Nat }\n}\n').specks.map(s => s.name)).toEqual(['A']);
+  });
+
+  it('reads a multi-line invariant from the brace span and rejects an empty one', () => {
+    const cont = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    invariant P { x >= 0',
+      '        && x < 0 }',
+      '}',
+      '',
+    ].join('\n');
+    const inv = parseSpeckContent(cont).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(inv.expr).toBe('x >= 0 && x < 0');
+    const closed = 'speck A {\n    state { x: Nat }\n    invariant P { x >= 0\n    }\n}\n';
+    const again = parseSpeckContent(closed).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(again.expr).toBe('x >= 0');
+    expect(() => parseSpeckContent('speck A {\n    invariant P {}\n}\n', 'empty.speckdl')).toThrow(/invariant expression is empty/);
+  });
+
+  it('rejects a second block or other text after a member close', () => {
+    expect(() => parseSpeckContent('speck A {\n    invariant P { x >= 0 } invariant Q { x < 0 }\n}\n', 'two.speckdl')).toThrow(/text after a member's "}"/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat } init { x := 0 }\n}\n', 'two.speckdl')).toThrow(/text after a member's "}"/);
+    expect(() => parseSpeckContent('speck A {\n    invariant P { x >= 0 } junk\n}\n', 'junk.speckdl')).toThrow(/text after a member's "}"/);
+    expect(() => parseSpeckContent('speck A {\n    state {\n        x: Nat\n    } junk\n}\n', 'junk.speckdl')).toThrow(/text after a member's "}"/);
+  });
+
+  it('strips a block comment out of a one-line invariant', () => {
+    const ast = parseSpeckContent('speck A {\n    invariant P { x >= 0 /* } */ }\n}\n');
+    const inv = ast.specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(inv.expr).toBe('x >= 0');
+  });
+
+  it('splits a one-line init on a top-level comma', () => {
+    const ast = parseSpeckContent('speck A {\n    state { x: Nat }\n    init { x := 0, y := 1 }\n}\n');
+    const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
+    expect(init.assignments).toEqual([{ name: 'x', expr: '0' }, { name: 'y', expr: '1' }]);
+  });
+
+  it('accepts a tab after speck and rejects a name that starts with a digit', () => {
+    expect(parseSpeckContent('speck\tA {\n    state { x: Nat }\n}\n').specks.map(s => s.name)).toEqual(['A']);
+    expect(() => parseSpeckContent('speck 9A {\n}\n', 'dig.speckdl')).toThrow(/identifier must not start with a digit/);
+  });
+
+  it('a contradictory invariant is unsat, not an empty (and true)', () => {
+    const src = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    invariant P { x >= 0',
+      '        && x < 0 }',
+      '}',
+      '',
+    ].join('\n');
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-unsat-'));
+    const file = join(dir, 'A.speckdl');
+    writeFileSync(file, src);
+    const out = join(dir, 'out');
+    compileSpec(file, { outputDir: out, target: 'z3', bomFormat: 'both', verifyDepth: 4 });
+    const smt = readFileSync(join(out, 'A.smt2'), 'utf8');
+    expect(smt).not.toMatch(/define-fun P \(\) Bool \(and true\)/);
+    expect(smt).toContain('(assert P)');
+    if (!hasZ3) return;
+    const z3 = spawnSync('z3', ['-smt2', join(out, 'A.smt2')], { encoding: 'utf8' });
+    expect(z3.stdout.trim()).toBe('unsat');
   });
 
   it('parses a long file in linear time', () => {
