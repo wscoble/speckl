@@ -1633,17 +1633,22 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   }
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-  if (innerLines.some(l => l.startsWith('import '))) {
-    throw new Error('Parse error: import is inside a block');
+  // Drop comments before joining. A `//` tail left in the text comments out
+  // every later line that gets concatenated onto it, so the rest of the
+  // block disappears into one field.
+  let commentState = lexStart();
+  const pieces: { text: string; hadComma: boolean }[] = [];
+  for (let li = startIndex + 1; li < endIndex; li++) {
+    const stripped = codeWithoutComments(lines[li], commentState);
+    commentState = stripped.state;
+    const trimmed = stripped.text.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('import ')) throw new Error('Parse error: import is inside a block');
+    pieces.push({
+      text: trimmed.replace(/,+\s*$/, ''),
+      hadComma: /,\s*$/.test(trimmed),
+    });
   }
-  // State blocks separate fields with commas or newlines/semicolons.
-  // Strip trailing commas (they are field separators, not continuations)
-  // then join with semicolons between complete variable declarations.
-  const pieces = innerLines.map(l => ({
-    text: l.replace(/,+\s*$/, ''),
-    hadComma: /,\s*$/.test(l),
-  }));
   const inner = pieces.reduce((acc, piece, i) => {
     const line = piece.text;
     if (i === 0) return line;
@@ -1682,6 +1687,34 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   const result = parseStateBlock(inner);
   if (messageName !== undefined) result.messageName = messageName;
   return result;
+}
+
+/**
+ * Code on one line with comments removed. A block comment carries `state`
+ * onto the next line, so a bar inside that comment is not a union.
+ */
+function codeWithoutComments(line: string, state: LexState): { text: string; state: LexState } {
+  let block = state.block;
+  let quote = state.quote;
+  let out = '';
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (quote) {
+      out += ch;
+      if (ch === '\\' && next !== undefined) { out += next; i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (block) {
+      if (ch === '*' && next === '/') { i++; block = false; }
+      continue;
+    }
+    if (ch === '/' && next === '/') break;
+    if (ch === '/' && next === '*') { block = true; i++; continue; }
+    out += ch;
+  }
+  return { text: out, state: { block, quote, openLine: 0 } };
 }
 
 /** True when an expression text has unbalanced brackets (type declarations). */
