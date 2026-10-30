@@ -113,7 +113,7 @@ function lowerSpeck(
 ): IRSpeck {
   // Read the raw source for expression re-parsing.
   // The main AST has string expressions; the IR needs typed trees.
-  const rawSource = verifiedSource(sourcePath) ?? readFileSync(sourcePath, 'utf-8');
+  const rawSource = verifiedSource(ast, sourcePath) ?? readFileSync(sourcePath, 'utf-8');
   const rawStatementsByAction = extractActionStatements(rawSource, speck);
 
   const imports: IRImport[] = [];

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -305,5 +306,70 @@ describe('import resolution', () => {
     expect(() => compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'both', verifyDepth: 2 })).toThrow(/outside the import root/);
     compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'both', verifyDepth: 2, rootDir: parent });
     expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
+  });
+
+  it('compiles when /proc/self/fd is missing', () => {
+    const folder = dir();
+    const file = write(folder, 'plain.speckdl', 'speck Plain {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const fs = createRequire(import.meta.url)('node:fs');
+    const orig = fs.realpathSync;
+    fs.realpathSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+      if (String(p).startsWith('/proc/self/fd/')) {
+        const e = new Error(`ENOENT: realpath '${p}'`) as NodeJS.ErrnoException;
+        e.code = 'ENOENT';
+        throw e;
+      }
+      return orig.call(this, p, ...rest);
+    };
+    syncBuiltinESMExports();
+    try {
+      compileSpec(file, { outputDir: join(folder, 'out'), target: 'typescript', bomFormat: 'cdx', verifyDepth: 2 });
+    } finally {
+      fs.realpathSync = orig;
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('rejects a FIFO import instead of blocking', () => {
+    const folder = dir();
+    execFileSync('mkfifo', [join(folder, 'fifo.speckdl')]);
+    const file = write(folder, 'f.speckdl', 'import "./fifo.speckdl"\nspeck F {\n}\n');
+    expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/cannot read import/);
+  }, 8000);
+
+  it('lower on a fresh parse does not reuse an earlier expand', () => {
+    const folder = dir();
+    const file = write(folder, 'st.speckdl', 'speck St {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 1\n    }\n}\n');
+    expandImports(parseSpeckFile(file), file);
+    writeFileSync(file, 'speck St {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 42\n    }\n}\n');
+    expect(JSON.stringify(lower(parseSpeckFile(file), { filePath: file, resolveImports: false }))).toContain('42');
+  });
+
+  it('the entry AST and the lowered action come from the same read', () => {
+    const folder = dir();
+    const file = write(folder, 'tw.speckdl', 'speck Tw {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 1\n    }\n}\n');
+    const fs = createRequire(import.meta.url)('node:fs');
+    const orig = fs.openSync;
+    let swapped = false;
+    fs.openSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+      if (String(p) === file && !swapped) {
+        swapped = true;
+        writeFileSync(file, 'speck Tw {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 5\n    }\n}\n');
+      }
+      return orig.call(this, p, ...rest);
+    };
+    syncBuiltinESMExports();
+    try {
+      const ast = parseSpeckFile(file);
+      const ex = expandImports(ast, file);
+      const ir = lower(ex, { filePath: file, resolveImports: true });
+      const astSays5 = JSON.stringify(ex).includes('n + 5') || JSON.stringify(ex).includes('"value":5');
+      const irSays5 = JSON.stringify(ir).includes('"value":5');
+      expect(irSays5).toBe(astSays5);
+      expect(astSays5).toBe(true);
+    } finally {
+      fs.openSync = orig;
+      syncBuiltinESMExports();
+    }
   });
 });

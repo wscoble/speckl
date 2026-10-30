@@ -6,7 +6,7 @@
 // `rootDir` — the CLI's `--root` — to widen that directory.
 
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { AST, ImportNode, parseSpeckContent, SpeckNode } from './parser.js';
 
@@ -37,14 +37,20 @@ interface CachedFile {
   ast: AST;
 }
 
-/** Bytes read while resolving imports, keyed by realpath. `lower` uses this instead of reading the file again. */
-const sourceByReal = new Map<string, string>();
+/**
+ * Verified text for one expand, keyed by realpath and tied to the AST
+ * `expandImports` returned. A later parse is a different object and does
+ * not see this text.
+ */
+const sourceOf = new WeakMap<AST, Map<string, string>>();
 
-export function verifiedSource(filePath: string): string | undefined {
-  const hit = sourceByReal.get(filePath);
+export function verifiedSource(ast: AST, filePath: string): string | undefined {
+  const files = sourceOf.get(ast);
+  if (!files) return undefined;
+  const hit = files.get(filePath);
   if (hit !== undefined) return hit;
   try {
-    return sourceByReal.get(realpathSync(filePath));
+    return files.get(realpathSync(filePath));
   } catch {
     return undefined;
   }
@@ -70,23 +76,24 @@ export function speckSourceFile(ast: AST, name: string, fallback: string): strin
  * Read imported files and append their specks. Throws on a missing file,
  * a cycle, a too-deep chain, a hash mismatch, an empty or short hash,
  * a path that leaves the import root, a duplicate alias, or the same
- * speck name twice. A file with no imports is returned unchanged.
+ * speck name twice. The returned AST is parsed from the bytes just read,
+ * so it matches the text `lower` compiles. A file with no imports is that parse.
  */
-export function expandImports(ast: AST, entryPath: string, options: ExpandOptions = {}): AST {
+export function expandImports(_ast: AST, entryPath: string, options: ExpandOptions = {}): AST {
   const opened = readViaFd(entryPath, null, entryPath);
   const entryAbs = opened.real;
   const entryText = opened.buf.toString('utf8');
-  sourceByReal.set(entryAbs, entryText);
+  const files = new Map<string, string>([[entryAbs, entryText]]);
+  const parsedEntry = parseSpeckContent(entryText, entryAbs);
   const rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
-  const rootHas = (ast.imports?.length ?? 0) > 0
-    || ast.specks.some(s => s.members.some(m => m.type === 'import'));
+  const rootHas = (parsedEntry.imports?.length ?? 0) > 0
+    || parsedEntry.specks.some(s => s.members.some(m => m.type === 'import'));
   if (!rootHas) {
-    if (!linksOf.has(ast)) {
-      linksOf.set(ast, []);
-      originOf.set(ast, new Map(ast.specks.map(s => [s.name, entryAbs])));
-    }
-    expanded.add(ast);
-    return ast;
+    sourceOf.set(parsedEntry, files);
+    linksOf.set(parsedEntry, []);
+    originOf.set(parsedEntry, new Map(parsedEntry.specks.map(s => [s.name, entryAbs])));
+    expanded.add(parsedEntry);
+    return parsedEntry;
   }
 
   const origin = new Map<string, string>();
@@ -98,14 +105,14 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
   const cache = new Map<string, CachedFile>();
   const aliasAt = new Set<string>();
 
-  function remember(real: string, buf: Buffer): CachedFile {
+  function remember(real: string, buf: Buffer, parsed?: AST): CachedFile {
     const hit = cache.get(real);
     if (hit) return hit;
     const text = buf.toString('utf8');
-    const parsed = parseSpeckContent(text, real);
-    const entry = { buf, text, ast: parsed };
+    const parsedAst = parsed ?? parseSpeckContent(text, real);
+    const entry = { buf, text, ast: parsedAst };
     cache.set(real, entry);
-    sourceByReal.set(real, text);
+    files.set(real, text);
     return entry;
   }
 
@@ -189,7 +196,7 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
     done.add(abs);
   }
 
-  remember(entryAbs, opened.buf);
+  remember(entryAbs, opened.buf, parsedEntry);
   load(entryAbs, 0);
 
   // Root file-level imports apply to every speck declared in the root file.
@@ -206,7 +213,8 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
   }
 
   const out: AST = { specks };
-  if (ast.imports?.length) out.imports = ast.imports;
+  if (parsedEntry.imports?.length) out.imports = parsedEntry.imports;
+  sourceOf.set(out, files);
   linksOf.set(out, lifted);
   originOf.set(out, origin);
   expanded.add(out);
@@ -222,30 +230,121 @@ function outsideRoot(rootReal: string, real: string): boolean {
   return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
-/** Open `candidate`, then decide from that fd so a swapped symlink cannot change what we read. */
-function readViaFd(candidate: string, rootReal: string | null, specPath: string): { real: string; buf: Buffer } {
+function errno(err: unknown): string | undefined {
+  return err !== null && typeof err === 'object' && 'code' in err ? String((err as { code?: unknown }).code) : undefined;
+}
+
+function cannotRead(specPath: string, candidate: string): Error {
+  return new Error(`Parse error: cannot read import "${specPath}" (resolved ${candidate})`);
+}
+
+function outsideError(specPath: string, rootReal: string): Error {
+  return new Error(`Parse error: import "${specPath}" resolves outside the import root ${rootReal}`);
+}
+
+function changedError(specPath: string): Error {
+  return new Error(`Parse error: import "${specPath}" changed while reading`);
+}
+
+/**
+ * Open for reading. `O_NONBLOCK` so a FIFO named `*.speckdl` does not hang.
+ * `O_NOFOLLOW` when the platform has it, so the last component is not a symlink.
+ * A flag the OS rejects is retried without that flag. `ENXIO` is not retried:
+ * that would block on a FIFO.
+ */
+function openRead(candidate: string): number {
+  const nonblock = typeof constants.O_NONBLOCK === 'number' ? constants.O_NONBLOCK : 0;
+  const nofollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  const sets = [constants.O_RDONLY | nonblock | nofollow];
+  if (nofollow !== 0) sets.push(constants.O_RDONLY | nonblock);
+  if (nonblock !== 0) sets.push(constants.O_RDONLY);
+  let last: unknown;
+  for (const flags of sets) {
+    try {
+      return openSync(candidate, flags);
+    } catch (err) {
+      last = err;
+      const code = errno(err);
+      if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP') throw err;
+    }
+  }
+  throw last;
+}
+
+function sameInode(a: { dev: number; ino: number }, b: { dev: number; ino: number }): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * Open `candidate` and read that fd. `realpath` of the path must stay inside
+ * `rootReal` and name the same inode as the fd, before and after the read.
+ * On Linux, `/proc/self/fd` is an extra check. A missing `/proc` (macOS,
+ * Windows, or a stub that throws `ENOENT`) is not an error.
+ */
+function readViaFd(candidate: string, rootReal: string | null, specPath: string, followed = false): { real: string; buf: Buffer } {
   let fd: number;
   try {
-    fd = openSync(candidate, 'r');
-  } catch {
-    throw new Error(`Parse error: cannot read import "${specPath}" (resolved ${candidate})`);
+    fd = openRead(candidate);
+  } catch (err) {
+    if (errno(err) === 'ELOOP' && !followed) return readSymlink(candidate, rootReal, specPath);
+    throw cannotRead(specPath, candidate);
   }
   try {
-    if (!fstatSync(fd).isFile()) {
-      throw new Error(`Parse error: cannot read import "${specPath}" (resolved ${candidate})`);
-    }
-    const fdPath = `/proc/self/fd/${fd}`;
-    const real = realpathSync(fdPath);
-    if (rootReal && outsideRoot(rootReal, real)) {
-      throw new Error(`Parse error: import "${specPath}" resolves outside the import root ${rootReal}`);
-    }
-    const buf = readFileSync(fd);
-    if (realpathSync(fdPath) !== real) {
-      throw new Error(`Parse error: import "${specPath}" changed while reading`);
-    }
-    return { real, buf };
+    return readOpened(fd, candidate, rootReal, specPath);
   } finally {
     closeSync(fd);
+  }
+}
+
+/** `O_NOFOLLOW` refused a symlink. Follow it only when the target stays inside the root. */
+function readSymlink(candidate: string, rootReal: string | null, specPath: string): { real: string; buf: Buffer } {
+  let real: string;
+  try {
+    real = realpathSync(candidate);
+  } catch {
+    throw cannotRead(specPath, candidate);
+  }
+  if (rootReal && outsideRoot(rootReal, real)) throw outsideError(specPath, rootReal);
+  return readViaFd(real, rootReal, specPath, true);
+}
+
+function readOpened(fd: number, candidate: string, rootReal: string | null, specPath: string): { real: string; buf: Buffer } {
+  const st = fstatSync(fd);
+  if (!st.isFile()) throw cannotRead(specPath, candidate);
+  let real: string;
+  try {
+    real = realpathSync(candidate);
+  } catch {
+    throw changedError(specPath);
+  }
+  if (rootReal && outsideRoot(rootReal, real)) throw outsideError(specPath, rootReal);
+  let stReal: { dev: number; ino: number };
+  try {
+    stReal = statSync(real);
+  } catch {
+    throw changedError(specPath);
+  }
+  if (!sameInode(st, stReal)) throw changedError(specPath);
+  const buf = readFileSync(fd);
+  let stAfter: { dev: number; ino: number };
+  try {
+    stAfter = statSync(real);
+  } catch {
+    throw changedError(specPath);
+  }
+  if (!sameInode(st, stAfter)) throw changedError(specPath);
+  assertProcAgrees(fd, real, specPath);
+  return { real, buf };
+}
+
+function assertProcAgrees(fd: number, real: string, specPath: string): void {
+  try {
+    const via = realpathSync(`/proc/self/fd/${fd}`);
+    if (via !== real) throw changedError(specPath);
+  } catch (err) {
+    if (errno(err) === 'ENOENT' || errno(err) === 'ENOTDIR' || errno(err) === 'EINVAL'
+      || errno(err) === 'EACCES' || errno(err) === 'EPERM' || errno(err) === 'ENOSYS') return;
+    throw err;
   }
 }
 
