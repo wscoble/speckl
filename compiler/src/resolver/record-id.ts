@@ -11,12 +11,27 @@ import { ResolverError } from './types.js';
  * Each `/` segment must pass UTS #39's single-script test on
  * Script_Extensions, ignoring Common and Inherited. The augmented sets are
  * allowed: Japanese (Han, Hiragana, Katakana), Korean (Han, Hangul), and
- * Chinese (Han, Bopomofo). Decimal digits do not pick a script. Every
- * decimal digit in a segment must belong to one numbering system, so
- * `2০26` is rejected and `report१२` is kept. U+200C and U+200D are allowed
- * only where IDNA (RFC 5892) allows them: after a virama, or U+200C between
- * joining Arabic letters. A mark (`\p{M}`) is allowed only immediately
- * after a letter.
+ * Chinese (Han, Bopomofo). Han plus Latin in one segment is rejected on
+ * purpose. That is stricter than UTS #39's highly restrictive level, which
+ * would allow Latin beside those augmented sets.
+ *
+ * Which scripts exist depends on this process's ICU (the Node version).
+ * A candidate name the engine does not know is ignored. A code point that
+ * is a letter, mark, or number, is not Common or Inherited, and matches no
+ * known Script_Extensions value is its own script. It does not mix with
+ * anything else, including another code point of an unknown script. An
+ * older ICU that has not assigned those letters rejects them as
+ * non-letters, which is stricter, not looser.
+ *
+ * Decimal digits do not pick a script. Every decimal digit in a segment
+ * must belong to one numbering system, so `2০26` is rejected and
+ * `report१२` is kept. U+200C and U+200D are allowed only where IDNA
+ * (RFC 5892) allows them, and not as the last character of a segment:
+ * after a virama and before another character, or U+200C between joining
+ * Arabic letters. The virama set is the ccc=9 / virama / invisible-stacker
+ * points shipped below. A virama missing from that set fails closed: a
+ * join control after it is rejected. A mark (`\p{M}`) is allowed only
+ * immediately after a letter.
  *
  * A segment is not empty, `.`, or `..`, so `a//b`, `a/`, `/a`, `/`, `.`,
  * `..`, and `a/../b` are rejected. Ids are map keys, not paths. They are
@@ -29,6 +44,8 @@ import { ResolverError } from './types.js';
 const NAME_PATTERN = /^[\p{L}\p{N}._~+-]+$/u;
 
 const CONTROL = /[\u0000-\u001F\u007F]/;
+const COMMON = /^\p{Script=Common}$/u;
+const INHERITED = /^\p{Script=Inherited}$/u;
 
 /**
  * Scripts a record id may use. A character that matches none of these and is
@@ -64,6 +81,7 @@ const SCRIPT_NAME_CANDIDATES = [
   'Tangsa', 'Tangut', 'Telugu', 'Thaana', 'Thai', 'Tibetan', 'Tifinagh',
   'Tirhuta', 'Todhri', 'Toto', 'Tulu_Tigalari', 'Ugaritic', 'Vai', 'Vithkuqi',
   'Wancho', 'Warang_Citi', 'Yezidi', 'Yi', 'Zanabazar_Square',
+  'Sidetic', 'Tai_Yo', 'Tolong_Siki', 'Beria_Erfe',
 ] as const;
 
 const SCRIPT_EXTENSIONS: ReadonlyArray<readonly [string, RegExp]> = SCRIPT_NAME_CANDIDATES.flatMap(
@@ -106,8 +124,10 @@ const VIRAMA = new Set<number>([
   0x0dca, 0x1039, 0x103a, 0x1714, 0x1734, 0x17d2, 0x1a60, 0x1b44, 0xa806,
   0xa8c4, 0xa953, 0xa9c0, 0xaaf6, 0xabed, 0x10a3f, 0x11046, 0x110b9, 0x11133,
   0x111c0, 0x11235, 0x112ea, 0x1134d, 0x11442, 0x114c2, 0x115bf, 0x1163f,
-  0x116b6, 0x11839, 0x1193e, 0x119e0, 0x11a34, 0x11a47, 0x11a99, 0x11c3f,
-  0x11d45, 0x11d97,
+  0x116b6, 0x11839, 0x1193e, 0x119e0,   0x11a34, 0x11a47, 0x11a99, 0x11c3f,
+  0x11d44, 0x11d45, 0x11d97, 0x11f41, 0x11f42,
+  0x0e3a, 0x0eba, 0x0f84, 0x0d3b, 0x0d3c, 0x1baa, 0x1bab, 0x1bf2, 0x1bf3,
+  0x1715, 0x2d7f, 0xa82c, 0x11070, 0x1107f, 0x11134, 0x1172b, 0x1193d,
 ]);
 
 /** Arabic-script letters that join only to the right (Alef, Dal, Reh, Waw, and their kin). */
@@ -228,7 +248,7 @@ function assertSegment(segment: string, id: string, where: string): void {
     const cp = cps[i]!;
     const ch = String.fromCodePoint(cp);
     if (cp === ZWJ || cp === ZWNJ) {
-      if (!contextJoiners(cps, i, cp)) {
+      if (i === cps.length - 1 || !contextJoiners(cps, i, cp)) {
         throw new ResolverError(
           `${where}: record id "${id}" has a join control outside the IDNA contexts`,
           { code: 'malformed', recordId: id },
@@ -300,14 +320,24 @@ const scriptCache = new Map<number, readonly string[]>();
 
 function scriptExtensions(cp: number): readonly string[] {
   const cached = scriptCache.get(cp);
-  if (cached) return cached;
+  if (cached !== undefined) return cached;
   const ch = String.fromCodePoint(cp);
   const found: string[] = [];
   for (const [name, pattern] of SCRIPT_EXTENSIONS) {
     if (pattern.test(ch)) found.push(name);
   }
-  scriptCache.set(cp, found);
-  return found;
+  let result: readonly string[] = found;
+  if (
+    found.length === 0
+    && !COMMON.test(ch)
+    && !INHERITED.test(ch)
+    && /^[\p{L}\p{M}\p{N}]$/u.test(ch)
+  ) {
+    // One code point, one script. Two unknown letters do not form a word.
+    result = [`U+${cp.toString(16)}`];
+  }
+  scriptCache.set(cp, result);
+  return result;
 }
 
 function numberingBase(cp: number): number | null {

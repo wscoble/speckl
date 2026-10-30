@@ -6,9 +6,10 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { constructFromEvents, EVENT_ALIAS, parseEvents } from 'js-yaml';
 import { plainCopy, plainRecord } from './plain.js';
 import { assertMeasurementClass, assertRecordId } from './record-id.js';
@@ -56,10 +57,18 @@ interface StoredRecord {
  * to that directory,
  * including a symlink such as macOS `/tmp`, are followed and are not
  * errors. Every read uses that resolved path. A symlink found under the
- * resolved root fails the load. It is not followed and it is not skipped.
+ * resolved root fails the load, including one swapped in after the listing.
+ * Each listed entry's device and inode are recorded with `lstat`. The open
+ * uses `O_RDONLY | O_NONBLOCK` and `O_NOFOLLOW` where the platform has it.
+ * `fstat` on that descriptor must be the same device and inode, and a
+ * record must be a regular file. On Linux, `readlink` of `/proc/self/fd/N`
+ * must still point inside the resolved root. A mismatch, or a check that
+ * cannot be done, is `malformed`. Without `O_NOFOLLOW` (Windows), the open
+ * may follow a symlink and the device/inode check then fails closed.
  * A hard link has no symlink bit and no second name the kernel will report,
  * so it loads. A Markdown file whose first line is blank, before `---`,
- * has no frontmatter and is skipped.
+ * has no frontmatter and is skipped. Replacing a file's bytes without
+ * changing its device and inode is not detected.
  *
  * A file over {@link MAX_RECORD_BYTES}, or a directory nested deeper than
  * {@link MAX_DIRECTORY_DEPTH}, fails the load. YAML anchors and aliases are
@@ -100,29 +109,50 @@ function loadRecords(rootDir: string): Map<string, StoredRecord> {
 
   const records = new Map<string, StoredRecord>();
   const origins = new Map<string, string>();
-  for (const file of markdownFiles(resolved, 0)) {
-    const stored = readRecord(file);
+  for (const file of markdownFiles(resolved, 0, resolved)) {
+    const stored = readRecord(file, resolved);
     if (!stored) continue;
     const previous = origins.get(stored.id);
     if (previous) {
       throw new ResolverError(
-        `${file}: record id "${stored.id}" is already defined in ${previous}`,
+        `${file.path}: record id "${stored.id}" is already defined in ${previous}`,
         { code: 'malformed', recordId: stored.id },
       );
     }
-    origins.set(stored.id, file);
+    origins.set(stored.id, file.path);
     records.set(stored.id, stored.record);
   }
   return records;
 }
 
-function markdownFiles(dir: string, depth: number): string[] {
+interface ListedEntry {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+function markdownFiles(dir: string, depth: number, root: string): ListedEntry[] {
   if (depth > MAX_DIRECTORY_DEPTH) {
     throw new ResolverError(
       `record directory is nested more than ${MAX_DIRECTORY_DEPTH} levels: ${dir}`,
       { code: 'malformed' },
     );
   }
+  const found: ListedEntry[] = [];
+  for (const entry of listDirectory(dir)) {
+    if (entry.kind === 'dir') {
+      const fd = openListed(entry, root, true);
+      closeSync(fd);
+      found.push(...markdownFiles(entry.path, depth + 1, root));
+    } else if (entry.kind === 'file' && isMarkdownName(entry.name)) {
+      found.push(entry);
+    }
+  }
+  found.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return found;
+}
+
+function listDirectory(dir: string): Array<ListedEntry & { name: string; kind: 'dir' | 'file' | 'other' }> {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -133,23 +163,29 @@ function markdownFiles(dir: string, depth: number): string[] {
       cause: err,
     });
   }
-  const found: string[] = [];
+  const listed = [];
   for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isSymbolicLink()) {
+    const entryPath = join(dir, entry.name);
+    let st;
+    try {
+      st = lstatSync(entryPath);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new ResolverError(`cannot read record ${entryPath}: ${detail}`, {
+        code: 'malformed',
+        cause: err,
+      });
+    }
+    if (st.isSymbolicLink() || entry.isSymbolicLink()) {
       throw new ResolverError(
-        `${path}: symlink in a record directory is not followed and is not skipped`,
+        `${entryPath}: symlink in a record directory is not followed and is not skipped`,
         { code: 'malformed' },
       );
     }
-    if (entry.isDirectory()) {
-      found.push(...markdownFiles(path, depth + 1));
-    } else if (entry.isFile() && isMarkdownName(entry.name)) {
-      found.push(path);
-    }
+    const kind = st.isDirectory() ? 'dir' as const : st.isFile() ? 'file' as const : 'other' as const;
+    listed.push({ name: entry.name, path: entryPath, dev: st.dev, ino: st.ino, kind });
   }
-  found.sort();
-  return found;
+  return listed;
 }
 
 function isMarkdownName(name: string): boolean {
@@ -157,18 +193,18 @@ function isMarkdownName(name: string): boolean {
   return lower.endsWith('.md') || lower.endsWith('.markdown');
 }
 
-function readRecord(file: string): { id: string; record: StoredRecord } | undefined {
-  let text = readRecordDescriptor(file);
+function readRecord(file: ListedEntry, root: string): { id: string; record: StoredRecord } | undefined {
+  let text = readRecordDescriptor(file, root);
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  const data = frontmatter(text, file);
+  const data = frontmatter(text, file.path);
   if (!data) return undefined;
 
   const idValue = data.id;
   if (typeof idValue !== 'string') {
-    throw new ResolverError(`${file}: id must be a non-empty string`, { code: 'malformed' });
+    throw new ResolverError(`${file.path}: id must be a non-empty string`, { code: 'malformed' });
   }
-  const id = assertRecordId(idValue, file);
-  const measurementClass = assertMeasurementClass(measurementClassOf(data, file), file);
+  const id = assertRecordId(idValue, file.path);
+  const measurementClass = assertMeasurementClass(measurementClassOf(data, file.path), file.path);
   delete data.id;
   delete data.measurement_class;
   delete data.measurementClass;
@@ -206,44 +242,90 @@ function frontmatter(text: string, file: string): Record<string, unknown> | unde
   }
 }
 
-function readRecordDescriptor(file: string): string {
-  if ((constants.O_NOFOLLOW ?? 0) === 0) {
-    throw new ResolverError(
-      `${file}: this platform cannot open a record without following symlinks`,
-      { code: 'malformed' },
-    );
+function readRecordDescriptor(file: ListedEntry, root: string): string {
+  const fd = openListed(file, root, false);
+  try {
+    return readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
   }
+}
+
+function openListed(entry: ListedEntry, root: string, directory: boolean): number {
+  let flags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+  if (constants.O_NOFOLLOW) flags |= constants.O_NOFOLLOW;
+  if (directory && constants.O_DIRECTORY) flags |= constants.O_DIRECTORY;
   let fd: number;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fd = openSync(entry.path, flags);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     const detail = err instanceof Error ? err.message : String(err);
-    if (code === 'ELOOP') {
+    if (code === 'ELOOP' || code === 'ENOTDIR' || code === 'EAGAIN') {
       throw new ResolverError(
-        `${file}: symlink in a record directory is not followed and is not skipped`,
+        `${entry.path}: symlink in a record directory is not followed and is not skipped`,
         { code: 'malformed', cause: err },
       );
     }
-    throw new ResolverError(`cannot read record ${file}: ${detail}`, {
+    throw new ResolverError(`cannot read record ${entry.path}: ${detail}`, {
       code: 'malformed',
       cause: err,
     });
   }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile()) {
-      throw new ResolverError(`${file}: record is not a regular file`, { code: 'malformed' });
-    }
-    if (st.size > MAX_RECORD_BYTES) {
+    if (st.dev !== entry.dev || st.ino !== entry.ino) {
       throw new ResolverError(
-        `${file}: record is ${st.size} bytes, over the ${MAX_RECORD_BYTES} byte limit`,
+        `${entry.path}: directory entry changed after listing`,
         { code: 'malformed' },
       );
     }
-    return readFileSync(fd, 'utf8');
-  } finally {
+    if (directory) {
+      if (!st.isDirectory()) {
+        throw new ResolverError(`${entry.path}: record directory is not a directory`, {
+          code: 'malformed',
+        });
+      }
+    } else if (!st.isFile()) {
+      throw new ResolverError(`${entry.path}: record is not a regular file`, { code: 'malformed' });
+    } else if (st.size > MAX_RECORD_BYTES) {
+      throw new ResolverError(
+        `${entry.path}: record is ${st.size} bytes, over the ${MAX_RECORD_BYTES} byte limit`,
+        { code: 'malformed' },
+      );
+    }
+    assertFdInsideRoot(fd, root, entry.path);
+    return fd;
+  } catch (err) {
     closeSync(fd);
+    throw err;
+  }
+}
+
+function assertFdInsideRoot(fd: number, root: string, label: string): void {
+  if (process.platform !== 'linux') return;
+  let linked: string;
+  try {
+    linked = readlinkSync(`/proc/self/fd/${fd}`);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`${label}: cannot verify the opened path: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
+  }
+  let resolved: string;
+  try {
+    resolved = realpathSync.native(linked);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`${label}: cannot verify the opened path: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
+  }
+  if (resolved !== root && !resolved.startsWith(root.endsWith(sep) ? root : root + sep)) {
+    throw new ResolverError(`${label}: opened path is outside the record root`, { code: 'malformed' });
   }
 }
 
