@@ -263,9 +263,11 @@ it couples `at global`. That cap is below the root's trust, so the cap is
 what binds. A root trusted only at `CorpusConsistent` would make both caps
 unreachable.
 
-Every `&` in this speck must resolve. The Task 4.2 test fixture provides
-these five records: `backup/exampleco/2026-09-19`,
-`backup/exampleco/restore-probe`, `outage/exampleco/2026-09-12`,
+Every `&` in this speck must resolve. There are six: the backup evidence,
+the restore-probe evidence, the outage condition, the mirror-404 `covers`
+edge, and the two horizons. The Task 4.2 test fixture provides these six
+records: `backup/exampleco/2026-09-19`, `backup/exampleco/restore-probe`,
+`outage/exampleco/2026-09-12`, `incident/exampleco-mirror-404`,
 `record/horizon-global`, and `record/horizon-sync-host`.
 
 ### 2.3 Claims surface
