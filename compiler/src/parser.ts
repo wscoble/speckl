@@ -1653,8 +1653,9 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     // Check if prev line ends with a continuation character (brace or paren, NOT comma)
     const prevIsContinuation = /[{(]\s*$/.test(prevLine);
     // A type continues onto this line when `<` `(` `[` `{` is still open,
-    // the previous line ended with `|`, or this line starts a union alternative.
-    const continues = angleUnbalanced(acc) || acc.trimEnd().endsWith('|') || line.startsWith('|');
+    // the code (not a comment) ended with `|`, or this line starts a union alternative.
+    // `x: Nat // a |` must not swallow the next field.
+    const continues = angleUnbalanced(acc) || maskCode(acc).text.trimEnd().endsWith('|') || line.startsWith('|');
     // While the accumulated text is unbalanced (a multi-line type expression,
     // e.g. `authorizationCodes: Map(AuthorizationCode, {` opening a multi-
     // line inline record), join every line until brackets balance — record
