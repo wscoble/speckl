@@ -14,9 +14,11 @@ not a customer and not a production incident.
 The thread that produced this design ran through four external anchors:
 
 1. **Jonathan Gorard on Theories of Everything**
-   (<https://youtu.be/oQypVVv1u1o>) — applied mathematician, co-founder of the
-   Wolfram Physics Project, and co-founder and CEO of Lanyon AI
-   (<https://lanyon.ai/company/>, the company's own team page). Core claim: the
+   (<https://youtu.be/oQypVVv1u1o>) — applied mathematician, one of the
+   cofounders of the Wolfram Physics Project (the project's own people page,
+   <https://www.wolframphysics.org/pages/people/jonathan-gorard/>), and
+   co-founder and CEO of Lanyon AI (<https://lanyon.ai/company/>, the company's
+   own team page). Core claim: the
    recent AI capability explosion happened in code and math because those
    domains have formal verification substrates (compilers, type checkers, proof
    assistants). Capabilities train via reinforcement learning with verifiable
@@ -100,8 +102,8 @@ Eleven primitives:
 |---|---|---|
 | `claim` | block member | Typed proposition. The unit of reasoning. |
 | `evidence` | member of `claim` | `&` pointer at a record. |
-| `provenance` | member of `claim` | Attribution chain. Must terminate at a `root`. |
-| `ensured` | member of `claim` | Positive boundary. Lowers like a v0.3 `invariant`. |
+| `provenance` | member of `claim` | Internal edge to a `root` or a `claim`. Not an `&` pointer. |
+| `ensured` | member of `claim` | Named boolean expression. Lowers like a v0.3 `invariant`. |
 | `except` | member of `claim` | Negation boundary. Default logic. |
 | `root` | block member | Axiom. Zero evidence. Declares `trust`. |
 | `coupling` | member of `claim` | Scale term: `coupling <Term> at <Layer>`. |
@@ -127,9 +129,20 @@ Names that are not in this set:
 
 `provenance` is also an existing top-level speck member (`provenance { }`
 with PROV-O clauses, SPEC §5). That production is unchanged. Inside
-`claim { }`, `provenance &id` is the claims attribution edge. The two
-productions share a keyword and are distinguished by position: a top-level
-`provenance` block versus a line inside a claim.
+`claim { }`, `provenance` is a different production: an internal name, not
+an `&` record. The two productions share a keyword and are distinguished by
+position.
+
+**How a claim reaches a root.** A support edge names a `root` or another
+`claim` in the same speck. The block form writes the bare name
+(`provenance ExampleCoAgreement2026`). The claims surface writes `*Name*`
+(`provenance *ExampleCoAgreement2026*`). Both lower to an internal reference.
+An `&` id is never a support edge. `evidence`, `covers`, and `horizon` are
+the `&` productions. They are resolver checks. They do not connect a claim
+to a root. Task 2 walks the internal names. The example below is the edge
+`BackupWithinRTO` to the root `ExampleCoAgreement2026`, so the rootless
+check passes. A `commit` names claims by the same internal-reference rule.
+Those edges are composition. They are not a substitute for `provenance`.
 
 ### 2.2 Canonical block form
 
@@ -153,13 +166,20 @@ speck ExampleCoBackup {
 
   claim BackupWithinRTO(client ExampleCo, window 24h): obligation {
     evidence &backup/exampleco/2026-09-19
-    provenance &agreement/exampleco-2026
-    ensured &invariant/restore-test-passes
+    provenance ExampleCoAgreement2026
+    ensured RestoreWithinWindow: ageHours <= 24
     except &outage/exampleco/2026-09-12 -> RTOx2
     coupling wan at global
     coupling local at sync-host
     covers &incident/exampleco-mirror-404
     verdict-cap Corrected
+  }
+
+  claim RestoreTestPasses: fact {
+    evidence &backup/exampleco/restore-probe
+    provenance ExampleCoAgreement2026
+    ensured ProbePassed: failures == 0
+    verdict-cap Verified
   }
 
   layer global {
@@ -184,11 +204,20 @@ speck ExampleCoBackup {
 
 Reference sigils:
 
-- `&id` — external record reference. It must exist. Resolution is a check
-  against the resolver registry. `&` never defines a record. It only refers.
-  The sigil is not part of the record id. The registry key is `id`.
-- a bare name in a `claims:` list — internal claim reference.
-- `and` — conjunction of claim references.
+- `&id` — external record reference, used by `evidence`, `covers`, `except`,
+  and `horizon`. It must exist. Resolution is a check against the resolver
+  registry. `&` never defines a record. It only refers. The sigil is not part
+  of the record id. The registry key is `id`. `&` is not a `provenance` edge.
+- a bare name — internal reference, used by `provenance` and by `claims:`.
+  It names a `root` or a `claim` in the same speck.
+- `and` — conjunction of claim references inside `claims:`.
+
+`ensured <Name>: <boolean expression>` is the positive boundary. The
+expression is the existing SpeckDL boolean language, the same language an
+`invariant` body uses. It lowers to that invariant expression and is what
+the Z3 backend emits. An `&` record is not an expression, so `ensured` is
+not a pointer. The evidence pointer names the measurement. The `ensured`
+line is the obligation over it (`ageHours <= 24` in the example).
 
 `except <condition> -> <consequence>` is the default-logic boundary.
 `<condition>` is an `&` record reference or a boolean expression in the
@@ -200,46 +229,62 @@ See §2.4.
 
 `commit` is the composition member. `claims:` lists internal claim references
 joined by `and`. In the block form those references are bare names, the same
-way `next: TurnOn | TurnOff` names actions.
+way `next: TurnOn | TurnOff` names actions. Every name in the list is a
+`claim` in the same speck. `RestoreTestPasses` is the second claim above.
 
 ### 2.3 Claims surface
 
 The claims surface is the condensed front-end: unbraced, indentation-scoped,
 breadth-first. It is a parser, not a second language. A claims-surface file
 and a block-form file of the same speck lower to identical IR (the same
-nodes, names, reference kinds, caps, and trust values). Source layout is
-allowed to differ. The IR is not.
+speck name, the same nodes, names, reference kinds, caps, and trust values).
+Source layout is allowed to differ. The IR is not. The surface starts with
+the same `speck` name the block form wraps in braces. Members are indented
+under that header.
 
-Internal references on this surface are written `*Name*`. That token and the
-bare name in a block-form `claims:` list lower to the same internal reference.
-`&` stays reserved for external records on both surfaces.
+Internal references on this surface are written `*Name*`, with the name
+between the asterisks. That token and the bare name in the block form lower
+to the same internal reference. `&` stays reserved for external records on
+both surfaces.
 
 ```
-root ExampleCoAgreement2026
-  authority "exampleco-ops"
-  basis "fictional service agreement, signed 2026-08"
-  trust CorpusConsistent
+speck ExampleCoBackup
 
-claim BackupWithinRTO(client ExampleCo, window 24h): obligation
-  evidence &backup/exampleco/2026-09-19
-  provenance &agreement/exampleco-2026
-  ensured &invariant/restore-test-passes
-  except &outage/exampleco/2026-09-12 -> RTOx2
-  coupling wan at global
-  coupling local at sync-host
-  covers &incident/exampleco-mirror-404
-  verdict-cap Corrected
+  root ExampleCoAgreement2026
+    authority "exampleco-ops"
+    basis "fictional service agreement, signed 2026-08"
+    trust CorpusConsistent
 
-layer global
-  horizon &record/horizon-global
+  claim BackupWithinRTO(client ExampleCo, window 24h): obligation
+    evidence &backup/exampleco/2026-09-19
+    provenance *ExampleCoAgreement2026*
+    ensured RestoreWithinWindow: ageHours <= 24
+    except &outage/exampleco/2026-09-12 -> RTOx2
+    coupling wan at global
+    coupling local at sync-host
+    covers &incident/exampleco-mirror-404
+    verdict-cap Corrected
 
-commit ExampleCo3Dot2
-  claims *BackupWithinRTO* and *RestoreTestPasses*
+  claim RestoreTestPasses: fact
+    evidence &backup/exampleco/restore-probe
+    provenance *ExampleCoAgreement2026*
+    ensured ProbePassed: failures == 0
+    verdict-cap Verified
+
+  layer global
+    horizon &record/horizon-global
+
+  layer sync-host
+    horizon &record/horizon-sync-host
+
+  commit ExampleCo3Dot2
+    claims *BackupWithinRTO* and *RestoreTestPasses*
 ```
 
 The IR both surfaces lower to:
 
 ```
+speck ExampleCoBackup
 root ExampleCoAgreement2026 {
   authority: "exampleco-ops"
   basis: "fictional service agreement, signed 2026-08"
@@ -249,16 +294,24 @@ claim BackupWithinRTO {
   kind: obligation
   args: [client ExampleCo, window 24h]
   evidence: [&backup/exampleco/2026-09-19]
-  provenance: [&agreement/exampleco-2026]
-  ensured: [&invariant/restore-test-passes]
+  provenance: [ExampleCoAgreement2026]          // internal, the root
+  ensured: [{ name: RestoreWithinWindow, expr: "ageHours <= 24" }]
   except: [{ condition: &outage/exampleco/2026-09-12, consequence: RTOx2 }]
   coupling: [{ term: wan, layer: global }, { term: local, layer: sync-host }]
   covers: [&incident/exampleco-mirror-404]
   verdictCap: Corrected
 }
+claim RestoreTestPasses {
+  kind: fact
+  evidence: [&backup/exampleco/restore-probe]
+  provenance: [ExampleCoAgreement2026]
+  ensured: [{ name: ProbePassed, expr: "failures == 0" }]
+  verdictCap: Verified
+}
 layer global { horizon: &record/horizon-global }
+layer sync-host { horizon: &record/horizon-sync-host }
 commit ExampleCo3Dot2 {
-  claims: [BackupWithinRTO, RestoreTestPasses]   // internal refs
+  claims: [BackupWithinRTO, RestoreTestPasses]  // internal refs
 }
 ```
 
@@ -338,8 +391,9 @@ derived ≤ trust(root)
 
 when its only support is the root. Claim premises are the claims named by
 `provenance` edges that land on claims, and the claims named by a `commit`.
-The root at the end of a provenance chain contributes `trust(root)` on the
-right-hand side. It is not also inserted into the `min`. Evidence records
+A `provenance` edge that lands on a root is the end of the chain. It
+contributes `trust(root)` on the right-hand side. It is not also inserted
+into the `min`. Evidence records
 are not verdicts and are not premises of this inequality. Entailment never
 upgrades a verdict: the derived verdict cannot outrank the weakest premise,
 and that weakest premise cannot outrank the root's declared trust.
@@ -373,7 +427,9 @@ testing, not metaphysics.
   a compile error.
 - **covers `&incident/id`** — this revision claims to address that incident.
   The generated replay tests check the edge. `speckl-incidents --check`
-  fails when a manifest incident has no `covers` edge. It does not inspect
+  fails when an id in the incident manifest has no `covers` edge. The
+  incident manifest is the incident ids only. A lifecycle record is not on
+  it, and neither is every resolver record. `--check` does not inspect
   coupling terms.
 
 ## 3. The discipline (the actual moat)
@@ -420,8 +476,8 @@ held, with verdict history, beyond an SLA paragraph in a contract.
 The two sketches below are fictional teaching examples. They use ExampleCo
 so the shape can be shown in a public repository.
 
-**Fact claim, corpus against wire.** `NoAckedProbes(2026-09-07)` is a `fact`.
-Twelve fictional probe rows each say `no-ack`. The verdict is
+**Fact claim, corpus against wire.** `NoAckedProbes(2026-02-11)` is a `fact`.
+Four fictional probe rows each say `no-ack`. The verdict is
 `CorpusConsistent`, and it is not `Verified`: the stored snapshot is not the
 wire. The refinement is an evidence-boundary change. It is also the first
 failure-taxonomy entry for a missing `routing` primitive.
@@ -431,10 +487,10 @@ records so the terms stay distinct:
 
 | Record | Term | What the fiction is for |
 |---|---|---|
-| `incident/exampleco-mirror-404` | upstream | `mirror-host` answered 404 for the object the sync requested. This is the record the `covers` edge cites. |
-| `incident/exampleco-pebblekv` | vendor-api | The fictional `PebbleKV` API returned an error. The term is the vendor API, not the caller. |
-| `incident/exampleco-quill` | configuration | The fictional `Quill` ledger was never configured, and no root declares that configuration. A missing root is a configuration term. |
-| `lifecycle/exampleco-keepsake-tombstone` | lifecycle, not an incident | A fictional `Keepsake` tombstone is ordinary record lifecycle. It is not an `ensured` violation, it does not enter the incident ledger, and it does not need a `covers` edge. |
+| `incident/exampleco-mirror-404` | upstream | `mirror-host` answered 404 for the object the sync requested. Incident-manifest id. The ops spec cites it with `covers`. |
+| `incident/exampleco-pebblekv` | vendor-api | The fictional `PebbleKV` API returned an error. The term is the vendor API, not the caller. Incident-manifest id, with its own `covers` edge. |
+| `incident/exampleco-quill` | configuration | The fictional `Quill` ledger was never configured, and no root declares that configuration. A missing root is a configuration term. Incident-manifest id, with its own `covers` edge. |
+| `lifecycle/exampleco-keepsake-tombstone` | lifecycle, not an incident | A fictional `Keepsake` tombstone is ordinary record lifecycle. It is not an `ensured` violation. It is not an incident-manifest id, it does not enter the incident ledger, and it does not need a `covers` edge. |
 
 ## 5. Incident to regression test (the pipeline)
 
@@ -461,8 +517,10 @@ gate. The replay is against the mocked term boundary by design. It shows
 the revision handles the recorded shape. It does not show that the world
 will not fail differently next time (the open-world rule survives).
 
-`speckl-incidents --check` implements only the covers gate: every incident
-id in the manifest has a `covers` edge in some spec revision. Deleting a
+`speckl-incidents --check` implements only the covers gate. Its manifest is
+the incident manifest: the three incident ids in section 4, and not the
+Keepsake lifecycle record, and not every record the resolver can see. Every
+id on that manifest needs a `covers` edge in some spec revision. Deleting a
 coupling term does not, by itself, make `--check` fail.
 
 ## 6. Generate the world it describes
@@ -509,14 +567,15 @@ architecture that observability and data-source integrations already rely on:
   two queries, existence (compile-time) and shape/lookup (runtime). The
   in-tree reference backends are `filesystem` (Markdown with YAML
   frontmatter) and `static-manifest` (a JSON map of record id to measurement
-  class). The SPI belongs in `compiler/src/resolver/index.ts` and is
-  exported from the package as `speckl/resolver` (Task 3). A backend that
-  lives outside this repository implements that interface and registers
-  itself. There is no
-  in-tree adapter for Greybeard Core. A Greybeard Core resolver adapter, if
-  any, lives out of tree, is registered through that plug-in point, and is
-  not imported by this repository. The compiler has no hard dependency on it
-  and does not reach it over the network.
+  class). The SPI belongs in `compiler/src/resolver/index.ts` (Task 3).
+  The package export name is `speckl/resolver`, for an install from a
+  checkout or a packed tarball. Speckl is not published to the npm registry.
+  A backend that lives outside this repository implements that interface and
+  registers itself. There is no in-tree adapter for Greybeard Core. A
+  Greybeard Core resolver adapter, if any, lives out of tree, is registered
+  through that plug-in point, and is not imported by this repository. The
+  compiler has no hard dependency on it and does not reach it over the
+  network.
 - The incident ledger is a runtime subsystem behind the resolver registry.
 - Surfaces are front-ends: block syntax and the claims surface both lower to
   the same IR. Any new surface is a new parser, never a fork.
@@ -527,9 +586,13 @@ architecture that observability and data-source integrations already rely on:
   Theories of Everything, <https://youtu.be/oQypVVv1u1o>
 - Lanyon AI team page (Gorard's co-founder and CEO title),
   <https://lanyon.ai/company/>
+- Wolfram Physics Project, Jonathan Gorard (cofounder, on the project's
+  people page), <https://www.wolframphysics.org/pages/people/jonathan-gorard/>
 - Philip Mannheim, "Dark Matter and General Relativity Explained FROM
   SCRATCH," Theories of Everything, <https://youtu.be/HJcQLHqOziM>
-- Catala: <https://catala-lang.org>; Inria Apollo program page
+- Catala: <https://catala-lang.org>
+- Inria Programme Apollo, Catala project page,
+  <https://apollo.inria.fr/projets/catala/>
 - CNAF press release, 8 June 2026, "La Cnaf et Inria s'engagent ensemble
   pour développer Catala":
   <https://caf.fr/professionnels/presse/publications/la-cnaf-et-inria-s-engagent-ensemble-pour-developper-catala-une-solution-souveraine-de-calcul-des>
