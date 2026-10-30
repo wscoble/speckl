@@ -196,6 +196,7 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
         member.expr = expr;
       }
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
+      if (!member) rejectUnparsed(filePath, rawLine, i + 1, line);
       if (closeCount < openCount) {
         const endIdx = blockEndLine(byLine, i + 1, braceCount + openCount, lines.length);
         if (member) {
@@ -217,6 +218,10 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
     if (line.startsWith('constraint ') || line.startsWith('verify ') || line.startsWith('verify:') || line.startsWith('constraint:')) {
       const member = parseMultiLineConstraintVerify(lines, i);
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
+      if (!member) {
+        if (openingBraceOnNextLine(lines, i)) rejectBraceOnNextLine(filePath, rawLine, i + 1);
+        rejectUnparsed(filePath, rawLine, i + 1, line);
+      }
       if (member) {
         const constraintStartLine = i + 1;
         while (i + 1 < lines.length) {
@@ -248,11 +253,20 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
       break;
     }
 
-    const member = parseMember(line);
-    if (member) {
-      members.push(Object.assign(member, { startLine: i + 1, endLine: i + 1 }));
-      speckEndLine = i + 1;
+    // `type Name = ...` is not stored on the AST (the printer says so).
+    // Every other non-blank, non-comment line here is a member or an error.
+    if (/^type\s+\S/.test(line) && !line.includes('{')) {
+      if (openingBraceOnNextLine(lines, i)) rejectBraceOnNextLine(filePath, rawLine, i + 1);
+      i++;
+      continue;
     }
+    if (openingBraceOnNextLine(lines, i) && !line.includes('{')) {
+      rejectBraceOnNextLine(filePath, rawLine, i + 1);
+    }
+    const member = parseMember(line);
+    if (!member) rejectUnparsed(filePath, rawLine, i + 1, line);
+    members.push(Object.assign(member, { startLine: i + 1, endLine: i + 1 }));
+    speckEndLine = i + 1;
     i++;
   }
 
@@ -277,6 +291,34 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
  */
 function parseMemberAt(lines: string[], start: number): MemberNode | null {
   return parseMemberBlock(lines, start);
+}
+
+function columnOf(raw: string): number {
+  const lead = /^\s*/.exec(raw);
+  return (lead ? lead[0].length : 0) + 1;
+}
+
+/** Next line that is not blank and not a comment. `-1` at EOF. */
+function nextCodeLine(lines: string[], from: number): number {
+  for (let j = from; j < lines.length; j++) {
+    const t = lines[j].trim();
+    if (!t || t.startsWith('//') || t.startsWith('/*')) continue;
+    return j;
+  }
+  return -1;
+}
+
+function openingBraceOnNextLine(lines: string[], index: number): boolean {
+  const n = nextCodeLine(lines, index + 1);
+  return n >= 0 && lines[n].trim().startsWith('{');
+}
+
+function rejectUnparsed(file: string | undefined, raw: string, lineNo: number, trimmed: string): never {
+  throw parseErrorAt(file, lineNo, columnOf(raw), `unrecognized member "${trimmed}"`);
+}
+
+function rejectBraceOnNextLine(file: string | undefined, raw: string, lineNo: number): never {
+  throw parseErrorAt(file, lineNo, columnOf(raw), 'opening "{" must be on the same line as the member header');
 }
 
 function bucketByLine(tokens: SpeckToken[]): SpeckToken[][] {
