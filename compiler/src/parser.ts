@@ -414,6 +414,8 @@ export interface TypeExpr {
 
 export interface AST {
   specks: SpeckNode[];
+  /** File-level imports, outside any speck. Omitted when the file has none. */
+  imports?: ImportNode[];
 }
 
 /**
@@ -427,10 +429,19 @@ export function parseSpeckFile(filePath: string): AST {
 /**
  * Parse SpeckDL content and return the AST
  */
+const sourceTextOf = new WeakMap<AST, string>();
+
+/** The text `parseSpeckContent` parsed into `ast`. Absent for a hand-built tree. */
+export function parsedSource(ast: AST): string | undefined {
+  return sourceTextOf.get(ast);
+}
+
 export function parseSpeckContent(content: string, filePath?: string): AST {
   parseFile = filePath ?? '';
   try {
-    return parseSpeckDocument(content, filePath);
+    const ast = parseSpeckDocument(content, filePath);
+    sourceTextOf.set(ast, content);
+    return ast;
   } finally {
     parseFile = '';
   }
@@ -1104,14 +1115,37 @@ function parseActionHeader(line: string): ActionNode | null {
   return { type: 'action', name, params, statements: [] };
 }
 
+/** Drop a trailing `//` comment without cutting a `//` inside quotes. */
+function stripTrailingLineComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '/' && line[i + 1] === '/') return line.slice(0, i);
+  }
+  return line;
+}
+
 export function parseImportStatement(line: string): ImportNode {
-  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?/);
+  const stripped = stripTrailingLineComment(line).trim();
+  const match = stripped.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.*)\6)?\s*$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
   }
-  
-  const [, , path, , alias, , version, , hash] = match;
-  
+
+  const path = match[2];
+  const alias = match[3];
+  const version = match[5];
+  const hash = match[7];
+  if (hash !== undefined && hash.replace(/^sha256:/i, '') === '') {
+    throw new Error(`Failed to parse import statement: ${line}`);
+  }
+
   return {
     type: 'import',
     path,
@@ -1609,6 +1643,7 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     commentState = stripped.state;
     const trimmed = stripped.text.trim();
     if (!trimmed) continue;
+    if (trimmed.startsWith('import ')) throw new Error('Parse error: import is inside a block');
     pieces.push({
       text: trimmed.replace(/,+\s*$/, ''),
       hadComma: /,\s*$/.test(trimmed),
@@ -2000,6 +2035,9 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     // Skip blank line separators
     if (stmtOrNull === null) continue;
     const stmt = stmtOrNull;
+    if (stmt.startsWith('import ')) {
+      throw new Error('Parse error: import is inside a block');
+    }
     // precondition: expr
     if (stmt.startsWith('precondition:')) {
       let expr = stmt.substring(13).trim();

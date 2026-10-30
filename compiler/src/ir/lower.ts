@@ -20,6 +20,7 @@
 
 import { exprToSource } from '../expr/print.js';
 import { readFileSync } from 'fs';
+import { verifiedSource } from '../imports.js';
 import {
   AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, inlineActionBody,
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
@@ -44,6 +45,7 @@ import {
 } from './types.js';
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
+import { expandImports, importLinks, importsExpanded, speckSourceFile } from '../imports.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -59,12 +61,37 @@ export interface LowerOptions {
 }
 
 export function lower(ast: AST, options: LowerOptions): IR {
-  const fileMetadata = extractFileMetadata(ast, options);
+  const unit = options.resolveImports && !importsExpanded(ast)
+    ? expandImports(ast, options.filePath, { rootDir: options.rootDir })
+    : ast;
+  const fileMetadata = extractFileMetadata(unit, options);
   const diagnostics: IRDiagnostic[] = [];
 
-  const specks: IRSpeck[] = ast.specks.map((speck) =>
-    lowerSpeck(speck, ast, options, diagnostics)
+  const specks: IRSpeck[] = unit.specks.map((speck) =>
+    lowerSpeck(speck, unit, options, diagnostics, speckSourceFile(unit, speck.name, options.filePath))
   );
+
+  if (options.resolveImports) {
+    const byName = new Map(specks.map(s => [s.name, s]));
+    for (const link of importLinks(unit)) {
+      const owner = specks.find(s => s.name === link.owner);
+      if (!owner) continue;
+      for (const name of link.speckNames) {
+        const resolved = byName.get(name);
+        if (!resolved) continue;
+        const alias = link.speckNames.length === 1
+          ? (link.node.alias ?? name)
+          : `${link.node.alias ?? 'import'}.${name}`;
+        owner.imports.push({
+          path: link.node.path,
+          alias,
+          version: link.node.version,
+          hash: link.node.hash,
+          resolved,
+        });
+      }
+    }
+  }
 
   return {
     specks,
@@ -82,26 +109,14 @@ function lowerSpeck(
   ast: AST,
   options: LowerOptions,
   diagnostics: IRDiagnostic[],
+  sourcePath: string,
 ): IRSpeck {
   // Read the raw source for expression re-parsing.
   // The main AST has string expressions; the IR needs typed trees.
-  const rawSource = readFileSync(options.filePath, 'utf-8');
+  const rawSource = verifiedSource(ast, sourcePath) ?? readFileSync(sourcePath, 'utf-8');
   const rawStatementsByAction = extractActionStatements(rawSource, speck);
 
-  // Resolve imports. (For now: no-op if resolveImports is false. Future:
-  // a real resolver that reads the imported file, lowers it, and merges.)
   const imports: IRImport[] = [];
-  if (options.resolveImports) {
-    for (const m of speck.members) {
-      if (m.type === 'import') {
-        diagnostics.push({
-          level: 'warning',
-          message: 'import resolution not yet implemented in lower pass',
-          speck: speck.name,
-        });
-      }
-    }
-  }
 
   // Build the eight facets.
   const typed_schema = lowerTypedSchema(speck, ast, diagnostics);
@@ -110,12 +125,12 @@ function lowerSpeck(
   const wire_format = lowerWireFormat(speck);
   const validation: ValidationFacet = { rules: new Map() };
   const resource_lifecycle = lowerResourceLifecycle(speck);
-  const provenance = lowerProvenance(speck, options.filePath, diagnostics);
+  const provenance = lowerProvenance(speck, sourcePath, diagnostics);
   const metadata = lowerMetadata(speck);
 
   return {
     name: speck.name,
-    sourcePath: options.filePath,
+    sourcePath,
     sourceMemberTypes: speck.members.map(m => m.type),
     imports,
     facets: {

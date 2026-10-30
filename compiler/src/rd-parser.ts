@@ -12,7 +12,7 @@
 // would otherwise be skipped with every later member.
 
 import {
-  AST, SpeckNode, MemberNode,
+  AST, SpeckNode, MemberNode, ImportNode,
   lexStart, maskLine, lexProblem,
   parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr, isAliasTypeText,
   parseMultiLineConstraintVerify, expressionSpanEnd, unsupportedVerify, parseNextRelation,
@@ -38,8 +38,11 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
     throw lexProblem(lexed.headerAfterComment[0], 'header is not at the start of the line');
   }
   assertBraceStructure(lexed.tokens, filePath);
+  assertImportNotInBlock(lexed.tokens, filePath);
   const specks: SpeckNode[] = [];
+  const fileImports: ImportNode[] = [];
   const headerLines = new Set(lexed.headerAfterComment);
+  let coveredUntil = 0;
   let i = 0;
   let lex = lexStart();
 
@@ -53,15 +56,24 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
       throw lexProblem(i + 1, 'header is not at the start of the line');
     }
 
-    if (!line || !code || line.startsWith('//') || line.startsWith('/*')) {
+    if (!line || !code || line.startsWith('//') || (line.startsWith('/*') && !code.startsWith('import '))) {
       i++;
       continue;
     }
 
-    if (line.startsWith('import ')) {
-      // File-level imports are recognized and checked. Attaching them to a
-      // speck is the import resolver's job.
-      parseImportStatement(line);
+    if (firstTokenIs(byLine, i + 1, 'import')) {
+      if (i < coveredUntil) {
+        i++;
+        continue;
+      }
+      if (!/^import\b/.test(line)) {
+        throw lexProblem(i + 1, `Failed to parse import statement: ${line}`);
+      }
+      try {
+        fileImports.push(parseImportStatement(line));
+      } catch (e) {
+        throw lexProblem(i + 1, (e as Error).message);
+      }
       i++;
       continue;
     }
@@ -76,6 +88,7 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
         throw parseErrorAt(filePath, i + 1, columnOf(lines[i]), `unrecognized top-level "${line}"`);
       }
       specks.push(speck);
+      coveredUntil = Math.max(coveredUntil, speck.endLine ?? i + 1);
       // endLine is 1-based, so it is the index of the line after the speck.
       // Walk the lex state through the speck, including a comment opened on its close.
       const endIdx = (speck.endLine ?? (i + 1)) - 1;
@@ -88,7 +101,9 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
   }
 
   assertParsedSpeckHeaders(lexed.tokens, specks, filePath);
-  return { specks };
+  const ast: AST = { specks };
+  if (fileImports.length > 0) ast.imports = fileImports;
+  return ast;
 }
 
 /**
@@ -127,6 +142,19 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
     const closeCount = counts.close;
 
     if (!line || !masked.text.trim() || line.startsWith('//') || line.startsWith('/*')) {
+      i++;
+      continue;
+    }
+
+    if (firstTokenIs(byLine, i + 1, 'import')) {
+      if (!/^import\b/.test(line)) throw lexProblem(i + 1, `Failed to parse import statement: ${line}`);
+      let node: ImportNode;
+      try {
+        node = parseImportStatement(line);
+      } catch (e) {
+        throw lexProblem(i + 1, (e as Error).message);
+      }
+      members.push(Object.assign(node, { startLine: i + 1, endLine: i + 1 }));
       i++;
       continue;
     }
@@ -405,12 +433,35 @@ function rejectBareCr(src: string, file?: string): void {
  * Tokens on that line are code after the closer, which the skip would drop
  * along with every later member.
  */
+function firstTokenIs(byLine: SpeckToken[][], line: number, text: string): boolean {
+  const t = byLine[line]?.[0];
+  return t?.kind === 'ident' && t.text === text;
+}
+
 function assertNoCodeAfterBlockComment(lines: string[], byLine: SpeckToken[][], file?: string): void {
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].trim().startsWith('/*')) continue;
     const tokens = byLine[i + 1] ?? [];
     if (tokens.length === 0) continue;
+    // An import glued to a comment closer is reported as a bad import.
+    if (tokens[0].kind === 'ident' && tokens[0].text === 'import') continue;
     throw parseErrorAt(file, i + 1, tokens[0].column, 'code after */ on a line that starts with /*');
+  }
+}
+
+/** An `import` token is legal at file level (depth 0) and as a speck member (depth 1). */
+function assertImportNotInBlock(tokens: SpeckToken[], file?: string): void {
+  let depth = 0;
+  for (const t of tokens) {
+    if (t.kind === '{') { depth++; continue; }
+    if (t.kind === '}') { depth = Math.max(0, depth - 1); continue; }
+    if (t.kind === 'ident' && t.text === 'import' && depth > 1) {
+      const next = tokens[tokens.indexOf(t) + 1];
+      // `import: Nat` is a field. An import statement is `import` followed by a string.
+      if (next?.kind === 'string') {
+        throw parseErrorAt(file, t.line, t.column, 'import is inside a block');
+      }
+    }
   }
 }
 

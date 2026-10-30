@@ -43,8 +43,12 @@ alias.
   with line and column. An unclosed string or block comment includes the
   column of the opener. Every AST member type is emitted or rejected by
   every backend (`compiler/src/conservation.ts`); a new member type that is
-  not listed fails the conservation test. File-level `import` lines are
-  checked and not yet attached to a speck.
+  not listed fails the conservation test.   File-level `import` lines and imports that are members of a speck are
+  parsed (`alias`, `version`, `hash`) and resolved against the importing
+  file's directory. A missing file, a cycle, a hash mismatch, an empty
+  hash, or the same speck name in two files is a parse error that names
+  the file. An `import` inside an action or a state block is
+  `import is inside a block`.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
