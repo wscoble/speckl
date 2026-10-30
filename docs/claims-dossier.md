@@ -509,9 +509,10 @@ architecture that observability and data-source integrations already rely on:
   two queries, existence (compile-time) and shape/lookup (runtime). The
   in-tree reference backends are `filesystem` (Markdown with YAML
   frontmatter) and `static-manifest` (a JSON map of record id to measurement
-  class). The SPI lives at `compiler/src/resolver/index.ts` and is exported
-  from the package as `speckl/resolver`. A backend that lives outside this
-  repository implements that interface and registers itself. There is no
+  class). The SPI belongs in `compiler/src/resolver/index.ts` and is
+  exported from the package as `speckl/resolver` (Task 3). A backend that
+  lives outside this repository implements that interface and registers
+  itself. There is no
   in-tree adapter for Greybeard Core. A Greybeard Core resolver adapter, if
   any, lives out of tree, is registered through that plug-in point, and is
   not imported by this repository. The compiler has no hard dependency on it
