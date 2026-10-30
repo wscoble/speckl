@@ -62,12 +62,12 @@ export const BACKENDS = [
 export type BackendId = typeof BACKENDS[number];
 
 const COMMON_EMIT: MemberNodeType[] = [
-  'input', 'output', 'constraint', 'verify', 'interface', 'event',
+  'import', 'input', 'output', 'constraint', 'verify', 'interface', 'event',
   'provenance', 'review', 'derives', 'satisfies', 'author', 'source', 'bom',
   'state', 'init', 'action', 'service', 'lifecycle_metadata', 'invariant', 'next', 'agent',
 ];
 
-const COMMON_REJECT: MemberNodeType[] = ['import', 'oneof', 'transition'];
+const COMMON_REJECT: MemberNodeType[] = ['oneof', 'transition'];
 
 function row(emit: MemberNodeType[], reject: MemberNodeType[]): Record<MemberNodeType, 'emit' | 'reject'> {
   const out = {} as Record<MemberNodeType, 'emit' | 'reject'>;
@@ -87,7 +87,7 @@ function row(emit: MemberNodeType[], reject: MemberNodeType[]): Record<MemberNod
 const common = row(COMMON_EMIT, COMMON_REJECT);
 const protobuf = row(
   [...COMMON_EMIT, 'oneof', 'transition'],
-  ['import'],
+  [],
 );
 
 export const COVERAGE: Record<BackendId, Record<MemberNodeType, 'emit' | 'reject'>> = {

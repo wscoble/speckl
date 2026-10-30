@@ -35,7 +35,9 @@ function breakCommentBeforeBrace(raw: string): string {
 
 /** Render a parsed AST back to SpeckDL source. */
 export function printAST(ast: AST): string {
-  return ast.specks.map(printSpeck).join('\n') + '\n';
+  const body = ast.specks.map(printSpeck).join('\n') + '\n';
+  const head = (ast.imports ?? []).map(imp => printMember(imp)[0]);
+  return head.length > 0 ? head.join('\n') + '\n' + body : body;
 }
 
 function printSpeck(speck: SpeckNode): string {

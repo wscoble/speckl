@@ -414,6 +414,8 @@ export interface TypeExpr {
 
 export interface AST {
   specks: SpeckNode[];
+  /** File-level imports, outside any speck. Omitted when the file has none. */
+  imports?: ImportNode[];
 }
 
 /**
@@ -1011,13 +1013,20 @@ function parseActionHeader(line: string): ActionNode | null {
 }
 
 export function parseImportStatement(line: string): ImportNode {
-  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?/);
+  const stripped = line.replace(/\/\/.*$/, '').trim();
+  const match = stripped.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.*)\6)?\s*$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
   }
-  
-  const [, , path, , alias, , version, , hash] = match;
-  
+
+  const path = match[2];
+  const alias = match[3];
+  const version = match[5];
+  const hash = match[7];
+  if (hash !== undefined && hash.replace(/^sha256:/i, '') === '') {
+    throw new Error(`Failed to parse import statement: ${line}`);
+  }
+
   return {
     type: 'import',
     path,
@@ -1374,6 +1383,9 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  if (innerLines.some(l => l.startsWith('import '))) {
+    throw new Error('Parse error: import is inside a block');
+  }
   // State blocks separate fields with commas or newlines/semicolons.
   // Strip trailing commas (they are field separators, not continuations)
   // then join with semicolons between complete variable declarations.
@@ -1617,6 +1629,9 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     // Skip blank line separators
     if (stmtOrNull === null) continue;
     const stmt = stmtOrNull;
+    if (stmt.startsWith('import ')) {
+      throw new Error('Parse error: import is inside a block');
+    }
     // precondition: expr
     if (stmt.startsWith('precondition:')) {
       let expr = stmt.substring(13).trim();

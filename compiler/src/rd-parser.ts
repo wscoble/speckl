@@ -9,7 +9,7 @@
 // the rest of the file.
 
 import {
-  AST, SpeckNode, MemberNode,
+  AST, SpeckNode, MemberNode, ImportNode,
   lexStart, maskLine, lexProblem,
   parseImportStatement, parseMember, parseMemberBlock,
   parseMultiLineConstraintVerify, unsupportedVerify, parseNextRelation,
@@ -26,7 +26,9 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
   const lexed = lexSpeck(content, filePath);
   const lines = content.split('\n');
   const specks: SpeckNode[] = [];
+  const fileImports: ImportNode[] = [];
   const headerLines = new Set(lexed.headerAfterComment);
+  let coveredUntil = 0;
   let i = 0;
   let lex = lexStart();
 
@@ -40,15 +42,24 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
       throw lexProblem(i + 1, 'header is not at the start of the line');
     }
 
-    if (!line || !code || line.startsWith('//') || line.startsWith('/*')) {
+    if (!line || !code || line.startsWith('//') || (line.startsWith('/*') && !code.startsWith('import '))) {
       i++;
       continue;
     }
 
-    if (line.startsWith('import ')) {
-      // File-level imports are recognized and checked. Attaching them to a
-      // speck is the import resolver's job.
-      parseImportStatement(line);
+    if (code.startsWith('import ') || line.startsWith('import ')) {
+      if (!line.startsWith('import ') || i < coveredUntil) {
+        if (i < coveredUntil && line.startsWith('import ')) {
+          i++;
+          continue;
+        }
+        throw lexProblem(i + 1, `Failed to parse import statement: ${line}`);
+      }
+      try {
+        fileImports.push(parseImportStatement(line));
+      } catch (e) {
+        throw lexProblem(i + 1, (e as Error).message);
+      }
       i++;
       continue;
     }
@@ -59,7 +70,10 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
 
     if (line.startsWith('speck ') && code.startsWith('speck ')) {
       const speck = parseSpeck(lines, lexed.tokens, i);
-      if (speck) specks.push(speck);
+      if (speck) {
+        specks.push(speck);
+        coveredUntil = Math.max(coveredUntil, speck.endLine ?? i + 1);
+      }
       i++;
       continue;
     }
@@ -67,7 +81,9 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
     i++;
   }
 
-  return { specks };
+  const ast: AST = { specks };
+  if (fileImports.length > 0) ast.imports = fileImports;
+  return ast;
 }
 
 /**
@@ -106,6 +122,19 @@ function parseSpeck(lines: string[], tokens: SpeckToken[], start: number): Speck
     const closeCount = counts.close;
 
     if (!line || !masked.text.trim() || line.startsWith('//') || line.startsWith('/*')) {
+      i++;
+      continue;
+    }
+
+    if (line.startsWith('import ') || masked.text.trim().startsWith('import ')) {
+      if (!line.startsWith('import ')) throw lexProblem(i + 1, `Failed to parse import statement: ${line}`);
+      let node: ImportNode;
+      try {
+        node = parseImportStatement(line);
+      } catch (e) {
+        throw lexProblem(i + 1, (e as Error).message);
+      }
+      members.push(Object.assign(node, { startLine: i + 1, endLine: i + 1 }));
       i++;
       continue;
     }
