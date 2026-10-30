@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { AST, ImportNode, parseSpeckContent, SpeckNode } from './parser.js';
+import { AST, ImportNode, parseSpeckContent, parsedSource, SpeckNode } from './parser.js';
 
 export interface ImportLink {
   /** Speck that declared the import, or `*` for a file-level import on the root. */
@@ -76,24 +76,29 @@ export function speckSourceFile(ast: AST, name: string, fallback: string): strin
  * Read imported files and append their specks. Throws on a missing file,
  * a cycle, a too-deep chain, a hash mismatch, an empty or short hash,
  * a path that leaves the import root, a duplicate alias, or the same
- * speck name twice. The returned AST is parsed from the bytes just read,
- * so it matches the text `lower` compiles. A file with no imports is that parse.
+ * speck name twice. The entry tree is the AST that was passed in. Imported
+ * files are read from disk. A file with no imports is that same AST.
  */
-export function expandImports(_ast: AST, entryPath: string, options: ExpandOptions = {}): AST {
-  const opened = readViaFd(entryPath, null, entryPath);
-  const entryAbs = opened.real;
-  const entryText = opened.buf.toString('utf8');
-  const files = new Map<string, string>([[entryAbs, entryText]]);
-  const parsedEntry = parseSpeckContent(entryText, entryAbs);
+export function expandImports(ast: AST, entryPath: string, options: ExpandOptions = {}): AST {
+  if (importsExpanded(ast)) return ast;
+  let entryAbs: string;
+  try {
+    entryAbs = realpathSync(entryPath);
+  } catch {
+    throw cannotRead(entryPath, entryPath);
+  }
+  const entryText = parsedSource(ast);
+  const files = new Map<string, string>();
+  if (entryText !== undefined) files.set(entryAbs, entryText);
   const rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
-  const rootHas = (parsedEntry.imports?.length ?? 0) > 0
-    || parsedEntry.specks.some(s => s.members.some(m => m.type === 'import'));
+  const rootHas = (ast.imports?.length ?? 0) > 0
+    || ast.specks.some(s => s.members.some(m => m.type === 'import'));
   if (!rootHas) {
-    sourceOf.set(parsedEntry, files);
-    linksOf.set(parsedEntry, []);
-    originOf.set(parsedEntry, new Map(parsedEntry.specks.map(s => [s.name, entryAbs])));
-    expanded.add(parsedEntry);
-    return parsedEntry;
+    sourceOf.set(ast, files);
+    linksOf.set(ast, []);
+    originOf.set(ast, new Map(ast.specks.map(s => [s.name, entryAbs])));
+    expanded.add(ast);
+    return ast;
   }
 
   const origin = new Map<string, string>();
@@ -196,7 +201,7 @@ export function expandImports(_ast: AST, entryPath: string, options: ExpandOptio
     done.add(abs);
   }
 
-  remember(entryAbs, opened.buf, parsedEntry);
+  cache.set(entryAbs, { buf: Buffer.from(entryText ?? '', 'utf8'), text: entryText ?? '', ast });
   load(entryAbs, 0);
 
   // Root file-level imports apply to every speck declared in the root file.
@@ -213,7 +218,7 @@ export function expandImports(_ast: AST, entryPath: string, options: ExpandOptio
   }
 
   const out: AST = { specks };
-  if (parsedEntry.imports?.length) out.imports = parsedEntry.imports;
+  if (ast.imports?.length) out.imports = ast.imports;
   sourceOf.set(out, files);
   linksOf.set(out, lifted);
   originOf.set(out, origin);

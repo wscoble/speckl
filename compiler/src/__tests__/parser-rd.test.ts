@@ -248,10 +248,43 @@ describe('token parser', () => {
     expect(inv.expr).toBe('s != "a  b"');
   });
 
+  it('does not skip lines after a constraint or verify', () => {
+    const src = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n    constraint: x >= 0\n    actoin go {\n        x := 1\n    }\n    action ok {\n        x := 2\n    }\n}\n';
+    expect(() => parseSpeckContent(src, 'skip.speckdl')).toThrow(/unrecognized member "actoin go \{"/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    constraint: x >= 0\n    garbage line here\n}\n', 'g.speckdl')).toThrow(/unrecognized member/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    verify: always(x >= 0)\n    invarient P { x >= 0 }\n}\n', 'v.speckdl')).toThrow(/unrecognized member/);
+    const kept = parseSpeckContent('speck A {\n    output: { y: Nat }\n    constraint: y >= 0\n    input: { x: Nat }\n}\n');
+    expect(kept.specks[0].members.map(m => m.type)).toContain('input');
+  });
+
+  it('does not fold the next member into a finished named constraint', () => {
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    constraint C: x >= 0\n    Action go {\n        x := 1\n    }\n}\n', 'c.speckdl')).toThrow(/unrecognized member "Action go \{"/);
+    const wal = parseSpeckContent('speck A {\n    state { x: Nat }\n    constraint ReadConsistency: forall r in [0..4]:\n        (x >= 0)\n    constraint WriteSerialization:\n        (x >= 0)\n}\n');
+    const exprs = wal.specks[0].members.filter(m => m.type === 'constraint').map(m => (m as { expr: string }).expr);
+    expect(exprs[0]).toBe('forall r in [0..4]: (x >= 0)');
+    expect(exprs[1]).toBe('(x >= 0)');
+  });
+
+  it('rejects a malformed line inside state or init', () => {
+    expect(() => parseSpeckContent('speck A {\n    state {\n        x: Nat\n        y Nat\n    }\n}\n', 'st.speckdl')).toThrow(/unrecognized state field/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        garbage line\n    }\n}\n', 'in.speckdl')).toThrow(/unrecognized init line/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        y = 0\n    }\n}\n', 'in.speckdl')).toThrow(/unrecognized init line/);
+  });
+
+  it('rejects a misspelled top-level speck and a garbage type alias', () => {
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n}\nspek B {\n    state { y: Nat }\n}\n', 'p.speckdl')).toThrow(/unrecognized top-level "spek B \{"/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    type T = this is not a type !!\n}\n', 't.speckdl')).toThrow(/unrecognized member/);
+    expect(parseSpeckContent('speck A {\n    type State = Follower | Candidate | Leader\n    state { x: Nat }\n}\n').specks[0].name).toBe('A');
+  });
+
+  it('reports a brace on the next line after a block comment', () => {
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    invariant P\n    /* c\n    still */\n    { x >= 0 }\n}\n', 'br.speckdl')).toThrow(/same line/);
+  });
+
   it('reports a numeric literal instead of a digit-identifier for scientific, hex, and unit forms', () => {
-    for (const lit of ['1e5', '0x1F', '1_000', '5min', '2w', '7days', '10sec']) {
+    for (const lit of ['1e5', '1e3', '1.e5', '1.5e3', '0x1F', '0b101', '1_000', '5min', '2w', '7days', '10sec', '1hr', '1h30m']) {
       expect(() => parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P { x <= ${lit} }\n}\n`, 'num.speckdl'), lit)
-        .toThrow(new RegExp(`unsupported numeric literal "${lit}"`));
+        .toThrow(new RegExp(`unsupported numeric literal "${lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
     }
     for (const lit of ['24h', '500ms', '30s', '3d', '5m', '1.5h']) {
       const inv = parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P { x <= ${lit} }\n}\n`).specks[0].members.find(m => m.type === 'invariant') as { expr: string };

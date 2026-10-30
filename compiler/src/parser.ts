@@ -429,10 +429,19 @@ export function parseSpeckFile(filePath: string): AST {
 /**
  * Parse SpeckDL content and return the AST
  */
+const sourceTextOf = new WeakMap<AST, string>();
+
+/** The text `parseSpeckContent` parsed into `ast`. Absent for a hand-built tree. */
+export function parsedSource(ast: AST): string | undefined {
+  return sourceTextOf.get(ast);
+}
+
 export function parseSpeckContent(content: string, filePath?: string): AST {
   parseFile = filePath ?? '';
   try {
-    return parseSpeckDocument(content, filePath);
+    const ast = parseSpeckDocument(content, filePath);
+    sourceTextOf.set(ast, content);
+    return ast;
   } finally {
     parseFile = '';
   }
@@ -581,6 +590,67 @@ function isExpressionComplete(expr: string): boolean {
     else if (char === ']') brackets--;
   }
   return braces === 0 && parens === 0 && brackets === 0;
+}
+
+/**
+ * A constraint or verify expression that should not take another line.
+ * Empty text, a trailing `:`, an unbalanced bracket, or a dangling operator
+ * still continues. A finished `x >= 0` does not.
+ */
+function expressionClosed(expr: string): boolean {
+  const t = expr.trim();
+  if (!t) return false;
+  if (!isExpressionComplete(t)) return false;
+  if (t.endsWith(':')) return false;
+  return !exprIncomplete(t);
+}
+
+/**
+ * Lines that belong to an expression starting at `startIndex`.
+ * Only an unfinished expression takes the next line. A later member,
+ * including one that is misspelled, is left for the caller.
+ */
+function takeExpressionLines(lines: string[], startIndex: number, initial: string, style: 'space' | 'newline'): { text: string; endIndex: number } {
+  const parts: string[] = [];
+  const head = initial.trim();
+  if (head) parts.push(head);
+  let end = startIndex;
+  const closed = () => expressionClosed(parts.join(' '));
+  if (parts.length > 0 && closed()) {
+    return { text: head, endIndex: end };
+  }
+  for (let j = startIndex + 1; j < lines.length; j++) {
+    const nl = lines[j].trim();
+    if (nl === '}') break;
+    if (!nl || nl.startsWith('//') || nl.startsWith('/*')) {
+      end = j;
+      continue;
+    }
+    if (parts.length > 0 && closed()) break;
+    parts.push(nl);
+    end = j;
+    if (closed()) break;
+  }
+  const text = style === 'newline'
+    ? parts.join('\n').replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim()
+    : parts.join(' ').replace(/\s+/g, ' ').trim();
+  return { text, endIndex: end };
+}
+
+/** Last line consumed by a brace-free constraint or verify. The line itself when the expression finishes there. */
+export function expressionSpanEnd(lines: string[], startIndex: number): number {
+  const line = lines[startIndex].trim();
+  let initial = '';
+  let style: 'space' | 'newline' = 'newline';
+  if (line.startsWith('constraint:') || line.startsWith('verify:')) {
+    initial = line.slice(line.indexOf(':') + 1);
+  } else {
+    const named = line.match(/^constraint\s+\w+:(.*)$/) || line.match(/^constraint\s+"[^"]+"\s*:(.*)$/);
+    if (!named) return startIndex;
+    initial = named[1];
+    style = 'space';
+  }
+  return takeExpressionLines(lines, startIndex, initial, style).endIndex;
 }
 
 export function parseMemberBlock(lines: string[], startIndex: number): MemberNode | null {
@@ -964,7 +1034,9 @@ function parseStateBlock(inner: string): StateNode {
         name: withoutDefault[1],
         typeExpr: parseTypeExpr(typeStr),
       });
+      continue;
     }
+    throw new Error(`Parse error: unrecognized state field "${vStr}"`);
   }
 
   return { type: 'state', variables };
@@ -1467,6 +1539,9 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
       if (isNewVar && !prevIsContinuation) {
         return acc + '; ' + line;
       }
+      if (!prevIsContinuation) {
+        throw lexProblem(startIndex + 1, `unrecognized state field "${line}"`);
+      }
       return acc + ' ' + line;
     }
     return acc.endsWith('{') ? acc + ' ' + line : acc + ', ' + line;
@@ -1497,6 +1572,15 @@ function exprIncomplete(text: string): boolean {
   return depth > 0 || /(==|!=|>=|<=|[<>+\-*/]|\b(?:and|or|implies)\b)\s*$/.test(code.trim());
 }
 
+function initStatementClosed(stmt: string): boolean {
+  return expressionClosed(stmt);
+}
+
+/** `name :=`, `name ==`, `let name :=`, `forall` / `exists`. Not `y = 0`. */
+function isInitStarter(raw: string): boolean {
+  return /^(?:let\s+)?\w+(?:\[[^\]]*\])?\s*(?::=|==)/.test(raw) || /^(?:forall|exists)\b/.test(raw);
+}
+
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
   const inline = inlineActionBody(lines[startIndex].trim());
   if (inline !== null) return parseInitBlock(inline.trim());
@@ -1511,12 +1595,22 @@ function parseInitBlockMultiline(lines: string[], startIndex: number, startBrace
   const stmts: string[] = [];
   let cur: string | null = null;
   for (const raw of innerLines) {
-    if (/^\w+\s*:=/.test(raw) || cur === null) {
-      if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
-      cur = raw;
-    } else {
+    const closed = cur !== null && initStatementClosed(cur);
+    if (cur !== null && !closed) {
       cur += ' ' + raw;
+      continue;
     }
+    // `name :=`, `name ==`, `let`, and `forall` start a statement.
+    // `y = 0` and a stray line do not.
+    if (isInitStarter(raw) || cur === null) {
+      if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
+      if (cur === null && !isInitStarter(raw)) {
+        throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+      }
+      cur = raw;
+      continue;
+    }
+    throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
   }
   if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
   return parseInitBlock(stmts.join('\n'));
@@ -2256,81 +2350,12 @@ function parseVerifyColonBlock(lines: string[], startIndex: number): VerifyNode 
   const head = firstLine.substring(firstLine.indexOf(':') + 1).trim();
   if (!head) return null;
 
-  // If the head is already balanced on its own (single-line verify: expr),
-  // just return it directly — no continuation needed.
-  if (isExpressionComplete(head)) {
-    const nameMatch = head.match(/^(?:always|Always|eventually|Eventually)\s*\(\s*(\w+)\s*\)$/);
-    return {
-      type: 'verify',
-      name: nameMatch ? nameMatch[1] : 'unnamed',
-      temporalExpr: head,
-    };
-  }
-
-  // Multi-line: collect continuation lines until parens balance. The same
-  // break-condition list used in the parseSpeck skip-loop applies (don't
-  // swallow the next member's keyword). We additionally stop at any
-  // standalone `}` so a verify inside a brace-block still terminates.
-  const parts: string[] = [head];
-  let parens = 0, brackets = 0, braces = 0;
-  for (const ch of maskCode(head).text) {
-    if (ch === '(') parens++;
-    else if (ch === ')') parens--;
-    else if (ch === '[') brackets++;
-    else if (ch === ']') brackets--;
-    else if (ch === '{') braces++;
-    else if (ch === '}') braces--;
-  }
-
-  let lastConsumed = startIndex;
-  for (let j = startIndex + 1; j < lines.length; j++) {
-    const raw = lines[j];
-    const nl = raw.trim();
-    if (!nl) {
-      // Empty line still updates counters (none) and advances lastConsumed
-      lastConsumed = j;
-      continue;
-    }
-    if (nl.startsWith('//') || nl.startsWith('/*')) {
-      // Skip standalone comments but treat them as part of the block
-      // (the LTL translator doesn't care about comments in temporalExpr).
-      lastConsumed = j;
-      continue;
-    }
-    // Stop at a new top-level member keyword — that's the next member.
-    if (
-      nl.startsWith('constraint ') || nl.startsWith('verify ') ||
-      nl.startsWith('constraint:') || nl.startsWith('verify:') ||
-      nl.startsWith('state') || nl.startsWith('init') ||
-      nl.startsWith('action ') || nl.startsWith('event ') ||
-      nl.startsWith('interface ') || nl.startsWith('provenance ') ||
-      nl.startsWith('bom ') || nl === '}' ||
-      nl.startsWith('next:') || nl.startsWith('invariant ')
-    ) {
-      break;
-    }
-    // Update depth counters.
-    for (const ch of maskCode(raw).text) {
-      if (ch === '(') parens++;
-      else if (ch === ')') parens--;
-      else if (ch === '[') brackets++;
-      else if (ch === ']') brackets--;
-      else if (ch === '{') braces++;
-      else if (ch === '}') braces--;
-    }
-    parts.push(nl);
-    lastConsumed = j;
-    if (parens === 0 && brackets === 0 && braces === 0) {
-      break;
-    }
-  }
-
-  const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
-  const nameMatch = joined.match(/^(?:always|Always|eventually|Eventually)\s*\(\s*(\w+)\s*\)$/);
+  const taken = takeExpressionLines(lines, startIndex, head, 'space');
+  const nameMatch = taken.text.match(/^(?:always|Always|eventually|Eventually)\s*\(\s*(\w+)\s*\)$/);
   return {
     type: 'verify',
     name: nameMatch ? nameMatch[1] : 'unnamed',
-    temporalExpr: joined,
+    temporalExpr: taken.text,
   };
 }
 
@@ -2351,67 +2376,8 @@ function parseConstraintColonBlock(lines: string[], startIndex: number): Constra
   // Strip the `constraint:` prefix.
   const head = firstLine.substring(firstLine.indexOf(':') + 1).trim();
   if (!head) return null;
-
-  // If the head is already balanced on its own (single-line constraint: expr),
-  // just return it directly — no continuation needed.
-  if (isExpressionComplete(head)) {
-    return { type: 'constraint', expr: head };
-  }
-
-  // Multi-line: collect continuation lines until parens balance.
-  const parts: string[] = [head];
-  let parens = 0, brackets = 0, braces = 0;
-  for (const ch of maskCode(head).text) {
-    if (ch === '(') parens++;
-    else if (ch === ')') parens--;
-    else if (ch === '[') brackets++;
-    else if (ch === ']') brackets--;
-    else if (ch === '{') braces++;
-    else if (ch === '}') braces--;
-  }
-
-  let lastConsumed = startIndex;
-  for (let j = startIndex + 1; j < lines.length; j++) {
-    const raw = lines[j];
-    const nl = raw.trim();
-    if (!nl) {
-      lastConsumed = j;
-      continue;
-    }
-    if (nl.startsWith('//') || nl.startsWith('/*')) {
-      lastConsumed = j;
-      continue;
-    }
-    // Stop at a new top-level member keyword.
-    if (
-      nl.startsWith('constraint ') || nl.startsWith('verify ') ||
-      nl.startsWith('constraint:') || nl.startsWith('verify:') ||
-      nl.startsWith('state') || nl.startsWith('init') ||
-      nl.startsWith('action ') || nl.startsWith('event ') ||
-      nl.startsWith('interface ') || nl.startsWith('provenance ') ||
-      nl.startsWith('bom ') || nl === '}' ||
-      nl.startsWith('next:') || nl.startsWith('invariant ')
-    ) {
-      break;
-    }
-    // Update depth counters.
-    for (const ch of maskCode(raw).text) {
-      if (ch === '(') parens++;
-      else if (ch === ')') parens--;
-      else if (ch === '[') brackets++;
-      else if (ch === ']') brackets--;
-      else if (ch === '{') braces++;
-      else if (ch === '}') braces--;
-    }
-    parts.push(nl);
-    lastConsumed = j;
-    if (parens === 0 && brackets === 0 && braces === 0) {
-      break;
-    }
-  }
-
-  const joined = parts.join('\n').replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim();
-  return { type: 'constraint', expr: joined };
+  const taken = takeExpressionLines(lines, startIndex, head, 'newline');
+  return { type: 'constraint', expr: taken.text };
 }
 
 function parseConstraintAnyForm(lines: string[], startIndex: number): ConstraintNode | null {
@@ -2454,25 +2420,10 @@ function parseConstraintAnyForm(lines: string[], startIndex: number): Constraint
       expr = (expr + ' ' + inner).trim();
     }
   } else {
-    // No braces — but might span multiple lines (forall continuation)
-    const continuationLines: string[] = [];
-    for (let j = startIndex + 1; j < lines.length; j++) {
-      const nl = lines[j].trim();
-      if (!nl || nl.startsWith('//') || nl.startsWith('/*') ||
-          nl.startsWith('constraint ') || nl.startsWith('verify ') ||
-          nl.startsWith('constraint:') || nl.startsWith('verify:') ||
-          nl.startsWith('state') || nl.startsWith('init') ||
-          nl.startsWith('action ') || nl.startsWith('event ') ||
-          nl.startsWith('interface ') || nl.startsWith('provenance ') ||
-          nl.startsWith('bom ') || nl.startsWith('}') ||
-          nl.startsWith('next:') || nl.startsWith('invariant ')) {
-        break;
-      }
-      continuationLines.push(nl);
-    }
-    if (continuationLines.length > 0) {
-      expr = expr + ' ' + continuationLines.join(' ');
-    }
+    // No braces. A finished expression stays on this line. An unfinished
+    // one (empty, trailing `:`, open bracket, dangling operator) takes
+    // the following lines and then stops.
+    expr = takeExpressionLines(lines, startIndex, expr, 'space').text;
   }
   
   return { type: 'constraint', name, expr: expr.trim() };

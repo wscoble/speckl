@@ -15,7 +15,7 @@ import {
   AST, SpeckNode, MemberNode, ImportNode,
   lexStart, maskLine, lexProblem,
   parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr,
-  parseMultiLineConstraintVerify, unsupportedVerify, parseNextRelation,
+  parseMultiLineConstraintVerify, expressionSpanEnd, unsupportedVerify, parseNextRelation,
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
 
@@ -84,15 +84,20 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
 
     if (/^speck\s+\S/.test(line) && /^speck\s+\S/.test(code)) {
       const speck = parseSpeck(content, lines, lexed.tokens, byLine, i, filePath);
-      if (speck) {
-        specks.push(speck);
-        coveredUntil = Math.max(coveredUntil, speck.endLine ?? i + 1);
+      if (!speck) {
+        throw parseErrorAt(filePath, i + 1, columnOf(lines[i]), `unrecognized top-level "${line}"`);
       }
-      i++;
+      specks.push(speck);
+      coveredUntil = Math.max(coveredUntil, speck.endLine ?? i + 1);
+      // endLine is 1-based, so it is the index of the line after the speck.
+      // Walk the lex state through the speck, including a comment opened on its close.
+      const endIdx = (speck.endLine ?? (i + 1)) - 1;
+      lex = lexThrough(lines, i + 1, endIdx, lex);
+      i = endIdx + 1;
       continue;
     }
 
-    i++;
+    throw parseErrorAt(filePath, i + 1, columnOf(lines[i]), `unrecognized top-level "${line}"`);
   }
 
   assertParsedSpeckHeaders(lexed.tokens, specks, filePath);
@@ -252,27 +257,14 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
         if (openingBraceOnNextLine(lines, i)) rejectBraceOnNextLine(filePath, rawLine, i + 1);
         rejectUnparsed(filePath, rawLine, i + 1, line);
       }
-      if (member) {
-        const constraintStartLine = i + 1;
-        while (i + 1 < lines.length) {
-          const nextLine = lines[i + 1].trim();
-          if (!nextLine || nextLine.startsWith('//') || nextLine.startsWith('/*') ||
-              nextLine.startsWith('constraint ') || nextLine.startsWith('verify ') ||
-              nextLine.startsWith('constraint:') || nextLine.startsWith('verify:') ||
-              nextLine.startsWith('state') || nextLine.startsWith('init') ||
-              nextLine.startsWith('action ') || nextLine.startsWith('event ') ||
-              nextLine.startsWith('interface ') || nextLine.startsWith('provenance ') ||
-              nextLine.startsWith('service ') || nextLine.startsWith('bom ') ||
-              nextLine.startsWith('}') ||
-              nextLine.startsWith('next:') || nextLine.startsWith('invariant ') || nextLine.startsWith('agent ')) {
-            break;
-          }
-          i++;
-        }
-        members.push(Object.assign(member, { startLine: constraintStartLine, endLine: i + 1 }));
-        speckEndLine = i + 1;
-      }
-      i++;
+      // The expression parser already took its continuation lines. Anything
+      // after that span is the next member, or an error. Do not skip ahead
+      // to the next keyword: that dropped valid actions and misspellings.
+      const endIdx = expressionSpanEnd(lines, i);
+      members.push(Object.assign(member!, { startLine: i + 1, endLine: endIdx + 1 }));
+      speckEndLine = endIdx + 1;
+      lex = lexThrough(lines, i + 1, endIdx, lex);
+      i = endIdx + 1;
       continue;
     }
 
@@ -287,6 +279,10 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
     // Every other non-blank, non-comment line here is a member or an error.
     if (/^type\s+\S/.test(line) && !line.includes('{')) {
       if (openingBraceOnNextLine(lines, i)) rejectBraceOnNextLine(filePath, rawLine, i + 1);
+      const rhs = line.replace(/^type\s+\S+\s*=\s*/, '');
+      if (!/^[A-Za-z_]\w*(\s*(?:<[^<>]*>|\([^()]*\)))?(\s*\|\s*[A-Za-z_]\w*(\s*(?:<[^<>]*>|\([^()]*\)))?)*$/.test(rhs.replace(/\/\/.*$/, '').trim())) {
+        rejectUnparsed(filePath, rawLine, i + 1, line);
+      }
       i++;
       continue;
     }
@@ -330,9 +326,18 @@ function columnOf(raw: string): number {
 
 /** Next line that is not blank and not a comment. `-1` at EOF. */
 function nextCodeLine(lines: string[], from: number): number {
+  let block = false;
   for (let j = from; j < lines.length; j++) {
     const t = lines[j].trim();
-    if (!t || t.startsWith('//') || t.startsWith('/*')) continue;
+    if (block) {
+      if (t.includes('*/')) block = false;
+      continue;
+    }
+    if (!t || t.startsWith('//')) continue;
+    if (t.startsWith('/*')) {
+      if (!t.includes('*/')) block = true;
+      continue;
+    }
     return j;
   }
   return -1;

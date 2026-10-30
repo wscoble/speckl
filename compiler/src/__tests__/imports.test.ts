@@ -345,31 +345,47 @@ describe('import resolution', () => {
     expect(JSON.stringify(lower(parseSpeckFile(file), { filePath: file, resolveImports: false }))).toContain('42');
   });
 
-  it('the entry AST and the lowered action come from the same read', () => {
+  it('expandImports keeps the entry AST when the file changes after the parse', () => {
     const folder = dir();
     const file = write(folder, 'tw.speckdl', 'speck Tw {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 1\n    }\n}\n');
+    const ast = parseSpeckFile(file);
+    writeFileSync(file, 'speck Tw {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 5\n    }\n}\n');
+    const ex = expandImports(ast, file);
+    expect(ex).toBe(ast);
+    const ir = lower(ex, { filePath: file, resolveImports: true });
+    expect(JSON.stringify(ex)).toContain('n + 1');
+    expect(JSON.stringify(ex)).not.toContain('n + 5');
+    expect(JSON.stringify(ir)).toContain('"value":1');
+    expect(JSON.stringify(ir)).not.toContain('"value":5');
+  });
+
+  it('replacing an import while its bytes are read is changed while reading', () => {
+    const folder = dir();
+    write(folder, 'b.speckdl', 'speck B {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    write(folder, 'evil.speckdl', 'speck Evil {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'a.speckdl', 'import "./b.speckdl"\nspeck A {\n}\n');
     const fs = createRequire(import.meta.url)('node:fs');
-    const orig = fs.openSync;
-    let swapped = false;
-    fs.openSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
-      if (String(p) === file && !swapped) {
-        swapped = true;
-        writeFileSync(file, 'speck Tw {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 5\n    }\n}\n');
+    const orig = fs.readFileSync;
+    fs.readFileSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+      const out = orig.call(this, p, ...rest);
+      if (typeof p === 'number' && Buffer.isBuffer(out) && out.includes('speck B')) {
+        fs.renameSync(join(folder, 'evil.speckdl'), join(folder, 'b.speckdl'));
       }
-      return orig.call(this, p, ...rest);
+      return out;
     };
     syncBuiltinESMExports();
     try {
-      const ast = parseSpeckFile(file);
-      const ex = expandImports(ast, file);
-      const ir = lower(ex, { filePath: file, resolveImports: true });
-      const astSays5 = JSON.stringify(ex).includes('n + 5') || JSON.stringify(ex).includes('"value":5');
-      const irSays5 = JSON.stringify(ir).includes('"value":5');
-      expect(irSays5).toBe(astSays5);
-      expect(astSays5).toBe(true);
+      expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/changed while reading/);
     } finally {
-      fs.openSync = orig;
+      fs.readFileSync = orig;
       syncBuiltinESMExports();
     }
+  });
+
+  it('lower with resolveImports compiles the AST it was given, not the file on disk', () => {
+    const folder = dir();
+    const file = write(folder, 'disk.speckdl', 'speck Disk {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const mem = parseSpeckContent('speck Mem {\n    state { m: Nat }\n    init { m := 0 }\n}\n', file);
+    expect(lower(mem, { filePath: file, resolveImports: true }).specks.map(s => s.name)).toEqual(['Mem']);
   });
 });
