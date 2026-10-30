@@ -42,14 +42,37 @@ describe('unknown scripts fail closed', () => {
     const letter = /^\p{L}$/u;
     const common = /^\p{Script=Common}$/u;
     const inherited = /^\p{Script=Inherited}$/u;
-    for (let cp = 0; cp <= 0x3ffff; cp++) {
+    const han = /^\p{Script_Extensions=Han}$/u;
+    const limit = 0x3ffff;
+    const isLetter = (cp: number) => letter.test(String.fromCodePoint(cp));
+    const reject = (cp: number) => {
       const ch = String.fromCodePoint(cp);
-      if (!letter.test(ch) || common.test(ch) || inherited.test(ch)) continue;
+      if (common.test(ch) || inherited.test(ch) || latin.test(ch)) return;
       // NFKC can reject a Latin compatibility letter for a reason other than
       // script. The fail-open bug is the other direction: a non-Latin letter
       // that this runtime has not classified must not be accepted next to "a".
-      if (latin.test(ch)) continue;
       expect(code(() => assertRecordId(`a${ch}`, 'q')), `U+${cp.toString(16)}`).toBe('malformed');
+    };
+
+    let cp = 0;
+    while (cp <= limit) {
+      while (cp <= limit && !isLetter(cp)) cp++;
+      if (cp > limit) break;
+      const runStart = cp;
+      while (cp < limit && isLetter(cp + 1)) cp++;
+      const runEnd = cp;
+      // CJK extensions are one assigned Han run. One sample covers the
+      // known-script rejection; a code point in that run that is not Han
+      // is still checked on its own.
+      if (runStart >= 0x20000 && han.test(String.fromCodePoint(runStart))) {
+        reject(runStart);
+        for (let sample = runStart + 1; sample <= runEnd; sample++) {
+          if (!han.test(String.fromCodePoint(sample))) reject(sample);
+        }
+      } else {
+        for (let sample = runStart; sample <= runEnd; sample++) reject(sample);
+      }
+      cp = runEnd + 1;
     }
   }, 60_000);
 });

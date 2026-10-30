@@ -56,19 +56,33 @@ interface StoredRecord {
  * symlinks the way the operating system resolves it. Symlinks on the way
  * to that directory,
  * including a symlink such as macOS `/tmp`, are followed and are not
- * errors. Every read uses that resolved path. A symlink found under the
- * resolved root fails the load, including one swapped in after the listing.
+ * errors. Every read uses that resolved path. A symlink that is present
+ * under the resolved root when the directory is listed fails the load.
  * Each listed entry's device and inode are recorded with `lstat`. The open
  * uses `O_RDONLY | O_NONBLOCK` and `O_NOFOLLOW` where the platform has it.
  * `fstat` on that descriptor must be the same device and inode, and a
- * record must be a regular file. On Linux, `readlink` of `/proc/self/fd/N`
- * must still point inside the resolved root. A mismatch, or a check that
- * cannot be done, is `malformed`. Without `O_NOFOLLOW` (Windows), the open
- * may follow a symlink and the device/inode check then fails closed.
+ * record must be a regular file. After a directory is listed, and after
+ * each open, that directory's device and inode are checked again. On
+ * Linux, `readlink` of `/proc/self/fd/N` must still point inside the
+ * resolved root. A mismatch, or a check that cannot be done, is
+ * `malformed`. If `/proc` is not mounted the error says
+ * `cannot verify opened path: /proc not mounted`. If the kernel reports
+ * the opened path as deleted, the error says the file was renamed during
+ * the load. Without `O_NOFOLLOW` (Windows), the open may follow a symlink
+ * and the device/inode check then fails closed.
  * A hard link has no symlink bit and no second name the kernel will report,
  * so it loads. A Markdown file whose first line is blank, before `---`,
  * has no frontmatter and is skipped. Replacing a file's bytes without
  * changing its device and inode is not detected.
+ *
+ * A directory swapped for a symlink after it was listed is caught on
+ * Linux, because `/proc/self/fd` covers files opened through it. On macOS
+ * and other platforms without `/proc`, the subdirectory is listed again
+ * by path after that check, so a race can still escape. Node has no
+ * `openat`, so the walk cannot be made race-free there. Re-checking the
+ * parent directory's device and inode only narrows that window. Swapping
+ * the root itself after it has been resolved is caught only on Linux.
+ * That attack needs write access to the root's parent directory.
  *
  * A file over {@link MAX_RECORD_BYTES}, or a directory nested deeper than
  * {@link MAX_DIRECTORY_DEPTH}, fails the load. YAML anchors and aliases are
@@ -109,8 +123,8 @@ function loadRecords(rootDir: string): Map<string, StoredRecord> {
 
   const records = new Map<string, StoredRecord>();
   const origins = new Map<string, string>();
-  for (const file of markdownFiles(resolved, 0, resolved)) {
-    const stored = readRecord(file, resolved);
+  for (const file of markdownFiles(resolved, 0, resolved.path)) {
+    const stored = readRecord(file, resolved.path);
     if (!stored) continue;
     const previous = origins.get(stored.id);
     if (previous) {
@@ -125,47 +139,65 @@ function loadRecords(rootDir: string): Map<string, StoredRecord> {
   return records;
 }
 
-interface ListedEntry {
+interface ListedNode {
   path: string;
   dev: number;
   ino: number;
 }
 
-function markdownFiles(dir: string, depth: number, root: string): ListedEntry[] {
+interface ListedEntry extends ListedNode {
+  parent: DirectoryIdentity;
+}
+
+/** Device and inode of a directory, taken before its children are trusted. */
+interface DirectoryIdentity {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+function markdownFiles(dir: DirectoryIdentity, depth: number, root: string): ListedEntry[] {
   if (depth > MAX_DIRECTORY_DEPTH) {
     throw new ResolverError(
-      `record directory is nested more than ${MAX_DIRECTORY_DEPTH} levels: ${dir}`,
+      `record directory is nested more than ${MAX_DIRECTORY_DEPTH} levels: ${dir.path}`,
       { code: 'malformed' },
     );
   }
   const found: ListedEntry[] = [];
   for (const entry of listDirectory(dir)) {
     if (entry.kind === 'dir') {
-      const fd = openListed(entry, root, true);
+      const fd = openListed(entry, root, dir, true);
       closeSync(fd);
-      found.push(...markdownFiles(entry.path, depth + 1, root));
+      found.push(...markdownFiles(
+        { path: entry.path, dev: entry.dev, ino: entry.ino },
+        depth + 1,
+        root,
+      ));
     } else if (entry.kind === 'file' && isMarkdownName(entry.name)) {
-      found.push(entry);
+      found.push({ path: entry.path, dev: entry.dev, ino: entry.ino, parent: dir });
     }
   }
   found.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   return found;
 }
 
-function listDirectory(dir: string): Array<ListedEntry & { name: string; kind: 'dir' | 'file' | 'other' }> {
+function listDirectory(
+  dir: DirectoryIdentity,
+): Array<ListedNode & { name: string; kind: 'dir' | 'file' | 'other' }> {
+  assertDirectoryIdentity(dir);
   let entries;
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
+    entries = readdirSync(dir.path, { withFileTypes: true });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    throw new ResolverError(`cannot read record directory ${dir}: ${detail}`, {
+    throw new ResolverError(`cannot read record directory ${dir.path}: ${detail}`, {
       code: 'malformed',
       cause: err,
     });
   }
   const listed = [];
   for (const entry of entries) {
-    const entryPath = join(dir, entry.name);
+    const entryPath = join(dir.path, entry.name);
     let st;
     try {
       st = lstatSync(entryPath);
@@ -185,7 +217,26 @@ function listDirectory(dir: string): Array<ListedEntry & { name: string; kind: '
     const kind = st.isDirectory() ? 'dir' as const : st.isFile() ? 'file' as const : 'other' as const;
     listed.push({ name: entry.name, path: entryPath, dev: st.dev, ino: st.ino, kind });
   }
+  assertDirectoryIdentity(dir);
   return listed;
+}
+
+function assertDirectoryIdentity(dir: DirectoryIdentity): void {
+  let st;
+  try {
+    st = lstatSync(dir.path);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`cannot read record directory ${dir.path}: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
+  }
+  if (st.isSymbolicLink() || !st.isDirectory() || st.dev !== dir.dev || st.ino !== dir.ino) {
+    throw new ResolverError(`${dir.path}: directory changed after it was resolved`, {
+      code: 'malformed',
+    });
+  }
 }
 
 function isMarkdownName(name: string): boolean {
@@ -243,7 +294,7 @@ function frontmatter(text: string, file: string): Record<string, unknown> | unde
 }
 
 function readRecordDescriptor(file: ListedEntry, root: string): string {
-  const fd = openListed(file, root, false);
+  const fd = openListed(file, root, file.parent, false);
   try {
     return readFileSync(fd, 'utf8');
   } finally {
@@ -251,7 +302,12 @@ function readRecordDescriptor(file: ListedEntry, root: string): string {
   }
 }
 
-function openListed(entry: ListedEntry, root: string, directory: boolean): number {
+function openListed(
+  entry: ListedNode,
+  root: string,
+  parent: DirectoryIdentity,
+  directory: boolean,
+): number {
   let flags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
   if (constants.O_NOFOLLOW) flags |= constants.O_NOFOLLOW;
   if (directory && constants.O_DIRECTORY) flags |= constants.O_DIRECTORY;
@@ -261,11 +317,23 @@ function openListed(entry: ListedEntry, root: string, directory: boolean): numbe
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     const detail = err instanceof Error ? err.message : String(err);
-    if (code === 'ELOOP' || code === 'ENOTDIR' || code === 'EAGAIN') {
+    if (code === 'ELOOP') {
       throw new ResolverError(
         `${entry.path}: symlink in a record directory is not followed and is not skipped`,
         { code: 'malformed', cause: err },
       );
+    }
+    if (code === 'ENOTDIR') {
+      throw new ResolverError(`${entry.path}: a path component is not a directory`, {
+        code: 'malformed',
+        cause: err,
+      });
+    }
+    if (code === 'EAGAIN') {
+      throw new ResolverError(`${entry.path}: opening the record would block`, {
+        code: 'malformed',
+        cause: err,
+      });
     }
     throw new ResolverError(`cannot read record ${entry.path}: ${detail}`, {
       code: 'malformed',
@@ -295,6 +363,7 @@ function openListed(entry: ListedEntry, root: string, directory: boolean): numbe
       );
     }
     assertFdInsideRoot(fd, root, entry.path);
+    assertDirectoryIdentity(parent);
     return fd;
   } catch (err) {
     closeSync(fd);
@@ -308,6 +377,12 @@ function assertFdInsideRoot(fd: number, root: string, label: string): void {
   try {
     linked = readlinkSync(`/proc/self/fd/${fd}`);
   } catch (err) {
+    if (isProcUnmounted(err)) {
+      throw new ResolverError(`${label}: cannot verify opened path: /proc not mounted`, {
+        code: 'malformed',
+        cause: err,
+      });
+    }
     const detail = err instanceof Error ? err.message : String(err);
     throw new ResolverError(`${label}: cannot verify the opened path: ${detail}`, {
       code: 'malformed',
@@ -318,6 +393,12 @@ function assertFdInsideRoot(fd: number, root: string, label: string): void {
   try {
     resolved = realpathSync.native(linked);
   } catch (err) {
+    if (linked.endsWith(' (deleted)')) {
+      throw new ResolverError(
+        `${label}: cannot verify opened path: file was renamed during the load`,
+        { code: 'malformed', cause: err },
+      );
+    }
     const detail = err instanceof Error ? err.message : String(err);
     throw new ResolverError(`${label}: cannot verify the opened path: ${detail}`, {
       code: 'malformed',
@@ -326,6 +407,17 @@ function assertFdInsideRoot(fd: number, root: string, label: string): void {
   }
   if (resolved !== root && !resolved.startsWith(root.endsWith(sep) ? root : root + sep)) {
     throw new ResolverError(`${label}: opened path is outside the record root`, { code: 'malformed' });
+  }
+}
+
+/** True when readlink failed because this Linux system has no /proc/self. */
+function isProcUnmounted(err: unknown): boolean {
+  if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+  try {
+    lstatSync('/proc/self');
+    return false;
+  } catch (probe) {
+    return (probe as NodeJS.ErrnoException).code === 'ENOENT';
   }
 }
 
@@ -365,7 +457,7 @@ function loadYamlDocument(text: string, file: string): unknown {
   return documents[0];
 }
 
-function resolveRecordRoot(rootDir: string): string {
+function resolveRecordRoot(rootDir: string): DirectoryIdentity {
   let resolved: string;
   try {
     resolved = realpathSync.native(rootDir);
@@ -386,12 +478,12 @@ function resolveRecordRoot(rootDir: string): string {
       cause: err,
     });
   }
-  if (!st.isDirectory()) {
+  if (st.isSymbolicLink() || !st.isDirectory()) {
     throw new ResolverError(`record directory is not a directory: ${rootDir}`, {
       code: 'malformed',
     });
   }
-  return resolved;
+  return { path: resolved, dev: st.dev, ino: st.ino };
 }
 
 function measurementClassOf(data: Record<string, unknown>, file: string): string {
