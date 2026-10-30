@@ -159,7 +159,8 @@ export function lexSpeck(src: string, file?: string): SpeckLex {
       // `9A` is an identifier that starts with a digit. `24h` and `500ms` are
       // duration suffixes and stay a number followed by a unit. `1e5`,
       // `0x1F`, `1_000`, `5min` are numeric forms this lexer does not accept.
-      if ((isIdentStart(src[i]) && !isDurationUnit(src, i)) || src[i] === '_') {
+      const dotExp = src[i] === '.' && (src[i + 1] === 'e' || src[i + 1] === 'E');
+      if ((isIdentStart(src[i]) && !isDurationUnit(src, i)) || src[i] === '_' || dotExp) {
         const lit = unsupportedNumericLiteral(src, start);
         if (lit) throw parseErrorAt(file, ln, col, `unsupported numeric literal "${lit}"`);
         throw parseErrorAt(file, ln, col, 'identifier must not start with a digit');
@@ -219,6 +220,12 @@ function unsupportedNumericLiteral(src: string, start: number): string | null {
     if (isIdentPart(src[i])) return null;
     return src.slice(start, i);
   }
+  if (src[i] === '0' && (src[i + 1] === 'b' || src[i + 1] === 'B') && (src[i + 2] === '0' || src[i + 2] === '1')) {
+    i += 2;
+    while (i < src.length && (src[i] === '0' || src[i] === '1' || src[i] === '_')) i++;
+    if (isIdentPart(src[i])) return null;
+    return src.slice(start, i);
+  }
   if (!isDigit(src[i])) return null;
   let special = false;
   while (i < src.length && (isDigit(src[i]) || src[i] === '_')) {
@@ -231,6 +238,9 @@ function unsupportedNumericLiteral(src: string, start: number): string | null {
       if (src[i] === '_') special = true;
       i++;
     }
+  } else if (src[i] === '.' && (src[i + 1] === 'e' || src[i + 1] === 'E')) {
+    special = true;
+    i++;
   }
   if ((src[i] === 'e' || src[i] === 'E') && (isDigit(src[i + 1]) || ((src[i + 1] === '+' || src[i + 1] === '-') && isDigit(src[i + 2])))) {
     special = true;
@@ -245,12 +255,20 @@ function unsupportedNumericLiteral(src: string, start: number): string | null {
   if (unit > 0) {
     special = true;
     i += unit;
+  } else if ((src[i] === 'h' || src[i] === 'm' || src[i] === 's' || src[i] === 'd') && isDigit(src[i + 1])) {
+    // `1h30m`: a duration letter followed by more digits is one literal, not `1` + `h30m`.
+    special = true;
+    i++;
+    while (i < src.length && isDigit(src[i])) i++;
+    const more = extendedUnitLength(src, i);
+    if (more > 0) i += more;
+    else if (isDurationUnit(src, i)) i += src.startsWith('ms', i) ? 2 : 1;
   }
   if (!special || isIdentPart(src[i])) return null;
   return src.slice(start, i);
 }
 
-const EXTENDED_UNITS = ['milliseconds', 'minutes', 'seconds', 'hours', 'weeks', 'days', 'msec', 'mins', 'secs', 'hrs', 'min', 'sec', 'day', 'week', 'hour', 'w'];
+const EXTENDED_UNITS = ['milliseconds', 'minutes', 'seconds', 'hours', 'weeks', 'days', 'msec', 'mins', 'secs', 'hrs', 'hr', 'min', 'sec', 'day', 'week', 'hour', 'w'];
 
 function extendedUnitLength(src: string, i: number): number {
   for (const word of EXTENDED_UNITS) {
