@@ -970,11 +970,32 @@ function parseStateBlock(inner: string): StateNode {
   return { type: 'state', variables };
 }
 
+/** Split on `,` `;` and newlines that are not inside `()` `[]` or `{}`. */
+function splitTopLevel(inner: string): string[] {
+  const masked = maskCode(inner).text;
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  for (let i = 0; i < masked.length; i++) {
+    const ch = masked[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (depth === 0 && (ch === ',' || ch === ';' || ch === '\n')) {
+      parts.push(inner.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(inner.slice(start));
+  return parts.map(s => s.trim()).filter(Boolean);
+}
+
 function parseInitBlock(inner: string): InitNode {
   const assignments: { name: string; expr: string }[] = [];
   if (!inner.trim()) return { type: 'init', assignments };
 
-  const assignStrs = inner.split(/;|\n/).map(s => s.trim()).filter(Boolean);
+  // A comma at bracket depth 0 separates assignments (`x := 0, y := 1`).
+  // A comma inside `()`, `[]`, or `{}` is part of the value.
+  const assignStrs = splitTopLevel(inner);
 
   for (let idx = 0; idx < assignStrs.length; idx++) {
     const match = assignStrs[idx].match(/^(\w+)\s*:=\s*(.+)$/);
@@ -1508,15 +1529,69 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   const firstLine = lines[startIndex].trim();
   const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
-  const inline = inlineActionBody(firstLine);
-  if (inline !== null) return { type: 'invariant', name, expr: inline.trim() };
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const body = lines
-    .slice(startIndex + 1, endIndex)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('//') && !l.startsWith('/*'))
-    .join(' ');
-  return { type: 'invariant', name, expr: body.trim() };
+  const expr = stripInvariantExpr(braceInner(lines, startIndex));
+  if (!expr) throw lexProblem(startIndex + 1, 'invariant expression is empty');
+  return { type: 'invariant', name, expr };
+}
+
+/**
+ * Source between a block's opening `{` and its matching `}`.
+ * Comments and strings are not braces. Includes text on the header
+ * after `{` and text on the closing line before `}`.
+ */
+function braceInner(lines: string[], startIndex: number): string {
+  let depth = 0;
+  let started = false;
+  let out = '';
+  for (let li = startIndex; li < lines.length; li++) {
+    const line = lines[li];
+    const masked = maskCode(line).text;
+    let takeFrom = 0;
+    for (let i = 0; i < masked.length; i++) {
+      const ch = masked[i];
+      if (ch === '{') {
+        depth++;
+        if (!started) {
+          started = true;
+          takeFrom = i + 1;
+        }
+      } else if (ch === '}' && started) {
+        depth--;
+        if (depth === 0) return out + line.slice(takeFrom, i);
+      }
+    }
+    if (started) out += line.slice(takeFrom) + '\n';
+  }
+  return out;
+}
+
+/** Invariant text with line and block comments removed. */
+export function stripInvariantExpr(src: string): string {
+  let out = '';
+  let quote = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (quote) {
+      out += ch;
+      if (ch === '\\' && next !== undefined) { out += next; i++; continue; }
+      if (ch === '"') quote = false;
+      continue;
+    }
+    if (ch === '"') { quote = true; out += ch; continue; }
+    if (ch === '/' && next === '/') {
+      while (i < src.length && src[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+  return out.replace(/\s+/g, ' ').trim();
 }
 
 /** Keep a line break after a `//` comment so the next statement is not commented out. */

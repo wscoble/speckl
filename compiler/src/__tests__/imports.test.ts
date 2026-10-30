@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
@@ -235,6 +236,63 @@ describe('import resolution', () => {
     symlinkSync(join(elsewhere, 'secret.speckdl'), join(folder, 'link.speckdl'));
     const linked = write(folder, 'linkroot.speckdl', 'import "link.speckdl" as S\nspeck Root {\n    state { n: Nat }\n}\n');
     expect(() => expandImports(parseSpeckFile(linked), linked)).toThrow(/outside the import root/);
+  });
+
+  it('does not treat one alias in a two-speck import as a duplicate', () => {
+    const folder = dir();
+    write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n}\n');
+    write(folder, 'two.speckdl', 'import "./lib.speckdl" as L\nspeck T1 {\n    state { n: Nat }\n}\nspeck T2 {\n    state { n: Nat }\n}\n');
+    const root = write(folder, 'a.speckdl', 'import "./two.speckdl"\nspeck A {\n    state { n: Nat }\n}\n');
+    expect(expandImports(parseSpeckFile(root), root).specks.map(s => s.name).sort()).toEqual(['A', 'Lib', 'T1', 'T2']);
+  });
+
+  it('allows a state field named import', () => {
+    expect(() => parseSpeckContent('speck A {\n    state {\n        import: Nat\n    }\n}\n', 'p.speckdl')).not.toThrow();
+  });
+
+  it('accepts a file whose name starts with two dots inside the root', () => {
+    const folder = dir();
+    write(folder, '..lib.speckdl', 'speck Dots {\n    state { n: Nat }\n}\n');
+    const root = write(folder, 'a.speckdl', 'import "./..lib.speckdl"\nspeck A {\n    state { n: Nat }\n}\n');
+    expect(expandImports(parseSpeckFile(root), root).specks.map(s => s.name)).toContain('Dots');
+  });
+
+  it('hashes the raw file bytes', () => {
+    const folder = dir();
+    const raw = Buffer.concat([Buffer.from('speck U8 {\n    author: "a'), Buffer.from([0xff]), Buffer.from('"\n}\n')]);
+    writeFileSync(join(folder, 'u8.speckdl'), raw);
+    const pin = createHash('sha256').update(raw).digest('hex');
+    const root = write(folder, 'a.speckdl', `import "./u8.speckdl" hash "sha256:${pin}"\nspeck A {\n    state { n: Nat }\n}\n`);
+    expect(expandImports(parseSpeckFile(root), root).specks.map(s => s.name)).toContain('U8');
+  });
+
+  it('lower uses the bytes expandImports already verified', () => {
+    const folder = dir();
+    const libSrc = 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n    action Tick {\n        n := n + 1\n    }\n}\n';
+    const lib = write(folder, 'lib.speckdl', libSrc);
+    const pin = createHash('sha256').update(libSrc).digest('hex');
+    const entry = write(folder, 'pin.speckdl', `import "./lib.speckdl" hash "sha256:${pin}"\nspeck A {\n    state { n: Nat }\n}\n`);
+    const fs = createRequire(import.meta.url)('node:fs');
+    const orig = fs.readFileSync;
+    let reads = 0;
+    fs.readFileSync = function (p: unknown, ...rest: unknown[]) {
+      if (String(p) === lib && ++reads === 1) writeFileSync(lib, libSrc.replace('n := n + 1', 'n := n + 999'));
+      return orig.call(this, p, ...rest);
+    };
+    syncBuiltinESMExports();
+    try {
+      const ast = expandImports(parseSpeckFile(entry), entry);
+      const ir = lower(ast, { filePath: entry, resolveImports: true });
+      expect(JSON.stringify(ir.specks.find(s => s.name === 'Lib'))).not.toContain('999');
+    } finally {
+      fs.readFileSync = orig;
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('throws when the entry path is missing', () => {
+    const src = 'import "./lib.speckdl"\nspeck A {\n    state { n: Nat }\n}\n';
+    expect(() => expandImports(parseSpeckContent(src, '/nonexistent/x.speckdl'), '/nonexistent/x.speckdl')).toThrow(/cannot read/);
   });
 
   it('compileSpec accepts --root as rootDir', () => {

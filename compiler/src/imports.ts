@@ -6,8 +6,8 @@
 // `rootDir` — the CLI's `--root` — to widen that directory.
 
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { closeSync, fstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { AST, ImportNode, parseSpeckContent, SpeckNode } from './parser.js';
 
 export interface ImportLink {
@@ -32,8 +32,22 @@ export interface ExpandOptions {
 const MAX_IMPORT_DEPTH = 64;
 
 interface CachedFile {
+  buf: Buffer;
   text: string;
   ast: AST;
+}
+
+/** Bytes read while resolving imports, keyed by realpath. `lower` uses this instead of reading the file again. */
+const sourceByReal = new Map<string, string>();
+
+export function verifiedSource(filePath: string): string | undefined {
+  const hit = sourceByReal.get(filePath);
+  if (hit !== undefined) return hit;
+  try {
+    return sourceByReal.get(realpathSync(filePath));
+  } catch {
+    return undefined;
+  }
 }
 
 const linksOf = new WeakMap<AST, ImportLink[]>();
@@ -59,8 +73,10 @@ export function speckSourceFile(ast: AST, name: string, fallback: string): strin
  * speck name twice. A file with no imports is returned unchanged.
  */
 export function expandImports(ast: AST, entryPath: string, options: ExpandOptions = {}): AST {
-  if (!existsSync(entryPath)) return ast;
-  const entryAbs = realpathSync(entryPath);
+  const opened = readViaFd(entryPath, null, entryPath);
+  const entryAbs = opened.real;
+  const entryText = opened.buf.toString('utf8');
+  sourceByReal.set(entryAbs, entryText);
   const rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
   const rootHas = (ast.imports?.length ?? 0) > 0
     || ast.specks.some(s => s.members.some(m => m.type === 'import'));
@@ -82,31 +98,44 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
   const cache = new Map<string, CachedFile>();
   const aliasAt = new Set<string>();
 
-  function ensure(abs: string): CachedFile {
-    const hit = cache.get(abs);
+  function remember(real: string, buf: Buffer): CachedFile {
+    const hit = cache.get(real);
     if (hit) return hit;
-    const text = readFileSync(abs, 'utf8');
-    const parsed = parseSpeckContent(text, abs);
-    const entry = { text, ast: parsed };
-    cache.set(abs, entry);
+    const text = buf.toString('utf8');
+    const parsed = parseSpeckContent(text, real);
+    const entry = { buf, text, ast: parsed };
+    cache.set(real, entry);
+    sourceByReal.set(real, text);
     return entry;
   }
 
   function importsIn(parsed: AST, abs: string): { owner: string; node: ImportNode }[] {
     const out: { owner: string; node: ImportNode }[] = [];
-    if (abs === entryAbs) {
-      for (const node of parsed.imports ?? []) out.push({ owner: '*', node });
-    } else {
-      for (const node of parsed.imports ?? []) {
-        for (const speck of parsed.specks) out.push({ owner: speck.name, node });
-      }
+    for (const node of parsed.imports ?? []) {
+      noteAlias(abs, node);
+      if (abs === entryAbs) out.push({ owner: '*', node });
+      else for (const speck of parsed.specks) out.push({ owner: speck.name, node });
     }
     for (const speck of parsed.specks) {
       for (const member of speck.members) {
-        if (member.type === 'import') out.push({ owner: speck.name, node: member });
+        if (member.type === 'import') {
+          noteAlias(abs, member);
+          out.push({ owner: speck.name, node: member });
+        }
       }
     }
     return out;
+  }
+
+  function fetchChild(fromAbs: string, node: ImportNode): string {
+    if (isAbsolute(node.path)) {
+      throw new Error(`Parse error: import "${node.path}" must be a relative path`);
+    }
+    const target = resolve(dirname(fromAbs), node.path);
+    const child = readViaFd(target, rootDir, node.path);
+    if (!cache.has(child.real)) remember(child.real, child.buf);
+    if (node.hash) verifyHash(cache.get(child.real)!.buf, node.hash, node.path);
+    return child.real;
   }
 
   function noteAlias(abs: string, node: ImportNode): void {
@@ -118,11 +147,8 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
     aliasAt.add(key);
   }
 
-  function load(abs: string, depth: number, pin?: { hash: string; specPath: string }): void {
-    if (done.has(abs)) {
-      if (pin) verifyHash(cache.get(abs)!.text, pin.hash, pin.specPath);
-      return;
-    }
+  function load(abs: string, depth: number): void {
+    if (done.has(abs)) return;
     if (depth > MAX_IMPORT_DEPTH) {
       throw new Error(`Parse error: import chain is too deep (limit ${MAX_IMPORT_DEPTH}): ${[...stack, abs].join(' -> ')}`);
     }
@@ -131,8 +157,7 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
     }
     stackSet.add(abs);
     stack.push(abs);
-    const { ast: parsed } = ensure(abs);
-    if (pin) verifyHash(cache.get(abs)!.text, pin.hash, pin.specPath);
+    const parsed = cache.get(abs)!.ast;
     if (abs !== entryAbs && parsed.specks.length === 0) {
       throw new Error(`Parse error: import "${abs}" declares no specks`);
     }
@@ -152,9 +177,8 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
       }
     }
     for (const { owner, node } of importsIn(parsed, abs)) {
-      noteAlias(abs, node);
-      const child = resolveImportPath(abs, node.path, rootDir);
-      load(child, depth + 1, node.hash ? { hash: node.hash, specPath: node.path } : undefined);
+      const child = fetchChild(abs, node);
+      load(child, depth + 1);
       const names = parsedNames(cache.get(child)!.ast);
       if (!links.some(l => l.owner === owner && l.file === child && l.node.path === node.path && l.node.alias === node.alias)) {
         links.push({ owner, node, file: child, speckNames: names });
@@ -165,6 +189,7 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
     done.add(abs);
   }
 
+  remember(entryAbs, opened.buf);
   load(entryAbs, 0);
 
   // Root file-level imports apply to every speck declared in the root file.
@@ -192,25 +217,40 @@ function parsedNames(ast: AST): string[] {
   return ast.specks.map(s => s.name);
 }
 
-export function resolveImportPath(fromFile: string, specPath: string, rootDir: string): string {
-  if (isAbsolute(specPath)) {
-    throw new Error(`Parse error: import "${specPath}" must be a relative path`);
-  }
-  const target = resolve(dirname(fromFile), specPath);
-  if (!existsSync(target) || !statSync(target).isFile()) {
-    throw new Error(`Parse error: cannot read import "${specPath}" (resolved ${target})`);
-  }
-  const real = realpathSync(target);
-  const rootReal = realpathSync(rootDir);
+function outsideRoot(rootReal: string, real: string): boolean {
   const rel = relative(rootReal, real);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error(`Parse error: import "${specPath}" resolves outside the import root ${rootReal}`);
-  }
-  return real;
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
-/** Hash `buf`, the same bytes that were parsed. A pin must be 64 hex digits. */
-export function verifyHash(buf: string | Buffer, pin: string, specPath: string): void {
+/** Open `candidate`, then decide from that fd so a swapped symlink cannot change what we read. */
+function readViaFd(candidate: string, rootReal: string | null, specPath: string): { real: string; buf: Buffer } {
+  let fd: number;
+  try {
+    fd = openSync(candidate, 'r');
+  } catch {
+    throw new Error(`Parse error: cannot read import "${specPath}" (resolved ${candidate})`);
+  }
+  try {
+    if (!fstatSync(fd).isFile()) {
+      throw new Error(`Parse error: cannot read import "${specPath}" (resolved ${candidate})`);
+    }
+    const fdPath = `/proc/self/fd/${fd}`;
+    const real = realpathSync(fdPath);
+    if (rootReal && outsideRoot(rootReal, real)) {
+      throw new Error(`Parse error: import "${specPath}" resolves outside the import root ${rootReal}`);
+    }
+    const buf = readFileSync(fd);
+    if (realpathSync(fdPath) !== real) {
+      throw new Error(`Parse error: import "${specPath}" changed while reading`);
+    }
+    return { real, buf };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Hash the raw file bytes. A pin must be 64 hex digits. */
+export function verifyHash(buf: Buffer, pin: string, specPath: string): void {
   const hex = pin.replace(/^sha256:/i, '').trim();
   if (hex === '') {
     throw new Error(`Parse error: empty hash on import "${specPath}"`);

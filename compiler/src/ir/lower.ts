@@ -20,6 +20,7 @@
 
 import { exprToSource } from '../expr/print.js';
 import { readFileSync } from 'fs';
+import { verifiedSource } from '../imports.js';
 import {
   AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, inlineActionBody,
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
@@ -112,7 +113,7 @@ function lowerSpeck(
 ): IRSpeck {
   // Read the raw source for expression re-parsing.
   // The main AST has string expressions; the IR needs typed trees.
-  const rawSource = readFileSync(sourcePath, 'utf-8');
+  const rawSource = verifiedSource(sourcePath) ?? readFileSync(sourcePath, 'utf-8');
   const rawStatementsByAction = extractActionStatements(rawSource, speck);
 
   const imports: IRImport[] = [];

@@ -368,7 +368,7 @@ exports[`generated output is pinned for every example > OAuth2AuthorizationCode.
   "OAuth2AuthorizationCode.specbom.spdx.json": "f85c440746217c08",
   "OAuth2AuthorizationCode.ts": "622865d1c635843a",
   "OAuth2AuthorizationCode/Cargo.toml": "9cc264661290ff58",
-  "OAuth2AuthorizationCode/src/lib.rs": "1d663e30174bfbdf",
+  "OAuth2AuthorizationCode/src/lib.rs": "dcf21cbfb4d6c05f",
   "camel/oauth2authorization-code/pom.xml": "d492fbd6eab77aeb",
   "camel/oauth2authorization-code/src/main/java/oauth2authorizationcode/camel/OAuth2AuthorizationCodeRoutes.java": "5256f059bf6809dc",
   "camel/oauth2authorization-code/src/main/java/oauth2authorizationcode/camel/OAuth2AuthorizationCodeState.java": "46f282237c580d0f",

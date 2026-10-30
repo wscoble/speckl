@@ -215,9 +215,14 @@ An import path is relative. The compiler resolves it from the importing
 file and then checks the real path, after symlinks, against an import root.
 The default root is the directory of the file you compile. `speckl <file>
 --root <dir>` widens that directory. An absolute path, a `../` that leaves
-the root, or a symlink whose target leaves the root is an error. The import
-clause itself is still a regex on the source line; a `//` inside the quoted
-path is not a comment.
+the root, or a symlink whose target leaves the root is an error. A name like
+`..lib.speckdl` that merely starts with two dots is still inside the root.
+`speckl <file> --root /` widens the root to the whole filesystem, so every
+readable relative path is allowed. That is an escape hatch, not a default.
+The import clause itself is still a regex on the source line; a `//` inside
+the quoted path is not a comment. The word `import` is recognized as a token,
+so a tab after it is still an import, and an import statement inside a block
+is an error. A state field named `import` is not.
 
 ### 2.9 Expression Operators
 
