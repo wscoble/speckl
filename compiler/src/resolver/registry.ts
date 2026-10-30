@@ -1,5 +1,5 @@
 import { plainCopy } from './plain.js';
-import { assertBackendName, assertRecordId } from './record-id.js';
+import { assertBackendName, assertMeasurementClass, assertRecordId } from './record-id.js';
 import {
   ResolverError,
   type RecordShape,
@@ -109,8 +109,11 @@ class Registry implements ResolverRegistry {
     if (id !== recordId) {
       throw new Error(`lookup() returned id "${String(id)}" for "${recordId}"`);
     }
-    if (typeof measurementClass !== 'string' || measurementClass.trim() === '') {
-      throw new Error(`lookup() returned an empty measurement class for "${recordId}"`);
+    let measurement: string;
+    try {
+      measurement = assertMeasurementClass(measurementClass, 'lookup');
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
     }
     const attributes = Object.hasOwn(shape, 'attributes')
       ? (shape as { attributes: unknown }).attributes
@@ -120,7 +123,7 @@ class Registry implements ResolverRegistry {
     }
     return {
       id: recordId,
-      measurementClass: measurementClass.trim(),
+      measurementClass: measurement,
       attributes: plainCopy(attributes) as Record<string, unknown>,
     };
   }

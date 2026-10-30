@@ -133,8 +133,11 @@ describe('lookup reads own properties only', () => {
 });
 
 describe('record id canonical form', () => {
-  it('rejects a Latin and Cyrillic homoglyph pair', () => {
-    expect(() => staticManifestBackend({ 'backup/a': 'c', 'backup/\u0430': 'c' })).toThrow(ResolverError);
+  it('keeps Latin and Cyrillic ids distinct and unchanged', () => {
+    const backend = staticManifestBackend({ 'backup/a': 'lat', 'backup/\u0430': 'cyr' });
+    expect(backend.lookup('backup/a')!.measurementClass).toBe('lat');
+    expect(backend.lookup('backup/\u0430')!.id).toBe('backup/\u0430');
+    expect(backend.lookup('backup/\u0430')!.measurementClass).toBe('cyr');
   });
 
   it('rejects an NFKC ligature that folds onto an ASCII id', () => {
@@ -180,13 +183,13 @@ describe('filesystem links and aliases', () => {
     expect(Date.now() - started).toBeLessThan(5000);
   });
 
-  it('rejects a root whose parent directory is a symlink', () => {
+  it('follows a symlink in the path to the root and reads the resolved directory', () => {
     const real = td();
     mkdirSync(path.join(real, 'recs'));
     writeFileSync(path.join(real, 'recs', 'r.md'), rec('incident/via-parent-link'));
     const linkParent = path.join(td(), 'lp');
     symlinkSync(real, linkParent);
-    expect(codeOf(() => filesystemBackend(path.join(linkParent, 'recs')))).toBe('malformed');
+    expect(filesystemBackend(path.join(linkParent, 'recs')).exists('incident/via-parent-link')).toBe(true);
   });
 
   it('loads a hard link, which has no symlink bit to reject', () => {

@@ -1,5 +1,6 @@
-import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, parse as parsePath, resolve, sep } from 'node:path';
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { EVENT_ALIAS, parseEvents } from 'js-yaml';
 import * as yaml from 'js-yaml';
 import { plainCopy, plainRecord } from './plain.js';
 import { assertMeasurementClass, assertRecordId } from './record-id.js';
@@ -42,17 +43,23 @@ interface StoredRecord {
  * file path. A file that is not Markdown, and a Markdown file with no
  * frontmatter, is skipped. A Markdown file that has frontmatter but is
  * missing an id or a measurement class fails the whole load (`malformed`).
- * A symlink anywhere in the root's path, a symlink entry under the root, a
- * file over {@link MAX_RECORD_BYTES}, a directory nested deeper than
- * {@link MAX_DIRECTORY_DEPTH}, or YAML anchors and aliases also fail the
- * load. Those cases are not skipped. A hard link is an ordinary file: the
- * kernel does not say it has another name, so containment cannot see it,
- * and the record loads.
+ * The root is `realpath`'d once. Symlinks on the way to that directory,
+ * including a symlink such as macOS `/tmp`, are followed and are not
+ * errors. Every read uses that resolved path. A symlink found under the
+ * resolved root fails the load. It is not followed and it is not skipped.
+ * A hard link has no symlink bit and no second name the kernel will report,
+ * so it loads. A Markdown file whose first line is blank, before `---`,
+ * has no frontmatter and is skipped.
  *
- * Symlinks are not followed. Record ids are map keys, never paths.
- * `lookup` returns a deep copy. Nested attributes are not shared with the
- * stored record, and a `__proto__` key stays an own property. A YAML alias
- * is rejected before the copy, so a shared document is not expanded into a tree.
+ * A file over {@link MAX_RECORD_BYTES}, or a directory nested deeper than
+ * {@link MAX_DIRECTORY_DEPTH}, fails the load. YAML anchors and aliases are
+ * rejected from the parser's event stream, before the document is built, so
+ * a shared node is never expanded into a tree. `team: R&D`, a query string,
+ * `rto*2`, and `&` inside a block scalar are ordinary text and load.
+ *
+ * Record ids are map keys, never paths. `lookup` returns a deep copy.
+ * Nested attributes are not shared with the stored record, and a `__proto__`
+ * key stays an own property.
  */
 export function filesystemBackend(
   rootDir: string,
@@ -79,29 +86,11 @@ export function filesystemBackend(
 }
 
 function loadRecords(rootDir: string): Map<string, StoredRecord> {
-  assertNoSymlinkInPath(rootDir);
-  let rootStat;
-  try {
-    rootStat = lstatSync(rootDir);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ResolverError(`cannot read record directory ${rootDir}: ${detail}`, {
-      code: 'malformed',
-      cause: err,
-    });
-  }
-  if (rootStat.isSymbolicLink()) {
-    throw new ResolverError(`record directory is a symlink: ${rootDir}`, { code: 'malformed' });
-  }
-  if (!rootStat.isDirectory()) {
-    throw new ResolverError(`record directory is not a directory: ${rootDir}`, {
-      code: 'malformed',
-    });
-  }
+  const resolved = resolveRecordRoot(rootDir);
 
   const records = new Map<string, StoredRecord>();
   const origins = new Map<string, string>();
-  for (const file of markdownFiles(rootDir, 0)) {
+  for (const file of markdownFiles(resolved, 0)) {
     const stored = readRecord(file);
     if (!stored) continue;
     const previous = origins.get(stored.id);
@@ -243,56 +232,48 @@ function frontmatter(text: string, file: string): Record<string, unknown> | unde
 }
 
 function assertNoYamlAliases(text: string, file: string): void {
-  let i = 0;
-  let quote: '"' | "'" | null = null;
-  while (i < text.length) {
-    const c = text[i];
-    if (quote === "'") {
-      if (c === "'" && text[i + 1] === "'") { i += 2; continue; }
-      if (c === "'") quote = null;
-      i += 1;
-      continue;
-    }
-    if (quote === '"') {
-      if (c === '\\') { i += 2; continue; }
-      if (c === '"') quote = null;
-      i += 1;
-      continue;
-    }
-    if (c === '#') {
-      while (i < text.length && text[i] !== '\n') i += 1;
-      continue;
-    }
-    if (c === "'" || c === '"') { quote = c; i += 1; continue; }
-    if ((c === '&' || c === '*') && i + 1 < text.length && /[A-Za-z0-9_]/.test(text[i + 1]!)) {
+  let events: ReturnType<typeof parseEvents>;
+  try {
+    events = parseEvents(text, { filename: file });
+  } catch {
+    return;
+  }
+  for (const event of events) {
+    if (event.type === EVENT_ALIAS || ('anchorStart' in event && event.anchorStart >= 0)) {
       throw new ResolverError(`${file}: YAML anchors and aliases are not allowed`, {
         code: 'malformed',
       });
     }
-    i += 1;
   }
 }
 
-function assertNoSymlinkInPath(rootDir: string): void {
-  const abs = resolve(rootDir);
-  const parts = abs.split(sep).filter((part) => part.length > 0);
-  let cur = parsePath(abs).root;
-  for (const part of parts) {
-    cur = join(cur, part);
-    let st;
-    try {
-      st = lstatSync(cur);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new ResolverError(`cannot read record directory ${rootDir}: ${detail}`, {
-        code: 'malformed',
-        cause: err,
-      });
-    }
-    if (st.isSymbolicLink()) {
-      throw new ResolverError(`record path contains a symlink: ${cur}`, { code: 'malformed' });
-    }
+function resolveRecordRoot(rootDir: string): string {
+  let resolved: string;
+  try {
+    resolved = realpathSync(rootDir);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`cannot read record directory ${rootDir}: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
   }
+  let st;
+  try {
+    st = lstatSync(resolved);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`cannot read record directory ${rootDir}: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
+  }
+  if (!st.isDirectory()) {
+    throw new ResolverError(`record directory is not a directory: ${rootDir}`, {
+      code: 'malformed',
+    });
+  }
+  return resolved;
 }
 
 function measurementClassOf(data: Record<string, unknown>, file: string): string {

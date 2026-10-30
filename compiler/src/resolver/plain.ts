@@ -5,17 +5,24 @@
  * into the object's prototype. `Object.create(null)` plus own-property
  * definition keeps `__proto__` as data.
  *
- * Each object is copied once. A second visit is a cycle or a YAML alias
- * that was already expanded into a shared node; both throw, so a shared
- * DAG is not walked into a tree. The node budget stops a wide tree from
- * exhausting the heap. Map and Set values are copied as a plain object and
- * an array. Symbol keys are rejected rather than dropped.
+ * Each object is copied once. A cycle, a node seen again before its copy is
+ * finished, throws. A later visit of an already-copied object reuses that
+ * copy, so a DAG is not expanded and changing one branch of the copy is
+ * visible on the other. YAML aliases are rejected before a Markdown record
+ * is copied, so a record loaded from the filesystem does not share nodes.
+ * The node budget stops a wide tree from exhausting the heap. Map and Set
+ * values are copied as a plain object and an array. Symbol keys are
+ * rejected rather than dropped.
  */
 
 const IN_PROGRESS = Symbol('plain-copy-in-progress');
 
-/** Distinct objects plainCopy will walk before it throws. */
-export const MAX_COPY_NODES = 10_000;
+/**
+ * Distinct objects plainCopy will walk before it throws. A record file is
+ * also limited to 1 MiB. 100_000 nodes covers a long list without letting a
+ * hostile tree exhaust the heap.
+ */
+export const MAX_COPY_NODES = 100_000;
 
 export class CopyLimitError extends Error {
   constructor(message: string) {

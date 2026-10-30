@@ -3,21 +3,20 @@ import { ResolverError } from './types.js';
 /**
  * Canonical record ids.
  *
- * The form is NFKC, then a fold of the Cyrillic and Greek letters that use
- * a Latin glyph and that NFKC does not already fold (а/е/о/р/с/у/х/і and
- * the capitals, plus the Greek lookalikes below). Two ids that fold to the
- * same string are the same key. NFC and NFD spellings fold together because
- * NFKC composes them. The ligature ﬁ folds to fi. This is not the whole
- * Unicode confusables table.
+ * The stored form is NFKC and nothing else. NFC and NFD spellings of the
+ * same id are one key, and the ligature ﬁ is `fi`, because NFKC does that.
+ * Backends are queried with that NFKC string. There is no homoglyph fold:
+ * Cyrillic `ах` is not Latin `ax`, and an all-Cyrillic id is stored unchanged.
  *
- * A slash separates segments. A segment is not empty, `.`, or `..`, so
- * `a//b`, `a/`, `/a`, `/`, `.`, `..`, and `a/../b` are rejected. Ids are
- * map keys, not paths. The segment rule is what keeps those spellings from
- * being two keys.
+ * Each `/` segment must be a single script, the UTS #39 rule. Common and
+ * Inherited characters (digits, the punctuation below, combining marks that
+ * are Inherited) do not count as a script. A segment that mixes scripts,
+ * such as Cyrillic `с` plus Latin `op`, is rejected. A mark (`\p{M}`) is
+ * allowed only immediately after a letter.
  *
- * A segment is letters, numbers, and `.` `_` `~` `+` `-`. A mark (`\p{M}`)
- * is allowed only immediately after a letter, so a Devanagari vowel sign is
- * legal and a mark cannot stand alone. Ids are case-sensitive.
+ * A segment is not empty, `.`, or `..`, so `a//b`, `a/`, `/a`, `/`, `.`,
+ * `..`, and `a/../b` are rejected. Ids are map keys, not paths. They are
+ * case-sensitive.
  *
  * The `&` sigil is SpeckDL syntax, not part of the id. Whitespace, controls,
  * and any other character are rejected.
@@ -29,32 +28,27 @@ const NAME_PATTERN = /^[\p{L}\p{N}._~+-]+$/u;
 
 const CONTROL = /[\u0000-\u001F\u007F]/;
 
+const COMMON = /^\p{Script=Common}$/u;
+const INHERITED = /^\p{Script=Inherited}$/u;
+
 /**
- * Cyrillic and Greek letters that share a Latin glyph. NFKC does not fold
- * these. The value is the Latin letter stored in the canonical id.
+ * Scripts a record id may use. A character that matches none of these and is
+ * not Common or Inherited is its own script, so it cannot hide inside another.
  */
-const HOMOGLYPHS: Readonly<Record<string, string>> = {
-  '\u0430': 'a', '\u0410': 'A',
-  '\u0435': 'e', '\u0415': 'E',
-  '\u043e': 'o', '\u041e': 'O',
-  '\u0440': 'p', '\u0420': 'P',
-  '\u0441': 'c', '\u0421': 'C',
-  '\u0443': 'y', '\u0423': 'Y',
-  '\u0445': 'x', '\u0425': 'X',
-  '\u0456': 'i', '\u0406': 'I',
-  '\u0458': 'j', '\u0408': 'J',
-  '\u0455': 's', '\u0405': 'S',
-  '\u041d': 'H', '\u041a': 'K', '\u041c': 'M', '\u0412': 'B', '\u0422': 'T',
-  '\u03b1': 'a', '\u0391': 'A',
-  '\u03bf': 'o', '\u039f': 'O',
-  '\u03b5': 'e', '\u0395': 'E',
-  '\u03b9': 'i', '\u0399': 'I',
-  '\u03ba': 'k', '\u039a': 'K',
-  '\u03c1': 'p', '\u03a1': 'P',
-  '\u03c4': 't', '\u03a4': 'T',
-  '\u03c5': 'u', '\u03a5': 'Y',
-  '\u03c7': 'x', '\u03a7': 'X',
-};
+const SCRIPT_NAMES = [
+  'Latin', 'Cyrillic', 'Greek', 'Hebrew', 'Arabic', 'Devanagari', 'Bengali',
+  'Gurmukhi', 'Gujarati', 'Oriya', 'Tamil', 'Telugu', 'Kannada', 'Malayalam',
+  'Thai', 'Lao', 'Tibetan', 'Myanmar', 'Georgian', 'Hangul', 'Ethiopic',
+  'Cherokee', 'Canadian_Aboriginal', 'Ogham', 'Runic', 'Khmer', 'Mongolian',
+  'Hiragana', 'Katakana', 'Bopomofo', 'Han', 'Yi', 'Armenian', 'Coptic',
+  'Gothic', 'Sinhala', 'Thaana', 'Syriac', 'Tagalog', 'Tai_Le', 'Tai_Tham',
+  'Tai_Viet', 'Tifinagh', 'Vai', 'Limbu', 'Buginese', 'Balinese', 'Sundanese',
+  'Batak', 'Lepcha', 'Ol_Chiki', 'Cham', 'Meetei_Mayek', 'Javanese',
+] as const;
+
+const SCRIPT_PATTERNS = new Map<string, RegExp>(
+  SCRIPT_NAMES.map((name) => [name, new RegExp(`\\p{Script=${name}}`, 'u')]),
+);
 
 /**
  * Return the canonical record id, or throw `malformed`.
@@ -66,9 +60,8 @@ export function assertRecordId(id: unknown, where: string): string {
   }
   let normalized: string;
   try {
-    normalized = foldId(id.normalize('NFKC'));
+    normalized = id.normalize('NFKC');
   } catch (err) {
-    if (err instanceof ResolverError) throw err;
     throw new ResolverError(`${where}: record id is not valid Unicode`, {
       code: 'malformed',
       cause: err,
@@ -135,12 +128,6 @@ export function assertBackendName(name: unknown): string {
   return normalized;
 }
 
-function foldId(id: string): string {
-  let out = '';
-  for (const ch of id) out += HOMOGLYPHS[ch] ?? ch;
-  return out;
-}
-
 function assertSegments(id: string, where: string): void {
   if (id.startsWith('/') || id.endsWith('/') || id.includes('//')) {
     throw new ResolverError(
@@ -161,5 +148,33 @@ function assertSegments(id: string, where: string): void {
         { code: 'malformed', recordId: id },
       );
     }
+    if (scriptsIn(segment).size > 1) {
+      throw new ResolverError(
+        `${where}: record id "${id}" mixes scripts in a segment`,
+        { code: 'malformed', recordId: id },
+      );
+    }
   }
+}
+
+function scriptsIn(segment: string): Set<string> {
+  const scripts = new Set<string>();
+  for (const ch of segment) {
+    const script = scriptOf(ch);
+    if (script !== null) scripts.add(script);
+  }
+  return scripts;
+}
+
+function scriptOf(ch: string): string | null {
+  const cp = ch.codePointAt(0) ?? 0;
+  if (cp <= 0x7f) {
+    if ((cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a)) return 'Latin';
+    return null;
+  }
+  if (COMMON.test(ch) || INHERITED.test(ch)) return null;
+  for (const [name, pattern] of SCRIPT_PATTERNS) {
+    if (pattern.test(ch)) return name;
+  }
+  return `U+${cp.toString(16)}`;
 }
