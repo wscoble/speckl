@@ -221,8 +221,8 @@ describe('braces in comments and strings', () => {
       ['        for i in xs { // }', '            x := 1', '        }'],
     ]) {
       const go = goOf(body);
-      expect(go, body[0]).toContain('m.x = 1');
-      if (body.some(l => l.includes('else'))) expect(go).toContain('m.x = 2');
+      expect(go, body[0]).toContain('m.X = 1');
+      if (body.some(l => l.includes('else'))) expect(go).toContain('m.X = 2');
     }
   });
 

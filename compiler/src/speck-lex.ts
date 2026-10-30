@@ -34,6 +34,7 @@ export function parseErrorAt(file: string | undefined, line: number, column: num
  * comment or a string.
  */
 export function lexSpeck(src: string, file?: string): SpeckLex {
+  if (src.charCodeAt(0) === 0xfeff) src = src.slice(1);
   const tokens: SpeckToken[] = [];
   const headerAfterComment: number[] = [];
   let i = 0;

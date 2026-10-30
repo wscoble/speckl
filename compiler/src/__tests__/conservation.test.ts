@@ -1,12 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
 import type { AST, MemberNode } from '../parser.js';
+import { parseImportStatement, parseSpeckContent } from '../parser.js';
 import { lower } from '../ir/lower.js';
 import {
-  BACKENDS, COVERAGE, MEMBER_NODE_TYPES, conservationLog, memberNodeTypesMatchUnion,
+  BACKENDS, COVERAGE, MEMBER_NODE_TYPES, conservationLog, guardAst, memberNodeTypesMatchUnion,
   type BackendId, type MemberNodeType,
 } from '../conservation.js';
 import { generateTypeScriptStateMachine } from '../generators/typescript-state-machine.js';
@@ -23,6 +23,8 @@ import { generateAgent } from '../generators/agent/index.js';
 import { generateCycloneDX } from '../generators/cyclonedx.js';
 import { generateSPDX } from '../generators/spdx.js';
 import { generateProvenanceFromIR } from '../generators/provenance-from-ir.js';
+import { generateTypeScriptFromIR } from '../generators/typescript-from-ir.js';
+import { compileSpec } from '../compile.js';
 
 function sample(type: MemberNodeType): MemberNode {
   switch (type) {
@@ -61,9 +63,9 @@ function astOf(type: MemberNodeType): AST {
   return { specks: [{ type: 'speck', name: 'S', members: [sample(type)] }] };
 }
 
-function run(backend: BackendId, ast: AST, out: string): void {
+function run(backend: BackendId, ast: AST, out: string, source?: string): void {
   const file = join(out, 'S.speckdl');
-  writeFileSync(file, 'speck S {\n}\n');
+  writeFileSync(file, source ?? 'speck S {\n}\n');
   const ir = () => lower(ast, { filePath: file, resolveImports: false });
   switch (backend) {
     case 'typescript': return generateTypeScriptStateMachine(ast, out);
@@ -93,16 +95,18 @@ describe('backend conservation', () => {
     expect(new Set(MEMBER_NODE_TYPES).size).toBe(MEMBER_NODE_TYPES.length);
   });
 
-  it('every backend declares emit or reject for every node type', () => {
+  it('every backend declares emit, reject, or n/a for every node type', () => {
     for (const backend of BACKENDS) {
       expect(Object.keys(COVERAGE[backend]).sort()).toEqual([...MEMBER_NODE_TYPES].sort());
       for (const type of MEMBER_NODE_TYPES) {
-        expect(COVERAGE[backend][type], `${backend} ${type}`).toMatch(/^(emit|reject)$/);
+        const cell = COVERAGE[backend][type];
+        expect(cell.disposition, `${backend} ${type}`).toMatch(/^(emit|reject|n\/a)$/);
+        if (cell.disposition === 'n/a') expect(cell.reason, `${backend} ${type}`).toBeTruthy();
       }
     }
   });
 
-  it('a backend emits the node or rejects it by name', () => {
+  it('a backend emits the node, rejects it by name, or marks it n/a', () => {
     for (const type of MEMBER_NODE_TYPES) {
       for (const backend of BACKENDS) {
         const out = mkdtempSync(join(tmpdir(), 'speckl-cons-'));
@@ -113,18 +117,183 @@ describe('backend conservation', () => {
         } catch (e) {
           thrown = e as Error;
         }
-        const decision = COVERAGE[backend][type];
+        const decision = COVERAGE[backend][type].disposition;
         if (decision === 'reject') {
           expect(thrown?.message, `${backend} ${type}`).toMatch(
             new RegExp(`${backend} backend rejects AST node type "${type}"`),
           );
-        } else {
+        } else if (decision === 'emit') {
           if (thrown) {
             expect(thrown.message, `${backend} ${type}`).not.toMatch(/rejects AST node type/);
           }
           expect(conservationLog, `${backend} ${type}`).toContain(`${backend}:emit:${type}`);
+        } else if (thrown) {
+          expect(thrown.message, `${backend} ${type}`).not.toMatch(/rejects AST node type/);
         }
       }
     }
+  });
+
+});
+
+const FIXTURE = `
+import "./MarkerImport.speckdl" as MarkerAlias
+speck MarkerSpeck {
+    input: { markerInput: Nat }
+    output: { markerOutput: Bool }
+    constraint MarkerConstraint: markerState >= 0
+    verify Always(MarkerVerify) { depth 2 }
+    interface MarkerInterface { Red, Green }
+    interface MarkerKindSpec { markerSpecField: Nat }
+    interface MarkerKindStatus { markerStatusField: String }
+    interface MarkerKind { markerKindField: String }
+    event MarkerEvent { markerEventField: String }
+    oneof MarkerOneof { markerTick: MarkerEvent }
+    transition MarkerTransition { payload: MarkerOneof }
+    provenance {
+        regulation "MarkerRegulation" :: "note"
+        design_decision "MarkerDecision" :: "why"
+    }
+    review: hybrid
+    derives from MarkerDerives
+    satisfies MarkerSatisfies
+    author: "MarkerAuthor" <"ada@example.com">
+    source: document ref "MarkerSource"
+    bom {
+        compiler { name: "MarkerBom", version: "1.2.3" }
+        license: "MarkerLicense"
+    }
+    state { markerState: Nat }
+    init { markerState := 4242 }
+    action MarkerAction {
+        markerState := markerState + 1
+    }
+    service MarkerService {
+        rpc MarkerRpc(MarkerEvent) returns (MarkerEvent);
+    }
+    conditions: ["MarkerCondition"]
+    finalizers: ["MarkerFinalizer"]
+    ownerReferences: true
+    invariant MarkerInvariant { markerState >= 0 }
+    next: MarkerAction
+    agent {
+        stages markerState {
+            Idle = 0
+            AwaitingReview = 1
+        }
+        tool markerTool -> MarkerAction effect act
+    }
+}
+`;
+
+const MARKERS: Record<MemberNodeType, string[]> = {
+  import: ['MarkerImport'],
+  input: ['markerInput'],
+  output: ['markerOutput'],
+  constraint: ['MarkerConstraint'],
+  verify: ['MarkerVerify'],
+  interface: ['MarkerInterface', 'markerSpecField'],
+  event: ['MarkerEvent'],
+  oneof: ['markerTick'],
+  transition: ['MarkerTransition'],
+  provenance: ['MarkerRegulation', 'MarkerDecision'],
+  review: ['hybrid'],
+  derives: ['MarkerDerives'],
+  satisfies: ['MarkerSatisfies'],
+  author: ['MarkerAuthor'],
+  source: ['MarkerSource'],
+  bom: ['MarkerBom', 'MarkerLicense'],
+  state: ['markerState'],
+  init: ['4242'],
+  action: ['MarkerAction'],
+  service: ['MarkerService'],
+  lifecycle_metadata: ['MarkerCondition', 'MarkerFinalizer'],
+  invariant: ['MarkerInvariant'],
+  next: ['Next transition'],
+  agent: ['markerTool'],
+};
+
+function hasMarker(text: string, marker: string): boolean {
+  if (text.includes(marker)) return true;
+  if (!/[A-Z]/.test(marker) || /\s/.test(marker)) return false;
+  const flat = (s: string) => s.replace(/_/g, '').toLowerCase();
+  return flat(text).includes(flat(marker));
+}
+
+function readTree(dir: string): string {
+  const acc: string[] = [];
+  const walk = (d: string) => {
+    for (const name of readdirSync(d)) {
+      const p = join(d, name);
+      if (name.endsWith('.speckdl')) continue;
+      if (statSync(p).isDirectory()) walk(p);
+      else acc.push(readFileSync(p, 'utf8'));
+    }
+  };
+  walk(dir);
+  return acc.join('\n');
+}
+
+describe('conservation markers', () => {
+  beforeAll(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterAll(() => { vi.restoreAllMocks(); });
+
+  it('compiles one fixture of every member type and finds each emit marker', () => {
+    const parsed = parseSpeckContent(FIXTURE, 'MarkerSpeck.speckdl');
+    const present = new Set(parsed.specks[0].members.map(m => m.type));
+    for (const type of MEMBER_NODE_TYPES) {
+      if (type === 'import') continue;
+      expect(present.has(type), type).toBe(true);
+    }
+    const imported = parseImportStatement('import "./MarkerImport.speckdl" as MarkerAlias');
+    const full: AST = {
+      specks: [{ ...parsed.specks[0], members: [imported, ...parsed.specks[0].members] }],
+    };
+
+    for (const backend of BACKENDS) {
+      const rejected = MEMBER_NODE_TYPES.filter(t => COVERAGE[backend][t].disposition === 'reject');
+      expect(rejected.length, backend).toBeGreaterThan(0);
+      expect(() => guardAst(backend, full), backend).toThrow(/rejects AST node type/);
+
+      const kept = full.specks[0].members.filter(m => COVERAGE[backend][m.type].disposition !== 'reject');
+      const ast: AST = { specks: [{ ...full.specks[0], members: kept }] };
+      const out = mkdtempSync(join(tmpdir(), 'speckl-mark-'));
+      run(backend, ast, out, FIXTURE);
+      const text = readTree(out);
+      for (const type of MEMBER_NODE_TYPES) {
+        if (COVERAGE[backend][type].disposition !== 'emit') continue;
+        const markers = MARKERS[type];
+        expect(markers.some(m => hasMarker(text, m)), `${backend} ${type}`).toBe(true);
+      }
+    }
+  });
+
+  it('compileSpec clears the conservation log so compiles do not accumulate', () => {
+    conservationLog.push('stale');
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-log-'));
+    const file = join(dir, 'S.speckdl');
+    writeFileSync(file, 'speck S {\n    state { n: Nat }\n    init { n := 0 }\n    action Go { n := 1 }\n}\n');
+    compileSpec(file, { outputDir: join(dir, 'out'), target: 'go', bomFormat: 'both', verifyDepth: 2 });
+    expect(conservationLog).not.toContain('stale');
+    expect(conservationLog).toContain('go:emit:action');
+  });
+
+  it('generateTypeScriptFromIR rejects a type the typescript backend does not emit', () => {
+    const ast = parseSpeckContent('speck S {\n    state { n: Nat }\n    init { n := 0 }\n    action Go { n := 1 }\n}\n', 's.speckdl');
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-tsir-'));
+    const file = join(dir, 's.speckdl');
+    writeFileSync(file, 'speck S {\n    state { n: Nat }\n    init { n := 0 }\n    action Go { n := 1 }\n}\n');
+    const ir = lower(ast, { filePath: file, resolveImports: false });
+    const out = join(dir, 'out');
+    mkdirSync(out, { recursive: true });
+    generateTypeScriptFromIR(ir, out);
+    expect(readFileSync(join(out, 'S.ts'), 'utf8')).toContain('Go');
+    ir.specks[0].sourceMemberTypes = ['oneof'];
+    expect(() => generateTypeScriptFromIR(ir, out)).toThrow(/typescript backend rejects AST node type "oneof"/);
+    delete ir.specks[0].sourceMemberTypes;
+    expect(() => generateTypeScriptFromIR(ir, out)).not.toThrow();
   });
 });

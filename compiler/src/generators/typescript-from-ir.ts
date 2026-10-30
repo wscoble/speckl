@@ -13,16 +13,19 @@
 import { IR, IRSpeck, IRStateVar, IRAction, IREvent, IRFieldDef, IRTypeRef } from '../ir/types.js';
 import { lower } from '../ir/lower.js';
 import { parseSpeckFile } from '../parser.js';
+import { guardIr } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
 /**
  * Generate TypeScript state machine runtime from a SpeckDL spec, via the IR.
  *
- * @param ir The lowered IR for the spec.
+ * @param ir The lowered IR for the spec. A speck with no `sourceMemberTypes`
+ *   skips the conservation guard; lowered IR always sets that field.
  * @param outputDir Where to write the generated .ts file.
  */
 export function generateTypeScriptFromIR(ir: IR, outputDir: string): void {
+  guardIr('typescript', ir);
   for (const speck of ir.specks) {
     const code = emitSpeck(speck);
     const filename = `${speck.name}.ts`;

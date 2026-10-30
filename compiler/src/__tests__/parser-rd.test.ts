@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseSpeckContent } from '../parser.js';
 import { lexSpeck } from '../speck-lex.js';
+import { compileSpec } from '../compile.js';
 
 function firstNonAsciiColumn(line: string): number {
   for (let i = 0; i < line.length; i++) {
@@ -90,4 +94,101 @@ describe('token parser', () => {
     expect(action.statements.map(s => s.type)).toEqual(['require', 'assign']);
     expect(action.statements[0].expr).toBe('n < 3');
   });
+
+  it('reads a one-line invariant and state from the header brace span', () => {
+    const src = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    invariant Pos { x >= 0 }',
+      '    invariant Small { x < 3 }',
+      '    action Inc { x := x + 1 }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src, 'one.speckdl');
+    const state = ast.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+    const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
+    const inv = (name: string) => ast.specks[0].members.find(m => m.type === 'invariant' && (m as { name: string }).name === name) as { expr: string };
+    expect(state.variables.map(v => v.name)).toEqual(['x']);
+    expect(init.assignments).toEqual([{ name: 'x', expr: '0' }]);
+    expect(inv('Pos').expr).toBe('x >= 0');
+    expect(inv('Small').expr).toBe('x < 3');
+    const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { expr?: string }[] };
+    expect(action.statements.map(s => s.expr)).toEqual(['x + 1']);
+  });
+
+  it('compiles a one-line invariant into the z3 file instead of skipping it', () => {
+    const src = [
+      'speck A {',
+      '    state { x: Nat }',
+      '    init { x := 0 }',
+      '    invariant Pos { x >= 0 }',
+      '    invariant Small { x < 3 }',
+      '    action Inc { x := x + 1 }',
+      '}',
+      '',
+    ].join('\n');
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-oneline-'));
+    const file = join(dir, 'A.speckdl');
+    writeFileSync(file, src);
+    const out = join(dir, 'out');
+    compileSpec(file, { outputDir: out, target: 'z3', bomFormat: 'both', verifyDepth: 4 });
+    const smt = readFileSync(join(out, 'A.smt2'), 'utf8');
+    expect(smt).not.toMatch(/skipped: references undeclared identifier\(s\): (Pos|Small)/);
+    expect(smt).toMatch(/define-fun Pos/);
+    expect(smt).toMatch(/define-fun Small/);
+    expect(smt).toContain('(assert Pos)');
+    expect(smt).toContain('(assert Small)');
+  });
+
+  it('rejects structure the token stream can see', () => {
+    const cases: [string, RegExp][] = [
+      ['speck A {\n    state { x: Nat }\n', /missing final "}"/],
+      ['speck A {\n    state { x: Nat }\n}}\n', /extra "}"/],
+      ['speck A {\n    state { x: Nat }\n} junk\n', /text after a speck's "}"/],
+      ['speck A { } speck B { }\n', /a second speck on one line/],
+      ['speck A {\n    /* c */ action go {\n        x := 1\n    }\n    state { x: Nat }\n}\n', /code after \*\/ on a line that starts with \/\*/],
+      ['/* note */ speck A {\n    state { x: Nat }\n}\n', /code after \*\/ on a line that starts with \/\*/],
+      ['speck A {\r    state { x: Nat }\r}\r', /CR-only line endings are not supported/],
+    ];
+    for (const [src, re] of cases) {
+      expect(() => parseSpeckContent(src, 'bad.speckdl'), src).toThrow(re);
+    }
+  });
+
+  it('strips one leading BOM and still parses the speck', () => {
+    const src = '\uFEFFspeck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n';
+    const ast = parseSpeckContent(src, 'bom.speckdl');
+    expect(ast.specks.map(s => s.name)).toEqual(['A']);
+    const state = ast.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+    expect(state.variables.map(v => v.name)).toEqual(['x']);
+  });
+
+  it('rejects a speck header separated by a unicode space', () => {
+    expect(() => parseSpeckContent('speck\u3000A {\n    state { x: Nat }\n}\n', 'sp.speckdl')).toThrow(
+      /speck header was not parsed/,
+    );
+  });
+
+  it('parses a long file in linear time', () => {
+    const n = 20000;
+    const lines = ['speck Big {', '    state { x: Nat }', '    init { x := 0 }'];
+    for (let i = 0; i < n; i++) lines.push(`    invariant I${i} { x >= 0 }`);
+    lines.push('}', '');
+    const t0 = performance.now();
+    const ast = parseSpeckContent(lines.join('\n'), 'big.speckdl');
+    const ms = performance.now() - t0;
+    const invs = ast.specks[0].members.filter(m => m.type === 'invariant') as { name: string; expr: string }[];
+    expect(invs).toHaveLength(n);
+    expect(invs[0].expr).toBe('x >= 0');
+    expect(invs[n - 1].expr).toBe('x >= 0');
+    expect(ms).toBeLessThan(2000);
+  });
 });
+
+beforeAll(() => {
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterAll(() => { vi.restoreAllMocks(); });
