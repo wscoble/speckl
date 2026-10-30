@@ -277,6 +277,18 @@ describe('token parser', () => {
     expect(parseSpeckContent('speck A {\n    type State = Follower | Candidate | Leader\n    state { x: Nat }\n}\n').specks[0].name).toBe('A');
   });
 
+  it('keeps the next field when a line comment ends with a bar', () => {
+    const specs = [
+      'speck A {\n    state {\n        x: Nat // a |\n        y: Nat\n    }\n    init { x := 0; y := 0 }\n}\n',
+      'speck A {\n    state {\n        s: "open" | "closed" // TODO: add |\n        y: Nat\n    }\n}\n',
+      'speck A {\n    state {\n        x: Nat /* a | */\n        y: Nat\n    }\n}\n',
+    ];
+    for (const src of specs) {
+      const state = parseSpeckContent(src).specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
+      expect(state.variables.map(v => v.name), src).toEqual(src.includes('s:') ? ['s', 'y'] : ['x', 'y']);
+    }
+  });
+
   it('keeps a state field type that continues onto the next line', () => {
     const specs = [
       'speck A {\n    state {\n        m: Map<\n            String, Nat\n        >\n        x: Nat\n    }\n}\n',
