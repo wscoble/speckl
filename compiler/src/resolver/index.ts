@@ -67,8 +67,9 @@
  *   (`id`, `measurement_class` or `measurementClass`).
  *
  * Record ids do not include the `&` sigil. The canonical form is NFKC only.
- * Each segment must be a single script (Common and Inherited are ignored).
- * Empty segments and `.` / `..` segments are rejected. See `record-id.ts`.
+ * Each segment is one UTS #39 script set, with the Japanese, Korean, and
+ * Chinese augmented sets. Decimal digits in a segment share one numbering
+ * system. See `record-id.ts`.
  */
 
 export { assertRecordId } from './record-id.js';

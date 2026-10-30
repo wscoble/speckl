@@ -1,7 +1,15 @@
-import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
 import { join } from 'node:path';
-import { EVENT_ALIAS, parseEvents } from 'js-yaml';
-import * as yaml from 'js-yaml';
+import { constructFromEvents, EVENT_ALIAS, parseEvents } from 'js-yaml';
 import { plainCopy, plainRecord } from './plain.js';
 import { assertMeasurementClass, assertRecordId } from './record-id.js';
 import {
@@ -43,7 +51,9 @@ interface StoredRecord {
  * file path. A file that is not Markdown, and a Markdown file with no
  * frontmatter, is skipped. A Markdown file that has frontmatter but is
  * missing an id or a measurement class fails the whole load (`malformed`).
- * The root is `realpath`'d once. Symlinks on the way to that directory,
+ * The root is `realpathSync.native`'d once, so `..` is resolved after
+ * symlinks the way the operating system resolves it. Symlinks on the way
+ * to that directory,
  * including a symlink such as macOS `/tmp`, are followed and are not
  * errors. Every read uses that resolved path. A symlink found under the
  * resolved root fails the load. It is not followed and it is not skipped.
@@ -148,32 +158,7 @@ function isMarkdownName(name: string): boolean {
 }
 
 function readRecord(file: string): { id: string; record: StoredRecord } | undefined {
-  let size: number;
-  try {
-    size = statSync(file).size;
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ResolverError(`cannot read record ${file}: ${detail}`, {
-      code: 'malformed',
-      cause: err,
-    });
-  }
-  if (size > MAX_RECORD_BYTES) {
-    throw new ResolverError(
-      `${file}: record is ${size} bytes, over the ${MAX_RECORD_BYTES} byte limit`,
-      { code: 'malformed' },
-    );
-  }
-  let text: string;
-  try {
-    text = readFileSync(file, 'utf8');
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ResolverError(`cannot read record ${file}: ${detail}`, {
-      code: 'malformed',
-      cause: err,
-    });
-  }
+  let text = readRecordDescriptor(file);
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   const data = frontmatter(text, file);
   if (!data) return undefined;
@@ -202,17 +187,7 @@ function frontmatter(text: string, file: string): Record<string, unknown> | unde
     });
   }
   const body = match[1] ?? '';
-  assertNoYamlAliases(body, file);
-  let parsed: unknown;
-  try {
-    parsed = yaml.load(body);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ResolverError(`${file}: frontmatter is not valid YAML: ${detail}`, {
-      code: 'malformed',
-      cause: err,
-    });
-  }
+  const parsed = loadYamlDocument(body, file);
   if (parsed === null || parsed === undefined) {
     throw new ResolverError(`${file}: frontmatter is empty`, { code: 'malformed' });
   }
@@ -231,12 +206,57 @@ function frontmatter(text: string, file: string): Record<string, unknown> | unde
   }
 }
 
-function assertNoYamlAliases(text: string, file: string): void {
+function readRecordDescriptor(file: string): string {
+  if ((constants.O_NOFOLLOW ?? 0) === 0) {
+    throw new ResolverError(
+      `${file}: this platform cannot open a record without following symlinks`,
+      { code: 'malformed' },
+    );
+  }
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const detail = err instanceof Error ? err.message : String(err);
+    if (code === 'ELOOP') {
+      throw new ResolverError(
+        `${file}: symlink in a record directory is not followed and is not skipped`,
+        { code: 'malformed', cause: err },
+      );
+    }
+    throw new ResolverError(`cannot read record ${file}: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) {
+      throw new ResolverError(`${file}: record is not a regular file`, { code: 'malformed' });
+    }
+    if (st.size > MAX_RECORD_BYTES) {
+      throw new ResolverError(
+        `${file}: record is ${st.size} bytes, over the ${MAX_RECORD_BYTES} byte limit`,
+        { code: 'malformed' },
+      );
+    }
+    return readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function loadYamlDocument(text: string, file: string): unknown {
   let events: ReturnType<typeof parseEvents>;
   try {
     events = parseEvents(text, { filename: file });
-  } catch {
-    return;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`${file}: frontmatter is not valid YAML: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
   }
   for (const event of events) {
     if (event.type === EVENT_ALIAS || ('anchorStart' in event && event.anchorStart >= 0)) {
@@ -245,12 +265,28 @@ function assertNoYamlAliases(text: string, file: string): void {
       });
     }
   }
+  let documents: unknown[];
+  try {
+    documents = constructFromEvents(events, { source: text });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ResolverError(`${file}: frontmatter is not valid YAML: ${detail}`, {
+      code: 'malformed',
+      cause: err,
+    });
+  }
+  if (documents.length !== 1) {
+    throw new ResolverError(`${file}: frontmatter must be a single YAML document`, {
+      code: 'malformed',
+    });
+  }
+  return documents[0];
 }
 
 function resolveRecordRoot(rootDir: string): string {
   let resolved: string;
   try {
-    resolved = realpathSync(rootDir);
+    resolved = realpathSync.native(rootDir);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new ResolverError(`cannot read record directory ${rootDir}: ${detail}`, {
