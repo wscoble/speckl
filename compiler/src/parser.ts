@@ -1144,6 +1144,128 @@ function splitOnTopLevelCommas(s: string): string[] {
   return tokens.filter(Boolean);
 }
 
+/**
+ * True when `src` is a type expression: the same shapes a field type accepts,
+ * including nested generics, `"a" | "b"`, `0..10`, `Nat[]`, and `(Nat, Nat)`.
+ * A comment tail is ignored. Words with no operator between them are not a type.
+ */
+export function isAliasTypeText(src: string): boolean {
+  const s = src.replace(/\/\/.*$/, '').trim();
+  if (!s) return false;
+  let i = 0;
+  const ok = parseUnion();
+  skip();
+  return ok && i === s.length;
+
+  function skip(): void {
+    while (s[i] === ' ' || s[i] === '\t' || s[i] === '\n' || s[i] === '\r') i++;
+  }
+  function parseUnion(): boolean {
+    if (!parseRange()) return false;
+    skip();
+    while (s[i] === '|') {
+      i++;
+      if (!parseRange()) return false;
+      skip();
+    }
+    return true;
+  }
+  function parseRange(): boolean {
+    if (!parsePostfix()) return false;
+    skip();
+    if (s.startsWith('..', i)) {
+      i += 2;
+      if (!parsePostfix()) return false;
+    }
+    return true;
+  }
+  function parsePostfix(): boolean {
+    if (!parseAtom()) return false;
+    skip();
+    while (s.startsWith('[]', i)) { i += 2; skip(); }
+    return true;
+  }
+  function parseAtom(): boolean {
+    skip();
+    if (i >= s.length) return false;
+    if (s[i] === '"') {
+      i++;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === '\\' && i + 1 < s.length) i += 2;
+        else i++;
+      }
+      if (s[i] !== '"') return false;
+      i++;
+      return true;
+    }
+    if (s[i] === '(' || s[i] === '[') {
+      const close = s[i] === '(' ? ')' : ']';
+      i++;
+      skip();
+      if (s[i] === close) { i++; return true; }
+      if (!parseUnion()) return false;
+      skip();
+      while (s[i] === ',') {
+        i++;
+        if (!parseUnion()) return false;
+        skip();
+      }
+      if (s[i] !== close) return false;
+      i++;
+      return true;
+    }
+    if (s[i] === '{') {
+      i++;
+      skip();
+      if (s[i] === '}') { i++; return true; }
+      for (;;) {
+        skip();
+        if (!/[A-Za-z_]/.test(s[i] ?? '')) return false;
+        while (/[A-Za-z0-9_]/.test(s[i] ?? '')) i++;
+        skip();
+        if (s[i] !== ':') return false;
+        i++;
+        if (!parseUnion()) return false;
+        skip();
+        if (s[i] === ',') { i++; continue; }
+        break;
+      }
+      skip();
+      if (s[i] !== '}') return false;
+      i++;
+      return true;
+    }
+    if (/[0-9]/.test(s[i])) {
+      while (/[0-9]/.test(s[i] ?? '')) i++;
+      if (s[i] === '.' && /[0-9]/.test(s[i + 1] ?? '')) {
+        i++;
+        while (/[0-9]/.test(s[i] ?? '')) i++;
+      }
+      return true;
+    }
+    if (!/[A-Za-z_]/.test(s[i])) return false;
+    while (/[A-Za-z0-9_]/.test(s[i] ?? '')) i++;
+    skip();
+    if (s[i] === '<' || s[i] === '(') {
+      const close = s[i] === '<' ? '>' : ')';
+      i++;
+      skip();
+      if (s[i] !== close) {
+        if (!parseUnion()) return false;
+        skip();
+        while (s[i] === ',') {
+          i++;
+          if (!parseUnion()) return false;
+          skip();
+        }
+      }
+      if (s[i] !== close) return false;
+      i++;
+    }
+    return true;
+  }
+}
+
 function parseTypeExpr(expr: string): TypeExpr {
   expr = expr.trim();
 
@@ -1481,14 +1603,21 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   // State blocks separate fields with commas or newlines/semicolons.
   // Strip trailing commas (they are field separators, not continuations)
   // then join with semicolons between complete variable declarations.
-  const cleanedLines = innerLines.map(l => l.replace(/,+\s*$/, ''));
-  const inner = cleanedLines.reduce((acc, line, i) => {
+  const pieces = innerLines.map(l => ({
+    text: l.replace(/,+\s*$/, ''),
+    hadComma: /,\s*$/.test(l),
+  }));
+  const inner = pieces.reduce((acc, piece, i) => {
+    const line = piece.text;
     if (i === 0) return line;
-    const prevLine = cleanedLines[i - 1];
+    const prevLine = pieces[i - 1].text;
     // Check if this line starts a new variable declaration (name: type)
     const isNewVar = /^\w+\s*:/.test(line);
     // Check if prev line ends with a continuation character (brace or paren, NOT comma)
     const prevIsContinuation = /[{(]\s*$/.test(prevLine);
+    // A type continues onto this line when `<` `(` `[` `{` is still open,
+    // the previous line ended with `|`, or this line starts a union alternative.
+    const continues = angleUnbalanced(acc) || acc.trimEnd().endsWith('|') || line.startsWith('|');
     // While the accumulated text is unbalanced (a multi-line type expression,
     // e.g. `authorizationCodes: Map(AuthorizationCode, {` opening a multi-
     // line inline record), join every line until brackets balance — record
@@ -1499,6 +1628,9 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
     // declarations never contain bare operators, and `Map<Nat, Real>` ends
     // with `>` which the operator heuristic would misread as incomplete.
     if (!bracketsUnbalanced(acc)) {
+      if (continues) {
+        return pieces[i - 1].hadComma && !line.startsWith('|') ? acc + ', ' + line : acc + ' ' + line;
+      }
       if (isNewVar && !prevIsContinuation) {
         return acc + '; ' + line;
       }
@@ -1520,6 +1652,16 @@ function bracketsUnbalanced(text: string): boolean {
   for (const c of maskCode(text).text) {
     if (c === '(' || c === '[' || c === '{') depth++;
     else if (c === ')' || c === ']' || c === '}') depth--;
+  }
+  return depth > 0;
+}
+
+/** A `<...>` generic that has not closed yet. `>` inside a string is not a closer. */
+function angleUnbalanced(text: string): boolean {
+  let depth = 0;
+  for (const c of maskCode(text).text) {
+    if (c === '<') depth++;
+    else if (c === '>') depth = Math.max(0, depth - 1);
   }
   return depth > 0;
 }

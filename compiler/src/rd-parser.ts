@@ -14,7 +14,7 @@
 import {
   AST, SpeckNode, MemberNode,
   lexStart, maskLine, lexProblem,
-  parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr,
+  parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr, isAliasTypeText,
   parseMultiLineConstraintVerify, expressionSpanEnd, unsupportedVerify, parseNextRelation,
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
@@ -252,7 +252,7 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
     if (/^type\s+\S/.test(line) && !line.includes('{')) {
       if (openingBraceOnNextLine(lines, i)) rejectBraceOnNextLine(filePath, rawLine, i + 1);
       const rhs = line.replace(/^type\s+\S+\s*=\s*/, '');
-      if (!/^[A-Za-z_]\w*(\s*(?:<[^<>]*>|\([^()]*\)))?(\s*\|\s*[A-Za-z_]\w*(\s*(?:<[^<>]*>|\([^()]*\)))?)*$/.test(rhs.replace(/\/\/.*$/, '').trim())) {
+      if (!isAliasTypeText(rhs)) {
         rejectUnparsed(filePath, rawLine, i + 1, line);
       }
       i++;
