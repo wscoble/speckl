@@ -464,25 +464,32 @@ export function lexProblem(line: number, detail: string): Error {
 }
 
 /**
- * Same length as `input`. Comments and the insides of strings are spaces,
- * so `{` `}` `(` `)` `[` `]` in the result are structural. Quote marks
- * themselves are kept. Backslash escapes a quote inside a string.
+ * One scan for structure and for source-with-comments-removed.
+ * `text` is the same length as `input`: comments and the insides of `"`
+ * strings are spaces, so `{` `}` `(` `)` `[` `]` `<` `>` `|` in it are
+ * structural. Quote marks themselves are kept. A backslash escapes the
+ * next character inside a string, so `"/*"` and `"a//b"` are strings.
+ * `kept` is `input` with those comments deleted and the strings left intact.
+ * `'` is not a string quote.
  */
-function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { text: string; state: LexState } {
+function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { text: string; kept: string; state: LexState } {
   let block = state.block;
   let quote = state.quote;
   let openLine = state.openLine;
   let text = '';
+  let kept = '';
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
     const next = input[i + 1];
     if (quote) {
       if (ch === '\\' && next !== undefined) {
         text += '  ';
+        kept += ch + next;
         i++;
         continue;
       }
       text += ch === quote ? ch : ' ';
+      kept += ch;
       if (ch === quote) { quote = null; openLine = 0; }
       continue;
     }
@@ -509,13 +516,15 @@ function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { te
     }
     if (ch === '"') {
       text += ch;
-      quote = ch;
+      kept += ch;
+      quote = '"';
       openLine = lineNo;
       continue;
     }
     text += ch;
+    kept += ch;
   }
-  return { text, state: { block, quote, openLine } };
+  return { text, kept, state: { block, quote, openLine } };
 }
 
 /** A `"` that is still open at the end of the line is an error on that line. */
@@ -998,13 +1007,7 @@ function parseStateBlock(inner: string): StateNode {
     const withDefault = vStr.match(/^(\w+)\s*:\s*(.+?)\s*:=\s*(.+)$/);
     if (withDefault) {
       // Strip trailing comments from type expression
-      let typeStr = withDefault[2].trim();
-      const commentIdx = typeStr.indexOf('//');
-      if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
-      // A declaration comma can survive comment stripping when a comment
-      // followed it (`signals: List<Foo>, // note`); strip it so the type
-      // parses as a generic, not an ident.
-      typeStr = typeStr.replace(/,\s*$/, '').trim();
+      let typeStr = stripTypeComment(withDefault[2]);
       variables.push({
         name: withDefault[1],
         typeExpr: parseTypeExpr(typeStr),
@@ -1015,10 +1018,7 @@ function parseStateBlock(inner: string): StateNode {
     const withoutDefault = vStr.match(/^(\w+)\s*:\s*(.+)$/);
     if (withoutDefault) {
       // Strip trailing comments from type expression
-      let typeStr = withoutDefault[2].trim();
-      const commentIdx = typeStr.indexOf('//');
-      if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
-      typeStr = typeStr.replace(/,\s*$/, '').trim();
+      let typeStr = stripTypeComment(withoutDefault[2]);
       variables.push({
         name: withoutDefault[1],
         typeExpr: parseTypeExpr(typeStr),
@@ -1150,7 +1150,7 @@ function splitOnTopLevelCommas(s: string): string[] {
  * A comment tail is ignored. Words with no operator between them are not a type.
  */
 export function isAliasTypeText(src: string): boolean {
-  const s = src.replace(/\/\/.*$/, '').trim();
+  const s = maskCode(src).kept.trim();
   if (!s) return false;
   let i = 0;
   const ok = parseUnion();
@@ -1655,31 +1655,17 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
 }
 
 /**
- * Code on one line with comments removed. A block comment carries `state`
- * onto the next line, so a bar inside that comment is not a union.
+ * One line of state text with comments removed, via `maskCode`.
+ * A block comment carries `state` onto the next line. `"/*"` and `"a//b"` stay.
  */
 function codeWithoutComments(line: string, state: LexState): { text: string; state: LexState } {
-  let block = state.block;
-  let quote = state.quote;
-  let out = '';
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    const next = line[i + 1];
-    if (quote) {
-      out += ch;
-      if (ch === '\\' && next !== undefined) { out += next; i++; continue; }
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (block) {
-      if (ch === '*' && next === '/') { i++; block = false; }
-      continue;
-    }
-    if (ch === '/' && next === '/') break;
-    if (ch === '/' && next === '*') { block = true; i++; continue; }
-    out += ch;
-  }
-  return { text: out, state: { block, quote, openLine: 0 } };
+  const scanned = maskCode(line, state);
+  return { text: scanned.kept, state: scanned.state };
+}
+
+/** Type text with comments removed. A `//` or `/*` inside `"..."` is part of the type. */
+function stripTypeComment(typeStr: string): string {
+  return maskCode(typeStr).kept.replace(/,\s*$/, '').trim();
 }
 
 /** True when an expression text has unbalanced brackets (type declarations). */
