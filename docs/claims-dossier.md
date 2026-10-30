@@ -137,9 +137,11 @@ position.
 `claim` in the same speck. The block form writes the bare name
 (`provenance ExampleCoAgreement2026`). The claims surface writes `*Name*`
 (`provenance *ExampleCoAgreement2026*`). Both lower to an internal reference.
-An `&` id is never a support edge. `evidence`, `covers`, and `horizon` are
-the `&` productions. They are resolver checks. They do not connect a claim
-to a root. Task 2 walks the internal names. The example below is the edge
+An `&` id is never a support edge. `evidence`, `covers`, `except`, and
+`horizon` are the `&` productions. They are resolver checks. An unresolvable
+`except` pointer is a compile error, the same as an unresolvable `evidence`
+pointer: the exception changes the obligation, so a missing record must not
+pass. They do not connect a claim to a root. Task 2 walks the internal names. The example below is the edge
 `BackupWithinRTO` to the root `ExampleCoAgreement2026`, so the rootless
 check passes. A `commit` names claims by the same internal-reference rule.
 Those edges are composition. They are not a substitute for `provenance`.
@@ -158,17 +160,22 @@ coupling line is only `coupling <Term> at <Layer>`.
 
 ```speck
 speck ExampleCoBackup {
+  state {
+    ageHours: Int
+    failures: Nat
+  }
+
   root ExampleCoAgreement2026 {
     authority "exampleco-ops"
     basis "fictional service agreement, signed 2026-08"
-    trust CorpusConsistent
+    trust Verified
   }
 
   claim BackupWithinRTO(client ExampleCo, window 24h): obligation {
     evidence &backup/exampleco/2026-09-19
     provenance ExampleCoAgreement2026
     ensured RestoreWithinWindow: ageHours <= 24
-    except &outage/exampleco/2026-09-12 -> RTOx2
+    except &outage/exampleco/2026-09-12 -> ageHours <= 48
     coupling wan at global
     coupling local at sync-host
     covers &incident/exampleco-mirror-404
@@ -217,20 +224,39 @@ expression is the existing SpeckDL boolean language, the same language an
 `invariant` body uses. It lowers to that invariant expression and is what
 the Z3 backend emits. An `&` record is not an expression, so `ensured` is
 not a pointer. The evidence pointer names the measurement. The `ensured`
-line is the obligation over it (`ageHours <= 24` in the example).
+line is the obligation over the speck's `state`. In the example, `ageHours`
+and `failures` are that state. They are not free identifiers.
 
 `except <condition> -> <consequence>` is the default-logic boundary.
 `<condition>` is an `&` record reference or a boolean expression in the
-existing expression language. `<consequence>` is the refinement that applies
-when the condition holds (`RTOx2` in the example).
+existing expression language. An `&` condition is a resolver check (Task 2).
+`<consequence>` is a boolean expression in that same language, not an
+unbound name. It is the refinement that replaces the `ensured` expression
+when the condition holds. In the example the consequence is `ageHours <= 48`.
+That expression is RTOx2: the 24-hour window doubled. The name RTOx2 is
+prose for that expression. The expression is what lowers to SMT.
 
 `root` members are `authority`, `basis`, and `trust`. `trust` is required.
 See §2.4.
 
-`commit` is the composition member. `claims:` lists internal claim references
-joined by `and`. In the block form those references are bare names, the same
-way `next: TurnOn | TurnOff` names actions. Every name in the list is a
+`commit` is the composition member. It is not a claim and it has no
+`verdict-cap`. `claims:` lists internal claim references joined by `and`.
+In the block form those references are bare names, the same way
+`next: TurnOn | TurnOff` names actions. On the claims surface the same list
+is `claims: *Name* and *Name*`, colon included. Every name in the list is a
 `claim` in the same speck. `RestoreTestPasses` is the second claim above.
+
+The claims in the list are the commit's premises. The commit's verdict is
+`min` of those claims' verdicts, and that verdict is also `≤` the `trust`
+of every root those claims reach. Naming a claim in a commit does not make
+it a premise of the other claims. A claim's premises stay the claims its
+own `provenance` edges name.
+
+The example root declares `trust Verified`. `RestoreTestPasses` can reach
+its cap of `Verified`. `BackupWithinRTO` still stops at `Corrected`, because
+it couples `at global`. That cap is below the root's trust, so the cap is
+what binds. A root trusted only at `CorpusConsistent` would make both caps
+unreachable.
 
 ### 2.3 Claims surface
 
@@ -250,16 +276,20 @@ both surfaces.
 ```
 speck ExampleCoBackup
 
+  state
+    ageHours: Int
+    failures: Nat
+
   root ExampleCoAgreement2026
     authority "exampleco-ops"
     basis "fictional service agreement, signed 2026-08"
-    trust CorpusConsistent
+    trust Verified
 
   claim BackupWithinRTO(client ExampleCo, window 24h): obligation
     evidence &backup/exampleco/2026-09-19
     provenance *ExampleCoAgreement2026*
     ensured RestoreWithinWindow: ageHours <= 24
-    except &outage/exampleco/2026-09-12 -> RTOx2
+    except &outage/exampleco/2026-09-12 -> ageHours <= 48
     coupling wan at global
     coupling local at sync-host
     covers &incident/exampleco-mirror-404
@@ -278,17 +308,18 @@ speck ExampleCoBackup
     horizon &record/horizon-sync-host
 
   commit ExampleCo3Dot2
-    claims *BackupWithinRTO* and *RestoreTestPasses*
+    claims: *BackupWithinRTO* and *RestoreTestPasses*
 ```
 
 The IR both surfaces lower to:
 
 ```
 speck ExampleCoBackup
+state: { ageHours: Int, failures: Nat }
 root ExampleCoAgreement2026 {
   authority: "exampleco-ops"
   basis: "fictional service agreement, signed 2026-08"
-  trust: CorpusConsistent
+  trust: Verified
 }
 claim BackupWithinRTO {
   kind: obligation
@@ -296,7 +327,7 @@ claim BackupWithinRTO {
   evidence: [&backup/exampleco/2026-09-19]
   provenance: [ExampleCoAgreement2026]          // internal, the root
   ensured: [{ name: RestoreWithinWindow, expr: "ageHours <= 24" }]
-  except: [{ condition: &outage/exampleco/2026-09-12, consequence: RTOx2 }]
+  except: [{ condition: &outage/exampleco/2026-09-12, consequence: "ageHours <= 48" }]
   coupling: [{ term: wan, layer: global }, { term: local, layer: sync-host }]
   covers: [&incident/exampleco-mirror-404]
   verdictCap: Corrected
@@ -389,9 +420,10 @@ when the claim has one or more claim premises, and
 derived ≤ trust(root)
 ```
 
-when its only support is the root. Claim premises are the claims named by
-`provenance` edges that land on claims, and the claims named by a `commit`.
-A `provenance` edge that lands on a root is the end of the chain. It
+when its only support is the root. A claim's premises are the claims named
+by its `provenance` edges. A `commit`'s premises are the claims in its
+`claims:` list, and the commit's verdict is `min` of those verdicts. A
+`provenance` edge that lands on a root is the end of the chain. It
 contributes `trust(root)` on the right-hand side. It is not also inserted
 into the `min`. Evidence records
 are not verdicts and are not premises of this inequality. Entailment never
