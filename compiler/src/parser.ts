@@ -659,8 +659,10 @@ export function parseMemberBlock(lines: string[], startIndex: number): MemberNod
     //   `parent_spec "name"`
     //   `external_doc "name" :: "url"`
     // The block may also be empty (clauses: []).
-    const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-    const innerLines = lines.slice(startIndex + 1, endIdx)
+    const inline = inlineActionBody(firstLine);
+    const innerLines = (inline !== null
+      ? (inline.trim() ? [inline.trim()] : [])
+      : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)))
       .map((l: string) => l.trim())
       .filter((l: string) => l && !l.startsWith('//') && l !== '}');
     const clauses: ProvenanceClause[] = [];
@@ -684,8 +686,10 @@ export function parseMemberBlock(lines: string[], startIndex: number): MemberNod
     //   `solver { name: "x", version: "y" }`
     //   `runtime { name: "x", version: "y" }`
     //   `license: "MIT"`
-    const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-    const innerText = lines.slice(startIndex + 1, endIdx)
+    const inline = inlineActionBody(firstLine);
+    const innerText = (inline !== null
+      ? (inline.trim() ? [inline.trim()] : [])
+      : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)))
       .map((l: string) => l.trim())
       .filter((l: string) => l && !l.startsWith('//') && l !== '}')
       .join(' ');
@@ -750,6 +754,12 @@ function parseInputOutputBlock(
   const header = lines[startIndex].trim();
   const isInput = header.startsWith('input:');
   const kind: 'input' | 'output' = isInput ? 'input' : 'output';
+
+  const inline = inlineActionBody(header);
+  if (inline !== null) {
+    const typeExpr = parseTypeExpr('{ ' + inline.trim() + ' }');
+    return { type: kind, typeExpr };
+  }
 
   // Collect inner content lines, brace-counting across the block.
   // startBraceCount is the brace count on the header line (1 for `input: {`).
@@ -1012,8 +1022,24 @@ function parseActionHeader(line: string): ActionNode | null {
   return { type: 'action', name, params, statements: [] };
 }
 
+/** Drop a trailing `//` comment without cutting a `//` inside quotes. */
+function stripTrailingLineComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '/' && line[i + 1] === '/') return line.slice(0, i);
+  }
+  return line;
+}
+
 export function parseImportStatement(line: string): ImportNode {
-  const stripped = line.replace(/\/\/.*$/, '').trim();
+  const stripped = stripTrailingLineComment(line).trim();
   const match = stripped.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.*)\6)?\s*$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
@@ -1381,6 +1407,16 @@ function parseStateBlockMultiline(lines: string[], startIndex: number, startBrac
   const asMatch = headerLine.match(/^state\s+as\s+(\w+)\s*{/);
   const messageName = asMatch ? asMatch[1] : undefined;
 
+  // A one-line `state { x: Nat }` closes on the header. The body is that
+  // brace span. Scanning the next line used to take the following member
+  // (or nothing, when the next brace was the speck's close).
+  const inline = inlineActionBody(headerLine);
+  if (inline !== null) {
+    const result = parseStateBlock(inline.trim());
+    if (messageName !== undefined) result.messageName = messageName;
+    return result;
+  }
+
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
   if (innerLines.some(l => l.startsWith('import '))) {
@@ -1441,6 +1477,9 @@ function exprIncomplete(text: string): boolean {
 }
 
 function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
+  const inline = inlineActionBody(lines[startIndex].trim());
+  if (inline !== null) return parseInitBlock(inline.trim());
+
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
   // Group lines into statements: a `name := ...` line starts a new
@@ -1469,6 +1508,8 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   const firstLine = lines[startIndex].trim();
   const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
+  const inline = inlineActionBody(firstLine);
+  if (inline !== null) return { type: 'invariant', name, expr: inline.trim() };
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const body = lines
     .slice(startIndex + 1, endIndex)
@@ -1847,8 +1888,10 @@ function parseEventBlockMultiline(lines: string[], startIndex: number, startBrac
 function parseInterfaceBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InterfaceNode {
   const firstLine = lines[startIndex].trim();
   const header = parseInterface(firstLine);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const methods: MethodSignature[] = [];
   const fields: InterfaceField[] = [];
@@ -1923,8 +1966,10 @@ function parseInterfaceBlockMultiline(lines: string[], startIndex: number, start
 function parseOneofBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): OneofNode {
   const firstLine = lines[startIndex].trim();
   const header = parseOneof(firstLine);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const variants: OneofVariant[] = [];
   for (const line of innerLines) {
@@ -1950,8 +1995,10 @@ function parseOneofBlockMultiline(lines: string[], startIndex: number, startBrac
 function parseTransitionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): TransitionNode {
   const firstLine = lines[startIndex].trim();
   const header = parseTransition(firstLine);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const fields: TransitionField[] = [];
   let payloadOneof: string | undefined;
@@ -1991,8 +2038,10 @@ function parseServiceBlockMultiline(lines: string[], startIndex: number, startBr
   const match = firstLine.match(/^service\s+(\w+)\s*{?/);
   const name = match ? match[1] : 'UnnamedService';
 
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const rpcs: RpcMethod[] = [];
   for (const line of innerLines) {
@@ -2283,13 +2332,18 @@ function parseConstraintAnyForm(lines: string[], startIndex: number): Constraint
   
   // If opens a brace, treat as block
   if (exprFollows === 'brace' || expr.startsWith('{')) {
-    // Strip the leading '{' from expr if it was passed in via the colon form
-    if (expr.startsWith('{')) expr = expr.substring(1).trim();
-    const openCount = braceCounts(line).open;
-    const endIdx = findBlockEnd(lines, startIndex + 1, openCount);
-    const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
-    const inner = innerLines.join(' ');
-    expr = (expr + ' ' + inner).trim();
+    const inline = inlineActionBody(line);
+    if (inline !== null) {
+      expr = inline.trim();
+    } else {
+      // Strip the leading '{' from expr if it was passed in via the colon form
+      if (expr.startsWith('{')) expr = expr.substring(1).trim();
+      const openCount = braceCounts(line).open;
+      const endIdx = findBlockEnd(lines, startIndex + 1, openCount);
+      const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
+      const inner = innerLines.join(' ');
+      expr = (expr + ' ' + inner).trim();
+    }
   } else {
     // No braces — but might span multiple lines (forall continuation)
     const continuationLines: string[] = [];
@@ -2475,12 +2529,17 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
     
     // If the expression opens a brace, collect the block
     if (expr.startsWith('{')) {
-      const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-      const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-      const inner = innerLines.join(' ');
-      // Combine: content after { on first line + content from inner lines
-      const afterBrace = expr.substring(1).trim();
-      expr = (afterBrace + ' ' + inner).trim();
+      const inline = inlineActionBody(firstLine);
+      if (inline !== null) {
+        expr = inline.trim();
+      } else {
+        const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
+        const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+        const inner = innerLines.join(' ');
+        // Combine: content after { on first line + content from inner lines
+        const afterBrace = expr.substring(1).trim();
+        expr = (afterBrace + ' ' + inner).trim();
+      }
     } else {
       // No braces, but might still be multiline (forall spanning multiple lines)
       // Check if next line(s) continue the expression
@@ -2608,8 +2667,10 @@ export function parseNextRelation(lines: string[], startIndex: number): { node: 
  *                   on outcome -> Target; timeout <dur> -> reject }
  */
 function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): AgentMemberNode {
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const bodyLines = lines.slice(startIndex + 1, endIndex);
+  const inline = inlineActionBody(lines[startIndex].trim());
+  const bodyLines = inline !== null
+    ? (inline.trim() ? [inline] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount));
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
   let stages: AgentStagesMap | undefined;

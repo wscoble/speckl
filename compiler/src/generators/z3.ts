@@ -84,7 +84,18 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
 
   // Also extract invariants from parsed constraint nodes
   const invariants = extractInvariantsFromConstraints(constraints);
-  const sourceInvariants = (speck as any)._invariants || [];
+  // compileSpec copies invariant members onto `_invariants` in the shape
+  // this emitter consumes. A direct generateZ3 call reads the members.
+  const attached = (speck as any)._invariants as InvariantNode[] | undefined;
+  const sourceInvariants: InvariantNode[] = attached && attached.length > 0
+    ? attached
+    : members
+      .filter((m) => m.type === 'invariant')
+      .map((m) => ({
+        type: 'invariant' as const,
+        name: (m as { name: string }).name,
+        statements: [{ type: 'require' as const, expr: (m as { expr: string }).expr }],
+      }));
   const allInvariants = [...sourceInvariants, ...invariants];
   
   // next: transition relation (first-class AST member). An unknown action

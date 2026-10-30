@@ -1,12 +1,15 @@
-// Recursive-descent parser for SpeckDL.
+// SpeckDL parser. `lexSpeck` produces one token stream for the file.
 //
-// `lexSpeck` produces the token stream. This parser consumes it: a file is
-// a sequence of specks, a speck is a sequence of members, and each member
-// is a function that reads the tokens of that phrase. Brace matching uses
-// the token stream, so a `{` or `}` inside a comment or a string is not
-// structure. Phrase bodies (action statements, field lists, agent blocks)
-// are the source span of those tokens; the span is not found by scanning
-// the rest of the file.
+// Brace matching uses that stream, so a `{` or `}` inside a comment or a
+// string is not structure. A block that opens and closes on its header
+// line takes its phrase body from that brace span. A multi-line block ends
+// at the matching token brace; the phrase parser then reads the source
+// lines in between. The member phrases themselves (action statements,
+// field lists, constraints) are still parsed from that source text.
+//
+// After the walk, token depth must be 0 at each speck's close and at EOF.
+// A line that starts with `/*` and still has tokens is an error: that code
+// would otherwise be skipped with every later member.
 
 import {
   AST, SpeckNode, MemberNode, ImportNode,
@@ -14,7 +17,7 @@ import {
   parseImportStatement, parseMember, parseMemberBlock,
   parseMultiLineConstraintVerify, unsupportedVerify, parseNextRelation,
 } from './parser.js';
-import { SpeckToken, lexSpeck } from './speck-lex.js';
+import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -23,8 +26,19 @@ const BLOCK_STARTERS = [
 ];
 
 export function parseSpeckDocument(content: string, filePath?: string): AST {
+  if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+  rejectBareCr(content, filePath);
   const lexed = lexSpeck(content, filePath);
   const lines = content.split('\n');
+  const byLine = bucketByLine(lexed.tokens);
+  assertNoCodeAfterBlockComment(lines, byLine, filePath);
+  // A header glued to a comment closer is reported before brace depth, which
+  // would otherwise see the header's `{` as an unclosed brace.
+  if (lexed.headerAfterComment.length > 0) {
+    throw lexProblem(lexed.headerAfterComment[0], 'header is not at the start of the line');
+  }
+  assertBraceStructure(lexed.tokens, filePath);
+  assertImportNotInBlock(lexed.tokens, filePath);
   const specks: SpeckNode[] = [];
   const fileImports: ImportNode[] = [];
   const headerLines = new Set(lexed.headerAfterComment);
@@ -47,12 +61,12 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
       continue;
     }
 
-    if (code.startsWith('import ') || line.startsWith('import ')) {
-      if (!line.startsWith('import ') || i < coveredUntil) {
-        if (i < coveredUntil && line.startsWith('import ')) {
-          i++;
-          continue;
-        }
+    if (firstTokenIs(byLine, i + 1, 'import')) {
+      if (i < coveredUntil) {
+        i++;
+        continue;
+      }
+      if (!/^import\b/.test(line)) {
         throw lexProblem(i + 1, `Failed to parse import statement: ${line}`);
       }
       try {
@@ -69,7 +83,7 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
     }
 
     if (line.startsWith('speck ') && code.startsWith('speck ')) {
-      const speck = parseSpeck(lines, lexed.tokens, i);
+      const speck = parseSpeck(lines, byLine, i);
       if (speck) {
         specks.push(speck);
         coveredUntil = Math.max(coveredUntil, speck.endLine ?? i + 1);
@@ -81,6 +95,7 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
     i++;
   }
 
+  assertParsedSpeckHeaders(lexed.tokens, specks, filePath);
   const ast: AST = { specks };
   if (fileImports.length > 0) ast.imports = fileImports;
   return ast;
@@ -90,7 +105,7 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
  * Parse the speck whose header is `lines[start]`. Member boundaries come
  * from the token stream. Returns null when the header is not `speck Name {`.
  */
-function parseSpeck(lines: string[], tokens: SpeckToken[], start: number): SpeckNode | null {
+function parseSpeck(lines: string[], byLine: SpeckToken[][], start: number): SpeckNode | null {
   const headerMatch = lines[start].match(/^speck\s+([\w-]+)\s*{/);
   if (!headerMatch) return null;
 
@@ -117,7 +132,7 @@ function parseSpeck(lines: string[], tokens: SpeckToken[], start: number): Speck
     const masked = maskLine(rawLine, lex, i + 1);
     lex = masked.state;
     const line = rawLine.trim();
-    const counts = bracesOnLine(tokens, i + 1);
+    const counts = bracesOnLine(byLine, i + 1);
     const openCount = counts.open;
     const closeCount = counts.close;
 
@@ -126,8 +141,8 @@ function parseSpeck(lines: string[], tokens: SpeckToken[], start: number): Speck
       continue;
     }
 
-    if (line.startsWith('import ') || masked.text.trim().startsWith('import ')) {
-      if (!line.startsWith('import ')) throw lexProblem(i + 1, `Failed to parse import statement: ${line}`);
+    if (firstTokenIs(byLine, i + 1, 'import')) {
+      if (!/^import\b/.test(line)) throw lexProblem(i + 1, `Failed to parse import statement: ${line}`);
       let node: ImportNode;
       try {
         node = parseImportStatement(line);
@@ -199,7 +214,7 @@ function parseSpeck(lines: string[], tokens: SpeckToken[], start: number): Speck
       const member = parseMemberAt(lines, i);
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (closeCount < openCount) {
-        const endIdx = blockEndLine(tokens, i + 1, braceCount + openCount, lines.length);
+        const endIdx = blockEndLine(byLine, i + 1, braceCount + openCount, lines.length);
         if (member) {
           members.push(Object.assign(member, { startLine: blockStartLine, endLine: endIdx + 1 }));
         }
@@ -281,11 +296,16 @@ function parseMemberAt(lines: string[], start: number): MemberNode | null {
   return parseMemberBlock(lines, start);
 }
 
-function bracesOnLine(tokens: SpeckToken[], line: number): { open: number; close: number } {
+function bucketByLine(tokens: SpeckToken[]): SpeckToken[][] {
+  const byLine: SpeckToken[][] = [];
+  for (const t of tokens) (byLine[t.line] ??= []).push(t);
+  return byLine;
+}
+
+function bracesOnLine(byLine: SpeckToken[][], line: number): { open: number; close: number } {
   let open = 0;
   let close = 0;
-  for (const t of tokens) {
-    if (t.line !== line) continue;
+  for (const t of byLine[line] ?? []) {
     if (t.kind === '{') open++;
     else if (t.kind === '}') close++;
   }
@@ -294,20 +314,120 @@ function bracesOnLine(tokens: SpeckToken[], line: number): { open: number; close
 
 /**
  * Line index of the `}` that brings the running brace count below
- * `startCount`, scanning tokens from the 0-based line `startIndex`.
- * Mirrors the old block walk, but the braces are tokens.
+ * `startCount`. `startIndex` is the 0-based header line; the scan starts
+ * on the next line, at that line's bucket, so it does not rescan earlier tokens.
  */
-function blockEndLine(tokens: SpeckToken[], startIndex: number, startCount: number, lineCount: number): number {
+function blockEndLine(byLine: SpeckToken[][], startIndex: number, startCount: number, lineCount: number): number {
   let count = startCount;
-  for (const t of tokens) {
-    if (t.line < startIndex + 1) continue;
-    if (t.kind === '{') count++;
-    else if (t.kind === '}') {
-      count--;
-      if (count < startCount) return t.line - 1;
+  for (let line = startIndex + 1; line <= lineCount; line++) {
+    for (const t of byLine[line] ?? []) {
+      if (t.kind === '{') count++;
+      else if (t.kind === '}') {
+        count--;
+        if (count < startCount) return t.line - 1;
+      }
     }
   }
   return lineCount;
+}
+
+/** A `\r` that is not part of `\r\n` is a CR-only line ending. Members on those "lines" would be one line and dropped. */
+function rejectBareCr(src: string, file?: string): void {
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== '\r' || src[i + 1] === '\n') continue;
+    let line = 1;
+    let column = 1;
+    for (let j = 0; j < i; j++) {
+      if (src[j] === '\n') { line++; column = 1; }
+      else column++;
+    }
+    throw parseErrorAt(file, line, column, 'CR-only line endings are not supported');
+  }
+}
+
+/**
+ * A line whose first code is a block-comment opener is skipped as a comment.
+ * Tokens on that line are code after the closer, which the skip would drop
+ * along with every later member.
+ */
+function firstTokenIs(byLine: SpeckToken[][], line: number, text: string): boolean {
+  const t = byLine[line]?.[0];
+  return t?.kind === 'ident' && t.text === text;
+}
+
+function assertNoCodeAfterBlockComment(lines: string[], byLine: SpeckToken[][], file?: string): void {
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trim().startsWith('/*')) continue;
+    const tokens = byLine[i + 1] ?? [];
+    if (tokens.length === 0) continue;
+    // An import glued to a comment closer is reported as a bad import.
+    if (tokens[0].kind === 'ident' && tokens[0].text === 'import') continue;
+    throw parseErrorAt(file, i + 1, tokens[0].column, 'code after */ on a line that starts with /*');
+  }
+}
+
+/** An `import` token is legal at file level (depth 0) and as a speck member (depth 1). */
+function assertImportNotInBlock(tokens: SpeckToken[], file?: string): void {
+  let depth = 0;
+  for (const t of tokens) {
+    if (t.kind === '{') { depth++; continue; }
+    if (t.kind === '}') { depth = Math.max(0, depth - 1); continue; }
+    if (t.kind === 'ident' && t.text === 'import' && depth > 1) {
+      throw parseErrorAt(file, t.line, t.column, 'import is inside a block');
+    }
+  }
+}
+
+/**
+ * Brace depth is the token stream. It must return to 0 at the end of each
+ * speck and at EOF. A `}` past that, text on the close line, or a second
+ * `speck` on that line is an error.
+ */
+/**
+ * A `speck` token at brace depth 0 that did not become a speck was skipped
+ * (a non-ASCII space in `speck A {`, or a header the line walk did not see).
+ */
+function assertParsedSpeckHeaders(tokens: SpeckToken[], specks: SpeckNode[], file?: string): void {
+  const starts = new Set(specks.map(s => s.startLine));
+  let depth = 0;
+  for (const t of tokens) {
+    if (t.kind === '{') depth++;
+    else if (t.kind === '}') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && t.kind === 'ident' && t.text === 'speck' && !starts.has(t.line)) {
+      throw parseErrorAt(file, t.line, t.column, 'speck header was not parsed');
+    }
+  }
+}
+
+function assertBraceStructure(tokens: SpeckToken[], file?: string): void {
+  let depth = 0;
+  const open: SpeckToken[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.kind === '{') {
+      depth++;
+      open.push(t);
+      continue;
+    }
+    if (t.kind !== '}') continue;
+    if (depth === 0) throw parseErrorAt(file, t.line, t.column, 'extra "}"');
+    depth--;
+    open.pop();
+    if (depth !== 0) continue;
+    const rest: SpeckToken[] = [];
+    for (let j = i + 1; j < tokens.length && tokens[j].line === t.line; j++) rest.push(tokens[j]);
+    if (rest.length === 0) continue;
+    const next = rest[0];
+    if (next.kind === 'ident' && next.text === 'speck') {
+      throw parseErrorAt(file, next.line, next.column, 'a second speck on one line');
+    }
+    if (next.kind === '}') throw parseErrorAt(file, next.line, next.column, 'extra "}"');
+    throw parseErrorAt(file, next.line, next.column, 'text after a speck\'s "}"');
+  }
+  if (depth > 0) {
+    const unclosed = open[open.length - 1];
+    throw parseErrorAt(file, unclosed.line, unclosed.column, 'missing final "}"');
+  }
 }
 
 function lexThrough(lines: string[], from: number, to: number, lex: ReturnType<typeof lexStart>): ReturnType<typeof lexStart> {

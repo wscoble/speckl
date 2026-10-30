@@ -61,7 +61,7 @@ export interface LowerOptions {
 
 export function lower(ast: AST, options: LowerOptions): IR {
   const unit = options.resolveImports && !importsExpanded(ast)
-    ? expandImports(ast, options.filePath)
+    ? expandImports(ast, options.filePath, { rootDir: options.rootDir })
     : ast;
   const fileMetadata = extractFileMetadata(unit, options);
   const diagnostics: IRDiagnostic[] = [];

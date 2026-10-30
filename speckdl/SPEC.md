@@ -211,6 +211,14 @@ import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 Version pinning is optional for local development and required for Specks
 with `review: manual` or `review: hybrid`.
 
+An import path is relative. The compiler resolves it from the importing
+file and then checks the real path, after symlinks, against an import root.
+The default root is the directory of the file you compile. `speckl <file>
+--root <dir>` widens that directory. An absolute path, a `../` that leaves
+the root, or a symlink whose target leaves the root is an error. The import
+clause itself is still a regex on the source line; a `//` inside the quoted
+path is not a comment.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:

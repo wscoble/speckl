@@ -1,9 +1,13 @@
 // Resolve `import "path"` against the directory of the file that writes it.
 // Nested imports use the imported file's directory. There is no package registry.
+//
+// The default root is the entry file's directory. An import must be a relative
+// path, and its real path (after symlinks) must stay inside the root. Pass
+// `rootDir` — the CLI's `--root` — to widen that directory.
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { AST, ImportNode, parseSpeckContent, SpeckNode } from './parser.js';
 
 export interface ImportLink {
@@ -14,6 +18,22 @@ export interface ImportLink {
   file: string;
   /** Speck names declared by that file. */
   speckNames: string[];
+}
+
+export interface ExpandOptions {
+  /**
+   * Directory imports may resolve inside, after symlinks.
+   * Default: the directory of `entryPath`.
+   */
+  rootDir?: string;
+}
+
+/** A chain longer than this is an error, not a stack overflow. */
+const MAX_IMPORT_DEPTH = 64;
+
+interface CachedFile {
+  text: string;
+  ast: AST;
 }
 
 const linksOf = new WeakMap<AST, ImportLink[]>();
@@ -34,12 +54,14 @@ export function speckSourceFile(ast: AST, name: string, fallback: string): strin
 
 /**
  * Read imported files and append their specks. Throws on a missing file,
- * a cycle, a hash mismatch, an empty hash, or the same speck name in two files.
- * A file with no imports is returned unchanged.
+ * a cycle, a too-deep chain, a hash mismatch, an empty or short hash,
+ * a path that leaves the import root, a duplicate alias, or the same
+ * speck name twice. A file with no imports is returned unchanged.
  */
-export function expandImports(ast: AST, entryPath: string): AST {
+export function expandImports(ast: AST, entryPath: string, options: ExpandOptions = {}): AST {
   if (!existsSync(entryPath)) return ast;
   const entryAbs = realpathSync(entryPath);
+  const rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
   const rootHas = (ast.imports?.length ?? 0) > 0
     || ast.specks.some(s => s.members.some(m => m.type === 'import'));
   if (!rootHas) {
@@ -55,14 +77,19 @@ export function expandImports(ast: AST, entryPath: string): AST {
   const specks: SpeckNode[] = [];
   const links: ImportLink[] = [];
   const stack: string[] = [];
-  const cache = new Map<string, AST>();
+  const stackSet = new Set<string>();
+  const done = new Set<string>();
+  const cache = new Map<string, CachedFile>();
+  const aliasAt = new Set<string>();
 
-  function parseFile(abs: string): AST {
+  function ensure(abs: string): CachedFile {
     const hit = cache.get(abs);
     if (hit) return hit;
-    const parsed = parseSpeckContent(readFileSync(abs, 'utf8'), abs);
-    cache.set(abs, parsed);
-    return parsed;
+    const text = readFileSync(abs, 'utf8');
+    const parsed = parseSpeckContent(text, abs);
+    const entry = { text, ast: parsed };
+    cache.set(abs, entry);
+    return entry;
   }
 
   function importsIn(parsed: AST, abs: string): { owner: string; node: ImportNode }[] {
@@ -82,16 +109,39 @@ export function expandImports(ast: AST, entryPath: string): AST {
     return out;
   }
 
-  function load(abs: string): void {
-    if (stack.includes(abs)) {
+  function noteAlias(abs: string, node: ImportNode): void {
+    if (!node.alias) return;
+    const key = `${abs}\0${node.alias}`;
+    if (aliasAt.has(key)) {
+      throw new Error(`Parse error: import alias ${node.alias} is used twice in ${abs}`);
+    }
+    aliasAt.add(key);
+  }
+
+  function load(abs: string, depth: number, pin?: { hash: string; specPath: string }): void {
+    if (done.has(abs)) {
+      if (pin) verifyHash(cache.get(abs)!.text, pin.hash, pin.specPath);
+      return;
+    }
+    if (depth > MAX_IMPORT_DEPTH) {
+      throw new Error(`Parse error: import chain is too deep (limit ${MAX_IMPORT_DEPTH}): ${[...stack, abs].join(' -> ')}`);
+    }
+    if (stackSet.has(abs)) {
       throw new Error(`Parse error: import cycle: ${[...stack, abs].join(' -> ')}`);
     }
+    stackSet.add(abs);
     stack.push(abs);
-    const parsed = parseFile(abs);
+    const { ast: parsed } = ensure(abs);
+    if (pin) verifyHash(cache.get(abs)!.text, pin.hash, pin.specPath);
     if (abs !== entryAbs && parsed.specks.length === 0) {
       throw new Error(`Parse error: import "${abs}" declares no specks`);
     }
+    const seenHere = new Set<string>();
     for (const speck of parsed.specks) {
+      if (seenHere.has(speck.name)) {
+        throw new Error(`Parse error: speck ${speck.name} is declared twice in ${abs}`);
+      }
+      seenHere.add(speck.name);
       const prev = origin.get(speck.name);
       if (prev && prev !== abs) {
         throw new Error(`Parse error: speck ${speck.name} is declared in ${prev} and ${abs}`);
@@ -102,22 +152,23 @@ export function expandImports(ast: AST, entryPath: string): AST {
       }
     }
     for (const { owner, node } of importsIn(parsed, abs)) {
-      const target = resolveImportPath(abs, node.path);
-      if (node.hash) verifyHash(target, node.hash, node.path);
-      const child = realpathSync(target);
-      load(child);
-      const names = parsedNames(cache.get(child)!);
+      noteAlias(abs, node);
+      const child = resolveImportPath(abs, node.path, rootDir);
+      load(child, depth + 1, node.hash ? { hash: node.hash, specPath: node.path } : undefined);
+      const names = parsedNames(cache.get(child)!.ast);
       if (!links.some(l => l.owner === owner && l.file === child && l.node.path === node.path && l.node.alias === node.alias)) {
         links.push({ owner, node, file: child, speckNames: names });
       }
     }
     stack.pop();
+    stackSet.delete(abs);
+    done.add(abs);
   }
 
-  load(entryAbs);
+  load(entryAbs, 0);
 
   // Root file-level imports apply to every speck declared in the root file.
-  const rootNames = (cache.get(entryAbs)?.specks ?? []).map(s => s.name);
+  const rootNames = (cache.get(entryAbs)?.ast.specks ?? []).map(s => s.name);
   const lifted: ImportLink[] = [];
   for (const link of links) {
     if (link.owner !== '*') {
@@ -141,24 +192,34 @@ function parsedNames(ast: AST): string[] {
   return ast.specks.map(s => s.name);
 }
 
-export function resolveImportPath(fromFile: string, specPath: string): string {
-  const target = isAbsolute(specPath) ? specPath : resolve(dirname(fromFile), specPath);
+export function resolveImportPath(fromFile: string, specPath: string, rootDir: string): string {
+  if (isAbsolute(specPath)) {
+    throw new Error(`Parse error: import "${specPath}" must be a relative path`);
+  }
+  const target = resolve(dirname(fromFile), specPath);
   if (!existsSync(target) || !statSync(target).isFile()) {
     throw new Error(`Parse error: cannot read import "${specPath}" (resolved ${target})`);
   }
-  return target;
+  const real = realpathSync(target);
+  const rootReal = realpathSync(rootDir);
+  const rel = relative(rootReal, real);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`Parse error: import "${specPath}" resolves outside the import root ${rootReal}`);
+  }
+  return real;
 }
 
-export function verifyHash(file: string, pin: string, specPath: string): void {
-  const hex = pin.replace(/^sha256:/i, '');
+/** Hash `buf`, the same bytes that were parsed. A pin must be 64 hex digits. */
+export function verifyHash(buf: string | Buffer, pin: string, specPath: string): void {
+  const hex = pin.replace(/^sha256:/i, '').trim();
   if (hex === '') {
     throw new Error(`Parse error: empty hash on import "${specPath}"`);
   }
-  if (!/^[0-9a-fA-F]+$/.test(hex)) {
-    throw new Error(`Parse error: hash on import "${specPath}" is not sha256 hex`);
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(`Parse error: hash on import "${specPath}" must be 64 hex characters`);
   }
-  const got = createHash('sha256').update(readFileSync(file)).digest('hex');
+  const got = createHash('sha256').update(buf).digest('hex');
   if (got.toLowerCase() !== hex.toLowerCase()) {
-    throw new Error(`Parse error: hash mismatch for import "${specPath}" (resolved ${file})`);
+    throw new Error(`Parse error: hash mismatch for import "${specPath}"`);
   }
 }

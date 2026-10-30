@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
 import { lower } from '../ir/lower.js';
 import { expandImports } from '../imports.js';
+import { compileSpec } from '../compile.js';
 
 function dir(): string {
   return mkdtempSync(join(tmpdir(), 'speckl-imp-'));
@@ -81,6 +82,28 @@ describe('import parsing', () => {
     ].join('\n'))).toThrow(/import is inside a block/);
   });
 
+  it('keeps a // inside the quoted path', () => {
+    const ast = parseSpeckContent('import ".//lib.speckdl" as Lib\nspeck S {\n    state { n: Nat }\n}\n');
+    expect(ast.imports?.[0].path).toBe('.//lib.speckdl');
+  });
+
+  it('parses an import separated by a tab, including a hash pin', () => {
+    const ast = parseSpeckContent('import\t"./lib.speckdl" hash "sha256:00"\nspeck S {\n    state { n: Nat }\n}\n', 'tab.speckdl');
+    expect(ast.imports?.[0]).toMatchObject({ path: './lib.speckdl', hash: 'sha256:00' });
+  });
+
+  it('rejects an import inside init, an invariant, or a one-line state', () => {
+    const cases = [
+      '    init {\n        import "lib.speckdl"\n        n := 0\n    }',
+      '    invariant Pos {\n        import "lib.speckdl"\n    }',
+      '    state { import "lib.speckdl" hash "sha256:00" }',
+    ];
+    for (const body of cases) {
+      const src = `speck S {\n    state { n: Nat }\n${body}\n}\n`;
+      expect(() => parseSpeckContent(src, 'in.speckdl'), body).toThrow(/import is inside a block/);
+    }
+  });
+
   it('round-trips a file-level import', () => {
     const src = 'import "lib.speckdl" as Lib version "1"\nspeck S {\n    state { n: Nat }\n}\n';
     const printed = printAST(parseSpeckContent(src));
@@ -105,9 +128,9 @@ describe('import resolution', () => {
 
   it('resolves a nested import from the imported file', () => {
     const folder = dir();
-    const nested = dir();
-    write(nested, 'leaf.speckdl', 'speck Leaf {\n    state { k: Nat }\n}\n');
-    write(folder, 'mid.speckdl', `import "${join(nested, 'leaf.speckdl')}" as Leaf\nspeck Mid {\n    state { m: Nat }\n}\n`);
+    mkdirSync(join(folder, 'nested'));
+    write(folder, 'nested/leaf.speckdl', 'speck Leaf {\n    state { k: Nat }\n}\n');
+    write(folder, 'mid.speckdl', 'import "nested/leaf.speckdl" as Leaf\nspeck Mid {\n    state { m: Nat }\n}\n');
     const root = write(folder, 'root.speckdl', 'import "mid.speckdl" as Mid\nspeck Root {\n    state { n: Nat }\n}\n');
     const ir = lower(parseSpeckFile(root), { filePath: root, resolveImports: true });
     expect(ir.specks.map(s => s.name)).toEqual(['Root', 'Mid', 'Leaf']);
@@ -144,5 +167,85 @@ describe('import resolution', () => {
     write(folder, 'lib.speckdl', 'speck Shared {\n    state { n: Nat }\n}\n');
     const root = write(folder, 'root.speckdl', 'import "lib.speckdl" as L\nspeck Shared {\n    state { n: Nat }\n}\n');
     expect(() => expandImports(parseSpeckFile(root), root)).toThrow(/speck Shared is declared in/);
+  });
+
+  it('rejects a short hash pin instead of calling it a mismatch', () => {
+    const folder = dir();
+    write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n}\n');
+    const root = write(folder, 'root.speckdl', 'import\t"./lib.speckdl" hash "sha256:00"\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(root), root)).toThrow(/must be 64 hex characters/);
+  });
+
+  it('rejects a duplicate alias and a speck declared twice in one imported file', () => {
+    const folder = dir();
+    write(folder, 'a.speckdl', 'speck A {\n    state { n: Nat }\n}\n');
+    write(folder, 'b.speckdl', 'speck B {\n    state { n: Nat }\n}\n');
+    const dupAlias = write(folder, 'root.speckdl', 'import "a.speckdl" as Lib\nimport "b.speckdl" as Lib\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(dupAlias), dupAlias)).toThrow(/import alias Lib is used twice/);
+    const twice = write(folder, 'twice.speckdl', 'speck Q {\n    state { n: Nat }\n}\nspeck Q {\n    state { m: Nat }\n}\n');
+    const root = write(folder, 'use.speckdl', 'import "twice.speckdl" as T\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(root), root)).toThrow(/speck Q is declared twice/);
+  });
+
+  it('rejects a chain that is too deep with a clear message', () => {
+    const folder = dir();
+    const n = 80;
+    for (let i = 0; i < n; i++) {
+      const next = i + 1 < n ? `import "f${i + 1}.speckdl" as N${i}\n` : '';
+      write(folder, `f${i}.speckdl`, `${next}speck S${i} {\n    state { n: Nat }\n}\n`);
+    }
+    expect(() => expandImports(parseSpeckFile(join(folder, 'f0.speckdl')), join(folder, 'f0.speckdl'))).toThrow(
+      /import chain is too deep \(limit 64\)/,
+    );
+  });
+
+  it('loads a diamond ladder without re-walking finished files', () => {
+    const folder = dir();
+    const levels = 20;
+    for (let level = levels; level >= 0; level--) {
+      const body = level === levels
+        ? ''
+        : `import "L${level + 1}.speckdl" as L${level}\nimport "R${level + 1}.speckdl" as R${level}\n`;
+      for (const side of ['L', 'R']) {
+        write(folder, `${side}${level}.speckdl`, `${body}speck ${side}${level} {\n    state { n: Nat }\n}\n`);
+      }
+    }
+    const root = write(folder, 'root.speckdl', 'import "L0.speckdl" as L\nimport "R0.speckdl" as R\nspeck Root {\n    state { n: Nat }\n}\n');
+    const t0 = performance.now();
+    const ast = expandImports(parseSpeckFile(root), root);
+    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(ast.specks.map(s => s.name)).toContain('L20');
+    expect(ast.specks.map(s => s.name)).toContain('R20');
+  });
+
+  it('rejects ../, absolute paths, and symlinks that leave the entry directory', () => {
+    const parent = dir();
+    const folder = join(parent, 'in');
+    mkdirSync(folder);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n}\n');
+    const outside = write(folder, 'root.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(outside), outside)).toThrow(/outside the import root/);
+    expect(expandImports(parseSpeckFile(outside), outside, { rootDir: parent }).specks.map(s => s.name)).toEqual(['Root', 'Out']);
+
+    const abs = write(folder, 'abs.speckdl', `import "${join(parent, 'out.speckdl')}" as O\nspeck Root {\n    state { n: Nat }\n}\n`);
+    expect(() => expandImports(parseSpeckFile(abs), abs, { rootDir: parent })).toThrow(/must be a relative path/);
+
+    const elsewhere = dir();
+    write(elsewhere, 'secret.speckdl', 'speck Secret {\n    state { n: Nat }\n}\n');
+    symlinkSync(join(elsewhere, 'secret.speckdl'), join(folder, 'link.speckdl'));
+    const linked = write(folder, 'linkroot.speckdl', 'import "link.speckdl" as S\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(linked), linked)).toThrow(/outside the import root/);
+  });
+
+  it('compileSpec accepts --root as rootDir', () => {
+    const parent = dir();
+    const folder = join(parent, 'in');
+    mkdirSync(folder);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(parent, 'out');
+    expect(() => compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'both', verifyDepth: 2 })).toThrow(/outside the import root/);
+    compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'both', verifyDepth: 2, rootDir: parent });
+    expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
   });
 });

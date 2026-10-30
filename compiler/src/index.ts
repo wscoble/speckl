@@ -47,6 +47,10 @@ async function main() {
           type: 'string',
           choices: ['cdx', 'spdx', 'both'],
           default: 'both' as const,
+        })
+        .option('root', {
+          describe: 'Directory imports may resolve inside, after following symlinks. Default: the entry file\'s directory. Absolute import paths are rejected, and a path whose real location leaves this directory is an error.',
+          type: 'string',
         });
     })
     .command('verify [paths..]', 'Check every verify block with Z3 (needs the z3 binary; see `speckl verify --help`)')
@@ -59,6 +63,7 @@ async function main() {
     bomFormat: argv.bomFormat as 'cdx' | 'spdx' | 'both',
     target: argv.target as CompileOptions['target'],
     verifyDepth: argv.verifyDepth as number,
+    rootDir: argv.root as string | undefined,
   };
 
   compileSpec(file, options);
