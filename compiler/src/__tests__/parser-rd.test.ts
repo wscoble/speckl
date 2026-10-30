@@ -213,6 +213,52 @@ describe('token parser', () => {
     expect(() => parseSpeckContent('speck 9A {\n}\n', 'dig.speckdl')).toThrow(/identifier must not start with a digit/);
   });
 
+  it('rejects an unrecognized member line, naming the line and column', () => {
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    actoin go {\n        x := 1\n    }\n}\n', 'bad.speckdl'))
+      .toThrow(/bad\.speckdl:3: unrecognized member "actoin go \{" \(column 5\)/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    Action go {\n        x := 1\n    }\n}\n', 'bad.speckdl'))
+      .toThrow(/unrecognized member "Action go \{"/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    invarient P { y >= 0 }\n}\n', 'bad.speckdl'))
+      .toThrow(/unrecognized member "invarient P \{ y >= 0 \}"/);
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    garbage line here\n}\n', 'bad.speckdl'))
+      .toThrow(/bad\.speckdl:3: unrecognized member "garbage line here" \(column 5\)/);
+  });
+
+  it('rejects a member whose opening brace is on the next line', () => {
+    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    invariant P\n    {\n        x >= 0\n    }\n}\n', 'allman.speckdl'))
+      .toThrow(/allman\.speckdl:3: opening "\{" must be on the same line as the member header \(column 5\)/);
+  });
+
+  it('keeps a constraint block, including text on the closing line', () => {
+    const one = parseSpeckContent('speck A {\n    state { x: Nat }\n    constraint C { x >= 0 }\n}\n');
+    expect(one.specks[0].members.find(m => m.type === 'constraint')).toMatchObject({ name: 'C', expr: 'x >= 0' });
+    const span = parseSpeckContent('speck A {\n    state { x: Nat y: Nat }\n    constraint C: { x >= 0\n        && y >= 0 }\n}\n');
+    expect(span.specks[0].members.find(m => m.type === 'constraint')).toMatchObject({ name: 'C', expr: 'x >= 0 && y >= 0' });
+  });
+
+  it('does not treat a brace inside a block comment as the end of an invariant', () => {
+    const src = 'speck A {\n    state { x: Nat }\n    invariant P { /* c\n        } */ x >= 0\n    }\n}\n';
+    const inv = parseSpeckContent(src).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(inv.expr).toBe('x >= 0');
+  });
+
+  it('keeps spaces inside a string while collapsing the rest of an invariant', () => {
+    const src = 'speck A {\n    state { s: String }\n    invariant P { s != "a  b" }\n}\n';
+    const inv = parseSpeckContent(src).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+    expect(inv.expr).toBe('s != "a  b"');
+  });
+
+  it('reports a numeric literal instead of a digit-identifier for scientific, hex, and unit forms', () => {
+    for (const lit of ['1e5', '0x1F', '1_000', '5min', '2w', '7days', '10sec']) {
+      expect(() => parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P { x <= ${lit} }\n}\n`, 'num.speckdl'), lit)
+        .toThrow(new RegExp(`unsupported numeric literal "${lit}"`));
+    }
+    for (const lit of ['24h', '500ms', '30s', '3d', '5m', '1.5h']) {
+      const inv = parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P { x <= ${lit} }\n}\n`).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+      expect(inv.expr, lit).toBe(`x <= ${lit}`);
+    }
+  });
+
   it('a contradictory invariant is unsat, not an empty (and true)', () => {
     const src = [
       'speck A {',

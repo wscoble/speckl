@@ -157,8 +157,11 @@ export function lexSpeck(src: string, file?: string): SpeckLex {
         while (i < src.length && isDigit(src[i])) bump(1);
       }
       // `9A` is an identifier that starts with a digit. `24h` and `500ms` are
-      // duration suffixes and stay a number followed by a unit.
-      if (isIdentStart(src[i]) && !isDurationUnit(src, i)) {
+      // duration suffixes and stay a number followed by a unit. `1e5`,
+      // `0x1F`, `1_000`, `5min` are numeric forms this lexer does not accept.
+      if ((isIdentStart(src[i]) && !isDurationUnit(src, i)) || src[i] === '_') {
+        const lit = unsupportedNumericLiteral(src, start);
+        if (lit) throw parseErrorAt(file, ln, col, `unsupported numeric literal "${lit}"`);
         throw parseErrorAt(file, ln, col, 'identifier must not start with a digit');
       }
       tokens.push({ kind: 'number', text: src.slice(start, i), line: ln, column: col, start, end: i });
@@ -202,6 +205,62 @@ function isDurationUnit(src: string, i: number): boolean {
   if (src.startsWith('ms', i) && !isIdentPart(src[i + 2])) return true;
   const ch = src[i];
   return (ch === 'h' || ch === 'm' || ch === 's' || ch === 'd') && !isIdentPart(src[i + 1]);
+}
+
+/**
+ * `1e5`, `0x1F`, `1_000`, `5min`, `2w`, `7days`. Null for `9A`, which is an
+ * identifier, and for `24h` / `500ms`, which are duration suffixes.
+ */
+function unsupportedNumericLiteral(src: string, start: number): string | null {
+  let i = start;
+  if (src[i] === '0' && (src[i + 1] === 'x' || src[i + 1] === 'X') && isHex(src[i + 2])) {
+    i += 2;
+    while (i < src.length && (isHex(src[i]) || src[i] === '_')) i++;
+    if (isIdentPart(src[i])) return null;
+    return src.slice(start, i);
+  }
+  if (!isDigit(src[i])) return null;
+  let special = false;
+  while (i < src.length && (isDigit(src[i]) || src[i] === '_')) {
+    if (src[i] === '_') special = true;
+    i++;
+  }
+  if (src[i] === '.' && (isDigit(src[i + 1]) || src[i + 1] === '_')) {
+    i++;
+    while (i < src.length && (isDigit(src[i]) || src[i] === '_')) {
+      if (src[i] === '_') special = true;
+      i++;
+    }
+  }
+  if ((src[i] === 'e' || src[i] === 'E') && (isDigit(src[i + 1]) || ((src[i + 1] === '+' || src[i + 1] === '-') && isDigit(src[i + 2])))) {
+    special = true;
+    i++;
+    if (src[i] === '+' || src[i] === '-') i++;
+    while (i < src.length && (isDigit(src[i]) || src[i] === '_')) {
+      if (src[i] === '_') special = true;
+      i++;
+    }
+  }
+  const unit = extendedUnitLength(src, i);
+  if (unit > 0) {
+    special = true;
+    i += unit;
+  }
+  if (!special || isIdentPart(src[i])) return null;
+  return src.slice(start, i);
+}
+
+const EXTENDED_UNITS = ['milliseconds', 'minutes', 'seconds', 'hours', 'weeks', 'days', 'msec', 'mins', 'secs', 'hrs', 'min', 'sec', 'day', 'week', 'hour', 'w'];
+
+function extendedUnitLength(src: string, i: number): number {
+  for (const word of EXTENDED_UNITS) {
+    if (src.startsWith(word, i) && !isIdentPart(src[i + word.length])) return word.length;
+  }
+  return 0;
+}
+
+function isHex(ch: string | undefined): boolean {
+  return ch !== undefined && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'));
 }
 
 function isDigit(ch: string | undefined): boolean {

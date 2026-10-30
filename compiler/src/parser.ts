@@ -1543,12 +1543,16 @@ function braceInner(lines: string[], startIndex: number): string {
   let depth = 0;
   let started = false;
   let out = '';
+  // Comment and string state carries across lines. A `}` inside a block
+  // comment that opened on the header line is not the close.
+  let lex = lexStart();
   for (let li = startIndex; li < lines.length; li++) {
     const line = lines[li];
-    const masked = maskCode(line).text;
+    const masked = maskCode(line, lex, li + 1);
+    lex = masked.state;
     let takeFrom = 0;
-    for (let i = 0; i < masked.length; i++) {
-      const ch = masked[i];
+    for (let i = 0; i < masked.text.length; i++) {
+      const ch = masked.text[i];
       if (ch === '{') {
         depth++;
         if (!started) {
@@ -1591,7 +1595,37 @@ export function stripInvariantExpr(src: string): string {
     }
     out += ch;
   }
-  return out.replace(/\s+/g, ' ').trim();
+  return collapseSpaceOutsideStrings(out);
+}
+
+/** Collapse whitespace outside `"..."` so `s != "a  b"` keeps both spaces. */
+function collapseSpaceOutsideStrings(src: string): string {
+  let out = '';
+  let quote = false;
+  let pending = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (quote) {
+      out += ch;
+      if (ch === '\\' && next !== undefined) { out += next; i++; continue; }
+      if (ch === '"') quote = false;
+      continue;
+    }
+    if (ch === '"') {
+      if (pending) { out += ' '; pending = false; }
+      quote = true;
+      out += ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (out.length > 0) pending = true;
+      continue;
+    }
+    if (pending) { out += ' '; pending = false; }
+    out += ch;
+  }
+  return out.trim();
 }
 
 /** Keep a line break after a `//` comment so the next statement is not commented out. */
@@ -2602,19 +2636,10 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
     const name = namedMatch[1];
     let expr = namedMatch[2].trim();
     
-    // If the expression opens a brace, collect the block
+    // If the expression opens a brace, the body is the whole {…} span,
+    // including text on the line that closes it.
     if (expr.startsWith('{')) {
-      const inline = inlineActionBody(firstLine);
-      if (inline !== null) {
-        expr = inline.trim();
-      } else {
-        const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-        const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-        const inner = innerLines.join(' ');
-        // Combine: content after { on first line + content from inner lines
-        const afterBrace = expr.substring(1).trim();
-        expr = (afterBrace + ' ' + inner).trim();
-      }
+      expr = stripInvariantExpr(braceInner(lines, startIndex));
     } else {
       // No braces, but might still be multiline (forall spanning multiple lines)
       // Check if next line(s) continue the expression
@@ -2647,6 +2672,12 @@ function parseConstraintBlockMultiline(lines: string[], startIndex: number, star
       expr = (expr + ' ' + inner).trim();
     }
     return { type: 'constraint', name, expr: expr.trim() };
+  }
+
+  // `constraint Name { expr }` — same brace span as a named invariant.
+  const bareBrace = firstLine.match(/^constraint\s+(\w+)\s*\{/);
+  if (bareBrace) {
+    return { type: 'constraint', name: bareBrace[1], expr: stripInvariantExpr(braceInner(lines, startIndex)) };
   }
 
   return null;

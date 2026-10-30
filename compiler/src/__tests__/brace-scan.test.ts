@@ -31,7 +31,7 @@ describe('braces in comments and strings', () => {
       ['speck A {', '    state { x: Nat }', '    init { x := 0 }', '}', '/* note: {', '   still open', '*/'],
       ['speck A {', '    state { x: Nat } // note: {', '    init { x := 0 }', '}'],
       ['speck A {', '    state { n: Nat }', '    invariant Grow {', "        n' >= n", '    }', '}'],
-      ['speck A {', '    description: "} speck B {"', '    state { x: Nat }', '    init { x := 0 }', '}'],
+      ['speck A {', '    invariant Keep { s != "} speck B {" }', '    state { x: Nat }', '    init { x := 0 }', '}'],
     ];
     for (const nl of ['\n', '\r\n'] as const) {
       for (const head of bodies) {
@@ -348,9 +348,7 @@ describe('braces in comments and strings', () => {
         '    init { x := 0 }',
         '    action One { x := x + 3 }',
         '    action Two { x := x + 2 } // }',
-        '    x := x + 3',
         '    // }',
-        '    x := x + 1',
         '}',
         '',
       ].join(nl);
