@@ -21,8 +21,11 @@ export function emitStateIntegrityMjs(): string {
  * where the hook and signal tooling can read it and the agent cannot.
  *
  * Decision record: <state>.decisions/log.jsonl is a second hash chain, HMAC'd
- * with the same key, holding every hook allow and deny. It is not replayed
- * into the machine. signal.mjs verify walks the whole chain.
+ * with the same key, holding every hook allow and deny and every adapter-stage
+ * denial (hook.mjs deny). An adapter denial line also carries \`class\`
+ * (unmapped, metachar, protected-path, bad-payload, or other). Hook lines
+ * omit \`class\`. The record is not replayed into the machine. signal.mjs
+ * verify walks the whole chain.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -405,6 +408,10 @@ function decisionLineError(line, seq, prev, key) {
   } else if (line.mac !== undefined) return 'unexpected mac';
   if (body.verdict !== 'allow' && body.verdict !== 'deny') return 'verdict';
   if (body.verdict === 'allow' && body.reason !== null) return 'reason';
+  // Present only on adapter-stage denials. A hook pre/post line omits it.
+  // Kept as its own check so a completion-signal shape check can follow it.
+  if (body.class !== undefined && body.class !== 'unmapped' && body.class !== 'metachar' && body.class !== 'protected-path' && body.class !== 'bad-payload' && body.class !== 'other') return 'class';
+  if (body.input_withheld !== undefined && body.input_withheld !== 'size' && body.input_withheld !== 'depth' && body.input_withheld !== 'wide') return 'input_withheld';
   return null;
 }
 
@@ -530,13 +537,21 @@ function writeDecisionHead(file, head, key) {
 export function appendDecision(stateFile, key, state, fields) {
   if (!state || (state.dev !== true && !key)) throw new Error('refusing to record a decision without a state key');
   if (fields.verdict !== 'allow' && fields.verdict !== 'deny') throw new Error('bad verdict');
-  const ev = evaluateDecisions(stateFile, key, state, false);
+  let ev = evaluateDecisions(stateFile, key, state, false);
   fs.mkdirSync(ev.paths.dir, { recursive: true });
   if (!fs.existsSync(ev.paths.log)) fs.writeFileSync(ev.paths.log, '');
   if (ev.torn) {
     const buf = fs.readFileSync(ev.paths.log);
     fs.truncateSync(ev.paths.log, buf.lastIndexOf(0x0a) + 1);
+    ev = evaluateDecisions(stateFile, key, state, false);
   }
+  // Snapshot the on-disk tail before adopting uncommitted lines in memory.
+  // A later writer that moved the tail must not be overwritten.
+  const baseSeq = ev.head.seq;
+  const baseHash = ev.head.hash;
+  const baseUncommitted = ev.uncommitted;
+  const baseAdoptSeq = ev.adoptSeq;
+  const baseAdoptHash = ev.adoptHash;
   const head = ev.head;
   if (ev.uncommitted > 0) {
     head.seq = ev.adoptSeq;
@@ -554,6 +569,23 @@ export function appendDecision(stateFile, key, state, fields) {
     reason: fields.verdict === 'deny' ? clipReason(fields.reason) : null,
     input_sha256: typeof fields.input_sha256 === 'string' ? fields.input_sha256 : digestInput(null),
   };
+  // Adapter-stage denials name a reason class. Hook pre/post lines leave it
+  // off, so their shape is unchanged. Optional trace fields (if added) belong
+  // on the next lines, before the hash, and must not reorder the keys above.
+  if (fields.class === 'unmapped' || fields.class === 'metachar' || fields.class === 'protected-path' || fields.class === 'bad-payload' || fields.class === 'other') {
+    body.class = fields.class;
+  }
+  if (fields.input_withheld === 'size' || fields.input_withheld === 'depth' || fields.input_withheld === 'wide') {
+    body.input_withheld = fields.input_withheld;
+  }
+  // The caller holds the state lock. Re-read anyway: if the tail moved,
+  // someone else appended and this write would fork the chain.
+  const latest = evaluateDecisions(stateFile, key, state, false);
+  if (latest.head.seq !== baseSeq || latest.head.hash !== baseHash
+      || latest.uncommitted !== baseUncommitted || latest.adoptSeq !== baseAdoptSeq
+      || latest.adoptHash !== baseAdoptHash) {
+    throw new Error('decision record changed while appending');
+  }
   const hash = sha(canonical(body));
   const line = { ...body, hash };
   if (key) line.mac = crypto.createHmac('sha256', key).update(hash).digest('hex');

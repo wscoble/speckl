@@ -246,15 +246,16 @@ describe('pathInside and unifiedDiff', () => {
   });
 });
 
-describe('an unmapped doctor probe never reaches hook.mjs', () => {
+describe('an unmapped doctor probe does not enter the pre gate', () => {
   for (const h of HARNESSES) {
-    it(h + ' denies the probe before runHook', () => {
+    it(h + ' records the probe denial and does not call pre', () => {
       const d = fakeDeps();
       const probe = doctorProbe(h, '/p', config.harness[h].rules);
       const out = runAdapter([h, 'pre', '--state', '.speckl/state.json', '--key', '/k/state.key'], {}, JSON.stringify(probe.body), config, d);
       expect(out.code, out.stderr + out.stdout).not.toBe(0);
       expect(out.stdout + out.stderr).toContain(probe.marker);
-      expect(d.calls).toHaveLength(0);
+      expect(d.calls.map(c => c.cmd)).toEqual(['deny']);
+      expect((d.calls[0].msg as { class?: string }).class).toBe('unmapped');
     });
   }
 });

@@ -540,8 +540,65 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 
 # State chain plus the decision record. The record is an HMAC with the state
 # key, not a third-party signature. It is empty until the first verdict after
-# the state verifies; denials before that are not recorded. verify walks every
-# decision line (the hook's check stops at the tail once the log passes 256 KiB).
+# the state verifies; denials before that are not recorded. Adapter-stage
+# denials (unmapped tool, shell metacharacters, a protected path, a bad
+# payload) are recorded by hook.mjs deny once the state verifies, with a
+# class on that line. A tool name or call id is stored as text only when it
+# matches [A-Za-z0-9_.:-]{1,200} and does not contain 16 or more hex
+# characters from the state key. Anything else is
+# "<tool name withheld>:<sha256>" or "<call id withheld>:<sha256>".
+# A name inside that charset is stored as written, including a colon-separated
+# spelling such as dir:keys:state.key. A run of fewer than 16 key hex
+# characters is not treated as key material. Split, reordered, or re-encoded
+# copies of the key (separators, reversed hex, decimal bytes, or a split
+# across the tool name and the call id) are not detected. An agent that can
+# read the key file can forge the whole record; the HMAC does not stop that.
+# Whoever can read the state key can append deny lines; they have no
+# provenance beyond the HMAC, the same trust as pre and post.
+# The lock is published with link() only after the pid is on disk, so a
+# kill cannot leave an empty lock. The temp name has a random suffix. If
+# link() returns EPERM, ENOTSUP, ENOSYS, EOPNOTSUPP, or EXDEV, the publish
+# falls back to an exclusive create plus the pid write. A kill in that
+# fallback, between the create and the pid write, can leave an empty lock;
+# that file waits until it is 30 seconds old.
+# A temp whose pid is dead is removed on the next acquire. An empty temp,
+# an empty stale file, and a lock.break.stale directory with no pid are
+# removed once they are 30 seconds old. A younger empty temp is left,
+# because its owner may still be writing it. A temp whose pid is alive in
+# another container looks dead (ESRCH) and is removed; that holder then
+# fails to publish and the call is refused.
+# Claim and break share a lock.break directory. A dead owner's lock is
+# renamed aside and discarded only when those bytes are still that pid.
+# A renamed gate is not moved back: rename() would replace a directory
+# another process had just created. A lock.break directory left by a kill
+# is removed on the next acquire when its pid is dead. If that pid file was
+# never written, it waits until the directory is 30 seconds old, the same
+# rule as an unreadable lock.
+# A live but unrelated pid, or content that is not a pid (empty, garbage,
+# 0, negative, or out of range), is left until the lock file is 30 seconds
+# old by mtime. Until then, every allowed call waits 5 seconds and exits 2
+# with "state lock timeout", and every denial waits 1 second and prints the
+# notice. The next call after the file is 30 seconds old breaks the lock.
+# The same age applies to a live gate. A holder paused with SIGSTOP, or
+# asleep, for more than 30 seconds loses the gate and the lock. When it
+# resumes it does not append: hook.mjs deny exits nonzero and the adapter
+# prints a notice.
+# A holder in another pid namespace looks dead and its lock is broken.
+# hook.mjs deny exits 0 only after the line is appended. A read-only log,
+# a lost lock, or a decision tail that moved exits nonzero, and the adapter
+# prints a notice. A denial is not dropped silently.
+# A denial flood is not free, and the cost moves with machine load. Measured
+# allowed-call latency with N parallel denials was about 0.9-1.8 s at 150,
+# about 3-4 s at 400, and about 14-23 s at 800, against about 0.1-0.3 s on
+# main with the same calls. Denials that wait past 1 second are dropped with
+# a notice, never silently. A timeout notice says "may not be recorded":
+# under load the line can already have been appended. Match only a whole
+# stderr line that starts with "(denial not recorded:" or
+# "(denial may not be recorded:".
+# A key path that normalizes to fewer than 8 characters is not recorded,
+# and the notice says so.
+# verify walks every decision line (the hook's check stops at the tail
+# once the log passes 256 KiB).
 node signal.mjs verify --state ./state.json
 \`\`\`
 

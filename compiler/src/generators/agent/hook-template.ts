@@ -46,12 +46,28 @@ export function emitHookMjs(speckName: string): string {
  * the state verifies are denied and not recorded. If the record cannot be
  * written, the call is denied.
  *
+ *   node hook.mjs deny --state <file>   # stdin JSON {class,reason,phase,tool,call_id,input}
+ *
+ * \`deny\` records a refusal the adapter already made (unmapped tool, shell
+ * metacharacters, a protected path, a bad payload, or other) and does not
+ * run the tool or change state.json. The line is a deny with that \`class\`.
+ * Exit 0 means the line was appended. Exit 2 means it was not, including
+ * when the append throws. The adapter still denies the harness call either
+ * way, and prints a notice when the line was not appended.
+ * Whoever can read the state key can append deny lines here. There is no
+ * provenance beyond the HMAC. That is the same trust as \`pre\` and \`post\`.
+ * A class or reason the hook does not accept is not appended.
+ * A busy state lock gives up after 5 seconds. The adapter stops waiting
+ * after SPECKL_HOOK_TIMEOUT_MS (default 20 seconds) and says the denial
+ * was not recorded.
+ *
  * A call-bound sign-off (await \`bind call\`) allows one later call whose
  * digest matches the signed \`call\` hash, and only once that call's post
  * succeeds. Any other call is denied and that denial is recorded. The hash
  * is sha256 of the canonical spec tool name and mapped arguments (see
  * state-integrity.mjs callDigest). The binding itself stays in state.log.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -110,6 +126,9 @@ function secretPaths(state) {
 function keyPathTooShort(p) {
   if (typeof p !== 'string' || !p) return false;
   if (p.length < 8) return true;
+  // ./././k.key is 11 characters and normalizes to k.key (5).
+  const lex = path.normalize(p).replace(/\\\\/g, '/');
+  if (lex.length < 8) return true;
   const candidates = [p];
   try {
     const abs = path.resolve(p);
@@ -133,8 +152,9 @@ function finishDeny(exitCode, build) {
   const text = safeDenyText(build);
   if (audit && !audit.sealed) {
     try { seal('deny', text); }
-    catch (e) { decisionUnavailable(e, exitCode); }
+    catch (e) { decisionUnavailable(e, exitCode || 2); }
   }
+  // exit 0 is the deny command's success code, and only after seal appended.
   respond('deny', text, exitCode);
 }
 
@@ -154,11 +174,22 @@ function readStdin() {
 }
 
 function releaseLock() {
-  if (lockHeld) {
-    try { fs.unlinkSync(lockHeld); } catch { /* ignore */ }
-    lockHeld = null;
-  }
+  if (!lockHeld) return;
+  const lp = lockHeld;
+  lockHeld = null;
+  try { fs.unlinkSync(lp); } catch { /* ignore */ }
+  try { releaseGate(lp); } catch { /* ignore */ }
 }
+// SIGKILL cannot be caught. SIGTERM is what the adapter sends when the
+// recorder times out, so the lock is removed before the process dies.
+// A kill -9 still leaves the file; the next acquire breaks it when the
+// pid inside is dead.
+function onStop() {
+  releaseLock();
+  process.exit(1);
+}
+process.on('SIGTERM', onStop);
+process.on('SIGINT', onStop);
 
 function respond(decision, reason, code) {
   const body = reason ? { decision, reason } : { decision };
@@ -177,15 +208,28 @@ function seal(verdict, reason) {
   const secrets = secretPaths(audit.state);
   const keep = audit.keep || [];
   const clean = (v) => v == null ? null : redactSecrets(String(v), secrets, keep);
-  appendDecision(audit.file, audit.key, audit.state, {
+  const fields = {
     phase: audit.phase,
     tool: clean(audit.tool),
     call_id: audit.callId == null || audit.callId === '' ? null : clean(audit.callId),
     action: audit.action,
     verdict,
     reason: verdict === 'deny' ? clean(reason) : reason,
-    input_sha256: digestInput(audit.input),
-  });
+    input_sha256: audit.inputSha || digestInput(audit.input),
+  };
+  // Set only for hook.mjs deny. Absent on pre/post, so those lines stay
+  // the same shape. A trace object, if one is added later, is a sibling.
+  // Clip after redaction so a long tool name cannot keep a cut-off key path.
+  if (audit.class) {
+    fields.class = audit.class;
+    if (typeof fields.tool === 'string' && fields.tool.length > 200) fields.tool = fields.tool.slice(0, 200);
+    if (typeof fields.call_id === 'string' && fields.call_id.length > 200) fields.call_id = fields.call_id.slice(0, 200);
+  }
+  if (audit.inputWithheld) fields.input_withheld = audit.inputWithheld;
+  // The gate and the lock pid must still be ours. A stale break that took
+  // them after we acquired is not allowed to append over the new owner.
+  if (!stillOwnLock()) throw new Error('state lock lost');
+  appendDecision(audit.file, audit.key, audit.state, fields);
   audit.sealed = true;
   audit.verdict = verdict;
 }
@@ -221,24 +265,214 @@ function parseArgs(argv) {
 
 function lockPath(stateFile) { return stateFile + '.lock'; }
 
-async function acquireLock(stateFile) {
+function randomSuffix() {
+  return process.pid + '.' + Date.now().toString(36) + '.' + Math.random().toString(36).slice(2);
+}
+function readLockText(file) {
+  try { return fs.readFileSync(file, 'utf-8'); } catch { return null; }
+}
+function pidFromText(text) {
+  if (typeof text !== 'string') return null;
+  const pid = parseInt(text.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return pid;
+}
+function pidIsDead(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (e) { return !!(e && e.code === 'ESRCH'); }
+}
+function linkUnsupported(e) {
+  const c = e && e.code;
+  return c === 'EPERM' || c === 'ENOTSUP' || c === 'ENOSYS' || c === 'EOPNOTSUPP' || c === 'EXDEV';
+}
+function gatePath(lp) { return lp + '.break'; }
+// One gate for both claim and break, so a breaker cannot unlink a lock
+// that a later claim already published. mkdir is the exclusive step.
+function takeGate(lp) {
+  const gp = gatePath(lp);
+  try { fs.mkdirSync(gp); }
+  catch (e) {
+    if (e && e.code === 'EEXIST') return false;
+    throw e;
+  }
+  let fd = -1;
+  try {
+    fd = fs.openSync(path.join(gp, 'pid'), 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(path.join(gp, 'pid')); } catch { /* ignore */ }
+    try { fs.rmdirSync(gp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  return true;
+}
+function releaseGate(lp) {
+  const gp = gatePath(lp);
+  const mine = String(process.pid);
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  // Not ours: leave dest. rename() back onto the gate path would replace
+  // a directory another process just created.
+  if (readLockText(path.join(dest, 'pid')) !== mine) return;
+  try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+  try { fs.rmdirSync(dest); } catch { /* ignore */ }
+}
+function clearDeadGate(lp) {
+  const gp = gatePath(lp);
+  let before;
+  try { before = fs.statSync(gp); } catch { return; }
+  const text = readLockText(path.join(gp, 'pid'));
+  const pid = pidFromText(text);
+  const dead = pid !== null && pidIsDead(pid);
+  const old = Date.now() - before.mtimeMs > 30000;
+  if (!dead && !old) return;
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  let after;
+  try { after = fs.statSync(dest); } catch { return; }
+  const now = readLockText(path.join(dest, 'pid'));
+  const nowDead = pidFromText(now) !== null && pidIsDead(pidFromText(now));
+  const same = before.ino === after.ino && before.dev === after.dev && now === text;
+  if (!(same && (nowDead || old))) return;
+  try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+  try { fs.rmdirSync(dest); } catch { try { fs.unlinkSync(dest); } catch { /* ignore */ } }
+}
+// Called only while this process holds the gate. Rename aside, then discard
+// only when the renamed bytes are still the ones we decided to break.
+// A mismatch is left where the rename put it. Putting it back with rename()
+// would replace a lock created at the original path.
+function breakLockIfUnchanged(lp, expected) {
+  if (typeof expected !== 'string') return;
+  const dest = lp + '.stale.' + randomSuffix();
+  try { fs.renameSync(lp, dest); }
+  catch { return; }
+  if (readLockText(dest) !== expected) return;
+  try { fs.unlinkSync(dest); } catch { /* already gone */ }
+}
+function sweepOne(full) {
+  try { fs.unlinkSync(path.join(full, 'pid')); } catch { /* no pid file */ }
+  try { fs.rmdirSync(full); } catch { try { fs.unlinkSync(full); } catch { /* best effort */ } }
+}
+function sweepLockTemps(lp) {
+  const dir = path.dirname(lp);
+  const base = path.basename(lp);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const now = Date.now();
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (name.indexOf(base + '.') !== 0) continue;
+    if (name.indexOf('.tmp.') < 0 && name.indexOf('.stale.') < 0) continue;
+    const full = path.join(dir, name);
+    let st;
+    try { st = fs.lstatSync(full); } catch { continue; }
+    const old = now - st.mtimeMs > 30000;
+    if (st.isDirectory()) {
+      const raw = readLockText(path.join(full, 'pid'));
+      const pid = pidFromText(raw);
+      const pidless = raw == null || String(raw).trim() === '';
+      if ((pid !== null && pid !== process.pid && pidIsDead(pid)) || (pidless && old)) sweepOne(full);
+      continue;
+    }
+    const raw = readLockText(full);
+    const pid = pidFromText(raw);
+    const empty = raw == null || String(raw).trim() === '';
+    if ((pid !== null && pid !== process.pid && pidIsDead(pid)) || (empty && old)) {
+      try { fs.unlinkSync(full); } catch { /* best effort */ }
+    }
+  }
+}
+function stillOwnLock() {
+  if (!lockHeld) return false;
+  if (pidFromText(readLockText(lockHeld)) !== process.pid) return false;
+  return pidFromText(readLockText(path.join(gatePath(lockHeld), 'pid'))) === process.pid;
+}
+// The lock path appears only after the pid is durable. linkSync is the
+// publish: EEXIST means someone else holds it. A kill between the temp
+// write and the link leaves no lock file. A kill after the link leaves a
+// lock that already contains the pid. The temp name has a random suffix so
+// two processes with the same pid (another container) do not share it.
+// Filesystems without hard links fall back to an exclusive create.
+// Caller holds the gate.
+function claimLock(lp) {
+  const tmp = lp + '.tmp.' + randomSuffix();
+  let fd = -1;
+  try {
+    fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  try {
+    fs.linkSync(tmp, lp);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    if (!linkUnsupported(e)) throw e;
+    fd = fs.openSync(lp, 'wx');
+    try { fs.writeSync(fd, String(process.pid)); fs.fsyncSync(fd); }
+    catch (writeErr) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      throw writeErr;
+    }
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    lockHeld = lp;
+    return;
+  }
+  try { fs.unlinkSync(tmp); } catch { /* the lock inode already holds the pid */ }
+  lockHeld = lp;
+}
+
+async function acquireLock(stateFile, waitMs) {
   const lp = lockPath(stateFile);
   const start = Date.now();
+  const limit = typeof waitMs === 'number' && waitMs > 0 ? waitMs : 5000;
+  try { sweepLockTemps(lp); } catch { /* best effort */ }
   while (true) {
+    let gate = false;
     try {
-      const fd = fs.openSync(lp, 'wx');
-      fs.closeSync(fd);
-      lockHeld = lp;
-      return;
+      try { clearDeadGate(lp); } catch { /* best effort */ }
+      gate = takeGate(lp);
+      if (gate) {
+        // A dead owner's lock is broken at once, under the gate, and only
+        // after the renamed bytes still match. A live but unrelated pid, or
+        // content that is not a pid, is left until the file is 30s old.
+        // Each attempt still waits only up to limit (1s for a denial, 5s
+        // for pre/post) and then fails. The next call tries again. A holder
+        // in another pid namespace looks dead.
+        if (fs.existsSync(lp)) {
+          const text = readLockText(lp);
+          const pid = pidFromText(text);
+          let stale = false;
+          try { stale = Date.now() - fs.statSync(lp).mtimeMs > 30000; } catch { stale = false; }
+          if (text !== null && ((pid !== null && pidIsDead(pid)) || stale)) breakLockIfUnchanged(lp, text);
+        }
+        if (!fs.existsSync(lp)) {
+          claimLock(lp);
+          return;
+        }
+        releaseGate(lp);
+        gate = false;
+      }
     } catch (e) {
+      if (gate) { try { releaseGate(lp); } catch { /* ignore */ } }
+      if (lockHeld === lp) {
+        lockHeld = null;
+        try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      }
       if (!e || e.code !== 'EEXIST') throw new Error('state lock could not be taken');
-      // Break a lock left behind by a crashed holder (older than 30s).
-      try {
-        if (Date.now() - fs.statSync(lp).mtimeMs > 30000) { fs.unlinkSync(lp); continue; }
-      } catch { /* raced with release; retry */ }
-      if (Date.now() - start > 5000) throw new Error('state lock timeout');
-      await new Promise(r => setTimeout(r, 10));
     }
+    if (Date.now() - start > limit) throw new Error('state lock timeout');
+    await new Promise(r => setTimeout(r, 10));
   }
 }
 
@@ -341,8 +575,8 @@ async function main() {
   if (keyPathTooShort(hookKeyArg) || keyPathTooShort(process.env.SPECKL_STATE_KEY_FILE)) {
     respond('deny', 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.', 2);
   }
-  if (args.cmd !== 'pre' && args.cmd !== 'post') {
-    finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post --state <file>', internalNext('usage'), secretPaths()));
+  if (args.cmd !== 'pre' && args.cmd !== 'post' && args.cmd !== 'deny') {
+    finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post|deny --state <file>', internalNext('usage'), secretPaths()));
   }
   if (!args.state) {
     finishDeny(1, () => renderDenyReason('internal', 'missing --state', internalNext('usage'), secretPaths()));
@@ -356,7 +590,9 @@ async function main() {
   catch { finishDeny(1, () => renderDenyReason('internal', 'stdin is not JSON', internalNext('stdin'), secretPaths())); }
 
   try {
-    await acquireLock(args.state);
+    // Denials wait at most 1s so a flood of them cannot hold an allow
+    // for the full 5s pre/post budget.
+    await acquireLock(args.state, args.cmd === 'deny' ? 1000 : 5000);
   } catch (e) {
     const msg = e instanceof Error ? e.message : '';
     const known = msg === 'state lock timeout' ? msg : 'state lock could not be taken';
@@ -399,7 +635,82 @@ async function main() {
       keep: [],
       sealed: false,
       verdict: null,
+      class: null,
     };
+    // Adapter-stage denial. The adapter already refused the call. Record
+    // that refusal and exit 0. Do not run the tool, and do not touch state.json.
+    // A missing class or reason is not appended; the adapter still denies.
+    // This runs before the specHash check on purpose. deny never allows a
+    // call. A stale compiled spec must not drop a refusal when the state
+    // chain itself still verifies. The class is the adapter's literal, not
+    // something read out of the tool name.
+    // Anyone who can read the state key can call deny and append lines.
+    // Those lines have no provenance beyond the HMAC, the same as pre/post.
+    if (args.cmd === 'deny') {
+      const cls = typeof msg.class === 'string' ? msg.class : '';
+      const known = cls === 'unmapped' || cls === 'metachar' || cls === 'protected-path' || cls === 'bad-payload' || cls === 'other';
+      let given = typeof msg.reason === 'string' ? msg.reason : '';
+      if (!known || !given) {
+        respond('deny', 'Speckl denied (internal error, fail closed): adapter denial was not recorded. Next: the call stays denied. Do not retry it.', 2);
+      }
+      audit.class = cls;
+      audit.phase = msg.phase === 'post' ? 'post' : 'pre';
+      // Only a safe charset is stored as text. Anything else (slashes, spaces,
+      // unicode, percent escapes) is a hash of the original bytes. The 64-hex
+      // hash is kept through redaction via audit.keep.
+      const safeName = /^[A-Za-z0-9_.:-]{1,200}$/;
+      const rawTool = typeof msg.tool === 'string' ? msg.tool : '';
+      const rawId = typeof msg.call_id === 'string' ? msg.call_id : '';
+      // 16 hex characters from the state key are enough to withhold the
+      // whole field. A shorter run is not treated as key material. An agent
+      // that can read the key file can already forge this record.
+      const windows = [];
+      const secrets = secretPaths(audit.state);
+      for (let s = 0; s < secrets.length; s++) {
+        if (typeof secrets[s] !== 'string') continue;
+        const hex = secrets[s].trim().toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+        for (let i = 0; i + 16 <= hex.length; i++) windows.push(hex.slice(i, i + 16));
+      }
+      const embedsKey = (text) => {
+        if (typeof text !== 'string' || text.length < 16 || !windows.length) return false;
+        const lower = text.toLowerCase();
+        for (let i = 0; i + 16 <= lower.length; i++) {
+          if (windows.indexOf(lower.slice(i, i + 16)) !== -1) return true;
+        }
+        return false;
+      };
+      const tag = (kind, raw) => {
+        const hex = crypto.createHash('sha256').update(raw).digest('hex');
+        audit.keep.push(hex);
+        return '<' + kind + ' withheld>:' + hex;
+      };
+      if (!audit.keep) audit.keep = [];
+      const toolSafe = rawTool && safeName.test(rawTool) && !embedsKey(rawTool);
+      const idSafe = rawId && safeName.test(rawId) && !embedsKey(rawId);
+      if (toolSafe) audit.tool = rawTool;
+      else if (rawTool) audit.tool = tag('tool name', rawTool);
+      else audit.tool = null;
+      if (idSafe) audit.callId = rawId;
+      else if (rawId) audit.callId = tag('call id', rawId);
+      else audit.callId = null;
+      if (rawTool && !toolSafe) {
+        given = given.split(JSON.stringify(rawTool)).join('"<tool name withheld>"');
+        if (rawTool.length >= 8) given = given.split(rawTool).join('<tool name withheld>');
+      }
+      if (rawId && !idSafe && rawId.length >= 8) {
+        given = given.split(rawId).join('<call id withheld>');
+      }
+      // Domain-separated digest. A real input equal to the words
+      // "<input too large>" hashes as that JSON string, not as this.
+      if (msg.input_withheld === 'size' || msg.input_withheld === 'depth' || msg.input_withheld === 'wide') {
+        audit.input = null;
+        audit.inputWithheld = msg.input_withheld;
+        audit.inputSha = crypto.createHash('sha256').update('speckl:withheld:' + msg.input_withheld).digest('hex');
+        audit.keep.push(audit.inputSha);
+      }
+      finishDeny(0, () => given);
+    }
     if (state.specHash !== config.specHash) {
       finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));
     }

@@ -1,0 +1,40 @@
+name: Harness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Separate from ci.yml. That file is also edited by open PRs #29, #39 and #59.
+# PR 1 has no harness/ package yet (that starts at PR 3). This job builds the
+# compiler and runs examples/harness/denials-recorded, which is the proof that
+# adapter-stage denials are in the decision record. Later PRs add
+# `npm ci && npm test && npm run examples` in harness/ as their own job.
+concurrency:
+  group: harness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  denials-recorded:
+    name: Example denials-recorded
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: compiler/package.json
+          cache: npm
+          cache-dependency-path: compiler/package-lock.json
+
+      - name: Install and build the compiler
+        working-directory: compiler
+        run: npm ci && npm run build
+
+      - name: Run examples/harness/denials-recorded
+        run: node examples/harness/denials-recorded/run.mjs

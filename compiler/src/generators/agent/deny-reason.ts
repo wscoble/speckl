@@ -24,7 +24,11 @@ export function shellQuote(value: unknown): string {
  * lowercase hex, as base64 and
  * base64url of its 32 bytes (with and without padding), and as the SPKI
  * DER-base64 and PEM of those bytes. Any other PEM block and any other
- * 64-hex token are removed too. The result is capped so a huge call id
+ * 64-hex token are removed too.
+ * Path spellings of a secret are removed too: extra slashes, `.` segments,
+ * and a relative path that lands on the secret from one of its ancestor
+ * directories (`../keys/state.key`, `<dir>//keys/state.key`,
+ * `<dir>/keys/./state.key`). The result is capped so a huge call id
  * cannot dump a state file into the harness.
  */
 export function redactSecrets(text: string, secrets: unknown, keep?: unknown): string {
@@ -34,6 +38,104 @@ export function redactSecrets(text: string, secrets: unknown, keep?: unknown): s
     for (const secret of secrets) {
       if (typeof secret === 'string' && secret.length >= 8) list.push(secret);
     }
+  }
+  // Lexical path only. No filesystem. `..` is applied. Duplicate slashes
+  // and `.` segments disappear.
+  const lexNorm = (p: string): string => {
+    const slash = p.replace(/\\/g, '/');
+    const abs = slash.charAt(0) === '/';
+    const parts = slash.split('/');
+    const out: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === '' || part === '.') continue;
+      if (part === '..') {
+        if (out.length > 0 && out[out.length - 1] !== '..') out.pop();
+        else if (!abs) out.push('..');
+        continue;
+      }
+      out.push(part);
+    }
+    if (abs) return '/' + out.join('/');
+    return out.join('/') || '.';
+  };
+  const norms: Record<string, boolean> = {};
+  const bases: string[] = [];
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].indexOf('/') === -1 && list[i].indexOf('\\') === -1) continue;
+    const n = lexNorm(list[i]);
+    if (n.length >= 8) norms[n] = true;
+    if (n.charAt(0) !== '/') continue;
+    const parts = n.split('/').filter(Boolean);
+    // Ancestors of the file, not the file itself, so `../name` is resolved
+    // from the directory that contains the secret.
+    for (let k = parts.length - 1; k >= 1; k--) {
+      const dir = '/' + parts.slice(0, k).join('/');
+      if (bases.indexOf(dir) === -1) bases.push(dir);
+    }
+  }
+  // `%2e` `%2f` `%5c` are `.` `/` `\` . Decode a copy for matching only.
+  // The stored text keeps the original spelling when nothing was a secret.
+  const decodePathEscapes = (src: string): { decoded: string; map: number[] } => {
+    let decoded = '';
+    const map: number[] = [];
+    for (let i = 0; i < src.length;) {
+      const three = src.slice(i, i + 3);
+      map.push(i);
+      if (/^%2e$/i.test(three)) { decoded += '.'; i += 3; }
+      else if (/^%2f$/i.test(three)) { decoded += '/'; i += 3; }
+      else if (/^%5c$/i.test(three)) { decoded += '\\'; i += 3; }
+      else { decoded += src.charAt(i); i++; }
+    }
+    map.push(src.length);
+    return { decoded, map };
+  };
+  const pathStops = /[\s"'<>|;&,`()\[\]{}]/;
+  const hits = (raw: string): boolean => {
+    if (raw.length < 4) return false;
+    const n = lexNorm(raw);
+    if (n.length >= 8 && norms[n]) return true;
+    if (n.charAt(0) === '/') return false;
+    for (let b = 0; b < bases.length; b++) {
+      const joined = lexNorm(bases[b] + '/' + raw);
+      if (joined.length >= 8 && norms[joined]) return true;
+    }
+    return false;
+  };
+  // Before the exact-string pass. Replacing a parent directory first would
+  // leave `<keyfile>/./state.key` for a `/.` spelling of the file.
+  const decodedPath = decodePathEscapes(s);
+  const spans: number[][] = [];
+  const scanned = decodedPath.decoded;
+  for (let i = 0; i < scanned.length;) {
+    const rel = scanned.startsWith('../', i) || scanned.startsWith('./', i) || scanned.startsWith('..\\', i) || scanned.startsWith('.\\', i);
+    const abs = scanned.charAt(i) === '/' || scanned.charAt(i) === '\\';
+    if (!rel && !abs) { i++; continue; }
+    let j = i + 1;
+    while (j < scanned.length && !pathStops.test(scanned.charAt(j))) j++;
+    const raw = scanned.slice(i, j);
+    let start = i;
+    if (abs) {
+      while (start > 0) {
+        const c = scanned.charAt(start - 1);
+        if (c === '_' || c === '/' || c === '\\' || pathStops.test(c)) break;
+        if (!/[A-Za-z0-9.~+-]/.test(c)) break;
+        start--;
+      }
+    }
+    const wider = start < i ? scanned.slice(start, j) : raw;
+    if (hits(raw) || (start < i && hits(wider))) {
+      const from = (start < i && hits(wider) && !hits(raw)) ? start : i;
+      spans.push([from, j]);
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  for (let n = spans.length - 1; n >= 0; n--) {
+    const from = decodedPath.map[spans[n][0]];
+    const to = decodedPath.map[spans[n][1]];
+    s = s.slice(0, from) + '<keyfile>' + s.slice(to);
   }
   const forms: string[] = [];
   for (const secret of list) {
@@ -66,6 +168,40 @@ export function redactSecrets(text: string, secrets: unknown, keep?: unknown): s
   // A call digest is 64 hex too. Keep only tokens named by the caller, and
   // only if a known secret did not already claim them.
   s = s.replace(/\b[0-9a-fA-F]{64}\b/g, (m) => kept.has(m.toLowerCase()) ? m : '<redacted>');
+  // A 16-hex run taken from the state key is key material even when it is
+  // not the whole key. A kept 64-hex token (a withheld-name hash) is copied
+  // through so this pass does not eat it.
+  const windows: string[] = [];
+  for (let si = 0; si < list.length; si++) {
+    const hex = list[si].trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+    for (let i = 0; i + 16 <= hex.length; i++) {
+      const w = hex.slice(i, i + 16);
+      if (windows.indexOf(w) === -1) windows.push(w);
+    }
+  }
+  if (windows.length && s.length >= 16) {
+    let out = '';
+    for (let i = 0; i < s.length;) {
+      const maybe = s.slice(i, i + 64);
+      const boundaryBefore = i === 0 || !/[0-9a-fA-F]/.test(s.charAt(i - 1));
+      const boundaryAfter = i + 64 >= s.length || !/[0-9a-fA-F]/.test(s.charAt(i + 64));
+      if (maybe.length === 64 && /^[0-9a-fA-F]{64}$/.test(maybe) && boundaryBefore && boundaryAfter && kept.has(maybe.toLowerCase())) {
+        out += maybe;
+        i += 64;
+        continue;
+      }
+      const slice = s.slice(i, i + 16);
+      if (slice.length === 16 && windows.indexOf(slice.toLowerCase()) !== -1) {
+        out += '<keyfile>';
+        i += 16;
+      } else {
+        out += s.charAt(i);
+        i++;
+      }
+    }
+    s = out;
+  }
   if (s.length > 1800) s = s.slice(0, 1800) + '…';
   return s;
 }
