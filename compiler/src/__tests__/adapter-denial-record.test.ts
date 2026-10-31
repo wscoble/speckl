@@ -477,7 +477,7 @@ describe('adapter-stage denials are in the decision record', () => {
       hook_event_name: 'PreToolUse', tool_name: 'WebFetch', tool_input: {}, tool_use_id: 't', cwd: ctx.project,
     }), { SPECKL_HOOK_TIMEOUT_MS: '1' });
     expect(timed.status, timed.stderr).toBe(2);
-    expect(timed.stderr).toContain('(denial not recorded: hook.mjs timed out)');
+    expect(timed.stderr).toContain('(denial may not be recorded: hook.mjs timed out)');
     expect(timed.stderr).toContain('unmapped harness tool "WebFetch"');
   }, 20_000);
 
@@ -542,6 +542,63 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(linesOf(ctx.state)).toHaveLength(before);
     expect(denied.stderr).not.toContain('mcp__x__k.key');
   });
+
+  it('a published lock contains a pid, and a partial key is not stored', async () => {
+    const ctx = newState();
+    const lock = ctx.state + '.lock';
+    let bad = 0;
+    let samples = 0;
+    const stop = { v: false };
+    const watch = (async () => {
+      while (!stop.v) {
+        try {
+          const text = readFileSync(lock, 'utf-8');
+          samples++;
+          if (!/^[1-9][0-9]*$/.test(text.trim())) bad++;
+        } catch { /* lock absent */ }
+        await new Promise(r => setTimeout(r, 1));
+      }
+    })();
+    const kids: ReturnType<typeof spawn>[] = [];
+    for (let i = 0; i < 24; i++) {
+      const child = spawn(process.execPath, [
+        join(agentDir, 'adapter.mjs'), 'claude-code', 'pre',
+        '--project', ctx.project, '--state', ctx.state, '--key', ctx.key,
+      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+      kids.push(child);
+      child.stdin.end(JSON.stringify({
+        hook_event_name: 'PreToolUse', tool_name: 'WebFetch', tool_input: {}, tool_use_id: 'atom' + i, cwd: ctx.project,
+      }));
+      if (i % 2 === 0) setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* exited */ } }, 8);
+    }
+    await Promise.all(kids.map(child => new Promise<void>(resolve => {
+      child.on('exit', () => resolve());
+      child.on('error', () => resolve());
+    })));
+    stop.v = true;
+    await watch;
+    expect(samples, 'saw the lock').toBeGreaterThan(0);
+    expect(bad, 'empty or non-pid lock').toBe(0);
+    const next = pre(ctx, 'claude-code', 'WebFetch', {}, 'after-atom');
+    expect(next.status, next.stderr).toBe(2);
+    expect(next.stderr).toContain('unmapped harness tool');
+
+    const keyHex = readFileSync(ctx.key, 'utf-8').trim();
+    expect(keyHex).toMatch(/^[0-9a-fA-F]{64}$/);
+    const sixteen = 'mcp__x__' + keyHex.slice(0, 16);
+    const fifteen = 'mcp__x__' + keyHex.slice(0, 15);
+    const hit = pre(ctx, 'claude-code', sixteen, {}, 'k16');
+    expect(hit.status, hit.stderr).toBe(2);
+    const hitLine = linesOf(ctx.state).at(-1)!;
+    expect(String(hitLine.tool)).toMatch(/^<tool name withheld>:[0-9a-f]{64}$/);
+    expect(JSON.stringify(hitLine).toLowerCase()).not.toContain(keyHex.slice(0, 16).toLowerCase());
+    const miss = pre(ctx, 'claude-code', fifteen, {}, 'k15');
+    expect(miss.status, miss.stderr).toBe(2);
+    expect(linesOf(ctx.state).at(-1)!.tool).toBe(fifteen);
+    const colon = pre(ctx, 'claude-code', 'dir:keys:state.key', {}, 'colon');
+    expect(colon.status, colon.stderr).toBe(2);
+    expect(linesOf(ctx.state).at(-1)!.tool).toBe('dir:keys:state.key');
+  }, 20_000);
 
   it('a post-event unmapped call is recorded as phase post', () => {
     const ctx = newState();

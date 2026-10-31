@@ -2454,7 +2454,9 @@ export function runAdapter(
     let why = 'recorder failed';
     if (blob.indexOf('state lock timeout') !== -1) why = 'state lock timeout';
     else if (blob.indexOf('state lock could not be taken') !== -1) why = 'state lock could not be taken';
-    else if (blob.indexOf('timed out') !== -1) why = 'hook.mjs timed out';
+    // The line may already have been appended when the adapter's timeout
+    // fires, so this notice says "may not" rather than "was not".
+    else if (blob.indexOf('timed out') !== -1) return '(denial may not be recorded: hook.mjs timed out)';
     else if (blob.indexOf('killed by') !== -1) why = 'hook.mjs killed';
     else if (blob.indexOf('could not be started') !== -1) why = 'hook.mjs could not be started';
     else if (blob.indexOf('decision record') !== -1) why = 'decision record could not be written';

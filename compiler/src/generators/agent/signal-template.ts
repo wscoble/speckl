@@ -98,19 +98,41 @@ function lockOwnerDead(lp) {
   catch (e) { return !!(e && e.code === 'ESRCH'); }
 }
 
+function claimLock(lp) {
+  const tmp = lp + '.tmp.' + process.pid;
+  let fd = -1;
+  try {
+    fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  try {
+    fs.linkSync(tmp, lp);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.unlinkSync(tmp); } catch { /* the lock inode already holds the pid */ }
+  lockHeld = lp;
+}
+
 async function acquireLock(stateFile) {
   const lp = lockPath(stateFile);
   const start = Date.now();
   while (true) {
     try {
-      const fd = fs.openSync(lp, 'wx');
-      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
-      lockHeld = lp;
+      claimLock(lp);
       return;
     } catch (e) {
       if (e && e.code !== 'EEXIST') throw e;
-      // A dead owner's pid is broken at once. A lock with no pid is the
-      // old file and is broken only after 30s.
+      // A dead owner's pid is broken at once. A live but unrelated pid, or
+      // content that is not a pid, waits out the 30s stale rule. A holder
+      // in another pid namespace looks dead and its lock is broken.
       try {
         const stale = Date.now() - fs.statSync(lp).mtimeMs > 30000;
         if (stale || lockOwnerDead(lp)) { fs.unlinkSync(lp); continue; }

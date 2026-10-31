@@ -543,18 +543,31 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 # the state verifies; denials before that are not recorded. Adapter-stage
 # denials (unmapped tool, shell metacharacters, a protected path, a bad
 # payload) are recorded by hook.mjs deny once the state verifies, with a
-# class on that line. A tool name or call id outside [A-Za-z0-9_.:-]{1,200}
-# is stored as "<tool name withheld>:<sha256>" or "<call id withheld>:<sha256>",
-# not as the raw text. Whoever can read the state key can append those lines;
-# they have no provenance beyond the HMAC, the same trust as pre and post.
-# A denial waits at most 1 second for the state lock. pre and post wait 5.
-# The lock file holds the owner's pid and is broken at once when that pid
-# is dead. SIGTERM releases it. An empty lock with no pid is broken after
-# 30 seconds. The adapter stops a hung recorder at SPECKL_HOOK_TIMEOUT_MS
-# (default 20 seconds). The call is still denied, and a stderr line that
-# begins with "(denial not recorded:" says why. Match only a whole line
-# that starts with that prefix. A key path that normalizes to fewer than
-# 8 characters is not recorded, and that same notice says so.
+# class on that line. A tool name or call id is stored as text only when it
+# matches [A-Za-z0-9_.:-]{1,200} and does not contain 16 or more hex
+# characters from the state key. Anything else is
+# "<tool name withheld>:<sha256>" or "<call id withheld>:<sha256>".
+# A name inside that charset is stored as written, including a colon-separated
+# spelling such as dir:keys:state.key. A run of fewer than 16 key hex
+# characters is not treated as key material. An agent that can read the key
+# file can forge the whole record; the HMAC does not stop that.
+# Whoever can read the state key can append deny lines; they have no
+# provenance beyond the HMAC, the same trust as pre and post.
+# The lock is published with link() only after the pid is on disk, so a
+# kill cannot leave an empty lock. A dead owner's pid is broken at once.
+# A live but unrelated pid, or content that is not a pid (empty, garbage,
+# 0, negative, or out of range), blocks pre and post for 5 seconds and then
+# exit 2 "state lock timeout", and blocks a denial for 1 second and then
+# the notice. The same live-pid wait is the 30 second stale rule. A holder
+# in another pid namespace looks dead and its lock is broken.
+# A denial flood is not free. An allowed call was about 0.8 s at 150 parallel
+# denials and about 7.5 s at 800, against about 0.1 s with no denials.
+# Denials that wait past 1 second are dropped with a notice, never silently.
+# A timeout notice says "may not be recorded": under load the line can
+# already have been appended. Match only a whole stderr line that starts
+# with "(denial not recorded:" or "(denial may not be recorded:".
+# A key path that normalizes to fewer than 8 characters is not recorded,
+# and the notice says so.
 # verify walks every decision line (the hook's check stops at the tail
 # once the log passes 256 KiB).
 node signal.mjs verify --state ./state.json

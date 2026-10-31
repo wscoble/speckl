@@ -343,7 +343,7 @@ describe('runAdapter', () => {
     const timed = runAdapter(['claude-code', 'pre', '--state', 's'], { CLAUDE_PROJECT_DIR: '/p' }, ccPre('WebFetch', {}), config, slow);
     expect(timed.code).toBe(2);
     expect(timed.stderr).toContain('unmapped harness tool "WebFetch"');
-    expect(timed.stderr).toContain('(denial not recorded: hook.mjs timed out)');
+    expect(timed.stderr).toContain('(denial may not be recorded: hook.mjs timed out)');
   });
   it('protects the key named by SPECKL_STATE_KEY_FILE and an out-of-project state dir', () => {
     const d = fakeDeps();

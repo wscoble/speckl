@@ -268,20 +268,48 @@ function lockOwnerDead(lp) {
   catch (e) { return !!(e && e.code === 'ESRCH'); }
 }
 
+// The lock path appears only after the pid is durable. linkSync is the
+// publish: EEXIST means someone else holds it. A kill between the temp
+// write and the link leaves no lock file. A kill after the link leaves a
+// lock that already contains the pid.
+function claimLock(lp) {
+  const tmp = lp + '.tmp.' + process.pid;
+  let fd = -1;
+  try {
+    fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  try {
+    fs.linkSync(tmp, lp);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.unlinkSync(tmp); } catch { /* the lock inode already holds the pid */ }
+  lockHeld = lp;
+}
+
 async function acquireLock(stateFile, waitMs) {
   const lp = lockPath(stateFile);
   const start = Date.now();
   const limit = typeof waitMs === 'number' && waitMs > 0 ? waitMs : 5000;
   while (true) {
     try {
-      const fd = fs.openSync(lp, 'wx');
-      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
-      lockHeld = lp;
+      claimLock(lp);
       return;
     } catch (e) {
       if (!e || e.code !== 'EEXIST') throw new Error('state lock could not be taken');
-      // A dead owner's lock is broken at once. An empty or unreadable lock
-      // (no pid) is still broken only after 30s, the old rule.
+      // A dead owner's lock is broken at once. A live but unrelated pid,
+      // or content that is not a pid, waits out the 30s stale rule.
+      // process.kill of an out-of-range pid throws a non-ESRCH error and
+      // is treated as alive. A holder in another pid namespace looks dead
+      // (ESRCH) and its lock is broken.
       try {
         const stale = Date.now() - fs.statSync(lp).mtimeMs > 30000;
         if (stale || lockOwnerDead(lp)) { fs.unlinkSync(lp); continue; }
@@ -477,23 +505,44 @@ async function main() {
       const safeName = /^[A-Za-z0-9_.:-]{1,200}$/;
       const rawTool = typeof msg.tool === 'string' ? msg.tool : '';
       const rawId = typeof msg.call_id === 'string' ? msg.call_id : '';
+      // 16 hex characters from the state key are enough to withhold the
+      // whole field. A shorter run is not treated as key material. An agent
+      // that can read the key file can already forge this record.
+      const windows = [];
+      const secrets = secretPaths(audit.state);
+      for (let s = 0; s < secrets.length; s++) {
+        if (typeof secrets[s] !== 'string') continue;
+        const hex = secrets[s].trim().toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+        for (let i = 0; i + 16 <= hex.length; i++) windows.push(hex.slice(i, i + 16));
+      }
+      const embedsKey = (text) => {
+        if (typeof text !== 'string' || text.length < 16 || !windows.length) return false;
+        const lower = text.toLowerCase();
+        for (let i = 0; i + 16 <= lower.length; i++) {
+          if (windows.indexOf(lower.slice(i, i + 16)) !== -1) return true;
+        }
+        return false;
+      };
       const tag = (kind, raw) => {
         const hex = crypto.createHash('sha256').update(raw).digest('hex');
         audit.keep.push(hex);
         return '<' + kind + ' withheld>:' + hex;
       };
       if (!audit.keep) audit.keep = [];
-      if (rawTool && safeName.test(rawTool)) audit.tool = rawTool;
+      const toolSafe = rawTool && safeName.test(rawTool) && !embedsKey(rawTool);
+      const idSafe = rawId && safeName.test(rawId) && !embedsKey(rawId);
+      if (toolSafe) audit.tool = rawTool;
       else if (rawTool) audit.tool = tag('tool name', rawTool);
       else audit.tool = null;
-      if (rawId && safeName.test(rawId)) audit.callId = rawId;
+      if (idSafe) audit.callId = rawId;
       else if (rawId) audit.callId = tag('call id', rawId);
       else audit.callId = null;
-      if (rawTool && !safeName.test(rawTool)) {
+      if (rawTool && !toolSafe) {
         given = given.split(JSON.stringify(rawTool)).join('"<tool name withheld>"');
         if (rawTool.length >= 8) given = given.split(rawTool).join('<tool name withheld>');
       }
-      if (rawId && !safeName.test(rawId) && rawId.length >= 8) {
+      if (rawId && !idSafe && rawId.length >= 8) {
         given = given.split(rawId).join('<call id withheld>');
       }
       // Domain-separated digest. A real input equal to the words

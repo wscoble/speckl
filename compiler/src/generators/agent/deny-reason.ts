@@ -168,6 +168,40 @@ export function redactSecrets(text: string, secrets: unknown, keep?: unknown): s
   // A call digest is 64 hex too. Keep only tokens named by the caller, and
   // only if a known secret did not already claim them.
   s = s.replace(/\b[0-9a-fA-F]{64}\b/g, (m) => kept.has(m.toLowerCase()) ? m : '<redacted>');
+  // A 16-hex run taken from the state key is key material even when it is
+  // not the whole key. A kept 64-hex token (a withheld-name hash) is copied
+  // through so this pass does not eat it.
+  const windows: string[] = [];
+  for (let si = 0; si < list.length; si++) {
+    const hex = list[si].trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+    for (let i = 0; i + 16 <= hex.length; i++) {
+      const w = hex.slice(i, i + 16);
+      if (windows.indexOf(w) === -1) windows.push(w);
+    }
+  }
+  if (windows.length && s.length >= 16) {
+    let out = '';
+    for (let i = 0; i < s.length;) {
+      const maybe = s.slice(i, i + 64);
+      const boundaryBefore = i === 0 || !/[0-9a-fA-F]/.test(s.charAt(i - 1));
+      const boundaryAfter = i + 64 >= s.length || !/[0-9a-fA-F]/.test(s.charAt(i + 64));
+      if (maybe.length === 64 && /^[0-9a-fA-F]{64}$/.test(maybe) && boundaryBefore && boundaryAfter && kept.has(maybe.toLowerCase())) {
+        out += maybe;
+        i += 64;
+        continue;
+      }
+      const slice = s.slice(i, i + 16);
+      if (slice.length === 16 && windows.indexOf(slice.toLowerCase()) !== -1) {
+        out += '<keyfile>';
+        i += 16;
+      } else {
+        out += s.charAt(i);
+        i++;
+      }
+    }
+    s = out;
+  }
   if (s.length > 1800) s = s.slice(0, 1800) + '…';
   return s;
 }

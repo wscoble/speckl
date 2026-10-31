@@ -40,14 +40,19 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
  * An adapter-stage denial (before hook.mjs pre/post) is also appended to the
  * decision record by \`hook.mjs deny\` once the state verifies. The call stays
- * denied when that record cannot be written. A stderr line that begins
- * with "(denial not recorded:" is that notice. Match only a whole line;
- * a tool name can quote the same words inside the reason. A denial waits
- * at most 1 second for the state lock. The lock stores the owner's pid
- * and is broken at once when that pid is dead. A timeout sends SIGTERM
- * so the hook can release the lock. SPECKL_HOOK_TIMEOUT_MS defaults to
- * 20 seconds. Whoever holds the state key can append deny lines; that is
- * the same HMAC trust as pre and post, not a third-party signature.
+ * denied when that record cannot be written. A notice is a whole stderr
+ * line that begins with "(denial not recorded:" or
+ * "(denial may not be recorded:". The timeout form says "may not": under
+ * load the line can already have been appended. A tool name can quote the
+ * same words inside the reason. A denial waits at most 1 second for the
+ * state lock. pre and post wait 5. The lock is published with link() only
+ * after the pid is on disk. A dead pid is broken at once. A live but
+ * unrelated pid, or content that is not a pid, waits out 30 seconds.
+ * A holder in another pid namespace looks dead and its lock is broken.
+ * A timeout sends SIGTERM. SPECKL_HOOK_TIMEOUT_MS defaults to 20 seconds.
+ * Whoever holds the state key can append deny lines; that is the same HMAC
+ * trust as pre and post. An agent that can read the key file can forge
+ * the record. A 16-hex run from that key is not stored as text.
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
 import crypto from 'node:crypto';
