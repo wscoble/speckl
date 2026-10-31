@@ -31,10 +31,11 @@ const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.jso
 let lockHeld = null;
 
 function releaseLock() {
-  if (lockHeld) {
-    try { fs.unlinkSync(lockHeld); } catch { /* ignore */ }
-    lockHeld = null;
-  }
+  if (!lockHeld) return;
+  const lp = lockHeld;
+  lockHeld = null;
+  try { fs.unlinkSync(lp); } catch { /* ignore */ }
+  try { releaseGate(lp); } catch { /* ignore */ }
 }
 function onStop() {
   releaseLock();
@@ -89,17 +90,146 @@ function atomicWrite(file, data) {
 
 function lockPath(s) { return s + '.lock'; }
 
-function lockOwnerDead(lp) {
-  let text = '';
-  try { text = fs.readFileSync(lp, 'utf-8'); } catch { return false; }
-  const pid = parseInt(String(text).trim(), 10);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+function randomSuffix() {
+  return process.pid + '.' + Date.now().toString(36) + '.' + Math.random().toString(36).slice(2);
+}
+function readLockText(file) {
+  try { return fs.readFileSync(file, 'utf-8'); } catch { return null; }
+}
+function pidFromText(text) {
+  if (typeof text !== 'string') return null;
+  const pid = parseInt(text.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return pid;
+}
+function pidIsDead(pid) {
   try { process.kill(pid, 0); return false; }
   catch (e) { return !!(e && e.code === 'ESRCH'); }
 }
-
+function linkUnsupported(e) {
+  const c = e && e.code;
+  return c === 'EPERM' || c === 'ENOTSUP' || c === 'ENOSYS' || c === 'EOPNOTSUPP' || c === 'EXDEV';
+}
+function gatePath(lp) { return lp + '.break'; }
+function takeGate(lp) {
+  const gp = gatePath(lp);
+  try { fs.mkdirSync(gp); }
+  catch (e) {
+    if (e && e.code === 'EEXIST') return false;
+    throw e;
+  }
+  let fd = -1;
+  try {
+    fd = fs.openSync(path.join(gp, 'pid'), 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(path.join(gp, 'pid')); } catch { /* ignore */ }
+    try { fs.rmdirSync(gp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  return true;
+}
+function releaseGate(lp) {
+  const gp = gatePath(lp);
+  const mine = String(process.pid);
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  if (readLockText(path.join(dest, 'pid')) === mine) {
+    try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+    try { fs.rmdirSync(dest); } catch { /* ignore */ }
+    return;
+  }
+  try { fs.renameSync(dest, gp); }
+  catch (e) {
+    if (!e || e.code !== 'EEXIST') return;
+    try {
+      const a = fs.statSync(dest);
+      const b = fs.statSync(gp);
+      if (a.ino === b.ino && a.dev === b.dev) {
+        try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+        try { fs.rmdirSync(dest); } catch { /* ignore */ }
+      }
+    } catch { /* leave dest; sweep removes a dead one */ }
+  }
+}
+function clearDeadGate(lp) {
+  const gp = gatePath(lp);
+  let st;
+  try { st = fs.statSync(gp); } catch { return; }
+  const text = readLockText(path.join(gp, 'pid'));
+  const pid = pidFromText(text);
+  const dead = pid !== null && pidIsDead(pid);
+  let old = false;
+  try { old = Date.now() - st.mtimeMs > 30000; } catch { old = false; }
+  if (!dead && !old) return;
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  const now = readLockText(path.join(dest, 'pid'));
+  if (now !== text) {
+    try { fs.renameSync(dest, gp); } catch { /* the winner already moved it */ }
+    return;
+  }
+  const nowDead = pidFromText(now) !== null && pidIsDead(pidFromText(now));
+  if (!nowDead && !old) {
+    try { fs.renameSync(dest, gp); } catch { /* ignore */ }
+    return;
+  }
+  try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+  try { fs.rmdirSync(dest); } catch { try { fs.unlinkSync(dest); } catch { /* ignore */ } }
+}
+function breakLockIfUnchanged(lp, expected) {
+  if (typeof expected !== 'string') return;
+  const dest = lp + '.stale.' + randomSuffix();
+  try { fs.renameSync(lp, dest); }
+  catch { return; }
+  const now = readLockText(dest);
+  if (now === expected) {
+    try { fs.unlinkSync(dest); } catch { /* already gone */ }
+    return;
+  }
+  try { fs.renameSync(dest, lp); }
+  catch (e) {
+    if (!e || e.code !== 'EEXIST') return;
+    try {
+      const a = fs.statSync(dest);
+      const b = fs.statSync(lp);
+      if (a.ino === b.ino && a.dev === b.dev) fs.unlinkSync(dest);
+    } catch { /* leave dest; the next sweep removes a dead one */ }
+  }
+}
+function sweepLockTemps(lp) {
+  const dir = path.dirname(lp);
+  const base = path.basename(lp);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (name.indexOf(base + '.') !== 0) continue;
+    if (name.indexOf('.tmp.') < 0 && name.indexOf('.stale.') < 0) continue;
+    const full = path.join(dir, name);
+    let st;
+    try { st = fs.lstatSync(full); } catch { continue; }
+    if (st.isDirectory()) {
+      const pid = pidFromText(readLockText(path.join(full, 'pid')));
+      if (pid !== null && pid !== process.pid && pidIsDead(pid)) {
+        try { fs.unlinkSync(path.join(full, 'pid')); } catch { /* ignore */ }
+        try { fs.rmdirSync(full); } catch { /* ignore */ }
+      }
+      continue;
+    }
+    const pid = pidFromText(readLockText(full));
+    if (pid !== null && pid !== process.pid && pidIsDead(pid)) {
+      try { fs.unlinkSync(full); } catch { /* best effort */ }
+    }
+  }
+}
 function claimLock(lp) {
-  const tmp = lp + '.tmp.' + process.pid;
+  const tmp = lp + '.tmp.' + randomSuffix();
   let fd = -1;
   try {
     fd = fs.openSync(tmp, 'w');
@@ -115,7 +245,17 @@ function claimLock(lp) {
     fs.linkSync(tmp, lp);
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    throw e;
+    if (!linkUnsupported(e)) throw e;
+    fd = fs.openSync(lp, 'wx');
+    try { fs.writeSync(fd, String(process.pid)); fs.fsyncSync(fd); }
+    catch (writeErr) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      throw writeErr;
+    }
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    lockHeld = lp;
+    return;
   }
   try { fs.unlinkSync(tmp); } catch { /* the lock inode already holds the pid */ }
   lockHeld = lp;
@@ -124,22 +264,37 @@ function claimLock(lp) {
 async function acquireLock(stateFile) {
   const lp = lockPath(stateFile);
   const start = Date.now();
+  try { sweepLockTemps(lp); } catch { /* best effort */ }
   while (true) {
+    let gate = false;
     try {
-      claimLock(lp);
-      return;
+      try { clearDeadGate(lp); } catch { /* best effort */ }
+      gate = takeGate(lp);
+      if (gate) {
+        if (fs.existsSync(lp)) {
+          const text = readLockText(lp);
+          const pid = pidFromText(text);
+          let stale = false;
+          try { stale = Date.now() - fs.statSync(lp).mtimeMs > 30000; } catch { stale = false; }
+          if (text !== null && ((pid !== null && pidIsDead(pid)) || stale)) breakLockIfUnchanged(lp, text);
+        }
+        if (!fs.existsSync(lp)) {
+          claimLock(lp);
+          return;
+        }
+        releaseGate(lp);
+        gate = false;
+      }
     } catch (e) {
+      if (gate) { try { releaseGate(lp); } catch { /* ignore */ } }
+      if (lockHeld === lp) {
+        lockHeld = null;
+        try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      }
       if (e && e.code !== 'EEXIST') throw e;
-      // A dead owner's pid is broken at once. A live but unrelated pid, or
-      // content that is not a pid, waits out the 30s stale rule. A holder
-      // in another pid namespace looks dead and its lock is broken.
-      try {
-        const stale = Date.now() - fs.statSync(lp).mtimeMs > 30000;
-        if (stale || lockOwnerDead(lp)) { fs.unlinkSync(lp); continue; }
-      } catch { /* raced with release; retry */ }
-      if (Date.now() - start > 5000) throw new Error('state lock timeout');
-      await new Promise(r => setTimeout(r, 10));
     }
+    if (Date.now() - start > 5000) throw new Error('state lock timeout');
+    await new Promise(r => setTimeout(r, 10));
   }
 }
 

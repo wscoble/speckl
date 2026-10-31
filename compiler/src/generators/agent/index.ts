@@ -549,23 +549,36 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 # "<tool name withheld>:<sha256>" or "<call id withheld>:<sha256>".
 # A name inside that charset is stored as written, including a colon-separated
 # spelling such as dir:keys:state.key. A run of fewer than 16 key hex
-# characters is not treated as key material. An agent that can read the key
-# file can forge the whole record; the HMAC does not stop that.
+# characters is not treated as key material. Split, reordered, or re-encoded
+# copies of the key (separators, reversed hex, decimal bytes, or a split
+# across the tool name and the call id) are not detected. An agent that can
+# read the key file can forge the whole record; the HMAC does not stop that.
 # Whoever can read the state key can append deny lines; they have no
 # provenance beyond the HMAC, the same trust as pre and post.
 # The lock is published with link() only after the pid is on disk, so a
-# kill cannot leave an empty lock. A dead owner's pid is broken at once.
+# kill cannot leave an empty lock. The temp name has a random suffix. If
+# link() returns EPERM, ENOTSUP, ENOSYS, EOPNOTSUPP, or EXDEV, the publish
+# falls back to an exclusive create plus the pid write. A temp file left
+# behind is removed on a later acquire when the pid inside it is dead.
+# Claim and break share a lock.break directory. A dead owner's lock is
+# renamed aside and discarded only when those bytes are still that pid.
+# A lock.break directory left by a kill is removed on the next acquire when
+# its pid is dead. If that pid file was never written, it waits until the
+# directory is 30 seconds old, the same rule as an unreadable lock.
 # A live but unrelated pid, or content that is not a pid (empty, garbage,
-# 0, negative, or out of range), blocks pre and post for 5 seconds and then
-# exit 2 "state lock timeout", and blocks a denial for 1 second and then
-# the notice. The same live-pid wait is the 30 second stale rule. A holder
-# in another pid namespace looks dead and its lock is broken.
-# A denial flood is not free. An allowed call was about 0.8 s at 150 parallel
-# denials and about 7.5 s at 800, against about 0.1 s with no denials.
-# Denials that wait past 1 second are dropped with a notice, never silently.
-# A timeout notice says "may not be recorded": under load the line can
-# already have been appended. Match only a whole stderr line that starts
-# with "(denial not recorded:" or "(denial may not be recorded:".
+# 0, negative, or out of range), is left until the lock file is 30 seconds
+# old by mtime. Until then, every allowed call waits 5 seconds and exits 2
+# with "state lock timeout", and every denial waits 1 second and prints the
+# notice. The next call after the file is 30 seconds old breaks the lock.
+# A holder in another pid namespace looks dead and its lock is broken.
+# A denial flood is not free, and the cost moves with machine load. Measured
+# allowed-call latency with N parallel denials was about 0.9-1.8 s at 150,
+# about 3-4 s at 400, and about 14-23 s at 800, against about 0.1-0.3 s on
+# main with the same calls. Denials that wait past 1 second are dropped with
+# a notice, never silently. A timeout notice says "may not be recorded":
+# under load the line can already have been appended. Match only a whole
+# stderr line that starts with "(denial not recorded:" or
+# "(denial may not be recorded:".
 # A key path that normalizes to fewer than 8 characters is not recorded,
 # and the notice says so.
 # verify walks every decision line (the hook's check stops at the tail

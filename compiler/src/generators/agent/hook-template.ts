@@ -172,10 +172,11 @@ function readStdin() {
 }
 
 function releaseLock() {
-  if (lockHeld) {
-    try { fs.unlinkSync(lockHeld); } catch { /* ignore */ }
-    lockHeld = null;
-  }
+  if (!lockHeld) return;
+  const lp = lockHeld;
+  lockHeld = null;
+  try { fs.unlinkSync(lp); } catch { /* ignore */ }
+  try { releaseGate(lp); } catch { /* ignore */ }
 }
 // SIGKILL cannot be caught. SIGTERM is what the adapter sends when the
 // recorder times out, so the lock is removed before the process dies.
@@ -223,6 +224,9 @@ function seal(verdict, reason) {
     if (typeof fields.call_id === 'string' && fields.call_id.length > 200) fields.call_id = fields.call_id.slice(0, 200);
   }
   if (audit.inputWithheld) fields.input_withheld = audit.inputWithheld;
+  // The gate and the lock pid must still be ours. A stale break that took
+  // them after we acquired is not allowed to append over the new owner.
+  if (!stillOwnLock()) throw new Error('state lock lost');
   appendDecision(audit.file, audit.key, audit.state, fields);
   audit.sealed = true;
   audit.verdict = verdict;
@@ -259,21 +263,162 @@ function parseArgs(argv) {
 
 function lockPath(stateFile) { return stateFile + '.lock'; }
 
-function lockOwnerDead(lp) {
-  let text = '';
-  try { text = fs.readFileSync(lp, 'utf-8'); } catch { return false; }
-  const pid = parseInt(String(text).trim(), 10);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+function randomSuffix() {
+  return process.pid + '.' + Date.now().toString(36) + '.' + Math.random().toString(36).slice(2);
+}
+function readLockText(file) {
+  try { return fs.readFileSync(file, 'utf-8'); } catch { return null; }
+}
+function pidFromText(text) {
+  if (typeof text !== 'string') return null;
+  const pid = parseInt(text.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return pid;
+}
+function pidIsDead(pid) {
   try { process.kill(pid, 0); return false; }
   catch (e) { return !!(e && e.code === 'ESRCH'); }
 }
-
+function linkUnsupported(e) {
+  const c = e && e.code;
+  return c === 'EPERM' || c === 'ENOTSUP' || c === 'ENOSYS' || c === 'EOPNOTSUPP' || c === 'EXDEV';
+}
+function gatePath(lp) { return lp + '.break'; }
+// One gate for both claim and break, so a breaker cannot unlink a lock
+// that a later claim already published. mkdir is the exclusive step.
+function takeGate(lp) {
+  const gp = gatePath(lp);
+  try { fs.mkdirSync(gp); }
+  catch (e) {
+    if (e && e.code === 'EEXIST') return false;
+    throw e;
+  }
+  let fd = -1;
+  try {
+    fd = fs.openSync(path.join(gp, 'pid'), 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(path.join(gp, 'pid')); } catch { /* ignore */ }
+    try { fs.rmdirSync(gp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  return true;
+}
+function releaseGate(lp) {
+  const gp = gatePath(lp);
+  const mine = String(process.pid);
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  if (readLockText(path.join(dest, 'pid')) === mine) {
+    try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+    try { fs.rmdirSync(dest); } catch { /* ignore */ }
+    return;
+  }
+  try { fs.renameSync(dest, gp); }
+  catch (e) {
+    if (!e || e.code !== 'EEXIST') return;
+    try {
+      const a = fs.statSync(dest);
+      const b = fs.statSync(gp);
+      if (a.ino === b.ino && a.dev === b.dev) {
+        try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+        try { fs.rmdirSync(dest); } catch { /* ignore */ }
+      }
+    } catch { /* leave dest; sweep removes a dead one */ }
+  }
+}
+function clearDeadGate(lp) {
+  const gp = gatePath(lp);
+  let st;
+  try { st = fs.statSync(gp); } catch { return; }
+  const text = readLockText(path.join(gp, 'pid'));
+  const pid = pidFromText(text);
+  const dead = pid !== null && pidIsDead(pid);
+  let old = false;
+  try { old = Date.now() - st.mtimeMs > 30000; } catch { old = false; }
+  if (!dead && !old) return;
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  const now = readLockText(path.join(dest, 'pid'));
+  if (now !== text) {
+    try { fs.renameSync(dest, gp); } catch { /* the winner already moved it */ }
+    return;
+  }
+  const nowDead = pidFromText(now) !== null && pidIsDead(pidFromText(now));
+  if (!nowDead && !old) {
+    try { fs.renameSync(dest, gp); } catch { /* ignore */ }
+    return;
+  }
+  try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+  try { fs.rmdirSync(dest); } catch { try { fs.unlinkSync(dest); } catch { /* ignore */ } }
+}
+// Called only while this process holds the gate. Rename aside, then discard
+// only when the renamed bytes are still the ones we decided to break.
+function breakLockIfUnchanged(lp, expected) {
+  if (typeof expected !== 'string') return;
+  const dest = lp + '.stale.' + randomSuffix();
+  try { fs.renameSync(lp, dest); }
+  catch { return; }
+  const now = readLockText(dest);
+  if (now === expected) {
+    try { fs.unlinkSync(dest); } catch { /* already gone */ }
+    return;
+  }
+  try { fs.renameSync(dest, lp); }
+  catch (e) {
+    if (!e || e.code !== 'EEXIST') return;
+    try {
+      const a = fs.statSync(dest);
+      const b = fs.statSync(lp);
+      if (a.ino === b.ino && a.dev === b.dev) fs.unlinkSync(dest);
+    } catch { /* leave dest; the next sweep removes a dead one */ }
+  }
+}
+function sweepLockTemps(lp) {
+  const dir = path.dirname(lp);
+  const base = path.basename(lp);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (name.indexOf(base + '.') !== 0) continue;
+    if (name.indexOf('.tmp.') < 0 && name.indexOf('.stale.') < 0) continue;
+    const full = path.join(dir, name);
+    let st;
+    try { st = fs.lstatSync(full); } catch { continue; }
+    if (st.isDirectory()) {
+      const pid = pidFromText(readLockText(path.join(full, 'pid')));
+      if (pid !== null && pid !== process.pid && pidIsDead(pid)) {
+        try { fs.unlinkSync(path.join(full, 'pid')); } catch { /* ignore */ }
+        try { fs.rmdirSync(full); } catch { /* ignore */ }
+      }
+      continue;
+    }
+    const pid = pidFromText(readLockText(full));
+    if (pid !== null && pid !== process.pid && pidIsDead(pid)) {
+      try { fs.unlinkSync(full); } catch { /* best effort */ }
+    }
+  }
+}
+function stillOwnLock() {
+  if (!lockHeld) return false;
+  if (pidFromText(readLockText(lockHeld)) !== process.pid) return false;
+  return pidFromText(readLockText(path.join(gatePath(lockHeld), 'pid'))) === process.pid;
+}
 // The lock path appears only after the pid is durable. linkSync is the
 // publish: EEXIST means someone else holds it. A kill between the temp
 // write and the link leaves no lock file. A kill after the link leaves a
-// lock that already contains the pid.
+// lock that already contains the pid. The temp name has a random suffix so
+// two processes with the same pid (another container) do not share it.
+// Filesystems without hard links fall back to an exclusive create.
+// Caller holds the gate.
 function claimLock(lp) {
-  const tmp = lp + '.tmp.' + process.pid;
+  const tmp = lp + '.tmp.' + randomSuffix();
   let fd = -1;
   try {
     fd = fs.openSync(tmp, 'w');
@@ -289,7 +434,17 @@ function claimLock(lp) {
     fs.linkSync(tmp, lp);
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    throw e;
+    if (!linkUnsupported(e)) throw e;
+    fd = fs.openSync(lp, 'wx');
+    try { fs.writeSync(fd, String(process.pid)); fs.fsyncSync(fd); }
+    catch (writeErr) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      throw writeErr;
+    }
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    lockHeld = lp;
+    return;
   }
   try { fs.unlinkSync(tmp); } catch { /* the lock inode already holds the pid */ }
   lockHeld = lp;
@@ -299,24 +454,43 @@ async function acquireLock(stateFile, waitMs) {
   const lp = lockPath(stateFile);
   const start = Date.now();
   const limit = typeof waitMs === 'number' && waitMs > 0 ? waitMs : 5000;
+  try { sweepLockTemps(lp); } catch { /* best effort */ }
   while (true) {
+    let gate = false;
     try {
-      claimLock(lp);
-      return;
+      try { clearDeadGate(lp); } catch { /* best effort */ }
+      gate = takeGate(lp);
+      if (gate) {
+        // A dead owner's lock is broken at once, under the gate, and only
+        // after the renamed bytes still match. A live but unrelated pid, or
+        // content that is not a pid, is left until the file is 30s old.
+        // Each attempt still waits only up to limit (1s for a denial, 5s
+        // for pre/post) and then fails. The next call tries again. A holder
+        // in another pid namespace looks dead.
+        if (fs.existsSync(lp)) {
+          const text = readLockText(lp);
+          const pid = pidFromText(text);
+          let stale = false;
+          try { stale = Date.now() - fs.statSync(lp).mtimeMs > 30000; } catch { stale = false; }
+          if (text !== null && ((pid !== null && pidIsDead(pid)) || stale)) breakLockIfUnchanged(lp, text);
+        }
+        if (!fs.existsSync(lp)) {
+          claimLock(lp);
+          return;
+        }
+        releaseGate(lp);
+        gate = false;
+      }
     } catch (e) {
+      if (gate) { try { releaseGate(lp); } catch { /* ignore */ } }
+      if (lockHeld === lp) {
+        lockHeld = null;
+        try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      }
       if (!e || e.code !== 'EEXIST') throw new Error('state lock could not be taken');
-      // A dead owner's lock is broken at once. A live but unrelated pid,
-      // or content that is not a pid, waits out the 30s stale rule.
-      // process.kill of an out-of-range pid throws a non-ESRCH error and
-      // is treated as alive. A holder in another pid namespace looks dead
-      // (ESRCH) and its lock is broken.
-      try {
-        const stale = Date.now() - fs.statSync(lp).mtimeMs > 30000;
-        if (stale || lockOwnerDead(lp)) { fs.unlinkSync(lp); continue; }
-      } catch { /* raced with release; retry */ }
-      if (Date.now() - start > limit) throw new Error('state lock timeout');
-      await new Promise(r => setTimeout(r, 10));
     }
+    if (Date.now() - start > limit) throw new Error('state lock timeout');
+    await new Promise(r => setTimeout(r, 10));
   }
 }
 

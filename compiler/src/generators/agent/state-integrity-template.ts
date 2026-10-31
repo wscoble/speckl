@@ -537,13 +537,21 @@ function writeDecisionHead(file, head, key) {
 export function appendDecision(stateFile, key, state, fields) {
   if (!state || (state.dev !== true && !key)) throw new Error('refusing to record a decision without a state key');
   if (fields.verdict !== 'allow' && fields.verdict !== 'deny') throw new Error('bad verdict');
-  const ev = evaluateDecisions(stateFile, key, state, false);
+  let ev = evaluateDecisions(stateFile, key, state, false);
   fs.mkdirSync(ev.paths.dir, { recursive: true });
   if (!fs.existsSync(ev.paths.log)) fs.writeFileSync(ev.paths.log, '');
   if (ev.torn) {
     const buf = fs.readFileSync(ev.paths.log);
     fs.truncateSync(ev.paths.log, buf.lastIndexOf(0x0a) + 1);
+    ev = evaluateDecisions(stateFile, key, state, false);
   }
+  // Snapshot the on-disk tail before adopting uncommitted lines in memory.
+  // A later writer that moved the tail must not be overwritten.
+  const baseSeq = ev.head.seq;
+  const baseHash = ev.head.hash;
+  const baseUncommitted = ev.uncommitted;
+  const baseAdoptSeq = ev.adoptSeq;
+  const baseAdoptHash = ev.adoptHash;
   const head = ev.head;
   if (ev.uncommitted > 0) {
     head.seq = ev.adoptSeq;
@@ -569,6 +577,14 @@ export function appendDecision(stateFile, key, state, fields) {
   }
   if (fields.input_withheld === 'size' || fields.input_withheld === 'depth' || fields.input_withheld === 'wide') {
     body.input_withheld = fields.input_withheld;
+  }
+  // The caller holds the state lock. Re-read anyway: if the tail moved,
+  // someone else appended and this write would fork the chain.
+  const latest = evaluateDecisions(stateFile, key, state, false);
+  if (latest.head.seq !== baseSeq || latest.head.hash !== baseHash
+      || latest.uncommitted !== baseUncommitted || latest.adoptSeq !== baseAdoptSeq
+      || latest.adoptHash !== baseAdoptHash) {
+    throw new Error('decision record changed while appending');
   }
   const hash = sha(canonical(body));
   const line = { ...body, hash };

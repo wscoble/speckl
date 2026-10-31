@@ -4,7 +4,7 @@
 // An allowed call is still only the hook's pre/post lines, with no class.
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -599,6 +599,115 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(colon.status, colon.stderr).toBe(2);
     expect(linesOf(ctx.state).at(-1)!.tool).toBe('dir:keys:state.key');
   }, 20_000);
+
+  it('parallel callers on a dead lock do not fork the decision chain', async () => {
+    const ctx = newState();
+    const lock = ctx.state + '.lock';
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    await new Promise<void>((resolve, reject) => {
+      holder.on('error', reject);
+      holder.on('spawn', () => resolve());
+    });
+    const deadPid = holder.pid;
+    holder.kill('SIGKILL');
+    await new Promise<void>(resolve => holder.on('exit', () => resolve()));
+    const burners = Array.from({ length: 4 }, () => spawn(process.execPath, ['-e', 'for(;;){}']));
+    const bursts = 8;
+    const width = 32;
+    try {
+      for (let b = 0; b < bursts; b++) {
+        writeFileSync(lock, String(deadPid));
+        const kids = Array.from({ length: width }, (_, i) => new Promise<void>((resolve) => {
+          const child = spawn(process.execPath, [
+            join(agentDir, 'adapter.mjs'), 'claude-code', 'pre',
+            '--project', ctx.project, '--state', ctx.state, '--key', ctx.key,
+          ], { stdio: ['pipe', 'pipe', 'pipe'] });
+          child.on('exit', () => resolve());
+          child.on('error', () => resolve());
+          child.stdin.end(JSON.stringify({
+            hook_event_name: 'PreToolUse', tool_name: 'WebFetch', tool_input: {},
+            tool_use_id: 'race' + b + 'x' + i, cwd: ctx.project,
+          }));
+        }));
+        await Promise.all(kids);
+      }
+      const lines = linesOf(ctx.state);
+      const seqs = lines.map(l => l.seq);
+      expect(new Set(seqs).size, 'duplicate seq ' + seqs.join(',')).toBe(seqs.length);
+      for (let i = 0; i < seqs.length; i++) expect(seqs[i], 'gap at ' + i).toBe(i);
+      expect(lines.length, 'dead lock was never broken').toBeGreaterThan(0);
+      const verify = run(join(agentDir, 'signal.mjs'), ['verify', '--state', ctx.state, '--key', ctx.key]);
+      expect(verify.status, verify.stderr).toBe(0);
+      const allowed = pre(ctx, 'claude-code', 'Bash', { command: 'git status' }, 'after-race');
+      expect(allowed.status, allowed.stderr).toBe(0);
+    } finally {
+      for (const burner of burners) { try { burner.kill('SIGKILL'); } catch { /* exited */ } }
+      try { unlinkSync(lock); } catch { /* already gone */ }
+    }
+  }, 90_000);
+
+  it('a dead-pid lock temp is removed on the next acquire and a live one is left', async () => {
+    const ctx = newState();
+    const lock = ctx.state + '.lock';
+    const live = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    const dead = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    await Promise.all([live, dead].map(child => new Promise<void>((resolve, reject) => {
+      child.on('error', reject);
+      child.on('spawn', () => resolve());
+    })));
+    dead.kill('SIGKILL');
+    await new Promise<void>(resolve => dead.on('exit', () => resolve()));
+    const deadTmp = lock + '.tmp.' + dead.pid + '.leftover';
+    const liveTmp = lock + '.tmp.' + live.pid + '.leftover';
+    const deadStale = lock + '.stale.' + dead.pid + '.leftover';
+    writeFileSync(deadTmp, String(dead.pid));
+    writeFileSync(liveTmp, String(live.pid));
+    writeFileSync(deadStale, String(dead.pid));
+    try {
+      const denied = pre(ctx, 'claude-code', 'WebFetch', {}, 'sweep');
+      expect(denied.status, denied.stderr).toBe(2);
+      expect(existsSync(deadTmp), 'dead tmp swept').toBe(false);
+      expect(existsSync(deadStale), 'dead stale swept').toBe(false);
+      expect(existsSync(liveTmp), 'live tmp kept').toBe(true);
+      expect(readFileSync(liveTmp, 'utf-8')).toBe(String(live.pid));
+    } finally {
+      try { live.kill('SIGKILL'); } catch { /* exited */ }
+      try { unlinkSync(liveTmp); } catch { /* already gone */ }
+    }
+  }, 20_000);
+
+  it('records a denial when link() cannot make a hard link', () => {
+    const ctx = newState();
+    const preload = join(ctx.project, 'no-link.cjs');
+    const marker = join(ctx.project, 'link-marker.txt');
+    writeFileSync(preload, [
+      "const fs = require('fs');",
+      "const marker = process.env.SPECKL_LINK_MARKER;",
+      "fs.linkSync = function () {",
+      "  if (marker) { try { fs.appendFileSync(marker, 'x'); } catch (e) {} }",
+      "  const err = new Error('ENOTSUP');",
+      "  err.code = 'ENOTSUP';",
+      "  throw err;",
+      "};",
+      '',
+    ].join('\n'));
+    const recorded = adapter(ctx, 'claude-code', 'pre', payload('claude-code', 'PreToolUse', 'WebFetch', {}, 'nolink'), {
+      NODE_OPTIONS: '--require ' + preload,
+      SPECKL_LINK_MARKER: marker,
+    });
+    expect(recorded.status, recorded.stderr).toBe(2);
+    expect(recorded.stderr).toContain('unmapped harness tool "WebFetch"');
+    expect(recorded.stderr).not.toContain('denial not recorded');
+    expect(existsSync(marker), 'linkSync was not called').toBe(true);
+    const line = linesOf(ctx.state).at(-1)!;
+    expect(line.class).toBe('unmapped');
+    expect(line.tool).toBe('WebFetch');
+    expect(existsSync(ctx.state + '.lock'), 'lock left behind').toBe(false);
+    const leftovers = readdirSync(join(ctx.project, '.speckl')).filter(name => name.indexOf('state.json.lock') === 0);
+    expect(leftovers, leftovers.join(',')).toEqual([]);
+    const verify = run(join(agentDir, 'signal.mjs'), ['verify', '--state', ctx.state, '--key', ctx.key]);
+    expect(verify.status, verify.stderr).toBe(0);
+  });
 
   it('a post-event unmapped call is recorded as phase post', () => {
     const ctx = newState();

@@ -46,9 +46,16 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  * load the line can already have been appended. A tool name can quote the
  * same words inside the reason. A denial waits at most 1 second for the
  * state lock. pre and post wait 5. The lock is published with link() only
- * after the pid is on disk. A dead pid is broken at once. A live but
- * unrelated pid, or content that is not a pid, waits out 30 seconds.
- * A holder in another pid namespace looks dead and its lock is broken.
+ * after the pid is on disk. The temp name has a random suffix. If link()
+ * cannot make a hard link, publish falls back to an exclusive create.
+ * A temp whose pid is dead is removed on a later acquire. Claim and break
+ * share a lock.break directory; a dead lock is renamed aside and discarded
+ * only when the renamed bytes are still that pid. Until a live or unreadable
+ * lock file is 30 seconds old by mtime, every allowed call waits 5 seconds
+ * and exits 2, and every denial waits 1 second and prints the notice. The
+ * next call after that breaks the lock. A holder in another pid namespace
+ * looks dead and its lock is broken. Split or re-encoded copies of the key
+ * are not detected.
  * A timeout sends SIGTERM. SPECKL_HOOK_TIMEOUT_MS defaults to 20 seconds.
  * Whoever holds the state key can append deny lines; that is the same HMAC
  * trust as pre and post. An agent that can read the key file can forge
