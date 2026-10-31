@@ -84,6 +84,7 @@ describe('deny reason text', () => {
     expect(redactSecrets('mcp__//tmp/proj/keys/state.key', secrets)).toBe('mcp__<keyfile>');
     expect(redactSecrets('..\\keys\\state.key', secrets)).toBe('<keyfile>');
     expect(redactSecrets('%2e%2e%2fkeys%2fstate.key', secrets)).toBe('<keyfile>');
+    expect(redactSecrets('mcp__srv__get%2Fitems%2e', secrets)).toBe('mcp__srv__get%2Fitems%2e');
     expect(redactSecrets('plain', null)).toBe('plain');
     expect(redactSecrets('plain', { not: 'an array' })).toBe('plain');
     expect(redactSecrets('x'.repeat(1801), []).endsWith('…')).toBe(true);

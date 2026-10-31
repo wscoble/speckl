@@ -314,7 +314,7 @@ describe('realpath on the adapter secret list', () => {
       { CLAUDE_PROJECT_DIR: '/proj' }, payload, config, deps(() => '/secret/real'),
     );
     expect(out.code).toBe(2);
-    expect(out.stderr.trim()).toBe(SHORT_KEY);
+    expect(out.stderr.trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
     expect(out.stdout + out.stderr).not.toContain('UNIQUE-SHORT-PATH-MARKER');
     expect(out.stderr).not.toContain('/secret/real');
   });
@@ -335,7 +335,7 @@ describe('realpath on the adapter secret list', () => {
       { ...deps(() => '/unused-long-dir/state.key'), cwd: deep },
     );
     expect(out.code).toBe(2);
-    expect(out.stderr.trim()).toBe(SHORT_KEY);
+    expect(out.stderr.trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
     expect(out.stderr).not.toContain(given);
   });
 
@@ -399,30 +399,30 @@ describe('realpath on the adapter secret list', () => {
     const env = { CLAUDE_PROJECT_DIR: '/proj' };
     const realShort = runAdapter(argv, env, payload, config, deps(() => '/tmp/ab'));
     expect(realShort.code).toBe(2);
-    expect(realShort.stderr.trim()).toBe(SHORT_KEY);
+    expect(realShort.stderr.trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
     expect(realShort.stderr).not.toContain('/tmp/ab');
 
     const parentShort = runAdapter(argv, env, payload, config, deps(() => '/tmp/abcdefghij'));
     expect('/tmp/abcdefghij'.length).toBeGreaterThanOrEqual(8);
-    expect(parentShort.stderr.trim()).toBe(SHORT_KEY);
+    expect(parentShort.stderr.trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
     expect(parentShort.stderr).not.toContain('abcdefghij');
 
     const viaRealPath = runAdapter(argv, env, payload, config, {
       ...deps(() => { throw new Error('ENOENT'); }),
       realPath: () => '/tmp/ab',
     });
-    expect(viaRealPath.stderr.trim()).toBe(SHORT_KEY);
+    expect(viaRealPath.stderr.trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
 
     const emptyThenReal = runAdapter(argv, env, payload, config, {
       ...deps(() => ''),
       realPath: () => '/tmp/ab',
     });
-    expect(emptyThenReal.stderr.trim()).toBe(SHORT_KEY);
+    expect(emptyThenReal.stderr.trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
 
     const onlyRealPath = deps(() => '/tmp/ab');
     delete (onlyRealPath as { realpath?: unknown }).realpath;
     onlyRealPath.realPath = () => '/tmp/ab';
-    expect(runAdapter(argv, env, payload, config, onlyRealPath).stderr.trim()).toBe(SHORT_KEY);
+    expect(runAdapter(argv, env, payload, config, onlyRealPath).stderr.trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
 
     const dirThrows = runAdapter(argv, env, payload, config, {
       ...deps(() => '/tmp/abcdefghij'),
@@ -523,17 +523,17 @@ describe('short key paths and other key encodings stay out of deny text', () => 
     for (const key of ['k', 'ab', 'xyz', './k']) {
       const out = run(key);
       expect(out.status, key + ' ' + out.stderr).toBe(2);
-      expect((out.stderr || '').trim(), key).toBe(SHORT_KEY);
+      expect((out.stderr || '').trim(), key).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
       expect((out.stdout || '') + (out.stderr || '') + logText(state), key).not.toContain(realKey);
     }
     const envOnly = run(keyFile, 'ab');
-    expect((envOnly.stderr || '').trim()).toBe(SHORT_KEY);
+    expect((envOnly.stderr || '').trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
     expect((envOnly.stdout || '') + (envOnly.stderr || '')).not.toContain(keyFile);
     expect((envOnly.stdout || '') + (envOnly.stderr || '')).not.toContain(realKey);
 
     const given = '../../../../k';
     const resolved = run(given);
-    expect((resolved.stderr || '').trim()).toBe(SHORT_KEY);
+    expect((resolved.stderr || '').trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
     expect((resolved.stdout || '') + (resolved.stderr || '')).not.toContain(given);
   });
 
@@ -583,13 +583,13 @@ describe('short key paths and other key encodings stay out of deny text', () => 
 
       const adapterKey = run(link, keyFile);
       expect(adapterKey.status, adapterKey.stderr).toBe(2);
-      expect((adapterKey.stderr || '').trim()).toBe(SHORT_KEY);
+      expect((adapterKey.stderr || '').trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
       expect((adapterKey.stdout || '') + (adapterKey.stderr || '')).not.toContain(held.path);
       expect((adapterKey.stdout || '') + (adapterKey.stderr || '')).not.toContain(link);
 
       const adapterEnv = run(keyFile, link);
       expect(adapterEnv.status, adapterEnv.stderr).toBe(2);
-      expect((adapterEnv.stderr || '').trim()).toBe(SHORT_KEY);
+      expect((adapterEnv.stderr || '').trim()).toBe(SHORT_KEY + '\n(denial not recorded: state key path too short)');
       expect((adapterEnv.stdout || '') + (adapterEnv.stderr || '')).not.toContain(held.path);
       expect((adapterEnv.stdout || '') + (adapterEnv.stderr || '')).not.toContain(link);
       expect((adapterEnv.stdout || '') + (adapterEnv.stderr || '')).not.toContain(keyFile);

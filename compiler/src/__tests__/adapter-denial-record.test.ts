@@ -259,7 +259,10 @@ describe('adapter-stage denials are in the decision record', () => {
     const name = '读取\u0301';
     const unicode = pre(ctx, 'claude-code', name, { note: 'café' }, 'uni');
     expect(unicode.status, unicode.stderr).toBe(2);
-    expect(linesOf(ctx.state).at(-1)).toMatchObject({ class: 'unmapped', tool: name, verdict: 'deny' });
+    const uniLine = linesOf(ctx.state).at(-1)!;
+    expect(uniLine).toMatchObject({ class: 'unmapped', verdict: 'deny' });
+    expect(uniLine.tool).toBe('<tool name withheld>:' + crypto.createHash('sha256').update(name).digest('hex'));
+    expect(JSON.stringify(uniLine)).not.toContain(name);
 
     const dotdot = pre(ctx, 'claude-code', 'Bash', { command: 'cat foo/../../.claude/settings.json' }, 'dots');
     expect(dotdot.status, dotdot.stderr).toBe(2);
@@ -287,8 +290,7 @@ describe('adapter-stage denials are in the decision record', () => {
     const secretLine = linesOf(ctx.state).at(-1)!;
     expect(secretLine.class).toBe('unmapped');
     expect(JSON.stringify(secretLine)).not.toContain(ctx.key);
-    expect(String(secretLine.tool)).toContain('<keyfile>');
-    expect(String(secretLine.tool).length).toBeLessThanOrEqual(200);
+    expect(String(secretLine.tool)).toMatch(/^<tool name withheld>:[0-9a-f]{64}$/);
 
     const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
     const nullDigest = sha('null');
@@ -296,9 +298,16 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(huge.status, huge.stderr).toBe(2);
     const hugeLine = linesOf(ctx.state).at(-1)!;
     expect(hugeLine.class).toBe('unmapped');
-    const sizeDigest = sha(JSON.stringify('<input too large>'));
+    const sizeDigest = sha('speckl:withheld:size');
     expect(hugeLine.input_sha256).toBe(sizeDigest);
+    expect(hugeLine.input_withheld).toBe('size');
     expect(hugeLine.input_sha256).not.toBe(nullDigest);
+    const asText = pre(ctx, 'claude-code', 'WebFetch', '<input too large>', 'marker-text');
+    expect(asText.status, asText.stderr).toBe(2);
+    const textLine = linesOf(ctx.state).at(-1)!;
+    expect(textLine.input_sha256).toBe(sha(JSON.stringify('<input too large>')));
+    expect(textLine.input_sha256).not.toBe(sizeDigest);
+    expect(textLine.input_withheld).toBeUndefined();
 
     let deep: unknown = { command: 'nope' };
     for (let i = 0; i < 40; i++) deep = { nested: deep };
@@ -310,7 +319,9 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(nested.stderr).not.toContain('Speckl-protected path');
     const deepLine = linesOf(ctx.state).at(-1)!;
     expect(deepLine.class).toBe('bad-payload');
-    expect(deepLine.input_sha256).toBe(sha(JSON.stringify('<input too deep>')));
+    expect(deepLine.input_withheld).toBe('depth');
+    expect(deepLine.input_sha256).toBe(sha('speckl:withheld:depth'));
+    expect(deepLine.input_sha256).not.toBe(sha(JSON.stringify('<input too deep>')));
     expect(deepLine.input_sha256).not.toBe(nullDigest);
 
     const verify = run(join(agentDir, 'signal.mjs'), ['verify', '--state', ctx.state, '--key', ctx.key]);
@@ -342,7 +353,7 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(hidden.status, hidden.stderr).toBe(2);
     const line = linesOf(ctx.state).at(-1)!;
     expect(JSON.stringify(line)).not.toContain(ctx.key);
-    expect(String(line.call_id)).toContain('<keyfile>');
+    expect(String(line.call_id)).toMatch(/^<call id withheld>:[0-9a-f]{64}$/);
     expect(String(line.call_id).length).toBeLessThanOrEqual(200);
   });
 
@@ -398,15 +409,31 @@ describe('adapter-stage denials are in the decision record', () => {
       expect(blob, name).not.toContain('keys/state.key');
       expect(blob, name).not.toContain('keys/./state.key');
       expect(blob, name).not.toContain('<keyfile>/./');
-      expect(blob, name).toContain('<keyfile>');
+      expect(String(line.tool), name).toMatch(/^<tool name withheld>:[0-9a-f]{64}$/);
       expect(line.class, name).toBe('unmapped');
       expect(r.stderr, name).not.toContain(base);
     }
+    const lookalikes = [
+      key.replace(/\//g, '\u2215'),
+      key.replace(/\//g, '\uFF0F'),
+      key.replace(/\//g, '/\u200b'),
+      key.replace(/\//g, '%252f'),
+      key.replace(/\//g, '&#47;'),
+      key.toUpperCase(),
+    ];
+    for (const name of lookalikes) {
+      const r = pre(ctx, 'claude-code', 'mcp__' + name, {}, 'look');
+      expect(r.status, r.stderr).toBe(2);
+      const line = linesOf(state).at(-1)!;
+      expect(String(line.tool)).toMatch(/^<tool name withheld>:[0-9a-f]{64}$/);
+      expect(JSON.stringify(line)).not.toContain(name);
+      expect(JSON.stringify(line)).not.toContain('keys/state.key');
+    }
     const asId = pre(ctx, 'claude-code', 'WebFetch', {}, '../keys/state.key');
     expect(asId.status, asId.stderr).toBe(2);
-    const idLine = JSON.stringify(linesOf(state).at(-1));
-    expect(idLine).not.toContain('keys/state.key');
-    expect(idLine).toContain('<keyfile>');
+    const idLine = linesOf(state).at(-1)!;
+    expect(JSON.stringify(idLine)).not.toContain('keys/state.key');
+    expect(String(idLine.call_id)).toMatch(/^<call id withheld>:[0-9a-f]{64}$/);
     const hostile = [
       'mcp__x__shell control characters',
       'mcp__x__protected path',
@@ -453,6 +480,68 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(timed.stderr).toContain('(denial not recorded: hook.mjs timed out)');
     expect(timed.stderr).toContain('unmapped harness tool "WebFetch"');
   }, 20_000);
+
+  it('a dead lock owner does not block the next allow, and a denial flood stays bounded', async () => {
+    const ctx = newState();
+    const lock = ctx.state + '.lock';
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    await new Promise<void>((resolve, reject) => {
+      holder.on('error', reject);
+      holder.on('spawn', () => resolve());
+    });
+    writeFileSync(lock, String(holder.pid));
+    holder.kill('SIGKILL');
+    await new Promise<void>(resolve => holder.on('exit', () => resolve()));
+    const t0 = Date.now();
+    const allowed = pre(ctx, 'claude-code', 'Bash', { command: 'git status' }, 'after-dead-lock');
+    const dt = Date.now() - t0;
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(dt, 'dead lock owner').toBeLessThan(2000);
+    expect(existsSync(lock)).toBe(false);
+    const clear = adapter(ctx, 'claude-code', 'post', payload('claude-code', 'PostToolUse', 'Bash', { command: 'git status' }, 'after-dead-lock'));
+    expect(clear.status, clear.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(ctx.state, 'utf-8')).pending).toBeNull();
+
+    const floodN = 40;
+    const flood = Array.from({ length: floodN }, (_, i) => new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        join(agentDir, 'adapter.mjs'), 'claude-code', 'pre',
+        '--project', ctx.project, '--state', ctx.state, '--key', ctx.key,
+      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+      child.on('error', reject);
+      child.on('exit', code => code === 2 ? resolve() : reject(new Error('flood ' + i + ' exit ' + code)));
+      child.stdin.end(JSON.stringify({
+        hook_event_name: 'PreToolUse', tool_name: 'WebFetch', tool_input: {}, tool_use_id: 'f' + i, cwd: ctx.project,
+      }));
+    }));
+    await new Promise(r => setTimeout(r, 50));
+    const a0 = Date.now();
+    const during = pre(ctx, 'claude-code', 'Bash', { command: 'git status' }, 'during-flood');
+    const allowMs = Date.now() - a0;
+    await Promise.all(flood);
+    expect(during.status, during.stderr + ' after ' + allowMs + 'ms').toBe(0);
+    expect(allowMs, 'allow latency under a denial flood').toBeLessThan(4000);
+    const post = adapter(ctx, 'claude-code', 'post', payload('claude-code', 'PostToolUse', 'Bash', { command: 'git status' }, 'during-flood'));
+    expect(post.status === 0 || post.status === 2, post.stderr).toBe(true);
+    const verify = run(join(agentDir, 'signal.mjs'), ['verify', '--state', ctx.state, '--key', ctx.key]);
+    expect(verify.status, verify.stderr).toBe(0);
+  }, 30_000);
+
+  it('a short normalized key path is refused with a visible notice and no record', () => {
+    const ctx = newState();
+    const rel = join(ctx.project, 'k.key');
+    writeFileSync(rel, readFileSync(ctx.key));
+    const before = linesOf(ctx.state).length;
+    const denied = run(join(agentDir, 'adapter.mjs'), [
+      'claude-code', 'pre', '--project', ctx.project, '--state', ctx.state, '--key', './././k.key',
+    ], JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'mcp__x__k.key', tool_input: {}, tool_use_id: 's', cwd: ctx.project,
+    }), { ...process.env });
+    expect(denied.status, denied.stderr).toBe(2);
+    expect(denied.stderr).toContain('(denial not recorded: state key path too short)');
+    expect(linesOf(ctx.state)).toHaveLength(before);
+    expect(denied.stderr).not.toContain('mcp__x__k.key');
+  });
 
   it('a post-event unmapped call is recorded as phase post', () => {
     const ctx = newState();

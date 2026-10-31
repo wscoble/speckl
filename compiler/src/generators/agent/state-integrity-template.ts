@@ -411,6 +411,7 @@ function decisionLineError(line, seq, prev, key) {
   // Present only on adapter-stage denials. A hook pre/post line omits it.
   // Kept as its own check so a completion-signal shape check can follow it.
   if (body.class !== undefined && body.class !== 'unmapped' && body.class !== 'metachar' && body.class !== 'protected-path' && body.class !== 'bad-payload' && body.class !== 'other') return 'class';
+  if (body.input_withheld !== undefined && body.input_withheld !== 'size' && body.input_withheld !== 'depth' && body.input_withheld !== 'wide') return 'input_withheld';
   return null;
 }
 
@@ -565,6 +566,9 @@ export function appendDecision(stateFile, key, state, fields) {
   // on the next lines, before the hash, and must not reorder the keys above.
   if (fields.class === 'unmapped' || fields.class === 'metachar' || fields.class === 'protected-path' || fields.class === 'bad-payload' || fields.class === 'other') {
     body.class = fields.class;
+  }
+  if (fields.input_withheld === 'size' || fields.input_withheld === 'depth' || fields.input_withheld === 'wide') {
+    body.input_withheld = fields.input_withheld;
   }
   const hash = sha(canonical(body));
   const line = { ...body, hash };

@@ -2351,6 +2351,24 @@ export function runAdapter(
   const keyPathTooShort = (p: unknown): boolean => {
     if (typeof p !== 'string' || p.length === 0) return false;
     if (p.length < 8) return true;
+    // Collapse `.` and `..` before the length check. `./././k.key` is 11
+    // characters and normalizes to `k.key`, which is too short to redact.
+    const slash = p.replace(/\\/g, '/');
+    const abs = slash.charAt(0) === '/';
+    const parts = slash.split('/');
+    const normParts: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === '' || part === '.') continue;
+      if (part === '..') {
+        if (normParts.length > 0 && normParts[normParts.length - 1] !== '..') normParts.pop();
+        else if (!abs) normParts.push('..');
+        continue;
+      }
+      normParts.push(part);
+    }
+    const norm = abs ? '/' + normParts.join('/') : (normParts.join('/') || '.');
+    if (norm.length < 8) return true;
     const candidates: string[] = [p];
     const bases = [projectDir, deps.cwd];
     for (let i = 0; i < bases.length; i++) {
@@ -2447,9 +2465,14 @@ export function runAdapter(
   const recordAdapterDenial = (cls: string, text: string): string => {
     // batch and turn-end never block the loop, so they are not tool refusals.
     // A missing state has nothing to append to. The deny still stands.
-    // Worst case: a busy state lock fails the record after 5 seconds
-    // (hook.mjs acquireLock). A hung recorder is killed at
-    // SPECKL_HOOK_TIMEOUT_MS (default 20 seconds). Either way stderr says so.
+    // A denial waits at most 1 second for the state lock, so a flood of
+    // denials cannot use the 5 second pre/post budget. A hung recorder is
+    // stopped with SIGTERM at SPECKL_HOOK_TIMEOUT_MS (default 20 seconds);
+    // the hook releases the lock on that signal. A lock whose owner pid is
+    // already dead is broken immediately. stderr says when the line was not
+    // written. Parsers should treat "(denial not recorded:" as a notice only
+    // when the whole stderr line begins with it. A tool name can quote the
+    // same words inside the reason.
     if (!flags.state || event === 'batch' || event === 'turn-end') return '';
     const judged = inputForRecord(denialCtx.input);
     let stateForRecord = '';
@@ -2482,7 +2505,9 @@ export function runAdapter(
   };
   // A key path under 8 characters cannot be redacted, so it is not sent to
   // hook.mjs deny either. The hook would refuse it for the same reason.
-  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
+  // The notice is its own stderr line so a missing record is visible.
+  const shortKeyOut = shortKeyPath + '\n(denial not recorded: state key path too short)';
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyOut);
   if (!harnesses[harness]) {
     return fail('harness ' + JSON.stringify(harness) + ' is not declared in the spec (declared: ' + (Object.keys(harnesses).join(', ') || 'none') + ')', 'other');
   }
@@ -2505,7 +2530,7 @@ export function runAdapter(
   };
   try { denialCtx.callId = harnessCallId(harness, payload); } catch { denialCtx.callId = null; }
   if (!flags.project && !envDir && typeof payload.cwd === 'string' && payload.cwd) projectDir = payload.cwd;
-  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyOut);
   if (payload.hook_event_name !== undefined && payload.hook_event_name !== expected) {
     return fail('payload is ' + JSON.stringify(payload.hook_event_name) + ' but this hook is wired as ' + expected, 'bad-payload');
   }

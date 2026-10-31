@@ -74,9 +74,22 @@ export function redactSecrets(text: string, secrets: unknown, keep?: unknown): s
       if (bases.indexOf(dir) === -1) bases.push(dir);
     }
   }
-  // `%2e` `%2f` `%5c` are `.` `/` `\` in a tool name. Decode those three
-  // before the path scan so a percent spelling cannot keep the key path.
-  s = s.replace(/%2e/gi, '.').replace(/%2f/gi, '/').replace(/%5c/gi, '\\');
+  // `%2e` `%2f` `%5c` are `.` `/` `\` . Decode a copy for matching only.
+  // The stored text keeps the original spelling when nothing was a secret.
+  const decodePathEscapes = (src: string): { decoded: string; map: number[] } => {
+    let decoded = '';
+    const map: number[] = [];
+    for (let i = 0; i < src.length;) {
+      const three = src.slice(i, i + 3);
+      map.push(i);
+      if (/^%2e$/i.test(three)) { decoded += '.'; i += 3; }
+      else if (/^%2f$/i.test(three)) { decoded += '/'; i += 3; }
+      else if (/^%5c$/i.test(three)) { decoded += '\\'; i += 3; }
+      else { decoded += src.charAt(i); i++; }
+    }
+    map.push(src.length);
+    return { decoded, map };
+  };
   const pathStops = /[\s"'<>|;&,`()\[\]{}]/;
   const hits = (raw: string): boolean => {
     if (raw.length < 4) return false;
@@ -91,39 +104,39 @@ export function redactSecrets(text: string, secrets: unknown, keep?: unknown): s
   };
   // Before the exact-string pass. Replacing a parent directory first would
   // leave `<keyfile>/./state.key` for a `/.` spelling of the file.
-  let rebuilt = '';
-  for (let i = 0; i < s.length;) {
-    const rel = s.startsWith('../', i) || s.startsWith('./', i) || s.startsWith('..\\', i) || s.startsWith('.\\', i);
-    const abs = s.charAt(i) === '/' || s.charAt(i) === '\\';
-    if (!rel && !abs) { rebuilt += s.charAt(i); i++; continue; }
+  const decodedPath = decodePathEscapes(s);
+  const spans: number[][] = [];
+  const scanned = decodedPath.decoded;
+  for (let i = 0; i < scanned.length;) {
+    const rel = scanned.startsWith('../', i) || scanned.startsWith('./', i) || scanned.startsWith('..\\', i) || scanned.startsWith('.\\', i);
+    const abs = scanned.charAt(i) === '/' || scanned.charAt(i) === '\\';
+    if (!rel && !abs) { i++; continue; }
     let j = i + 1;
-    while (j < s.length && !pathStops.test(s.charAt(j))) j++;
-    const raw = s.slice(i, j);
-    // `keys/./state.key` does not start at the slash. Take the segment in
-    // front of it, but stop at `_` so `mcp__/<abs>` stays an absolute path.
+    while (j < scanned.length && !pathStops.test(scanned.charAt(j))) j++;
+    const raw = scanned.slice(i, j);
     let start = i;
     if (abs) {
       while (start > 0) {
-        const c = s.charAt(start - 1);
+        const c = scanned.charAt(start - 1);
         if (c === '_' || c === '/' || c === '\\' || pathStops.test(c)) break;
         if (!/[A-Za-z0-9.~+-]/.test(c)) break;
         start--;
       }
     }
-    const wider = start < i ? s.slice(start, j) : raw;
+    const wider = start < i ? scanned.slice(start, j) : raw;
     if (hits(raw) || (start < i && hits(wider))) {
-      if (start < i && hits(wider) && !hits(raw)) {
-        const prefix = s.slice(start, i);
-        if (rebuilt.endsWith(prefix)) rebuilt = rebuilt.slice(0, rebuilt.length - prefix.length);
-      }
-      rebuilt += '<keyfile>';
+      const from = (start < i && hits(wider) && !hits(raw)) ? start : i;
+      spans.push([from, j]);
       i = j;
       continue;
     }
-    rebuilt += s.charAt(i);
     i++;
   }
-  s = rebuilt;
+  for (let n = spans.length - 1; n >= 0; n--) {
+    const from = decodedPath.map[spans[n][0]];
+    const to = decodedPath.map[spans[n][1]];
+    s = s.slice(0, from) + '<keyfile>' + s.slice(to);
+  }
   const forms: string[] = [];
   for (const secret of list) {
     if (!/^[0-9a-fA-F]{64}$/.test(secret)) continue;

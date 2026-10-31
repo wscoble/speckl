@@ -40,11 +40,14 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
  * An adapter-stage denial (before hook.mjs pre/post) is also appended to the
  * decision record by \`hook.mjs deny\` once the state verifies. The call stays
- * denied when that record cannot be written, and stderr then says
- * "(denial not recorded: ...)". A busy state lock fails that write after
- * 5 seconds. A hung recorder is stopped at SPECKL_HOOK_TIMEOUT_MS
- * (default 20 seconds). Whoever holds the state key can append deny lines;
- * that is the same HMAC trust as pre and post, not a third-party signature.
+ * denied when that record cannot be written. A stderr line that begins
+ * with "(denial not recorded:" is that notice. Match only a whole line;
+ * a tool name can quote the same words inside the reason. A denial waits
+ * at most 1 second for the state lock. The lock stores the owner's pid
+ * and is broken at once when that pid is dead. A timeout sends SIGTERM
+ * so the hook can release the lock. SPECKL_HOOK_TIMEOUT_MS defaults to
+ * 20 seconds. Whoever holds the state key can append deny lines; that is
+ * the same HMAC trust as pre and post, not a third-party signature.
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
 import crypto from 'node:crypto';
@@ -75,7 +78,9 @@ const deps = {
     // wiring) so a hung hook.mjs is answered with a deny, not a fail-open.
     const t = Number(process.env.SPECKL_HOOK_TIMEOUT_MS);
     const timeout = Number.isFinite(t) && t > 0 ? t : 20000;
-    const r = spawnSync(process.execPath, args, { input: JSON.stringify(msg), encoding: 'utf-8', timeout, killSignal: 'SIGKILL' });
+    // SIGTERM, not SIGKILL: hook.mjs drops the state lock in its SIGTERM
+    // handler. SIGKILL cannot be caught and would leave the lock behind.
+    const r = spawnSync(process.execPath, args, { input: JSON.stringify(msg), encoding: 'utf-8', timeout, killSignal: 'SIGTERM' });
     const why = r.error
       ? (r.error.code === 'ETIMEDOUT' ? 'hook.mjs timed out after ' + timeout + 'ms' : 'hook.mjs could not be started')
       : (r.signal ? 'hook.mjs killed by ' + r.signal : '');

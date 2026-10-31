@@ -543,12 +543,20 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 # the state verifies; denials before that are not recorded. Adapter-stage
 # denials (unmapped tool, shell metacharacters, a protected path, a bad
 # payload) are recorded by hook.mjs deny once the state verifies, with a
-# class on that line. Whoever can read the state key can append those lines;
+# class on that line. A tool name or call id outside [A-Za-z0-9_.:-]{1,200}
+# is stored as "<tool name withheld>:<sha256>" or "<call id withheld>:<sha256>",
+# not as the raw text. Whoever can read the state key can append those lines;
 # they have no provenance beyond the HMAC, the same trust as pre and post.
-# A busy state lock gives up after 5 seconds, and the adapter stops waiting
-# after SPECKL_HOOK_TIMEOUT_MS (default 20 seconds). The call is still denied,
-# and stderr says the denial was not recorded. verify walks every decision
-# line (the hook's check stops at the tail once the log passes 256 KiB).
+# A denial waits at most 1 second for the state lock. pre and post wait 5.
+# The lock file holds the owner's pid and is broken at once when that pid
+# is dead. SIGTERM releases it. An empty lock with no pid is broken after
+# 30 seconds. The adapter stops a hung recorder at SPECKL_HOOK_TIMEOUT_MS
+# (default 20 seconds). The call is still denied, and a stderr line that
+# begins with "(denial not recorded:" says why. Match only a whole line
+# that starts with that prefix. A key path that normalizes to fewer than
+# 8 characters is not recorded, and that same notice says so.
+# verify walks every decision line (the hook's check stops at the tail
+# once the log passes 256 KiB).
 node signal.mjs verify --state ./state.json
 \`\`\`
 

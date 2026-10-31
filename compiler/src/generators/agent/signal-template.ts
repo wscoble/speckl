@@ -36,6 +36,12 @@ function releaseLock() {
     lockHeld = null;
   }
 }
+function onStop() {
+  releaseLock();
+  process.exit(1);
+}
+process.on('SIGTERM', onStop);
+process.on('SIGINT', onStop);
 
 function fail(msg, code = 1) {
   const err = new Error(msg);
@@ -83,20 +89,31 @@ function atomicWrite(file, data) {
 
 function lockPath(s) { return s + '.lock'; }
 
+function lockOwnerDead(lp) {
+  let text = '';
+  try { text = fs.readFileSync(lp, 'utf-8'); } catch { return false; }
+  const pid = parseInt(String(text).trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (e) { return !!(e && e.code === 'ESRCH'); }
+}
+
 async function acquireLock(stateFile) {
   const lp = lockPath(stateFile);
   const start = Date.now();
   while (true) {
     try {
       const fd = fs.openSync(lp, 'wx');
-      fs.closeSync(fd);
+      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
       lockHeld = lp;
       return;
     } catch (e) {
       if (e && e.code !== 'EEXIST') throw e;
-      // Break a lock left behind by a crashed holder (older than 30s).
+      // A dead owner's pid is broken at once. A lock with no pid is the
+      // old file and is broken only after 30s.
       try {
-        if (Date.now() - fs.statSync(lp).mtimeMs > 30000) { fs.unlinkSync(lp); continue; }
+        const stale = Date.now() - fs.statSync(lp).mtimeMs > 30000;
+        if (stale || lockOwnerDead(lp)) { fs.unlinkSync(lp); continue; }
       } catch { /* raced with release; retry */ }
       if (Date.now() - start > 5000) throw new Error('state lock timeout');
       await new Promise(r => setTimeout(r, 10));

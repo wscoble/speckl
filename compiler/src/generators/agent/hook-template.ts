@@ -66,6 +66,7 @@ export function emitHookMjs(speckName: string): string {
  * is sha256 of the canonical spec tool name and mapped arguments (see
  * state-integrity.mjs callDigest). The binding itself stays in state.log.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -124,6 +125,9 @@ function secretPaths(state) {
 function keyPathTooShort(p) {
   if (typeof p !== 'string' || !p) return false;
   if (p.length < 8) return true;
+  // ./././k.key is 11 characters and normalizes to k.key (5).
+  const lex = path.normalize(p).replace(/\\\\/g, '/');
+  if (lex.length < 8) return true;
   const candidates = [p];
   try {
     const abs = path.resolve(p);
@@ -173,6 +177,16 @@ function releaseLock() {
     lockHeld = null;
   }
 }
+// SIGKILL cannot be caught. SIGTERM is what the adapter sends when the
+// recorder times out, so the lock is removed before the process dies.
+// A kill -9 still leaves the file; the next acquire breaks it when the
+// pid inside is dead.
+function onStop() {
+  releaseLock();
+  process.exit(1);
+}
+process.on('SIGTERM', onStop);
+process.on('SIGINT', onStop);
 
 function respond(decision, reason, code) {
   const body = reason ? { decision, reason } : { decision };
@@ -198,7 +212,7 @@ function seal(verdict, reason) {
     action: audit.action,
     verdict,
     reason: verdict === 'deny' ? clean(reason) : reason,
-    input_sha256: digestInput(audit.input),
+    input_sha256: audit.inputSha || digestInput(audit.input),
   };
   // Set only for hook.mjs deny. Absent on pre/post, so those lines stay
   // the same shape. A trace object, if one is added later, is a sibling.
@@ -208,6 +222,7 @@ function seal(verdict, reason) {
     if (typeof fields.tool === 'string' && fields.tool.length > 200) fields.tool = fields.tool.slice(0, 200);
     if (typeof fields.call_id === 'string' && fields.call_id.length > 200) fields.call_id = fields.call_id.slice(0, 200);
   }
+  if (audit.inputWithheld) fields.input_withheld = audit.inputWithheld;
   appendDecision(audit.file, audit.key, audit.state, fields);
   audit.sealed = true;
   audit.verdict = verdict;
@@ -244,22 +259,34 @@ function parseArgs(argv) {
 
 function lockPath(stateFile) { return stateFile + '.lock'; }
 
-async function acquireLock(stateFile) {
+function lockOwnerDead(lp) {
+  let text = '';
+  try { text = fs.readFileSync(lp, 'utf-8'); } catch { return false; }
+  const pid = parseInt(String(text).trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (e) { return !!(e && e.code === 'ESRCH'); }
+}
+
+async function acquireLock(stateFile, waitMs) {
   const lp = lockPath(stateFile);
   const start = Date.now();
+  const limit = typeof waitMs === 'number' && waitMs > 0 ? waitMs : 5000;
   while (true) {
     try {
       const fd = fs.openSync(lp, 'wx');
-      fs.closeSync(fd);
+      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
       lockHeld = lp;
       return;
     } catch (e) {
       if (!e || e.code !== 'EEXIST') throw new Error('state lock could not be taken');
-      // Break a lock left behind by a crashed holder (older than 30s).
+      // A dead owner's lock is broken at once. An empty or unreadable lock
+      // (no pid) is still broken only after 30s, the old rule.
       try {
-        if (Date.now() - fs.statSync(lp).mtimeMs > 30000) { fs.unlinkSync(lp); continue; }
+        const stale = Date.now() - fs.statSync(lp).mtimeMs > 30000;
+        if (stale || lockOwnerDead(lp)) { fs.unlinkSync(lp); continue; }
       } catch { /* raced with release; retry */ }
-      if (Date.now() - start > 5000) throw new Error('state lock timeout');
+      if (Date.now() - start > limit) throw new Error('state lock timeout');
       await new Promise(r => setTimeout(r, 10));
     }
   }
@@ -379,7 +406,9 @@ async function main() {
   catch { finishDeny(1, () => renderDenyReason('internal', 'stdin is not JSON', internalNext('stdin'), secretPaths())); }
 
   try {
-    await acquireLock(args.state);
+    // Denials wait at most 1s so a flood of them cannot hold an allow
+    // for the full 5s pre/post budget.
+    await acquireLock(args.state, args.cmd === 'deny' ? 1000 : 5000);
   } catch (e) {
     const msg = e instanceof Error ? e.message : '';
     const known = msg === 'state lock timeout' ? msg : 'state lock could not be taken';
@@ -436,19 +465,45 @@ async function main() {
     if (args.cmd === 'deny') {
       const cls = typeof msg.class === 'string' ? msg.class : '';
       const known = cls === 'unmapped' || cls === 'metachar' || cls === 'protected-path' || cls === 'bad-payload' || cls === 'other';
-      const given = typeof msg.reason === 'string' ? msg.reason : '';
+      let given = typeof msg.reason === 'string' ? msg.reason : '';
       if (!known || !given) {
         respond('deny', 'Speckl denied (internal error, fail closed): adapter denial was not recorded. Next: the call stays denied. Do not retry it.', 2);
       }
       audit.class = cls;
       audit.phase = msg.phase === 'post' ? 'post' : 'pre';
-      // A non-string tool name must not become "[object Object]".
-      audit.tool = typeof msg.tool === 'string' ? msg.tool : null;
-      audit.callId = typeof msg.call_id === 'string' && msg.call_id !== '' ? msg.call_id : null;
-      // Distinct from a real null input, whose digest is sha256("null").
-      if (msg.input_withheld === 'size') audit.input = '<input too large>';
-      else if (msg.input_withheld === 'depth') audit.input = '<input too deep>';
-      else if (msg.input_withheld === 'wide') audit.input = '<input too wide>';
+      // Only a safe charset is stored as text. Anything else (slashes, spaces,
+      // unicode, percent escapes) is a hash of the original bytes. The 64-hex
+      // hash is kept through redaction via audit.keep.
+      const safeName = /^[A-Za-z0-9_.:-]{1,200}$/;
+      const rawTool = typeof msg.tool === 'string' ? msg.tool : '';
+      const rawId = typeof msg.call_id === 'string' ? msg.call_id : '';
+      const tag = (kind, raw) => {
+        const hex = crypto.createHash('sha256').update(raw).digest('hex');
+        audit.keep.push(hex);
+        return '<' + kind + ' withheld>:' + hex;
+      };
+      if (!audit.keep) audit.keep = [];
+      if (rawTool && safeName.test(rawTool)) audit.tool = rawTool;
+      else if (rawTool) audit.tool = tag('tool name', rawTool);
+      else audit.tool = null;
+      if (rawId && safeName.test(rawId)) audit.callId = rawId;
+      else if (rawId) audit.callId = tag('call id', rawId);
+      else audit.callId = null;
+      if (rawTool && !safeName.test(rawTool)) {
+        given = given.split(JSON.stringify(rawTool)).join('"<tool name withheld>"');
+        if (rawTool.length >= 8) given = given.split(rawTool).join('<tool name withheld>');
+      }
+      if (rawId && !safeName.test(rawId) && rawId.length >= 8) {
+        given = given.split(rawId).join('<call id withheld>');
+      }
+      // Domain-separated digest. A real input equal to the words
+      // "<input too large>" hashes as that JSON string, not as this.
+      if (msg.input_withheld === 'size' || msg.input_withheld === 'depth' || msg.input_withheld === 'wide') {
+        audit.input = null;
+        audit.inputWithheld = msg.input_withheld;
+        audit.inputSha = crypto.createHash('sha256').update('speckl:withheld:' + msg.input_withheld).digest('hex');
+        audit.keep.push(audit.inputSha);
+      }
       finishDeny(0, () => given);
     }
     if (state.specHash !== config.specHash) {

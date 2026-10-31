@@ -326,7 +326,7 @@ describe('runAdapter', () => {
     const short = runAdapter(['claude-code', 'pre', '--state', 's', '--key', 'short'], { CLAUDE_PROJECT_DIR: '/p' }, ccPre('Bash', { command: 'npm test' }), config, recorded);
     expect(short.code).toBe(2);
     expect(short.stderr).toContain('shorter than 8');
-    expect(short.stderr).not.toContain('denial not recorded');
+    expect(short.stderr).toContain('(denial not recorded: state key path too short)');
     expect(recorded.calls).toHaveLength(0);
     const crashed = fakeDeps({
       runHook: () => { throw new Error('disk full /k/state.key'); },
