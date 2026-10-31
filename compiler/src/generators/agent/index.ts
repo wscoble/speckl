@@ -540,8 +540,11 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 
 # State chain plus the decision record. The record is an HMAC with the state
 # key, not a third-party signature. It is empty until the first verdict after
-# the state verifies; denials before that are not recorded. verify walks every
-# decision line (the hook's check stops at the tail once the log passes 256 KiB).
+# the state verifies; denials before that are not recorded. Adapter-stage
+# denials (unmapped tool, shell metacharacters, a protected path, a bad
+# payload) are recorded by hook.mjs deny once the state verifies, with a
+# class on that line. verify walks every decision line (the hook's check
+# stops at the tail once the log passes 256 KiB).
 node signal.mjs verify --state ./state.json
 \`\`\`
 

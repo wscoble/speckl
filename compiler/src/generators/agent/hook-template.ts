@@ -46,6 +46,14 @@ export function emitHookMjs(speckName: string): string {
  * the state verifies are denied and not recorded. If the record cannot be
  * written, the call is denied.
  *
+ *   node hook.mjs deny --state <file>   # stdin JSON {class,reason,phase,tool,call_id,input}
+ *
+ * \`deny\` records a refusal the adapter already made (unmapped tool, shell
+ * metacharacters, a protected path, a bad payload, or other) and does not
+ * run the tool or change state.json. The line is a deny with that \`class\`.
+ * A class or reason the hook does not accept is not appended. The adapter
+ * still denies when this command fails.
+ *
  * A call-bound sign-off (await \`bind call\`) allows one later call whose
  * digest matches the signed \`call\` hash, and only once that call's post
  * succeeds. Any other call is denied and that denial is recorded. The hash
@@ -177,7 +185,7 @@ function seal(verdict, reason) {
   const secrets = secretPaths(audit.state);
   const keep = audit.keep || [];
   const clean = (v) => v == null ? null : redactSecrets(String(v), secrets, keep);
-  appendDecision(audit.file, audit.key, audit.state, {
+  const fields = {
     phase: audit.phase,
     tool: clean(audit.tool),
     call_id: audit.callId == null || audit.callId === '' ? null : clean(audit.callId),
@@ -185,7 +193,16 @@ function seal(verdict, reason) {
     verdict,
     reason: verdict === 'deny' ? clean(reason) : reason,
     input_sha256: digestInput(audit.input),
-  });
+  };
+  // Set only for hook.mjs deny. Absent on pre/post, so those lines stay
+  // the same shape. A trace object, if one is added later, is a sibling.
+  // Clip after redaction so a long tool name cannot keep a cut-off key path.
+  if (audit.class) {
+    fields.class = audit.class;
+    if (typeof fields.tool === 'string' && fields.tool.length > 200) fields.tool = fields.tool.slice(0, 200);
+    if (typeof fields.call_id === 'string' && fields.call_id.length > 200) fields.call_id = fields.call_id.slice(0, 200);
+  }
+  appendDecision(audit.file, audit.key, audit.state, fields);
   audit.sealed = true;
   audit.verdict = verdict;
 }
@@ -341,8 +358,8 @@ async function main() {
   if (keyPathTooShort(hookKeyArg) || keyPathTooShort(process.env.SPECKL_STATE_KEY_FILE)) {
     respond('deny', 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.', 2);
   }
-  if (args.cmd !== 'pre' && args.cmd !== 'post') {
-    finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post --state <file>', internalNext('usage'), secretPaths()));
+  if (args.cmd !== 'pre' && args.cmd !== 'post' && args.cmd !== 'deny') {
+    finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post|deny --state <file>', internalNext('usage'), secretPaths()));
   }
   if (!args.state) {
     finishDeny(1, () => renderDenyReason('internal', 'missing --state', internalNext('usage'), secretPaths()));
@@ -399,7 +416,22 @@ async function main() {
       keep: [],
       sealed: false,
       verdict: null,
+      class: null,
     };
+    // Adapter-stage denial. The adapter already refused the call. Record
+    // that refusal and exit. Do not run the tool, and do not touch state.json.
+    // A missing class or reason is not appended; the adapter still denies.
+    if (args.cmd === 'deny') {
+      const cls = typeof msg.class === 'string' ? msg.class : '';
+      const known = cls === 'unmapped' || cls === 'metachar' || cls === 'protected-path' || cls === 'bad-payload' || cls === 'other';
+      const given = typeof msg.reason === 'string' ? msg.reason : '';
+      if (!known || !given) {
+        respond('deny', 'Speckl denied (internal error, fail closed): adapter denial was not recorded. Next: the call stays denied. Do not retry it.', 2);
+      }
+      audit.class = cls;
+      audit.phase = msg.phase === 'post' ? 'post' : 'pre';
+      finishDeny(2, () => given);
+    }
     if (state.specHash !== config.specHash) {
       finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));
     }

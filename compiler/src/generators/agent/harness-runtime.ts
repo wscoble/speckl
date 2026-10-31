@@ -51,8 +51,11 @@ export interface AdapterConfig {
 export interface HookResult { status: number | null; stdout: string; stderr: string }
 
 export interface AdapterDeps {
-  /** Run hook.mjs `pre` | `post` with the generic JSON message. */
-  runHook(cmd: 'pre' | 'post', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult;
+  /**
+   * Run hook.mjs. `pre` and `post` are the gate. `deny` records an
+   * adapter-stage denial (the gate already refused) and does not run the tool.
+   */
+  runHook(cmd: 'pre' | 'post' | 'deny', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult;
   /** Absolute path of a path relative to a base directory. */
   resolvePath(base: string, p: string): string;
   /** path.relative(from, to). */
@@ -2389,8 +2392,74 @@ export function runAdapter(
     if (isPre || harnessEventName(harness, event) === null) return formatPre(harness, false, msg);
     return formatPost(harness, msg);
   };
-  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
-  const fail = (reason: string): AdapterOutput => emitDeny(explainAdapterDeny(reason, secretsFor()));
+  // What the denial was about, filled in as the payload is understood.
+  // Early refusals (bad JSON, unknown event) leave the fields null.
+  let denialCtx: { tool: unknown; input: unknown; callId: unknown } = { tool: null, input: null, callId: null };
+  // The hook hashes this. A huge or deeply nested value is stored as null
+  // so a denial cannot stall or crash the recorder. The class and reason
+  // still name the refusal.
+  const inputForRecord = (value: unknown): unknown => {
+    let encoded = '';
+    try { encoded = JSON.stringify(value === undefined ? null : value); } catch { return null; }
+    if (encoded.length > 65536) return null;
+    const stack: { v: unknown; d: number }[] = [{ v: value, d: 0 }];
+    let n = 0;
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur) break;
+      if (cur.d > 32) return null;
+      n++;
+      if (n > 8000) return null;
+      if (!cur.v || typeof cur.v !== 'object') continue;
+      const next = cur.d + 1;
+      if (Array.isArray(cur.v)) {
+        for (let i = 0; i < cur.v.length; i++) stack.push({ v: cur.v[i], d: next });
+      } else {
+        const keys = Object.keys(cur.v as Record<string, unknown>);
+        for (let i = 0; i < keys.length; i++) stack.push({ v: (cur.v as Record<string, unknown>)[keys[i]], d: next });
+      }
+    }
+    return value === undefined ? null : value;
+  };
+  const recordAdapterDenial = (reason: string, text: string): void => {
+    // batch and turn-end never block the loop, so they are not tool refusals.
+    // A missing state has nothing to append to. The deny still stands.
+    if (!flags.state || event === 'batch' || event === 'turn-end') return;
+    const r = String(reason);
+    let cls = 'other';
+    if (r.indexOf('shell control characters') !== -1) cls = 'metachar';
+    else if (r.indexOf('Speckl-protected path') !== -1 || r.indexOf('protected path') !== -1) cls = 'protected-path';
+    else if (r.indexOf('unmapped harness tool') !== -1 || r.indexOf('no tool_name') !== -1 || r.indexOf('without a Speckl mapping') !== -1 || r.indexOf('invalid pattern') !== -1 || r.indexOf(' needs ') !== -1) cls = 'unmapped';
+    else if (r.indexOf('not JSON') !== -1 || r.indexOf('not a JSON') !== -1 || r.indexOf('tool_input') !== -1 || r.indexOf('tool_use_id') !== -1 || r.indexOf('wired as') !== -1) cls = 'bad-payload';
+    // Do not clip here. hook.mjs redacts, then caps the reason and the
+    // tool and call id. Clipping first can leave a cut-off key path.
+    const sent = text;
+    let stateForRecord = '';
+    let keyForRecord: string | null = null;
+    try {
+      stateForRecord = deps.resolvePath(projectDir, flags.state);
+      keyForRecord = flags.key ? deps.resolvePath(projectDir, flags.key) : null;
+    } catch { return; }
+    try {
+      deps.runHook('deny', {
+        class: cls,
+        reason: sent,
+        phase: event === 'post' || event === 'post-failure' ? 'post' : 'pre',
+        tool: denialCtx.tool == null ? null : denialCtx.tool,
+        call_id: denialCtx.callId == null ? null : denialCtx.callId,
+        input: inputForRecord(denialCtx.input),
+      }, stateForRecord, keyForRecord);
+    } catch { /* the deny still stands when the recorder throws */ }
+  };
+  const fail = (reason: string): AdapterOutput => {
+    const text = explainAdapterDeny(reason, secretsFor());
+    recordAdapterDenial(reason, text);
+    return emitDeny(text);
+  };
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) {
+    recordAdapterDenial('state key path is shorter than 8 characters', shortKeyPath);
+    return emitDeny(shortKeyPath);
+  }
   if (!harnesses[harness]) {
     return fail('harness ' + JSON.stringify(harness) + ' is not declared in the spec (declared: ' + (Object.keys(harnesses).join(', ') || 'none') + ')');
   }
@@ -2406,8 +2475,17 @@ export function runAdapter(
   } catch {
     return fail('hook payload is not JSON');
   }
+  denialCtx = {
+    tool: payload.tool_name === undefined ? null : payload.tool_name,
+    input: payload.tool_input === undefined ? null : payload.tool_input,
+    callId: null,
+  };
+  try { denialCtx.callId = harnessCallId(harness, payload); } catch { denialCtx.callId = null; }
   if (!flags.project && !envDir && typeof payload.cwd === 'string' && payload.cwd) projectDir = payload.cwd;
-  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) {
+    recordAdapterDenial('state key path is shorter than 8 characters', shortKeyPath);
+    return emitDeny(shortKeyPath);
+  }
   if (payload.hook_event_name !== undefined && payload.hook_event_name !== expected) {
     return fail('payload is ' + JSON.stringify(payload.hook_event_name) + ' but this hook is wired as ' + expected);
   }
@@ -2437,6 +2515,7 @@ export function runAdapter(
       if (!isPre) return formatPost(harness, null);
       const pin = parseToolInput(payload.tool_input);
       if (!pin.ok) return fail(pin.reason);
+      denialCtx.input = pin.input;
       const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
       if (hit) return fail(String(payload.tool_name) + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
       return formatPre(harness, true, '');
@@ -2514,6 +2593,7 @@ export function runAdapter(
   }
   const pin0 = parseToolInput(payload.tool_input);
   if (!pin0.ok) return fail(pin0.reason);
+  denialCtx.input = pin0.input;
   if (harness === 'kiro' && event === 'post' && Object.keys(pin0.input).length === 0) {
     // Kiro IDE often sends PostToolUse with an empty tool_input. The pending
     // call carries the spec tool and input its pre hook mapped; the derived

@@ -38,6 +38,9 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
+ * An adapter-stage denial (before hook.mjs pre/post) is also appended to the
+ * decision record by \`hook.mjs deny\` once the state verifies. The call stays
+ * denied when that record cannot be written.
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
 import crypto from 'node:crypto';

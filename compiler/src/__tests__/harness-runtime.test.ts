@@ -231,7 +231,7 @@ function fakeDeps(over: Partial<AdapterDeps> = {}, files: Record<string, string>
   const d = {
     calls,
     files,
-    runHook(cmd: 'pre' | 'post', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
+    runHook(cmd: 'pre' | 'post' | 'deny', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
       calls.push({ cmd, msg, statePath, keyPath });
       return { status: 0, stdout: '{"decision":"allow"}\n', stderr: '' };
     },
@@ -287,28 +287,55 @@ describe('runAdapter', () => {
     expect(cu.code).toBe(2);
     expect(JSON.parse(cu.stdout).permission).toBe('deny');
   });
-  it('pre: denies without calling the hook on bad input', () => {
-    const d = fakeDeps();
-    const cases: [string[], string, string][] = [
-      [['claude-code', 'pre', '--state', 's'], 'not json', 'not JSON'],
-      [['claude-code', 'pre', '--state', 's'], '[1]', 'not a JSON object'],
-      [['claude-code', 'pre', '--state', 's'], ccPre('WebFetch', {}), 'unmapped harness tool'],
-      [['claude-code', 'pre', '--state', 's'], ccPre('Bash', { command: 'npm test' }, { tool_use_id: '' }), 'no tool_use_id'],
-      [['claude-code', 'pre', '--state', 's'], ccPre('Bash', 'bad'), 'not JSON'],
-      [['claude-code', 'pre', '--state', 's'], ccPre('Bash', { command: 'npm test' }, { hook_event_name: 'PostToolUse' }), 'wired as PreToolUse'],
-      [['claude-code', 'pre'], ccPre('Bash', { command: 'npm test' }), 'missing --state'],
-      [['claude-code', 'pre', '--state', 's'], ccPre('Read', { path: '/p/.speckl/agent/hook.mjs' }), 'Speckl-protected path'],
-      [['claude-code', 'pre', '--state', 's'], ccPre('Edit', { file_path: '/p/.claude/settings.json' }), 'Speckl-protected path'],
-      [['claude-code', 'pre', '--state', 's'], ccPre('Edit', { file_path: '/p/.speckl/harness-install/claude-code.json' }), 'Speckl-protected path'],
-      [['claude-code', 'nope', '--state', 's'], ccPre('Bash', {}), 'unknown event'],
-      [['gemini', 'pre', '--state', 's'], ccPre('Bash', {}), 'not declared in the spec'],
+  it('pre: denies without a pre gate call, and records the refusal when --state is set', () => {
+    const cases: [string[], string, string, string | null][] = [
+      [['claude-code', 'pre', '--state', 's'], 'not json', 'not JSON', 'bad-payload'],
+      [['claude-code', 'pre', '--state', 's'], '[1]', 'not a JSON object', 'bad-payload'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('WebFetch', {}), 'unmapped harness tool', 'unmapped'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Bash', { command: 'npm test' }, { tool_use_id: '' }), 'no tool_use_id', 'bad-payload'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Bash', 'bad'), 'not JSON', 'bad-payload'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Bash', { command: 'npm test; rm -rf /' }), 'shell control characters', 'metachar'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Bash', { command: 'npm test' }, { hook_event_name: 'PostToolUse' }), 'wired as PreToolUse', 'bad-payload'],
+      [['claude-code', 'pre'], ccPre('Bash', { command: 'npm test' }), 'missing --state', null],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Read', { path: '/p/.speckl/agent/hook.mjs' }), 'Speckl-protected path', 'protected-path'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Edit', { file_path: '/p/.claude/settings.json' }), 'Speckl-protected path', 'protected-path'],
+      [['claude-code', 'pre', '--state', 's'], ccPre('Edit', { file_path: '/p/.speckl/harness-install/claude-code.json' }), 'Speckl-protected path', 'protected-path'],
+      [['claude-code', 'nope', '--state', 's'], ccPre('Bash', {}), 'unknown event', 'other'],
+      [['gemini', 'pre', '--state', 's'], ccPre('Bash', {}), 'not declared in the spec', 'other'],
+      [['claude-code', 'batch', '--state', 's'], 'not json', 'not JSON', null],
     ];
-    for (const [argv, stdin, want] of cases) {
+    for (const [argv, stdin, want, cls] of cases) {
+      const d = fakeDeps();
       const out = runAdapter(argv, { CLAUDE_PROJECT_DIR: '/p' }, stdin, config, d);
-      expect(out.code, want).toBe(2);
+      const blocking = argv[1] !== 'batch';
+      expect(out.code, want).toBe(blocking ? 2 : 0);
       expect(out.stderr, want).toContain(want);
+      expect(d.calls.every(c => c.cmd !== 'pre' && c.cmd !== 'post'), want).toBe(true);
+      if (cls === null) {
+        expect(d.calls, want).toHaveLength(0);
+      } else {
+        expect(d.calls, want).toHaveLength(1);
+        expect(d.calls[0].cmd, want).toBe('deny');
+        expect(d.calls[0].msg.class, want).toBe(cls);
+        expect(d.calls[0].msg.reason, want).toContain(want);
+      }
     }
-    expect(d.calls).toHaveLength(0);
+  });
+  it('a too-short key path is recorded as other, and a throwing recorder still denies', () => {
+    const recorded = fakeDeps();
+    const short = runAdapter(['claude-code', 'pre', '--state', 's', '--key', 'short'], { CLAUDE_PROJECT_DIR: '/p' }, ccPre('Bash', { command: 'npm test' }), config, recorded);
+    expect(short.code).toBe(2);
+    expect(short.stderr).toContain('shorter than 8');
+    expect(recorded.calls.map(c => c.cmd)).toEqual(['deny']);
+    expect(recorded.calls[0].msg.class).toBe('other');
+    const crashed = fakeDeps({
+      runHook: () => { throw new Error('disk full /k/state.key'); },
+    });
+    const out = runAdapter(['claude-code', 'pre', '--state', 's'], { CLAUDE_PROJECT_DIR: '/p' }, ccPre('WebFetch', {}), config, crashed);
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('unmapped harness tool "WebFetch"');
+    expect(out.stderr).not.toContain('disk full');
+    expect(out.stderr).not.toContain('/k/state.key');
   });
   it('protects the key named by SPECKL_STATE_KEY_FILE and an out-of-project state dir', () => {
     const d = fakeDeps();
