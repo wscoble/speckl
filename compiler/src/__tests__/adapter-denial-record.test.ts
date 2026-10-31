@@ -4,7 +4,7 @@
 // An allowed call is still only the hook's pre/post lines, with no class.
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, chmodSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -707,6 +707,201 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(leftovers, leftovers.join(',')).toEqual([]);
     const verify = run(join(agentDir, 'signal.mjs'), ['verify', '--state', ctx.state, '--key', ctx.key]);
     expect(verify.status, verify.stderr).toBe(0);
+  });
+
+  function denyStdin(id: string): string {
+    return JSON.stringify({
+      class: 'unmapped', reason: 'unmapped harness tool "WebFetch"', phase: 'pre',
+      tool: 'WebFetch', call_id: id, input: {},
+    });
+  }
+  function hookDeny(ctx: { state: string; key: string }, id: string, env?: NodeJS.ProcessEnv): R {
+    return run(join(agentDir, 'hook.mjs'), ['deny', '--state', ctx.state, '--key', ctx.key], denyStdin(id), env);
+  }
+  function expectRefused(ctx: { project: string; state: string; key: string }, id: string, env?: NodeJS.ProcessEnv) {
+    const before = JSON.stringify(linesOf(ctx.state));
+    const hook = hookDeny(ctx, id + '-hook', env);
+    expect(hook.status, hook.stderr).not.toBe(0);
+    expect(hook.status, hook.stderr).not.toBeNull();
+    expect(hook.stderr, hook.stderr).toContain('decision record unavailable');
+    const via = adapter(ctx, 'claude-code', 'pre', payload('claude-code', 'PreToolUse', 'WebFetch', {}, id), env);
+    expect(via.status, via.stderr).toBe(2);
+    expect(via.stderr, via.stderr).toContain('(denial not recorded:');
+    expect(JSON.stringify(linesOf(ctx.state)), id).toBe(before);
+  }
+
+  it('a failed append exits nonzero and the adapter prints a notice', async () => {
+    const ctx = newState();
+    const seeded = hookDeny(ctx, 'seed');
+    expect(seeded.status, seeded.stderr).toBe(0);
+    const log = ctx.state + '.decisions/log.jsonl';
+    chmodSync(log, 0o444);
+    try {
+      expectRefused(ctx, 'ro');
+    } finally {
+      chmodSync(log, 0o644);
+    }
+
+    const lost = join(ctx.project, 'spoof-lock.cjs');
+    writeFileSync(lost, [
+      "const fs = require('fs');",
+      "const orig = fs.readFileSync;",
+      "fs.readFileSync = function (p, opts) {",
+      "  const s = String(p);",
+      "  if (s.endsWith('/state.json.lock') || s.endsWith('\\\\state.json.lock')) {",
+      "    return typeof opts === 'string' || (opts && opts.encoding) ? '1' : Buffer.from('1');",
+      "  }",
+      "  return orig.call(this, p, opts);",
+      "};",
+      '',
+    ].join('\n'));
+    expectRefused(ctx, 'lost', { NODE_OPTIONS: '--require ' + lost });
+
+    const tail = join(ctx.project, 'move-tail.cjs');
+    writeFileSync(tail, [
+      "const fs = require('fs');",
+      "const crypto = require('crypto');",
+      "const orig = fs.readFileSync;",
+      "function canonical(v) {",
+      "  if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';",
+      "  if (v !== null && typeof v === 'object') {",
+      "    return '{' + Object.keys(v).filter(function (k) { return v[k] !== undefined; }).sort()",
+      "      .map(function (k) { return JSON.stringify(k) + ':' + canonical(v[k]); }).join(',') + '}';",
+      "  }",
+      "  return JSON.stringify(v === undefined ? null : v);",
+      "}",
+      "function give(buf, opts) {",
+      "  if (typeof opts === 'string') return buf.toString(opts);",
+      "  if (opts && opts.encoding) return buf.toString(opts.encoding);",
+      "  return buf;",
+      "}",
+      "let n = 0;",
+      "fs.readFileSync = function (p, opts) {",
+      "  const buf = orig.call(this, p);",
+      "  if (!String(p).endsWith('log.jsonl')) return give(buf, opts);",
+      "  n++;",
+      "  if (n !== 2) return give(buf, opts);",
+      "  const text = buf.toString('utf8');",
+      "  const last = JSON.parse(text.trim().split('\\n').pop());",
+      "  const body = {};",
+      "  for (const k of Object.keys(last)) if (k !== 'hash' && k !== 'mac') body[k] = last[k];",
+      "  body.seq = last.seq + 1;",
+      "  body.prev = last.hash;",
+      "  body.ts = new Date().toISOString();",
+      "  const hash = crypto.createHash('sha256').update(canonical(body)).digest('hex');",
+      "  const keyHex = orig.call(this, process.env.SPECKL_TAIL_KEY_FILE, 'utf8').trim();",
+      "  const mac = crypto.createHmac('sha256', Buffer.from(keyHex, 'hex')).update(hash).digest('hex');",
+      "  const extra = Buffer.from(text.replace(/\\n?$/, '\\n') + JSON.stringify(Object.assign({}, body, { hash: hash, mac: mac })) + '\\n');",
+      "  return give(extra, opts);",
+      "};",
+      '',
+    ].join('\n'));
+    expectRefused(ctx, 'tail', { NODE_OPTIONS: '--require ' + tail, SPECKL_TAIL_KEY_FILE: ctx.key });
+
+    const stop = join(ctx.project, 'stop-after-link.cjs');
+    writeFileSync(stop, [
+      "const fs = require('fs');",
+      "const orig = fs.linkSync;",
+      "fs.linkSync = function (src, dest) {",
+      "  const r = orig.apply(this, arguments);",
+      "  if (String(dest).endsWith('.lock')) process.kill(process.pid, 'SIGSTOP');",
+      "  return r;",
+      "};",
+      '',
+    ].join('\n'));
+    const findStopped = (pid: number): number => {
+      const stack = [pid];
+      const seen = new Set<number>();
+      while (stack.length) {
+        const cur = stack.pop()!;
+        if (!cur || seen.has(cur)) continue;
+        seen.add(cur);
+        let status = '';
+        try { status = readFileSync('/proc/' + cur + '/status', 'utf8'); } catch { continue; }
+        const state = (status.match(/^State:\s+(\S+)/m) || [])[1] || '';
+        if (state === 'T' || state === 't') return cur;
+        let kids = '';
+        try { kids = readFileSync('/proc/' + cur + '/task/' + cur + '/children', 'utf8'); } catch { continue; }
+        for (const id of kids.trim().split(/\s+/)) if (id) stack.push(Number(id));
+      }
+      return 0;
+    };
+    const hold = async (file: string, args: string[], input: string): Promise<R> => {
+      const child = spawn(process.execPath, [file, ...args], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, NODE_OPTIONS: '--require ' + stop },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', c => { stdout += String(c); });
+      child.stderr.on('data', c => { stderr += String(c); });
+      child.stdin.end(input);
+      const deadline = Date.now() + 8000;
+      let stopped = 0;
+      while (Date.now() < deadline && !stopped) {
+        if (child.pid) stopped = findStopped(child.pid);
+        if (!stopped) await new Promise(r => setTimeout(r, 20));
+      }
+      if (!stopped) {
+        try { child.kill('SIGKILL'); } catch { /* exited */ }
+        throw new Error('holder did not pause: ' + stderr);
+      }
+      try {
+        const past = new Date(Date.now() - 31000);
+        utimesSync(ctx.state + '.lock', past, past);
+        utimesSync(ctx.state + '.lock.break', past, past);
+        const broke = hookDeny(ctx, 'pause-breaker-' + file.length);
+        expect(broke.status, broke.stderr).toBe(0);
+        process.kill(stopped, 'SIGCONT');
+        const status = await new Promise<number | null>(resolve => child.on('exit', code => resolve(code)));
+        return { status, stdout, stderr };
+      } catch (e) {
+        try { process.kill(stopped, 'SIGCONT'); } catch { /* already continued */ }
+        try { child.kill('SIGKILL'); } catch { /* exited */ }
+        throw e;
+      }
+    };
+    const pausedHook = await hold(
+      join(agentDir, 'hook.mjs'),
+      ['deny', '--state', ctx.state, '--key', ctx.key],
+      denyStdin('paused-hook'),
+    );
+    expect(pausedHook.status, pausedHook.stderr).not.toBe(0);
+    expect(pausedHook.status, pausedHook.stderr).not.toBeNull();
+    expect(pausedHook.stderr).toContain('decision record unavailable');
+    expect(JSON.stringify(linesOf(ctx.state))).not.toContain('paused-hook');
+    const pausedAdapter = await hold(
+      join(agentDir, 'adapter.mjs'),
+      ['claude-code', 'pre', '--project', ctx.project, '--state', ctx.state, '--key', ctx.key],
+      payload('claude-code', 'PreToolUse', 'WebFetch', {}, 'paused-adapter').replace(/"cwd":""/g, '"cwd":' + JSON.stringify(ctx.project)),
+    );
+    expect(pausedAdapter.status, pausedAdapter.stderr).toBe(2);
+    expect(pausedAdapter.stderr).toContain('(denial not recorded:');
+    expect(JSON.stringify(linesOf(ctx.state))).not.toContain('paused-adapter');
+  }, 40_000);
+
+  it('empty lock temps and pid-less stale dirs older than 30s are swept', () => {
+    const ctx = newState();
+    const lock = ctx.state + '.lock';
+    const old = new Date(Date.now() - 31000);
+    const oldTmp = lock + '.tmp.empty.old';
+    const youngTmp = lock + '.tmp.empty.young';
+    const oldStale = lock + '.stale.empty.old';
+    const oldGate = lock + '.break.stale.nopid.old';
+    writeFileSync(oldTmp, '');
+    writeFileSync(youngTmp, '');
+    writeFileSync(oldStale, '');
+    mkdirSync(oldGate);
+    utimesSync(oldTmp, old, old);
+    utimesSync(oldStale, old, old);
+    utimesSync(oldGate, old, old);
+    const denied = pre(ctx, 'claude-code', 'WebFetch', {}, 'sweep-empty');
+    expect(denied.status, denied.stderr).toBe(2);
+    expect(existsSync(oldTmp), 'old empty tmp').toBe(false);
+    expect(existsSync(oldStale), 'old empty stale').toBe(false);
+    expect(existsSync(oldGate), 'old pid-less gate').toBe(false);
+    expect(existsSync(youngTmp), 'young empty tmp kept').toBe(true);
+    try { unlinkSync(youngTmp); } catch { /* already gone */ }
   });
 
   it('a post-event unmapped call is recorded as phase post', () => {

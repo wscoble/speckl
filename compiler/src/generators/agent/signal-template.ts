@@ -138,47 +138,28 @@ function releaseGate(lp) {
   const dest = lp + '.break.stale.' + randomSuffix();
   try { fs.renameSync(gp, dest); }
   catch { return; }
-  if (readLockText(path.join(dest, 'pid')) === mine) {
-    try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
-    try { fs.rmdirSync(dest); } catch { /* ignore */ }
-    return;
-  }
-  try { fs.renameSync(dest, gp); }
-  catch (e) {
-    if (!e || e.code !== 'EEXIST') return;
-    try {
-      const a = fs.statSync(dest);
-      const b = fs.statSync(gp);
-      if (a.ino === b.ino && a.dev === b.dev) {
-        try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
-        try { fs.rmdirSync(dest); } catch { /* ignore */ }
-      }
-    } catch { /* leave dest; sweep removes a dead one */ }
-  }
+  if (readLockText(path.join(dest, 'pid')) !== mine) return;
+  try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+  try { fs.rmdirSync(dest); } catch { /* ignore */ }
 }
 function clearDeadGate(lp) {
   const gp = gatePath(lp);
-  let st;
-  try { st = fs.statSync(gp); } catch { return; }
+  let before;
+  try { before = fs.statSync(gp); } catch { return; }
   const text = readLockText(path.join(gp, 'pid'));
   const pid = pidFromText(text);
   const dead = pid !== null && pidIsDead(pid);
-  let old = false;
-  try { old = Date.now() - st.mtimeMs > 30000; } catch { old = false; }
+  const old = Date.now() - before.mtimeMs > 30000;
   if (!dead && !old) return;
   const dest = lp + '.break.stale.' + randomSuffix();
   try { fs.renameSync(gp, dest); }
   catch { return; }
+  let after;
+  try { after = fs.statSync(dest); } catch { return; }
   const now = readLockText(path.join(dest, 'pid'));
-  if (now !== text) {
-    try { fs.renameSync(dest, gp); } catch { /* the winner already moved it */ }
-    return;
-  }
   const nowDead = pidFromText(now) !== null && pidIsDead(pidFromText(now));
-  if (!nowDead && !old) {
-    try { fs.renameSync(dest, gp); } catch { /* ignore */ }
-    return;
-  }
+  const same = before.ino === after.ino && before.dev === after.dev && now === text;
+  if (!(same && (nowDead || old))) return;
   try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
   try { fs.rmdirSync(dest); } catch { try { fs.unlinkSync(dest); } catch { /* ignore */ } }
 }
@@ -187,26 +168,19 @@ function breakLockIfUnchanged(lp, expected) {
   const dest = lp + '.stale.' + randomSuffix();
   try { fs.renameSync(lp, dest); }
   catch { return; }
-  const now = readLockText(dest);
-  if (now === expected) {
-    try { fs.unlinkSync(dest); } catch { /* already gone */ }
-    return;
-  }
-  try { fs.renameSync(dest, lp); }
-  catch (e) {
-    if (!e || e.code !== 'EEXIST') return;
-    try {
-      const a = fs.statSync(dest);
-      const b = fs.statSync(lp);
-      if (a.ino === b.ino && a.dev === b.dev) fs.unlinkSync(dest);
-    } catch { /* leave dest; the next sweep removes a dead one */ }
-  }
+  if (readLockText(dest) !== expected) return;
+  try { fs.unlinkSync(dest); } catch { /* already gone */ }
+}
+function sweepOne(full) {
+  try { fs.unlinkSync(path.join(full, 'pid')); } catch { /* no pid file */ }
+  try { fs.rmdirSync(full); } catch { try { fs.unlinkSync(full); } catch { /* best effort */ } }
 }
 function sweepLockTemps(lp) {
   const dir = path.dirname(lp);
   const base = path.basename(lp);
   let names = [];
   try { names = fs.readdirSync(dir); } catch { return; }
+  const now = Date.now();
   for (let i = 0; i < names.length; i++) {
     const name = names[i];
     if (name.indexOf(base + '.') !== 0) continue;
@@ -214,16 +188,18 @@ function sweepLockTemps(lp) {
     const full = path.join(dir, name);
     let st;
     try { st = fs.lstatSync(full); } catch { continue; }
+    const old = now - st.mtimeMs > 30000;
     if (st.isDirectory()) {
-      const pid = pidFromText(readLockText(path.join(full, 'pid')));
-      if (pid !== null && pid !== process.pid && pidIsDead(pid)) {
-        try { fs.unlinkSync(path.join(full, 'pid')); } catch { /* ignore */ }
-        try { fs.rmdirSync(full); } catch { /* ignore */ }
-      }
+      const raw = readLockText(path.join(full, 'pid'));
+      const pid = pidFromText(raw);
+      const pidless = raw == null || String(raw).trim() === '';
+      if ((pid !== null && pid !== process.pid && pidIsDead(pid)) || (pidless && old)) sweepOne(full);
       continue;
     }
-    const pid = pidFromText(readLockText(full));
-    if (pid !== null && pid !== process.pid && pidIsDead(pid)) {
+    const raw = readLockText(full);
+    const pid = pidFromText(raw);
+    const empty = raw == null || String(raw).trim() === '';
+    if ((pid !== null && pid !== process.pid && pidIsDead(pid)) || (empty && old)) {
       try { fs.unlinkSync(full); } catch { /* best effort */ }
     }
   }

@@ -558,19 +558,35 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 # The lock is published with link() only after the pid is on disk, so a
 # kill cannot leave an empty lock. The temp name has a random suffix. If
 # link() returns EPERM, ENOTSUP, ENOSYS, EOPNOTSUPP, or EXDEV, the publish
-# falls back to an exclusive create plus the pid write. A temp file left
-# behind is removed on a later acquire when the pid inside it is dead.
+# falls back to an exclusive create plus the pid write. A kill in that
+# fallback, between the create and the pid write, can leave an empty lock;
+# that file waits until it is 30 seconds old.
+# A temp whose pid is dead is removed on the next acquire. An empty temp,
+# an empty stale file, and a lock.break.stale directory with no pid are
+# removed once they are 30 seconds old. A younger empty temp is left,
+# because its owner may still be writing it. A temp whose pid is alive in
+# another container looks dead (ESRCH) and is removed; that holder then
+# fails to publish and the call is refused.
 # Claim and break share a lock.break directory. A dead owner's lock is
 # renamed aside and discarded only when those bytes are still that pid.
-# A lock.break directory left by a kill is removed on the next acquire when
-# its pid is dead. If that pid file was never written, it waits until the
-# directory is 30 seconds old, the same rule as an unreadable lock.
+# A renamed gate is not moved back: rename() would replace a directory
+# another process had just created. A lock.break directory left by a kill
+# is removed on the next acquire when its pid is dead. If that pid file was
+# never written, it waits until the directory is 30 seconds old, the same
+# rule as an unreadable lock.
 # A live but unrelated pid, or content that is not a pid (empty, garbage,
 # 0, negative, or out of range), is left until the lock file is 30 seconds
 # old by mtime. Until then, every allowed call waits 5 seconds and exits 2
 # with "state lock timeout", and every denial waits 1 second and prints the
 # notice. The next call after the file is 30 seconds old breaks the lock.
+# The same age applies to a live gate. A holder paused with SIGSTOP, or
+# asleep, for more than 30 seconds loses the gate and the lock. When it
+# resumes it does not append: hook.mjs deny exits nonzero and the adapter
+# prints a notice.
 # A holder in another pid namespace looks dead and its lock is broken.
+# hook.mjs deny exits 0 only after the line is appended. A read-only log,
+# a lost lock, or a decision tail that moved exits nonzero, and the adapter
+# prints a notice. A denial is not dropped silently.
 # A denial flood is not free, and the cost moves with machine load. Measured
 # allowed-call latency with N parallel denials was about 0.9-1.8 s at 150,
 # about 3-4 s at 400, and about 14-23 s at 800, against about 0.1-0.3 s on
