@@ -4,7 +4,7 @@
 // An allowed call is still only the hook's pre/post lines, with no class.
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,8 +45,10 @@ const POST: Record<string, string> = {
 type R = { status: number | null; stdout: string; stderr: string };
 let agentDir = '';
 
-function run(file: string, args: string[], input?: string): R {
-  const r = spawnSync(process.execPath, [file, ...args], { input, encoding: 'utf-8' });
+function run(file: string, args: string[], input?: string, env?: NodeJS.ProcessEnv): R {
+  const r = spawnSync(process.execPath, [file, ...args], {
+    input, encoding: 'utf-8', env: env ? { ...process.env, ...env } : process.env,
+  });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
@@ -80,10 +82,10 @@ function payload(harness: string, event: string, tool: string, input: unknown, i
   });
 }
 
-function adapter(ctx: { project: string; state: string; key: string }, harness: string, event: string, stdin: string): R {
+function adapter(ctx: { project: string; state: string; key: string }, harness: string, event: string, stdin: string, env?: NodeJS.ProcessEnv): R {
   return run(join(agentDir, 'adapter.mjs'), [
     harness, event, '--project', ctx.project, '--state', ctx.state, '--key', ctx.key,
-  ], stdin.replace(/"cwd":""/g, '"cwd":' + JSON.stringify(ctx.project)));
+  ], stdin.replace(/"cwd":""/g, '"cwd":' + JSON.stringify(ctx.project)), env);
 }
 
 function pre(ctx: { project: string; state: string; key: string }, harness: string, tool: string, input: unknown, id = 'c1'): R {
@@ -288,23 +290,28 @@ describe('adapter-stage denials are in the decision record', () => {
     expect(String(secretLine.tool)).toContain('<keyfile>');
     expect(String(secretLine.tool).length).toBeLessThanOrEqual(200);
 
+    const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+    const nullDigest = sha('null');
     const huge = pre(ctx, 'claude-code', 'WebFetch', { blob: 'a'.repeat(80_000) }, 'huge');
     expect(huge.status, huge.stderr).toBe(2);
     const hugeLine = linesOf(ctx.state).at(-1)!;
     expect(hugeLine.class).toBe('unmapped');
-    const nullDigest = crypto.createHash('sha256').update('null').digest('hex');
-    expect(hugeLine.input_sha256).toBe(nullDigest);
+    const sizeDigest = sha(JSON.stringify('<input too large>'));
+    expect(hugeLine.input_sha256).toBe(sizeDigest);
+    expect(hugeLine.input_sha256).not.toBe(nullDigest);
 
     let deep: unknown = { command: 'nope' };
     for (let i = 0; i < 40; i++) deep = { nested: deep };
     const nested = pre(ctx, 'claude-code', 'WebFetch', deep, 'deep');
     expect(nested.status, nested.stderr).toBe(2);
-    // The path walk stops past depth 20 and treats that as a protected hit.
-    // The recorder must still append, and must not hash the deep value.
-    expect(nested.stderr).toContain('Speckl-protected path');
+    // Too deep to walk. That is a payload problem, not a protected path,
+    // and its digest is not the digest of a real null input.
+    expect(nested.stderr).toContain('nested too deeply');
+    expect(nested.stderr).not.toContain('Speckl-protected path');
     const deepLine = linesOf(ctx.state).at(-1)!;
-    expect(deepLine.class).toBe('protected-path');
-    expect(deepLine.input_sha256).toBe(nullDigest);
+    expect(deepLine.class).toBe('bad-payload');
+    expect(deepLine.input_sha256).toBe(sha(JSON.stringify('<input too deep>')));
+    expect(deepLine.input_sha256).not.toBe(nullDigest);
 
     const verify = run(join(agentDir, 'signal.mjs'), ['verify', '--state', ctx.state, '--key', ctx.key]);
     expect(verify.status, verify.stderr).toBe(0);
@@ -364,6 +371,88 @@ describe('adapter-stage denials are in the decision record', () => {
     const verify = run(join(agentDir, 'signal.mjs'), ['verify', '--state', ctx.state, '--key', ctx.key]);
     expect(verify.status, verify.stderr).toBe(0);
   });
+
+  it('key-path spellings are redacted, and a hostile tool name cannot pick the class', () => {
+    const base = mkdtempSync(join(tmpdir(), 'speckl-keybase-'));
+    const project = join(base, 'proj');
+    const key = join(base, 'keys', 'state.key');
+    mkdirSync(join(base, 'keys'), { recursive: true });
+    mkdirSync(join(project, '.speckl'), { recursive: true });
+    const state = join(project, '.speckl', 'state.json');
+    const init = run(join(agentDir, 'signal.mjs'), ['init', '--state', state, '--key', key]);
+    expect(init.status, init.stderr).toBe(0);
+    const ctx = { project, state, key };
+    const variants = [
+      'mcp__' + base + '//keys/state.key',
+      '../keys/state.key',
+      base + '/keys/./state.key',
+      'keys/./state.key',
+      'foo/../../keys/state.key',
+    ];
+    for (const name of variants) {
+      const r = pre(ctx, 'claude-code', name, {}, 'k');
+      expect(r.status, name + ' ' + r.stderr).toBe(2);
+      const line = linesOf(state).at(-1)!;
+      const blob = JSON.stringify(line);
+      expect(blob, name).not.toContain(base);
+      expect(blob, name).not.toContain('keys/state.key');
+      expect(blob, name).not.toContain('keys/./state.key');
+      expect(blob, name).not.toContain('<keyfile>/./');
+      expect(blob, name).toContain('<keyfile>');
+      expect(line.class, name).toBe('unmapped');
+      expect(r.stderr, name).not.toContain(base);
+    }
+    const asId = pre(ctx, 'claude-code', 'WebFetch', {}, '../keys/state.key');
+    expect(asId.status, asId.stderr).toBe(2);
+    const idLine = JSON.stringify(linesOf(state).at(-1));
+    expect(idLine).not.toContain('keys/state.key');
+    expect(idLine).toContain('<keyfile>');
+    const hostile = [
+      'mcp__x__shell control characters',
+      'mcp__x__protected path',
+      'mcp__x__ needs path',
+    ];
+    for (const name of hostile) {
+      const r = pre(ctx, 'claude-code', name, {}, 'h');
+      expect(r.status, r.stderr).toBe(2);
+      expect(linesOf(state).at(-1)!.class, name).toBe('unmapped');
+    }
+    const missing = pre(ctx, 'claude-code', 'Read', {}, 'need');
+    expect(missing.status, missing.stderr).toBe(2);
+    expect(missing.stderr).toContain('needs path');
+    expect(linesOf(state).at(-1)!.class).toBe('bad-payload');
+    const obj = adapter(ctx, 'claude-code', 'pre', JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: { not: 'a string' }, tool_input: {}, tool_use_id: 'obj', cwd: project,
+    }));
+    expect(obj.status, obj.stderr).toBe(2);
+    const objLine = linesOf(state).at(-1)!;
+    expect(objLine.class).toBe('unmapped');
+    expect(objLine.tool).toBeNull();
+    expect(JSON.stringify(objLine)).not.toContain('[object Object]');
+    expect(obj.stderr).not.toContain('[object Object]');
+  });
+
+  it('a busy lock or a timed-out recorder is named on stderr and does not append', () => {
+    const ctx = newState();
+    const before = linesOf(ctx.state).length;
+    const lock = ctx.state + '.lock';
+    writeFileSync(lock, '');
+    try {
+      const held = pre(ctx, 'claude-code', 'WebFetch', {}, 'locked');
+      expect(held.status, held.stderr).toBe(2);
+      expect(held.stderr).toContain('unmapped harness tool "WebFetch"');
+      expect(held.stderr).toContain('(denial not recorded: state lock timeout)');
+      expect(linesOf(ctx.state)).toHaveLength(before);
+    } finally {
+      try { unlinkSync(lock); } catch { /* already gone */ }
+    }
+    const timed = adapter(ctx, 'claude-code', 'pre', JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'WebFetch', tool_input: {}, tool_use_id: 't', cwd: ctx.project,
+    }), { SPECKL_HOOK_TIMEOUT_MS: '1' });
+    expect(timed.status, timed.stderr).toBe(2);
+    expect(timed.stderr).toContain('(denial not recorded: hook.mjs timed out)');
+    expect(timed.stderr).toContain('unmapped harness tool "WebFetch"');
+  }, 20_000);
 
   it('a post-event unmapped call is recorded as phase post', () => {
     const ctx = newState();

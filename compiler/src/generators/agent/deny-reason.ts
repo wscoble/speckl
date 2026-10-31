@@ -24,7 +24,11 @@ export function shellQuote(value: unknown): string {
  * lowercase hex, as base64 and
  * base64url of its 32 bytes (with and without padding), and as the SPKI
  * DER-base64 and PEM of those bytes. Any other PEM block and any other
- * 64-hex token are removed too. The result is capped so a huge call id
+ * 64-hex token are removed too.
+ * Path spellings of a secret are removed too: extra slashes, `.` segments,
+ * and a relative path that lands on the secret from one of its ancestor
+ * directories (`../keys/state.key`, `<dir>//keys/state.key`,
+ * `<dir>/keys/./state.key`). The result is capped so a huge call id
  * cannot dump a state file into the harness.
  */
 export function redactSecrets(text: string, secrets: unknown, keep?: unknown): string {
@@ -35,6 +39,91 @@ export function redactSecrets(text: string, secrets: unknown, keep?: unknown): s
       if (typeof secret === 'string' && secret.length >= 8) list.push(secret);
     }
   }
+  // Lexical path only. No filesystem. `..` is applied. Duplicate slashes
+  // and `.` segments disappear.
+  const lexNorm = (p: string): string => {
+    const slash = p.replace(/\\/g, '/');
+    const abs = slash.charAt(0) === '/';
+    const parts = slash.split('/');
+    const out: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === '' || part === '.') continue;
+      if (part === '..') {
+        if (out.length > 0 && out[out.length - 1] !== '..') out.pop();
+        else if (!abs) out.push('..');
+        continue;
+      }
+      out.push(part);
+    }
+    if (abs) return '/' + out.join('/');
+    return out.join('/') || '.';
+  };
+  const norms: Record<string, boolean> = {};
+  const bases: string[] = [];
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].indexOf('/') === -1 && list[i].indexOf('\\') === -1) continue;
+    const n = lexNorm(list[i]);
+    if (n.length >= 8) norms[n] = true;
+    if (n.charAt(0) !== '/') continue;
+    const parts = n.split('/').filter(Boolean);
+    // Ancestors of the file, not the file itself, so `../name` is resolved
+    // from the directory that contains the secret.
+    for (let k = parts.length - 1; k >= 1; k--) {
+      const dir = '/' + parts.slice(0, k).join('/');
+      if (bases.indexOf(dir) === -1) bases.push(dir);
+    }
+  }
+  // `%2e` `%2f` `%5c` are `.` `/` `\` in a tool name. Decode those three
+  // before the path scan so a percent spelling cannot keep the key path.
+  s = s.replace(/%2e/gi, '.').replace(/%2f/gi, '/').replace(/%5c/gi, '\\');
+  const pathStops = /[\s"'<>|;&,`()\[\]{}]/;
+  const hits = (raw: string): boolean => {
+    if (raw.length < 4) return false;
+    const n = lexNorm(raw);
+    if (n.length >= 8 && norms[n]) return true;
+    if (n.charAt(0) === '/') return false;
+    for (let b = 0; b < bases.length; b++) {
+      const joined = lexNorm(bases[b] + '/' + raw);
+      if (joined.length >= 8 && norms[joined]) return true;
+    }
+    return false;
+  };
+  // Before the exact-string pass. Replacing a parent directory first would
+  // leave `<keyfile>/./state.key` for a `/.` spelling of the file.
+  let rebuilt = '';
+  for (let i = 0; i < s.length;) {
+    const rel = s.startsWith('../', i) || s.startsWith('./', i) || s.startsWith('..\\', i) || s.startsWith('.\\', i);
+    const abs = s.charAt(i) === '/' || s.charAt(i) === '\\';
+    if (!rel && !abs) { rebuilt += s.charAt(i); i++; continue; }
+    let j = i + 1;
+    while (j < s.length && !pathStops.test(s.charAt(j))) j++;
+    const raw = s.slice(i, j);
+    // `keys/./state.key` does not start at the slash. Take the segment in
+    // front of it, but stop at `_` so `mcp__/<abs>` stays an absolute path.
+    let start = i;
+    if (abs) {
+      while (start > 0) {
+        const c = s.charAt(start - 1);
+        if (c === '_' || c === '/' || c === '\\' || pathStops.test(c)) break;
+        if (!/[A-Za-z0-9.~+-]/.test(c)) break;
+        start--;
+      }
+    }
+    const wider = start < i ? s.slice(start, j) : raw;
+    if (hits(raw) || (start < i && hits(wider))) {
+      if (start < i && hits(wider) && !hits(raw)) {
+        const prefix = s.slice(start, i);
+        if (rebuilt.endsWith(prefix)) rebuilt = rebuilt.slice(0, rebuilt.length - prefix.length);
+      }
+      rebuilt += '<keyfile>';
+      i = j;
+      continue;
+    }
+    rebuilt += s.charAt(i);
+    i++;
+  }
+  s = rebuilt;
   const forms: string[] = [];
   for (const secret of list) {
     if (!/^[0-9a-fA-F]{64}$/.test(secret)) continue;

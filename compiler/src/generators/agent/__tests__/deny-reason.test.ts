@@ -73,6 +73,17 @@ describe('deny reason text', () => {
     expect(out).toContain('<keyfile>');
     expect(out).toContain('<redacted>');
     expect(out).toContain('short');
+    const key = '/tmp/proj/keys/state.key';
+    const secrets = [key, '/tmp/proj/keys'];
+    expect(redactSecrets('mcp__/tmp/proj//keys/state.key', secrets)).toBe('mcp__<keyfile>');
+    expect(redactSecrets('../keys/state.key', secrets)).toBe('<keyfile>');
+    expect(redactSecrets('/tmp/proj/keys/./state.key', secrets)).toBe('<keyfile>');
+    expect(redactSecrets('/tmp/proj/keys/./state.key', secrets)).not.toContain('/./');
+    expect(redactSecrets('keys/./state.key', secrets)).toBe('<keyfile>');
+    expect(redactSecrets('see keys/../keys/state.key please', secrets)).toBe('see <keyfile> please');
+    expect(redactSecrets('mcp__//tmp/proj/keys/state.key', secrets)).toBe('mcp__<keyfile>');
+    expect(redactSecrets('..\\keys\\state.key', secrets)).toBe('<keyfile>');
+    expect(redactSecrets('%2e%2e%2fkeys%2fstate.key', secrets)).toBe('<keyfile>');
     expect(redactSecrets('plain', null)).toBe('plain');
     expect(redactSecrets('plain', { not: 'an array' })).toBe('plain');
     expect(redactSecrets('x'.repeat(1801), []).endsWith('…')).toBe(true);

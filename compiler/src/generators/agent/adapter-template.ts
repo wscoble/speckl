@@ -40,7 +40,11 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
  * An adapter-stage denial (before hook.mjs pre/post) is also appended to the
  * decision record by \`hook.mjs deny\` once the state verifies. The call stays
- * denied when that record cannot be written.
+ * denied when that record cannot be written, and stderr then says
+ * "(denial not recorded: ...)". A busy state lock fails that write after
+ * 5 seconds. A hung recorder is stopped at SPECKL_HOOK_TIMEOUT_MS
+ * (default 20 seconds). Whoever holds the state key can append deny lines;
+ * that is the same HMAC trust as pre and post, not a third-party signature.
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
 import crypto from 'node:crypto';

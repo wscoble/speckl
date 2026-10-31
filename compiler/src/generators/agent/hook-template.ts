@@ -51,8 +51,14 @@ export function emitHookMjs(speckName: string): string {
  * \`deny\` records a refusal the adapter already made (unmapped tool, shell
  * metacharacters, a protected path, a bad payload, or other) and does not
  * run the tool or change state.json. The line is a deny with that \`class\`.
- * A class or reason the hook does not accept is not appended. The adapter
- * still denies when this command fails.
+ * Exit 0 means the line was appended. Exit 2 means it was not. The adapter
+ * still denies the harness call either way.
+ * Whoever can read the state key can append deny lines here. There is no
+ * provenance beyond the HMAC. That is the same trust as \`pre\` and \`post\`.
+ * A class or reason the hook does not accept is not appended.
+ * A busy state lock gives up after 5 seconds. The adapter stops waiting
+ * after SPECKL_HOOK_TIMEOUT_MS (default 20 seconds) and says the denial
+ * was not recorded.
  *
  * A call-bound sign-off (await \`bind call\`) allows one later call whose
  * digest matches the signed \`call\` hash, and only once that call's post
@@ -419,8 +425,14 @@ async function main() {
       class: null,
     };
     // Adapter-stage denial. The adapter already refused the call. Record
-    // that refusal and exit. Do not run the tool, and do not touch state.json.
+    // that refusal and exit 0. Do not run the tool, and do not touch state.json.
     // A missing class or reason is not appended; the adapter still denies.
+    // This runs before the specHash check on purpose. deny never allows a
+    // call. A stale compiled spec must not drop a refusal when the state
+    // chain itself still verifies. The class is the adapter's literal, not
+    // something read out of the tool name.
+    // Anyone who can read the state key can call deny and append lines.
+    // Those lines have no provenance beyond the HMAC, the same as pre/post.
     if (args.cmd === 'deny') {
       const cls = typeof msg.class === 'string' ? msg.class : '';
       const known = cls === 'unmapped' || cls === 'metachar' || cls === 'protected-path' || cls === 'bad-payload' || cls === 'other';
@@ -430,7 +442,14 @@ async function main() {
       }
       audit.class = cls;
       audit.phase = msg.phase === 'post' ? 'post' : 'pre';
-      finishDeny(2, () => given);
+      // A non-string tool name must not become "[object Object]".
+      audit.tool = typeof msg.tool === 'string' ? msg.tool : null;
+      audit.callId = typeof msg.call_id === 'string' && msg.call_id !== '' ? msg.call_id : null;
+      // Distinct from a real null input, whose digest is sha256("null").
+      if (msg.input_withheld === 'size') audit.input = '<input too large>';
+      else if (msg.input_withheld === 'depth') audit.input = '<input too deep>';
+      else if (msg.input_withheld === 'wide') audit.input = '<input too wide>';
+      finishDeny(0, () => given);
     }
     if (state.specHash !== config.specHash) {
       finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));

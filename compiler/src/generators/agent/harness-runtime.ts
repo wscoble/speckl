@@ -108,9 +108,11 @@ export interface AdapterOutput {
   writes?: { path: string; text: string; mode?: number }[];
 }
 
+export type DenyClass = 'unmapped' | 'metachar' | 'protected-path' | 'bad-payload' | 'other';
+
 export type MapResult =
   | { ok: true; tool: string; input: Record<string, unknown>; rule: number }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; class: DenyClass };
 
 /** True when a matched value could chain a second command or redirect. */
 export function hasShellControl(value: string): boolean {
@@ -136,7 +138,7 @@ export function parseToolInput(raw: unknown): { ok: true; input: Record<string, 
  */
 export function mapHarnessCall(rules: HarnessRule[], toolName: unknown, input: Record<string, unknown>): MapResult {
   if (typeof toolName !== 'string' || toolName === '') {
-    return { ok: false, reason: 'payload has no tool_name' };
+    return { ok: false, reason: 'payload has no tool_name', class: 'unmapped' };
   }
   let chained = '';
   for (let i = 0; i < rules.length; i++) {
@@ -147,27 +149,28 @@ export function mapHarnessCall(rules: HarnessRule[], toolName: unknown, input: R
       if (typeof value !== 'string') continue;
       if (hasShellControl(value)) chained = rule.field;
       let re: RegExp;
-      try { re = new RegExp('^(?:' + (rule.pattern ?? '') + ')$'); } catch { return { ok: false, reason: 'map rule ' + (i + 1) + ' has an invalid pattern' }; }
+      try { re = new RegExp('^(?:' + (rule.pattern ?? '') + ')$'); } catch { return { ok: false, reason: 'map rule ' + (i + 1) + ' has an invalid pattern', class: 'other' }; }
       if (!re.test(value)) continue;
       if (hasShellControl(value)) {
-        return { ok: false, reason: rule.field + ' contains shell control characters (; & | ` $ < > or a newline); run one plain command per call' };
+        return { ok: false, reason: rule.field + ' contains shell control characters (; & | ` $ < > or a newline); run one plain command per call', class: 'metachar' };
       }
     }
     const out: Record<string, unknown> = {};
     for (const m of rule.inputs) {
       if (!Object.prototype.hasOwnProperty.call(input, m.field)) {
-        return { ok: false, reason: rule.target + ' needs ' + m.param + ' but tool_input has no ' + m.field };
+        return { ok: false, reason: rule.target + ' needs ' + m.param + ' but tool_input has no ' + m.field, class: 'bad-payload' };
       }
       out[m.param] = input[m.field];
     }
     return { ok: true, tool: rule.target, input: out, rule: i };
   }
   if (chained) {
-    return { ok: false, reason: chained + ' contains shell control characters (; & | ` $ < > or a newline) and matches no map line; run one plain command per call' };
+    return { ok: false, reason: chained + ' contains shell control characters (; & | ` $ < > or a newline) and matches no map line; run one plain command per call', class: 'metachar' };
   }
   return {
     ok: false,
     reason: 'unmapped harness tool ' + JSON.stringify(toolName) + ' (fail closed): no map line in the spec\'s harness block matches this call',
+    class: 'unmapped',
   };
 }
 
@@ -2395,21 +2398,22 @@ export function runAdapter(
   // What the denial was about, filled in as the payload is understood.
   // Early refusals (bad JSON, unknown event) leave the fields null.
   let denialCtx: { tool: unknown; input: unknown; callId: unknown } = { tool: null, input: null, callId: null };
-  // The hook hashes this. A huge or deeply nested value is stored as null
-  // so a denial cannot stall or crash the recorder. The class and reason
-  // still name the refusal.
-  const inputForRecord = (value: unknown): unknown => {
+  // 'size' | 'depth' | 'wide' when the value must not be hashed as itself.
+  // A real null input stays null so its digest is not the withheld one.
+  const inputForRecord = (value: unknown): { withheld: string; value: unknown } => {
     let encoded = '';
-    try { encoded = JSON.stringify(value === undefined ? null : value); } catch { return null; }
-    if (encoded.length > 65536) return null;
+    try { encoded = JSON.stringify(value === undefined ? null : value); }
+    catch { return { withheld: 'size', value: null }; }
+    if (encoded.length > 65536) return { withheld: 'size', value: null };
     const stack: { v: unknown; d: number }[] = [{ v: value, d: 0 }];
     let n = 0;
+    let deep = false;
     while (stack.length) {
       const cur = stack.pop();
       if (!cur) break;
-      if (cur.d > 32) return null;
+      if (cur.d > 32) { deep = true; break; }
       n++;
-      if (n > 8000) return null;
+      if (n > 8000) return { withheld: 'wide', value: null };
       if (!cur.v || typeof cur.v !== 'object') continue;
       const next = cur.d + 1;
       if (Array.isArray(cur.v)) {
@@ -2419,61 +2423,80 @@ export function runAdapter(
         for (let i = 0; i < keys.length; i++) stack.push({ v: (cur.v as Record<string, unknown>)[keys[i]], d: next });
       }
     }
-    return value === undefined ? null : value;
+    if (deep) return { withheld: 'depth', value: null };
+    return { withheld: '', value: value === undefined ? null : value };
   };
-  const recordAdapterDenial = (reason: string, text: string): void => {
+  // Exit 0 from hook.mjs deny means the line was appended. Anything else
+  // was not. The phrases below are fixed so a hook error cannot smuggle a
+  // path into the adapter's stderr.
+  const recordFailureNote = (r: { status: number | null; stdout: string; stderr: string } | null): string => {
+    if (!r) return '(denial not recorded: recorder failed)';
+    if (r.status === 0) return '';
+    const blob = String(r.stderr || '') + '\n' + String(r.stdout || '');
+    let why = 'recorder failed';
+    if (blob.indexOf('state lock timeout') !== -1) why = 'state lock timeout';
+    else if (blob.indexOf('state lock could not be taken') !== -1) why = 'state lock could not be taken';
+    else if (blob.indexOf('timed out') !== -1) why = 'hook.mjs timed out';
+    else if (blob.indexOf('killed by') !== -1) why = 'hook.mjs killed';
+    else if (blob.indexOf('could not be started') !== -1) why = 'hook.mjs could not be started';
+    else if (blob.indexOf('decision record') !== -1) why = 'decision record could not be written';
+    else if (blob.indexOf('state integrity') !== -1 || blob.indexOf('state file') !== -1) why = 'state could not be verified';
+    else if (blob.indexOf('not recorded') !== -1) why = 'adapter denial was not recorded';
+    return '(denial not recorded: ' + why + ')';
+  };
+  const recordAdapterDenial = (cls: string, text: string): string => {
     // batch and turn-end never block the loop, so they are not tool refusals.
     // A missing state has nothing to append to. The deny still stands.
-    if (!flags.state || event === 'batch' || event === 'turn-end') return;
-    const r = String(reason);
-    let cls = 'other';
-    if (r.indexOf('shell control characters') !== -1) cls = 'metachar';
-    else if (r.indexOf('Speckl-protected path') !== -1 || r.indexOf('protected path') !== -1) cls = 'protected-path';
-    else if (r.indexOf('unmapped harness tool') !== -1 || r.indexOf('no tool_name') !== -1 || r.indexOf('without a Speckl mapping') !== -1 || r.indexOf('invalid pattern') !== -1 || r.indexOf(' needs ') !== -1) cls = 'unmapped';
-    else if (r.indexOf('not JSON') !== -1 || r.indexOf('not a JSON') !== -1 || r.indexOf('tool_input') !== -1 || r.indexOf('tool_use_id') !== -1 || r.indexOf('wired as') !== -1) cls = 'bad-payload';
-    // Do not clip here. hook.mjs redacts, then caps the reason and the
-    // tool and call id. Clipping first can leave a cut-off key path.
-    const sent = text;
+    // Worst case: a busy state lock fails the record after 5 seconds
+    // (hook.mjs acquireLock). A hung recorder is killed at
+    // SPECKL_HOOK_TIMEOUT_MS (default 20 seconds). Either way stderr says so.
+    if (!flags.state || event === 'batch' || event === 'turn-end') return '';
+    const judged = inputForRecord(denialCtx.input);
     let stateForRecord = '';
     let keyForRecord: string | null = null;
     try {
       stateForRecord = deps.resolvePath(projectDir, flags.state);
       keyForRecord = flags.key ? deps.resolvePath(projectDir, flags.key) : null;
-    } catch { return; }
+    } catch { return '(denial not recorded: recorder failed)'; }
+    const msg: Record<string, unknown> = {
+      class: cls,
+      reason: text,
+      phase: event === 'post' || event === 'post-failure' ? 'post' : 'pre',
+      tool: typeof denialCtx.tool === 'string' ? denialCtx.tool : null,
+      call_id: typeof denialCtx.callId === 'string' ? denialCtx.callId : null,
+      input: judged.value,
+    };
+    if (judged.withheld) msg.input_withheld = judged.withheld;
     try {
-      deps.runHook('deny', {
-        class: cls,
-        reason: sent,
-        phase: event === 'post' || event === 'post-failure' ? 'post' : 'pre',
-        tool: denialCtx.tool == null ? null : denialCtx.tool,
-        call_id: denialCtx.callId == null ? null : denialCtx.callId,
-        input: inputForRecord(denialCtx.input),
-      }, stateForRecord, keyForRecord);
-    } catch { /* the deny still stands when the recorder throws */ }
+      return recordFailureNote(deps.runHook('deny', msg, stateForRecord, keyForRecord));
+    } catch { return '(denial not recorded: recorder failed)'; }
   };
-  const fail = (reason: string): AdapterOutput => {
+  const withNote = (text: string, note: string): string => note ? text + '\n' + note : text;
+  const fail = (reason: string, cls: DenyClass): AdapterOutput => {
     const text = explainAdapterDeny(reason, secretsFor());
-    recordAdapterDenial(reason, text);
-    return emitDeny(text);
+    return emitDeny(withNote(text, recordAdapterDenial(cls, text)));
   };
-  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) {
-    recordAdapterDenial('state key path is shorter than 8 characters', shortKeyPath);
-    return emitDeny(shortKeyPath);
-  }
+  const protectedFail = (label: string, hit: string): AdapterOutput => {
+    if (hit === '(input nested too deeply)') return fail(label + ' input is nested too deeply; Speckl will not walk it', 'bad-payload');
+    return fail(label + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails', 'protected-path');
+  };
+  // A key path under 8 characters cannot be redacted, so it is not sent to
+  // hook.mjs deny either. The hook would refuse it for the same reason.
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
   if (!harnesses[harness]) {
-    return fail('harness ' + JSON.stringify(harness) + ' is not declared in the spec (declared: ' + (Object.keys(harnesses).join(', ') || 'none') + ')');
+    return fail('harness ' + JSON.stringify(harness) + ' is not declared in the spec (declared: ' + (Object.keys(harnesses).join(', ') || 'none') + ')', 'other');
   }
   const expected = harnessEventName(harness, event);
-  if (!expected) return fail('unknown event ' + JSON.stringify(event) + ' for ' + harness);
+  if (!expected) return fail('unknown event ' + JSON.stringify(event) + ' for ' + harness, 'other');
   const rules = harnesses[harness].rules;
 
   let payload: Record<string, unknown>;
   try {
     const parsed = JSON.parse(stdinText || '');
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail('hook payload is not a JSON object');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail('hook payload is not a JSON object', 'bad-payload');
     payload = normalizePayload(harness, parsed as Record<string, unknown>);
   } catch {
-    return fail('hook payload is not JSON');
+    return fail('hook payload is not JSON', 'bad-payload');
   }
   denialCtx = {
     tool: payload.tool_name === undefined ? null : payload.tool_name,
@@ -2482,14 +2505,11 @@ export function runAdapter(
   };
   try { denialCtx.callId = harnessCallId(harness, payload); } catch { denialCtx.callId = null; }
   if (!flags.project && !envDir && typeof payload.cwd === 'string' && payload.cwd) projectDir = payload.cwd;
-  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) {
-    recordAdapterDenial('state key path is shorter than 8 characters', shortKeyPath);
-    return emitDeny(shortKeyPath);
-  }
+  if (keyPathTooShort(flags.key) || keyPathTooShort(env.SPECKL_STATE_KEY_FILE)) return emitDeny(shortKeyPath);
   if (payload.hook_event_name !== undefined && payload.hook_event_name !== expected) {
-    return fail('payload is ' + JSON.stringify(payload.hook_event_name) + ' but this hook is wired as ' + expected);
+    return fail('payload is ' + JSON.stringify(payload.hook_event_name) + ' but this hook is wired as ' + expected, 'bad-payload');
   }
-  if (!flags.state) return fail('missing --state');
+  if (!flags.state) return fail('missing --state', 'other');
 
   const stateAbs = deps.resolvePath(projectDir, flags.state);
   const keyAbs = flags.key ? deps.resolvePath(projectDir, flags.key) : null;
@@ -2514,10 +2534,10 @@ export function runAdapter(
     if (r === '..' || r.startsWith('../') || /^[A-Za-z]:|^\//.test(r)) {
       if (!isPre) return formatPost(harness, null);
       const pin = parseToolInput(payload.tool_input);
-      if (!pin.ok) return fail(pin.reason);
+      if (!pin.ok) return fail(pin.reason, 'bad-payload');
       denialCtx.input = pin.input;
       const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
-      if (hit) return fail(String(payload.tool_name) + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
+      if (hit) return protectedFail(typeof payload.tool_name === 'string' ? payload.tool_name : '(no tool_name)', hit);
       return formatPre(harness, true, '');
     }
   }
@@ -2592,7 +2612,7 @@ export function runAdapter(
     if (!pending || callId === null || pending.call_id !== callId) return formatPost(harness, null);
   }
   const pin0 = parseToolInput(payload.tool_input);
-  if (!pin0.ok) return fail(pin0.reason);
+  if (!pin0.ok) return fail(pin0.reason, 'bad-payload');
   denialCtx.input = pin0.input;
   if (harness === 'kiro' && event === 'post' && Object.keys(pin0.input).length === 0) {
     // Kiro IDE often sends PostToolUse with an empty tool_input. The pending
@@ -2615,7 +2635,7 @@ export function runAdapter(
 
   if (isPre) {
     const hit = findProtectedMention(pin.input, protectedPaths, callCwd, deps.resolvePath);
-    if (hit) return fail(label + ' touches a Speckl-protected path (' + hit + '); the agent may not read or change its own rails');
+    if (hit) return protectedFail(label, hit);
     // OpenCode bash and OpenClaw exec take a workdir, Kiro shell tools a cwd: a mapped command run
     // elsewhere (`npm test` in another checkout) would advance the policy
     // on someone else's result, so only the project root is accepted.
@@ -2623,16 +2643,16 @@ export function runAdapter(
     const wd = pin.input[wdField];
     if ((harness === 'opencode' || harness === 'openclaw' || harness === 'kiro' || harness === 'windsurf') && wd !== undefined && wd !== null && wd !== '') {
       if (typeof wd !== 'string' || deps.resolvePath(callCwd, wd) !== deps.resolvePath(projectDir, '.')) {
-        return fail(label + ' sets ' + wdField + ' ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')');
+        return fail(label + ' sets ' + wdField + ' ' + JSON.stringify(wd) + '; Speckl only accepts commands run in the project root (' + projectDir + ')', 'other');
       }
     }
   }
   const m = mapHarnessCall(rules, toolName, pin.input);
   if (!m.ok) {
-    if (isPre) return fail(m.reason);
-    return fail(label + ' ran without a Speckl mapping (' + m.reason + '); its pre hook should have denied it');
+    if (isPre) return fail(m.reason, m.class);
+    return fail(label + ' ran without a Speckl mapping (' + m.reason + '); its pre hook should have denied it', m.class);
   }
-  if (callId === null) return fail('payload has no tool_use_id (the harness sent no tool call id)');
+  if (callId === null) return fail('payload has no tool_use_id (the harness sent no tool call id)', 'bad-payload');
 
   if (isPre) {
     const r = interpretHook(deps.runHook('pre', { tool: m.tool, input: m.input, call_id: callId }, stateAbs, keyAbs));

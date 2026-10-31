@@ -321,13 +321,13 @@ describe('runAdapter', () => {
       }
     }
   });
-  it('a too-short key path is recorded as other, and a throwing recorder still denies', () => {
+  it('a too-short key path is not recorded, and a throwing recorder still denies', () => {
     const recorded = fakeDeps();
     const short = runAdapter(['claude-code', 'pre', '--state', 's', '--key', 'short'], { CLAUDE_PROJECT_DIR: '/p' }, ccPre('Bash', { command: 'npm test' }), config, recorded);
     expect(short.code).toBe(2);
     expect(short.stderr).toContain('shorter than 8');
-    expect(recorded.calls.map(c => c.cmd)).toEqual(['deny']);
-    expect(recorded.calls[0].msg.class).toBe('other');
+    expect(short.stderr).not.toContain('denial not recorded');
+    expect(recorded.calls).toHaveLength(0);
     const crashed = fakeDeps({
       runHook: () => { throw new Error('disk full /k/state.key'); },
     });
@@ -336,6 +336,14 @@ describe('runAdapter', () => {
     expect(out.stderr).toContain('unmapped harness tool "WebFetch"');
     expect(out.stderr).not.toContain('disk full');
     expect(out.stderr).not.toContain('/k/state.key');
+    expect(out.stderr).toContain('(denial not recorded: recorder failed)');
+    const slow = fakeDeps({
+      runHook: () => ({ status: null, stdout: '', stderr: 'hook.mjs timed out after 1ms' }),
+    });
+    const timed = runAdapter(['claude-code', 'pre', '--state', 's'], { CLAUDE_PROJECT_DIR: '/p' }, ccPre('WebFetch', {}), config, slow);
+    expect(timed.code).toBe(2);
+    expect(timed.stderr).toContain('unmapped harness tool "WebFetch"');
+    expect(timed.stderr).toContain('(denial not recorded: hook.mjs timed out)');
   });
   it('protects the key named by SPECKL_STATE_KEY_FILE and an out-of-project state dir', () => {
     const d = fakeDeps();
