@@ -93,6 +93,24 @@ describe('generated TS machine runtime API', () => {
     expect(m.opens).toBe(0);
   });
 
+  it('splits a one-line assign and return into two statements', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-ts-split-'));
+    generateTypeScriptStateMachine(parseSpeckContent(`
+speck Inc {
+  state {
+    n: Nat
+  }
+  action Inc() {
+    n := n + 1 return n
+  }
+}
+`), dir);
+    const src = readFileSync(join(dir, 'Inc.ts'), 'utf-8');
+    expect(src).toContain('this.n = this.n + 1;');
+    expect(src).toContain('return this.n;');
+    expect(src).not.toContain('1 return');
+  });
+
   it('restore rejects snapshots from another speck or with missing state', () => {
     expect(() => Gate.restore({ speck: 'Other', version: 1, state: {}, decisionLog: [] })).toThrow(/not a Gate v1 snapshot/);
     expect(() => Gate.restore({ speck: 'Gate', version: 1, state: { stage: 0 }, decisionLog: [] })).toThrow(/missing state variable opens/);

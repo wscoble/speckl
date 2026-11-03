@@ -32,7 +32,7 @@ async function main() {
           alias: 't',
           describe: 'Compilation target',
           type: 'string',
-          choices: ['typescript', 'z3', 'rust', 'go', 'protobuf', 'k8s', 'openapi', 'camel', 'elm', 'agent', 'all', 'all-ir'],
+          choices: ['typescript', 'z3', 'rust', 'go', 'protobuf', 'k8s', 'openapi', 'camel', 'elm', 'effect', 'agent', 'all', 'all-ir'],
           default: 'typescript' as const,
         })
         .option('verify-depth', {

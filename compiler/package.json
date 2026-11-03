@@ -1,7 +1,7 @@
 {
   "name": "speckl",
   "version": "0.4.0",
-  "description": "Speckl compiler for SpeckDL specs: TypeScript, Rust, Go, Z3, Protobuf, K8s CRDs, OpenAPI, agent rails (Claude Code, Cursor, Codex, Gemini) and SBOM artifacts with embedded provenance",
+  "description": "Speckl compiler for SpeckDL specs: TypeScript, Rust, Go, Effect, Z3, Protobuf, K8s CRDs, OpenAPI, agent rails (Claude Code, Cursor, Codex, Gemini) and SBOM artifacts with embedded provenance",
   "keywords": [
     "speckl",
     "speckdl",
@@ -69,6 +69,7 @@
     "@types/yargs": "^17.0.33",
     "@vitest/coverage-v8": "^2.1.9",
     "ajv": "^8.20.0",
+    "effect": "^3.22.4",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vitest": "^2.1.8"

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { splitSameLineStatements } from './expr/stmt-parser.js';
 
 // AST node types for SpeckDL
 export interface SpeckNode {
@@ -1128,8 +1129,9 @@ function parseActionHeader(line: string): ActionNode | null {
   // Strip a `returns (...)` clause before param parsing, otherwise the
   // greedy paren capture swallows it into the parameter list.
   line = line.replace(/\s+returns\s*\([^)]*\)/g, '');
-  // Strip a `: Type` return annotation (`action Foo(x: Nat): Bool {`).
-  line = line.replace(/\)\s*:\s*[A-Za-z][\w<>\[\]| ]*\s*\{\s*$/, ') {');
+  // Strip a `: Type` return annotation (`action Foo(x: Nat): Bool {`),
+  // including a body that stays on that same line.
+  line = line.replace(/\)\s*:\s*[A-Za-z][\w<>\[\]|, ]*\s*(?=\{)/, ') ');
   const match = line.match(/^action\s+(\w+)\s*(?:\((.*)\))?\s*\{/);
   if (!match) return null;
 
@@ -1138,7 +1140,8 @@ function parseActionHeader(line: string): ActionNode | null {
   const params: { name: string; type: TypeExpr }[] = [];
 
   if (paramsStr.trim()) {
-    const paramPairs = paramsStr.split(',').map(s => s.trim()).filter(Boolean);
+    // Commas inside `Map<String, String>` are not parameter separators.
+    const paramPairs = splitOnTopLevelCommas(paramsStr);
     for (const p of paramPairs) {
       const pMatch = p.match(/^(\w+)\s*:\s*(.+)$/);
       if (pMatch) {
@@ -1590,6 +1593,28 @@ function parseInitBlockMultiline(lines: string[], startIndex: number, startBrace
   return parseInitBlock(stmts.join('\n'));
 }
 
+/** True when `line` opens a brace block and closes it again. */
+function blockClosedOnLine(line: string): boolean {
+  let depth = 0;
+  let opened = false;
+  let inStr = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '{') { depth++; opened = true; }
+    else if (c === '}') {
+      depth--;
+      if (opened && depth === 0) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Parse an `invariant Name { expr }` block into a first-class member.
  */
@@ -1597,6 +1622,13 @@ function parseInvariantBlockMultiline(lines: string[], startIndex: number, start
   const firstLine = lines[startIndex].trim();
   const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
+  // `invariant Name { expr }` closes on the header line. findBlockEnd starts
+  // on the next line and would swallow the following action.
+  if (blockClosedOnLine(firstLine)) {
+    const open = firstLine.indexOf('{');
+    const close = firstLine.lastIndexOf('}');
+    return { type: 'invariant', name, expr: firstLine.slice(open + 1, close).trim() };
+  }
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const body = lines
     .slice(startIndex + 1, endIndex)
@@ -1686,7 +1718,13 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     const stmtOrNull = bodyLines[i];
     // Skip blank line separators
     if (stmtOrNull === null) continue;
-    const stmt = stmtOrNull;
+    const pieces = splitSameLineStatements(stmtOrNull);
+    if (pieces.length > 1) {
+      bodyLines.splice(i, 1, ...pieces);
+      i--;
+      continue;
+    }
+    const stmt = pieces[0] ?? stmtOrNull;
     // precondition: expr
     if (stmt.startsWith('precondition:')) {
       let expr = stmt.substring(13).trim();

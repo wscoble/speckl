@@ -1,5 +1,5 @@
 {
-  "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java), Rust and Kubernetes have no entries: all examples compile.",
+  "$comment": "Examples whose generated code does not compile yet, per target, with the first compiler error. Checked by compiler/src/__tests__/compiles-*.test.ts: a listed example must still fail and an unlisted one must compile, so delete an entry when its fix lands. Camel (Java), Rust, Kubernetes and Effect have no entries: all examples compile.",
   "typescript": {
     "AgentPolicy": "AgentPolicy.ts(144,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
     "ClaudeCodePolicy": "ClaudeCodePolicy.ts(157,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",

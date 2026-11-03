@@ -13,6 +13,9 @@ import { ActionStatement } from './stmt-ast.js';
  */
 export function parseActionStatements(lines: string[]): ActionStatement[] {
   const stmts: ActionStatement[] = [];
+  // `action Inc() { n := n + 1 return n }` is one source line and two
+  // statements. Split it before the assignment parser swallows `return`.
+  lines = lines.flatMap((line) => splitSameLineStatements(line));
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -278,6 +281,54 @@ function splitTopLevel(text: string): string[] {
 }
 
 const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|precondition:|postcondition:|[\w.]+(\[.*?\])?\s*:=)/;
+
+/**
+ * Split `n := n + 1 return n` into two statements. A keyword starts a new
+ * statement only at depth 0, outside strings, and only once the text before
+ * it is already a finished statement.
+ */
+export function splitSameLineStatements(line: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inStr = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (depth === 0 && i > start && /\s/.test(line[i - 1] ?? '')) {
+      const rest = line.slice(i);
+      if (/^(?:return|require|emit|let|if|forall)\b|^(?:precondition|postcondition):/.test(rest)) {
+        const prev = line.slice(start, i).trim();
+        if (prev && statementClosed(prev)) {
+          parts.push(prev);
+          start = i;
+        }
+      }
+    }
+  }
+  const tail = line.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts.length > 0 ? parts : [line];
+}
+
+function statementClosed(text: string): boolean {
+  // `let x :=` has no right-hand side yet. `... } else` is waiting for the other branch.
+  if (/:=\s*$/.test(text) || /\belse\s*$/.test(text)) return false;
+  const assign = text.match(/^(?:let\s+[\w.]+\s*:=\s*|[\w.]+(?:\[[^\]]*\])?\s*:=\s*)([\s\S]+)$/);
+  if (assign) return !exprLooksIncomplete(assign[1]);
+  const kw = text.match(/^(?:return|require|emit|if|forall)\b\s*([\s\S]*)$/);
+  if (kw) return kw[1].trim().length > 0 && !exprLooksIncomplete(kw[1]);
+  const pre = text.match(/^(?:precondition|postcondition):\s*([\s\S]+)$/);
+  if (pre) return !exprLooksIncomplete(pre[1]);
+  return false;
+}
 
 function collectExpression(lines: string[], startIdx: number, prefixLen: number, continuationPfx: string): CollectResult {
   let text = lines[startIdx].trim().substring(prefixLen).trim();

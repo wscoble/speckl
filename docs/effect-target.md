@@ -1,0 +1,126 @@
+# Effect target
+
+`speckl <file> -t effect` compiles a speck to an [Effect](https://effect.website) 3.x module: `src/index.ts`, `package.json`, and `tsconfig.json` under `<output>/<Speck>/`. The module imports `effect` as a namespace (`$$effect`) so a spec type named `Schema`, `Effect`, or `Layer` cannot collide with the import. Generated code is typechecked with `tsc` against Effect 3.22.
+
+Other components depend on the schemas and on the `Context.Tag`. The `Live` layer is the adapter that holds the machine in a `Ref`.
+
+## Example
+
+```speck
+speck ToggleSwitch {
+    state { isOn: Bool }
+    init { isOn := false }
+    action TurnOn {
+        require not isOn
+        isOn := true
+        return isOn
+    }
+    next: TurnOn
+}
+```
+
+```ts
+export interface ToggleSwitchState {
+  readonly isOn: boolean;
+}
+export const ToggleSwitchState: $$effect.Schema.Schema<ToggleSwitchState> = $$effect.Schema.Struct({
+  isOn: $$effect.Schema.Boolean,
+});
+
+export class $$GuardFailed extends $$effect.Schema.TaggedError<$$GuardFailed>()("GuardFailed", {
+  action: $$effect.Schema.String,
+  detail: $$effect.Schema.String,
+}) {}
+
+export const turnOn = ($$machine: ToggleSwitchMachine): $$effect.Effect.Effect<ToggleSwitchDecision<boolean>, $$GuardFailed> =>
+  $$effect.Effect.gen(function* () {
+    const $$specklOld = { ...$$machine.state };
+    let $$state = { ...$$machine.state };
+    let $$log = $$machine.decisionLog;
+    if (!((!$$state.isOn))) {
+      return yield* new $$GuardFailed({ action: "TurnOn", detail: "not isOn" });
+    }
+    $$state = { ...$$state, isOn: true };
+    return { state: $$state, decisionLog: $$log, value: $$state.isOn };
+  });
+
+export class ToggleSwitchCapability extends $$effect.Context.Tag("@speckl/ToggleSwitch")<ToggleSwitchCapability, {
+  readonly getState: $$effect.Effect.Effect<ToggleSwitchState>
+  readonly turnOn: () => $$effect.Effect.Effect<boolean, $$GuardFailed>
+}>() {}
+
+export const toggleSwitchLive: $$effect.Layer.Layer<ToggleSwitchCapability, never> = $$effect.Layer.effect(
+  ToggleSwitchCapability,
+  $$effect.Effect.gen(function* () {
+    const initial = yield* $$boot;
+    const $$held = yield* $$effect.Ref.make<ToggleSwitchMachine>(initial);
+    return {
+      getState: $$effect.Effect.map($$effect.Ref.get($$held), ($$machine) => $$machine.state),
+      turnOn: () => $$effect.Effect.gen(function* () {
+        const $$current = yield* $$effect.Ref.get($$held);
+        const decided = yield* turnOn($$current);
+        yield* $$effect.Ref.set($$held, { state: decided.state, decisionLog: decided.decisionLog });
+        return decided.value;
+      }),
+    };
+  }),
+);
+```
+
+`$$boot` builds the initial machine. `name == expr` is an initializer, same as `name := expr`, and an initializer that reads another field waits until that field has been written. A `service` block becomes its own `Context.Tag` plus a layer that fails with `$$AdapterUnimplemented`, because the spec declares the capability and no adapter. Generated bindings are `$$machine`, `$$held`, `$$current`, and `$$boot`, so a parameter or a type with one of those names still compiles.
+
+## Type mapping
+
+| Speckl | Effect |
+|---|---|
+| `Bool` | `Schema.Boolean` (`boolean`) |
+| `Nat` | `Schema.Number` filtered with `int()` and `nonNegative()` (`number`) |
+| `Int`, `Integer`, `Long` | `Schema.Number` filtered with `int()` (`number`) |
+| `Real`, `Float`, `Double`, `Number` | `Schema.Finite` (`number`) |
+| `String` | `Schema.String` |
+| `Bytes` | `Schema.Uint8ArrayFromSelf` |
+| `Date`, `Timestamp` | `Schema.DateFromSelf` |
+| `T \| null`, `Option(T)`, `nil` | `Schema.NullOr` (`T \| null`) |
+| `List(T)` | `Schema.Array` (`ReadonlyArray<T>`) |
+| `Set(T)` | `Schema.HashSetFromSelf` (`HashSet`) |
+| `Map(K, V)` | `Schema.HashMapFromSelf` (`HashMap`) |
+| record, including a nested `{ ... }` | `Schema.Struct`, recursive fields behind `Schema.suspend` |
+| `interface` enum | `Schema.Literal` of the variant names |
+| `"a" \| "b"` and `Follower \| Candidate \| Leader` | `Schema.Literal` |
+| `type Name = <type>` | a named schema (and a type alias) |
+| bare name that is not declared | `Schema.Unknown`, commented `SPECKL-UNRESOLVED` |
+| event | tagged struct (`_tag` plus fields); the decision log is a `Schema.Union` of them |
+| `require` / `precondition` / `postcondition` | `Schema.TaggedError` (`$$GuardFailed`, `$$PreconditionFailed`, `$$PostconditionFailed`) |
+| invariant, constraint, `verify` | `Effect` that fails with `$$InvariantViolated` |
+| action | `Effect` that returns the next machine and the action's value |
+| the speck | `Context.Tag` (`<Name>Capability`) and `Layer` (`<name>Live`) over a `Ref` |
+| `service` RPC | `Context.Tag` plus an unimplemented `Layer` (`$$AdapterUnimplemented`) |
+
+`Nat` and `Int` decode as `number` (the filters do not brand), so generated arithmetic stays ordinary TypeScript. A write of a `Nat`, `Int`, or `Real` that is not in range fails the effect with `$$SchemaViolation` and the `Ref` keeps the previous machine. Collections are the in-memory Effect values (`HashSetFromSelf`, `HashMapFromSelf`), not JSON arrays. A field named `__proto__` is stored with a computed key.
+
+An invariant that translates to a boolean is checked at the end of every action, against the pre-state when it calls `old(...)`. The action fails with `$$InvariantViolated` and the layer does not publish the new state. Translated forms include comparisons, `and` / `or` / `implies`, set membership (`x in {a, b}`), and `forall` / `exists` over a `List`, a `Set`, a `Map`'s keys or values, and a bounded integer range. An invariant outside that set does not get dropped: every action fails `$$Untranslated` before it commits, and generation still succeeds. `$$boot` is unchanged. A returned `Nat`, `Int`, or `Real`, including one that was bound with `let`, and every element stored into a `List`, `Set`, or `Map` of those types, takes the same range check as a direct field write. `box.n := v` updates the nested record. Comments are blanked by the same string-aware scan that finds block ends; a nested `/*` or an unclosed string throws `EffectTargetError`. A nested quantifier restores the outer binding when it exits. A missing map key or a list index that is out of range does not throw. In a boolean formula the missed atom is unknown, in the three-valued sense: `true or unknown` is true, `false and unknown` is false, `exists` is true when any element is true, and `forall` is false when any element is false. Only a final unknown fails the invariant or guard, with detail `missing map key`. A read in arithmetic, `let`, assignment, or `return` still fails that action with `$$IndexOutOfRange` before a stand-in value is range-checked. `Effect.either` sees either failure.
+
+A single-line `type Name = { ... }` is read from the source. The parser otherwise drops the closing brace and can turn the record into an enum; the Effect target keeps the record.
+
+## What fails closed
+
+Generation throws `EffectTargetError` for:
+
+- `import` (cross-spec references are not resolved)
+- `oneof` and `transition` (not lowered into the IR; emitting the other records would drop the discriminator)
+- a streaming RPC (`stream` on the request or the response)
+- validation rules, if the IR ever carries them
+- a record field declared twice with two different parsed types
+- a type expression that does not parse (unbalanced brackets, or a shape that is not a type)
+- a union arm that is a bare word mixed with a real type (`String | Ntoe`). `Follower | Candidate | Leader` and `"red" | "blue"` stay `Schema.Literal`
+
+A bare name the spec never declares (`Operation`, a service request type) stays `Schema.Unknown` with a `SPECKL-UNRESOLVED` comment. That is an open slot an integrator fills. A type we failed to parse, or a typo sitting next to a real type, is a generator error instead: emitting `Schema.Unknown` there would look like a successful mapping.
+
+An expression or statement with no Effect form does not become a guess. The decision or rule returns `$$Untranslated` (`Schema.TaggedError`) before it changes state, and the source text is in the error. `eventually(...)` is one of these: it cannot be judged from the current state. A missing map key or list index is a typed failure (`$$IndexOutOfRange`, or `missing map key` when a boolean formula stays unknown). The read does not throw out of `Effect.either`.
+
+## Explicitly not emitted
+
+- PROV-O, CycloneDX, and SPDX stay on their own targets. `-t effect` does not write them.
+- Agent rails (hooks, harness adapters) stay on `-t agent`. An `agent { }` block is emitted as an `agentConfig` value so the declaration is not dropped.
+- Resource lifecycle (`conditions`, `finalizers`, `ownerReferences`, status text) is a `lifecycle` value. The status text is not parsed into a schema.
+- `Set` algebra beyond `union` and difference (`\`) is untranslated. `forall` / `exists` over a list, set, map, or bounded range are checked.
