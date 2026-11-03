@@ -1,0 +1,98 @@
+// Fixture for the Effect target. Compiled with tsc against the effect
+// package by compiles-effect.test.ts. Covers records, string-literal unions,
+// enums, collections, recursion, a service, and one action that must fail closed.
+speck EffectTranslation {
+    interface Phase {
+        Draft
+        Review
+        Done
+    }
+
+    type Color = "red" | "blue"
+    type Rank = Low | High
+
+    type Note = {
+        body: String,
+        weight: Real
+    }
+
+    type Node = {
+        value: Nat,
+        next: Node | null
+    }
+
+    type Schema = {
+        pipe: Nat,
+        tag: String
+    }
+
+    state {
+        phase: Phase
+        color: Color
+        rank: Rank
+        status: "open" | "closed"
+        type: Nat
+        note: Note | null
+        node: Node | null
+        tags: Set(String)
+        ids: List(Nat)
+        meta: Schema
+        grid: Map(String, Nat)
+        extra: { depth: Nat }
+    }
+
+    init {
+        phase := Draft
+        color := "red"
+        rank := Low
+        status := "open"
+        type := 0
+        note := nil
+        node := nil
+    }
+
+    event Moved {
+        to: Phase
+    }
+
+    invariant TypeNonNegative {
+        type >= 0
+    }
+
+    constraint OpenWhenRed: status == "open" implies color == "red"
+
+    verify Always(TypeNonNegative) { depth 3 }
+
+    verify "later" { eventually(type > 0) }
+
+    service Clock {
+        rpc Now(Note) returns (Schema);
+    }
+
+    action Advance(step: Nat) {
+        require phase == Draft
+        require step > 0 and step <= 10
+        type := type + step
+        phase := Review
+        color := "blue"
+        rank := High
+        status := "closed"
+        emit Moved { to: phase }
+        return type
+    }
+
+    action Reset() {
+        tags := emptySet()
+        ids := emptyList()
+        note := nil
+        node := nil
+    }
+
+    action Unsupported(id: Nat) {
+        require type >= 0
+        tags := tags union { id }
+        type := type + 1
+    }
+
+    next: Advance | Reset | Unsupported
+}

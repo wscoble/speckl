@@ -148,5 +148,7 @@ jobs:
 
       # Fetches the pinned jars/schemas (and Elm packages) if not cached, then
       # runs every compile test; a missing toolchain fails here.
+      # Effect (`compiles-effect.test.ts`) needs no extra toolchain: `npm ci`
+      # installs the pinned `effect` devDependency and tsc typechecks against it.
       - name: Compile tests
         run: npm run test:compile

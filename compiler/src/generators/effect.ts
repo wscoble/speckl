@@ -1,0 +1,2154 @@
+// effect.ts — Effect (effect 3.x) target.
+//
+// Emits one module per speck: <outputDir>/<Speck>/src/index.ts plus
+// package.json and tsconfig.json. The module is meant to be imported by
+// other Effect programs:
+//
+//   - a Schema for every record, enum, alias, and inline union
+//     (string unions are Schema.Literal, including the inline form the
+//     TypeScript generator currently prints as an illegal type name)
+//   - Schema.TaggedError classes for guards, preconditions, postconditions,
+//     invariant failures, untranslated constructs, and index errors
+//   - a Context.Tag (the capability) and a Layer (the adapter) over a Ref
+//   - Effect-returning functions for actions (decisions) and for
+//     invariants, constraints, and verify blocks (rules)
+//   - a Context.Tag plus an unimplemented Layer for each `service`
+//
+// Generation fails closed. A type that cannot be mapped throws
+// EffectTargetError — nothing is emitted for that speck. A statement or
+// expression that has no Effect form does not become a guess: the action
+// or rule fails with SpecklUntranslated before it changes state, and the
+// original source is in the error and in a comment.
+//
+// `effect` is imported as a namespace the spec cannot collide with
+// (`$$effect`). Spec identifiers are `\w+`, which does not include `$`.
+
+import * as fs from 'fs';
+import * as path from 'path';
+import type {
+  AST,
+  SpeckNode,
+  TypeExpr,
+  InvariantMemberNode,
+  InterfaceNode,
+  EventNode,
+  ServiceNode,
+  OneofNode,
+  TransitionNode,
+  StateNode,
+  ActionNode,
+  InputNode,
+  OutputNode,
+} from '../parser.js';
+import type {
+  IR,
+  IRSpeck,
+  IRExpr,
+  IRStmt,
+  IRTypeRef,
+  IRAction,
+} from '../ir/types.js';
+import { parseStringToIRExpr } from '../ir/lower.js';
+
+/** Pinned to the effect 3.x line the compile tests typecheck against. */
+export const EFFECT_VERSION = '3.22.4';
+
+export class EffectTargetError extends Error {
+  readonly speck: string;
+  constructor(speck: string, message: string) {
+    super(`speckl effect: ${speck}: ${message}`);
+    this.name = 'EffectTargetError';
+    this.speck = speck;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Effect-side types
+// ─────────────────────────────────────────────────────────────────────
+
+type ET =
+  | { k: 'bool' }
+  | { k: 'nat' }
+  | { k: 'int' }
+  | { k: 'real' }
+  | { k: 'string' }
+  | { k: 'bytes' }
+  | { k: 'date' }
+  | { k: 'unit' }
+  | { k: 'unknown'; name: string; why: string }
+  | { k: 'literal'; name?: string; values: string[] }
+  | { k: 'record'; name: string }
+  | { k: 'list'; elem: ET }
+  | { k: 'set'; elem: ET }
+  | { k: 'map'; key: ET; val: ET }
+  | { k: 'nullable'; inner: ET }
+  | { k: 'union'; members: ET[] };
+
+interface RecField {
+  name: string;
+  type: ET;
+  optional: boolean;
+}
+
+const BOOL: ET = { k: 'bool' };
+const NAT: ET = { k: 'nat' };
+const INT: ET = { k: 'int' };
+const REAL: ET = { k: 'real' };
+const STRING: ET = { k: 'string' };
+
+const PRIMITIVES: Record<string, ET> = {
+  Bool: BOOL, Boolean: BOOL,
+  Nat: NAT,
+  Int: INT, Integer: INT, Long: INT,
+  Real: REAL, Float: REAL, Double: REAL, Number: REAL,
+  String: STRING, Str: STRING,
+  Bytes: { k: 'bytes' },
+  Date: { k: 'date' }, Timestamp: { k: 'date' },
+  Void: { k: 'unit' },
+};
+
+const isNum = (t: ET): boolean => t.k === 'nat' || t.k === 'int' || t.k === 'real';
+
+function sameType(a: ET, b: ET): boolean {
+  if (a.k !== b.k) return false;
+  switch (a.k) {
+    case 'literal':
+      return a.values.length === (b as { values: string[] }).values.length
+        && a.values.every((v, i) => v === (b as { values: string[] }).values[i]);
+    case 'record':
+    case 'unknown':
+      return a.name === (b as { name: string }).name;
+    case 'list':
+    case 'set':
+      return sameType(a.elem, (b as { elem: ET }).elem);
+    case 'map':
+      return sameType(a.key, (b as { key: ET }).key) && sameType(a.val, (b as { val: ET }).val);
+    case 'nullable':
+      return sameType(a.inner, (b as { inner: ET }).inner);
+    case 'union':
+      return a.members.length === (b as { members: ET[] }).members.length
+        && a.members.every((m, i) => sameType(m, (b as { members: ET[] }).members[i]));
+    default:
+      return true;
+  }
+}
+
+/** Names a generated binding may use. Spec identifiers cannot start with `$`. */
+const TS_RESERVED = new Set([
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do',
+  'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in',
+  'instanceof', 'new', 'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof',
+  'var', 'void', 'while', 'with', 'implements', 'interface', 'let', 'package', 'private', 'protected',
+  'public', 'static', 'yield', 'await', 'as', 'any', 'boolean', 'number', 'string', 'symbol',
+  'unknown', 'never', 'object', 'undefined', 'bigint', 'override', 'readonly', 'unique', 'abstract',
+  'declare', 'global', 'keyof', 'infer', 'is', 'satisfies', 'namespace', 'module', 'type', 'from',
+  'of', 'async', 'using',
+]);
+
+/** Type names TypeScript rejects in type-alias position. */
+const TS_TYPE_WORDS = new Set([
+  'any', 'boolean', 'number', 'string', 'symbol', 'unknown', 'never', 'object', 'undefined', 'bigint',
+  'void', 'null', 'undefined',
+]);
+
+class Ctx {
+  readonly records = new Map<string, RecField[]>();
+  readonly enums = new Map<string, string[]>();
+  /** Variant name → literal-type names that own it. */
+  readonly variants = new Map<string, string[]>();
+  readonly aliases = new Map<string, string>();
+  readonly aliasResolved = new Map<string, ET>();
+  readonly opaque = new Map<string, string>();
+  readonly events = new Set<string>();
+  readonly stateVars = new Map<string, ET>();
+  readonly inputFields = new Map<string, ET>();
+  readonly outputFields = new Map<string, ET>();
+  /** Invariant or constraint export name, for verify blocks that name one. */
+  readonly rules = new Map<string, string>();
+  readonly usedExports = new Set<string>();
+
+  constructor(readonly speck: IRSpeck, readonly ast: SpeckNode | undefined) {}
+
+  fail(message: string): never {
+    throw new EffectTargetError(this.speck.name, message);
+  }
+
+  ownVariant(owner: string, value: string): void {
+    const cur = this.variants.get(value) ?? [];
+    if (!cur.includes(owner)) cur.push(owner);
+    this.variants.set(value, cur);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Names
+// ─────────────────────────────────────────────────────────────────────
+
+function sanitize(s: string): string {
+  let out = s.replace(/[^A-Za-z0-9_]/g, '_');
+  if (!out || /^[0-9]/.test(out)) out = `_${out}`;
+  return out;
+}
+
+function pascal(s: string): string {
+  const cleaned = sanitize(s);
+  return cleaned.replace(/(^|_)([a-z])/g, (_, __, c: string) => c.toUpperCase()).replace(/_/g, '') || 'Anon';
+}
+
+function camel(s: string): string {
+  const p = pascal(s);
+  return p.charAt(0).toLowerCase() + p.slice(1);
+}
+
+function exportIdent(base: string, used: Set<string>, asType = false): string {
+  let name = sanitize(base);
+  if (TS_RESERVED.has(name) || (asType && TS_TYPE_WORDS.has(name))) name = `${name}_`;
+  const root = name;
+  for (let i = 2; used.has(name); i++) name = `${root}_${i}`;
+  used.add(name);
+  return name;
+}
+
+function localIdent(base: string, used: Set<string>): string {
+  let name = sanitize(base);
+  if (TS_RESERVED.has(name) || name.startsWith('$$')) name = `${name.replace(/^\$+/, '') || 'local'}_`;
+  if (TS_RESERVED.has(name)) name = `${name}_`;
+  const root = name;
+  for (let i = 2; used.has(name); i++) name = `${root}_${i}`;
+  used.add(name);
+  return name;
+}
+
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function jsDoc(s: string): string {
+  return oneLine(s).replace(/\*\//g, '* /');
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Type parsing (AST + source aliases the parser drops)
+// ─────────────────────────────────────────────────────────────────────
+
+function splitTop(src: string, sep: string): string[] | null {
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let brace = 0;
+  let bracket = 0;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '<') depth++;
+    else if (c === ')' || c === '>') depth--;
+    else if (c === '{') brace++;
+    else if (c === '}') brace--;
+    else if (c === '[') bracket++;
+    else if (c === ']') bracket--;
+    else if (depth === 0 && brace === 0 && bracket === 0 && src.startsWith(sep, i)) {
+      parts.push(src.slice(start, i).trim());
+      i += sep.length - 1;
+      start = i + 1;
+    }
+  }
+  if (quote || depth !== 0 || brace !== 0 || bracket !== 0) return null;
+  parts.push(src.slice(start).trim());
+  return parts;
+}
+
+function unquote(src: string): string | null {
+  const m = src.match(/^"((?:[^"\\]|\\.)*)"$/) ?? src.match(/^'((?:[^'\\]|\\.)*)'$/);
+  if (!m) return null;
+  try {
+    return JSON.parse(src.startsWith("'") ? `"${m[1].replace(/"/g, '\\"')}"` : src);
+  } catch {
+    return m[1];
+  }
+}
+
+function stripCodeComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '/' && line[i + 1] === '/') return line.slice(0, i);
+  }
+  return line;
+}
+
+function balancedType(src: string): boolean {
+  return splitTop(src, '\u0000') !== null;
+}
+
+/**
+ * `type Name = ...` aliases. The parser drops a single-line record alias's
+ * closing brace and then swallows the next members, so a record can arrive
+ * as an enum. The source line is the authority for these aliases.
+ */
+function readSourceTypes(source: string): { aliases: Map<string, string>; records: Map<string, string> } {
+  const aliases = new Map<string, string>();
+  const records = new Map<string, string>();
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    let buf = stripCodeComment(lines[i]).trim();
+    if (!/^type\s+\w+\s*=/.test(buf)) continue;
+    while (!balancedType(buf) && i + 1 < lines.length) {
+      i++;
+      const more = stripCodeComment(lines[i]).trim();
+      if (!more) continue;
+      buf = `${buf}\n${more}`;
+    }
+    const m = buf.match(/^type\s+(\w+)\s*=\s*([\s\S]+)$/);
+    if (!m) continue;
+    const rhs = m[2].trim().replace(/,\s*$/, '');
+    if (rhs.startsWith('{') && rhs.endsWith('}') && balancedType(rhs)) records.set(m[1], rhs.slice(1, -1).trim());
+    else if (!rhs.includes('{')) aliases.set(m[1], rhs);
+  }
+  return { aliases, records };
+}
+
+/** A type the spec wrote but this target cannot map. Marked in the module; not a guess. */
+function unresolved(ctx: Ctx, why: string): ET {
+  let name = 'SpecklUnparsed';
+  for (let n = 2; ctx.usedExports.has(name) || ctx.opaque.has(name); n++) name = `SpecklUnparsed${n}`;
+  claimTypeName(ctx, name);
+  ctx.opaque.set(name, why);
+  return { k: 'unknown', name, why };
+}
+
+function resolveTypeExpr(ctx: Ctx, t: TypeExpr | undefined, hint: string, seen: Set<string> = new Set()): ET {
+  if (!t) ctx.fail(`missing type where ${hint} was expected`);
+  const wrap = (inner: ET): ET => (t.nullable ? { k: 'nullable', inner } : inner);
+  switch (t.type) {
+    case 'primitive': {
+      const p = PRIMITIVES[t.name ?? ''];
+      if (!p) ctx.fail(`cannot map primitive ${(t.name ?? '(none)')} (${hint})`);
+      return wrap(p);
+    }
+    case 'list':
+      return wrap({ k: 'list', elem: resolveTypeExpr(ctx, t.elementType, `${hint} element`, seen) });
+    case 'set':
+      return wrap({ k: 'set', elem: resolveTypeExpr(ctx, t.elementType, `${hint} element`, seen) });
+    case 'map':
+      return wrap({
+        k: 'map',
+        key: resolveTypeExpr(ctx, t.keyType, `${hint} key`, seen),
+        val: resolveTypeExpr(ctx, t.valueType, `${hint} value`, seen),
+      });
+    case 'record':
+      return wrap(inlineRecord(ctx, t.fields ?? [], hint, seen));
+    case 'ident':
+      return wrap(resolveIdent(ctx, t.name ?? '', hint, seen));
+    default:
+      ctx.fail(`cannot map type form ${(t as { type?: string }).type ?? 'unknown'} (${hint})`);
+  }
+}
+
+function inlineRecord(ctx: Ctx, fields: { name: string; type: TypeExpr }[], hint: string, seen: Set<string>): ET {
+  let name = exportIdent(pascal(hint) || 'Inline', ctx.usedExports, true);
+  if (!name.endsWith('Record') && ctx.records.has(name)) name = exportIdent(`${name}Record`, ctx.usedExports, true);
+  ctx.records.set(name, []);
+  const resolved: RecField[] = fields.map((f) => ({
+    name: f.name,
+    optional: false,
+    type: resolveTypeExpr(ctx, f.type, `${name}.${f.name}`, seen),
+  }));
+  ctx.records.set(name, resolved);
+  return { k: 'record', name };
+}
+
+function resolveIdent(ctx: Ctx, raw: string, hint: string, seen: Set<string>): ET {
+  const name = raw.trim();
+  if (!name) ctx.fail(`empty type name (${hint})`);
+  if (PRIMITIVES[name]) return PRIMITIVES[name];
+  if (ctx.enums.has(name)) return { k: 'literal', name, values: ctx.enums.get(name)! };
+  if (ctx.records.has(name)) return { k: 'record', name };
+  if (ctx.aliasResolved.has(name)) return ctx.aliasResolved.get(name)!;
+  if (ctx.aliases.has(name)) return resolveAlias(ctx, name, seen);
+  if (ctx.opaque.has(name)) return { k: 'unknown', name, why: ctx.opaque.get(name)! };
+
+  const opt = name.match(/^Option\s*[(<]\s*([\s\S]+)\s*[)>]$/);
+  if (opt) return { k: 'nullable', inner: resolveIdent(ctx, opt[1], hint, seen) };
+  const array = name.match(/^(\w+)\[\]$/);
+  if (array) return { k: 'list', elem: resolveIdent(ctx, array[1], hint, seen) };
+
+  if (name.includes('|') || name.startsWith('"') || name.startsWith("'") || /^(List|Set|Map|Option)\b/.test(name)) {
+    return parseTypeSource(ctx, name, hint, seen);
+  }
+  if (/^[A-Za-z_]\w*$/.test(name)) {
+    const why = `type ${name} is not declared in this spec`;
+    claimTypeName(ctx, name);
+    ctx.opaque.set(name, why);
+    return { k: 'unknown', name, why };
+  }
+  return unresolved(ctx, `type \`${oneLine(name)}\` (${hint}) is not a primitive, collection, record, enum, alias, nullable, or a string or identifier union`);
+}
+
+function resolveAlias(ctx: Ctx, name: string, seen: Set<string>): ET {
+  if (seen.has(name)) ctx.fail(`alias ${name} is recursive (${[...seen, name].join(' -> ')})`);
+  const rhs = ctx.aliases.get(name);
+  if (rhs === undefined) ctx.fail(`alias ${name} has no right-hand side`);
+  const resolved = parseTypeSource(ctx, rhs, `alias ${name}`, new Set([...seen, name]));
+  const t = resolved.k === 'literal' && !resolved.name ? { ...resolved, name } : resolved;
+  ctx.aliasResolved.set(name, t);
+  if (t.k === 'literal') {
+    for (const v of t.values) ctx.ownVariant(name, v);
+  }
+  return t;
+}
+
+function parseTypeSource(ctx: Ctx, src: string, hint: string, seen: Set<string>): ET {
+  const expr = src.trim().replace(/,\s*$/, '');
+  if (!expr) return unresolved(ctx, `empty type (${hint})`);
+  const arms = splitTop(expr, '|');
+  if (!arms) return unresolved(ctx, `type \`${oneLine(expr)}\` (${hint}) has unbalanced brackets`);
+  if (arms.length > 1) {
+    if (arms.some((a) => !a)) return unresolved(ctx, `type \`${oneLine(expr)}\` (${hint}) has an empty union arm`);
+    const parsed = arms.map((a) => parseTypeAtom(ctx, a, `${hint} union`, seen));
+    const nonNull = parsed.filter((p): p is ET => p !== 'null');
+    const nulls = parsed.length - nonNull.length;
+    if (nulls > 0 && nonNull.length === 1) return { k: 'nullable', inner: nonNull[0] };
+    if (nulls > 0) return unresolved(ctx, `type \`${oneLine(expr)}\` (${hint}) mixes null with more than one arm`);
+    if (nonNull.every((p) => p.k === 'literal' && p.values.length === 1)) {
+      const values = nonNull.map((p) => (p as { k: 'literal'; values: string[] }).values[0]);
+      return { k: 'literal', values };
+    }
+    return { k: 'union', members: nonNull };
+  }
+  const atom = parseTypeAtom(ctx, expr, hint, seen);
+  if (atom === 'null') return unresolved(ctx, `type null (${hint})`);
+  return atom;
+}
+
+function parseTypeAtom(ctx: Ctx, src: string, hint: string, seen: Set<string>): ET | 'null' {
+  const expr = src.trim();
+  if (expr === 'null') return 'null';
+  const quoted = unquote(expr);
+  if (quoted !== null && (expr.startsWith('"') || expr.startsWith("'"))) return { k: 'literal', values: [quoted] };
+  if (PRIMITIVES[expr]) return PRIMITIVES[expr];
+
+  const generic = expr.match(/^(List|Set|Map)\s*[(<]([\s\S]*)[)>]$/);
+  if (generic) {
+    const kind = generic[1];
+    const inner = generic[2];
+    if (kind === 'Map') {
+      const parts = splitTop(inner, ',');
+      if (!parts || parts.length !== 2) return unresolved(ctx, `type \`${oneLine(expr)}\` (${hint}) is a Map without a key and a value type`);
+      return {
+        k: 'map',
+        key: parseTypeSource(ctx, parts[0], `${hint} key`, seen),
+        val: parseTypeSource(ctx, parts[1], `${hint} value`, seen),
+      };
+    }
+    const elem = parseTypeSource(ctx, inner, `${hint} element`, seen);
+    return kind === 'Set' ? { k: 'set', elem } : { k: 'list', elem };
+  }
+  if (expr.startsWith('{') && expr.endsWith('}')) {
+    const fields = parseRecordBody(ctx, expr.slice(1, -1), hint);
+    return inlineRecord(ctx, fields, hint, seen);
+  }
+  const opt = expr.match(/^Option\s*[(<]\s*([\s\S]+)\s*[)>]$/);
+  if (opt) return { k: 'nullable', inner: parseTypeSource(ctx, opt[1], hint, seen) };
+  const array = expr.match(/^(\w+)\[\]$/);
+  if (array) return { k: 'list', elem: resolveIdent(ctx, array[1], hint, seen) };
+  if (/^[A-Za-z_]\w*$/.test(expr)) {
+    if (ctx.enums.has(expr) || ctx.records.has(expr) || ctx.aliases.has(expr) || ctx.aliasResolved.has(expr) || PRIMITIVES[expr]) {
+      return resolveIdent(ctx, expr, hint, seen);
+    }
+    // A bare word in a union arm is a variant name, not a missing type.
+    // Callers that are not inside a union still go through resolveIdent.
+    if (hint.includes('union') || src.includes('|')) return { k: 'literal', values: [expr] };
+    return resolveIdent(ctx, expr, hint, seen);
+  }
+  return unresolved(ctx, `type \`${oneLine(expr)}\` (${hint})`);
+}
+
+function parseRecordBody(ctx: Ctx, body: string, hint: string): { name: string; type: TypeExpr }[] {
+  const parts = splitTop(body, ',');
+  if (!parts) ctx.fail(`cannot map record \`${oneLine(body)}\` (${hint}): unbalanced brackets`);
+  const fields: { name: string; type: TypeExpr }[] = [];
+  for (const part of parts) {
+    if (!part.trim()) continue;
+    const m = part.trim().match(/^(\w+)\s*:\s*([\s\S]+)$/);
+    if (!m) ctx.fail(`cannot map record field \`${oneLine(part)}\` (${hint})`);
+    fields.push({ name: m[1], type: { type: 'ident', name: m[2].trim() } });
+  }
+  return fields;
+}
+
+function resolveIr(ctx: Ctx, ref: IRTypeRef | undefined, hint: string): ET {
+  if (!ref) ctx.fail(`missing type where ${hint} was expected`);
+  const wrap = (inner: ET): ET => (ref.nullable ? { k: 'nullable', inner } : inner);
+  switch (ref.kind) {
+    case 'primitive': {
+      const p = PRIMITIVES[ref.primitive ?? ''];
+      if (!p) ctx.fail(`cannot map primitive ${ref.primitive ?? '(none)'} (${hint})`);
+      return wrap(p);
+    }
+    case 'list':
+      return wrap({ k: 'list', elem: resolveIr(ctx, ref.elementType, `${hint} element`) });
+    case 'set':
+      return wrap({ k: 'set', elem: resolveIr(ctx, ref.elementType, `${hint} element`) });
+    case 'map':
+      if (ref.fields && (!ref.keyType || !ref.valueType)) {
+        return wrap(inlineRecord(ctx, ref.fields.map((f) => ({
+          name: f.name,
+          type: { type: 'ident', name: schemaHint(f.type) },
+        })), hint, new Set()));
+      }
+      if (!ref.keyType || !ref.valueType) ctx.fail(`cannot map map type (${hint}): missing key or value`);
+      return wrap({
+        k: 'map',
+        key: resolveIr(ctx, ref.keyType, `${hint} key`),
+        val: resolveIr(ctx, ref.valueType, `${hint} value`),
+      });
+    case 'ident':
+      return wrap(resolveIdent(ctx, ref.name ?? '', hint, new Set()));
+    default:
+      ctx.fail(`cannot map IR type kind ${(ref as { kind?: string }).kind ?? 'unknown'} (${hint})`);
+  }
+}
+
+/** A placeholder ident the IR-only path can re-parse. Prefer the AST. */
+function schemaHint(ref: IRTypeRef): string {
+  if (ref.kind === 'primitive') return ref.primitive ?? 'Unknown';
+  if (ref.kind === 'ident') return ref.name ?? 'Unknown';
+  return 'Unknown';
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Schema text
+// ─────────────────────────────────────────────────────────────────────
+
+function schemaExpr(t: ET): string {
+  switch (t.k) {
+    case 'bool': return '$$effect.Schema.Boolean';
+    case 'nat': return '$$specklNat';
+    case 'int': return '$$specklInt';
+    case 'real': return '$$specklReal';
+    case 'string': return '$$effect.Schema.String';
+    case 'bytes': return '$$effect.Schema.Uint8ArrayFromSelf';
+    case 'date': return '$$effect.Schema.DateFromSelf';
+    case 'unit': return '$$effect.Schema.Void';
+    case 'unknown': return t.name;
+    case 'literal':
+      if (t.values.length === 0) return '$$effect.Schema.Never';
+      return `$$effect.Schema.Literal(${t.values.map((v) => JSON.stringify(v)).join(', ')})`;
+    case 'record':
+      return `$$effect.Schema.suspend(() => ${t.name})`;
+    case 'list':
+      return `$$effect.Schema.Array(${schemaExpr(t.elem)})`;
+    case 'set':
+      return `$$effect.Schema.HashSetFromSelf(${schemaExpr(t.elem)})`;
+    case 'map':
+      return `$$effect.Schema.HashMapFromSelf({ key: ${schemaExpr(t.key)}, value: ${schemaExpr(t.val)} })`;
+    case 'nullable':
+      return `$$effect.Schema.NullOr(${schemaExpr(t.inner)})`;
+    case 'union':
+      if (t.members.length === 0) return '$$effect.Schema.Never';
+      if (t.members.length === 1) return schemaExpr(t.members[0]);
+      return `$$effect.Schema.Union(${t.members.map(schemaExpr).join(', ')})`;
+  }
+}
+
+function tsType(t: ET): string {
+  switch (t.k) {
+    case 'bool': return 'boolean';
+    case 'nat':
+    case 'int':
+    case 'real': return 'number';
+    case 'string': return 'string';
+    case 'bytes': return 'Uint8Array';
+    case 'date': return 'Date';
+    case 'unit': return 'void';
+    case 'unknown': return 'unknown';
+    case 'literal':
+      if (t.values.length === 0) return 'never';
+      return t.values.map((v) => JSON.stringify(v)).join(' | ');
+    case 'record': return t.name;
+    case 'list': return `ReadonlyArray<${tsType(t.elem)}>`;
+    case 'set': return `$$effect.HashSet.HashSet<${tsType(t.elem)}>`;
+    case 'map': return `$$effect.HashMap.HashMap<${tsType(t.key)}, ${tsType(t.val)}>`;
+    case 'nullable': return `${tsType(t.inner)} | null`;
+    case 'union':
+      if (t.members.length === 0) return 'never';
+      return t.members.map(tsType).join(' | ');
+  }
+}
+
+/** Schema expression that names a declared const instead of re-inlining it. */
+function schemaRef(ctx: Ctx, t: ET): string {
+  if (t.k === 'literal' && t.name && ctx.enums.has(t.name)) return t.name;
+  if (t.k === 'literal' && t.name && ctx.aliasResolved.has(t.name)) return t.name;
+  if (t.k === 'record') return `$$effect.Schema.suspend(() => ${t.name})`;
+  if (t.k === 'unknown') return t.name;
+  if (t.k === 'nullable') return `$$effect.Schema.NullOr(${schemaRef(ctx, t.inner)})`;
+  if (t.k === 'list') return `$$effect.Schema.Array(${schemaRef(ctx, t.elem)})`;
+  if (t.k === 'set') return `$$effect.Schema.HashSetFromSelf(${schemaRef(ctx, t.elem)})`;
+  if (t.k === 'map') return `$$effect.Schema.HashMapFromSelf({ key: ${schemaRef(ctx, t.key)}, value: ${schemaRef(ctx, t.val)} })`;
+  if (t.k === 'union') return `$$effect.Schema.Union(${t.members.map((m) => schemaRef(ctx, m)).join(', ')})`;
+  return schemaExpr(t);
+}
+
+function fieldSchema(ctx: Ctx, f: RecField): string {
+  const inner = schemaRef(ctx, f.type);
+  return f.optional ? `$$effect.Schema.optional(${inner})` : inner;
+}
+
+function defaultValue(ctx: Ctx, t: ET, seen: Set<string> = new Set()): string {
+  switch (t.k) {
+    case 'bool': return 'false';
+    case 'nat':
+    case 'int':
+    case 'real': return '0';
+    case 'string': return '""';
+    case 'bytes': return 'new Uint8Array()';
+    case 'date': return 'new Date(0)';
+    case 'unit': return 'undefined';
+    case 'unknown': return 'undefined';
+    case 'literal':
+      if (t.values.length === 0) ctx.fail(`enum ${t.name ?? '(anonymous)'} has no variants, so it has no initial value`);
+      return JSON.stringify(t.values[0]);
+    case 'list': return `[] as ReadonlyArray<${tsType(t.elem)}>`;
+    case 'set': return `$$effect.HashSet.empty<${tsType(t.elem)}>()`;
+    case 'map': return `$$effect.HashMap.empty<${tsType(t.key)}, ${tsType(t.val)}>()`;
+    case 'nullable': return 'null';
+    case 'union': return defaultValue(ctx, t.members[0], seen);
+    case 'record': {
+      if (seen.has(t.name)) ctx.fail(`cannot build a default ${t.name}: the record contains itself and init does not set it`);
+      const fields = ctx.records.get(t.name) ?? [];
+      const next = new Set([...seen, t.name]);
+      const body = fields
+        .filter((f) => !f.optional)
+        .map((f) => `${propKey(f.name)}: ${defaultValue(ctx, f.type, next)}`)
+        .join(', ');
+      return `{ ${body} }`;
+    }
+  }
+}
+
+function propKey(name: string): string {
+  return /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Expressions
+// ─────────────────────────────────────────────────────────────────────
+
+interface TExpr { code: string; t: ET }
+
+class Env {
+  readonly locals = new Map<string, { js: string; t: ET }>();
+  readonly failures: string[] = [];
+  useOld = false;
+  readingOld = false;
+  /** Rule bodies may read input and output fields. Actions may not. */
+  readonly rules: boolean;
+  slot = 0;
+
+  constructor(readonly ctx: Ctx, rules = false) {
+    this.rules = rules;
+  }
+
+  fresh(prefix: string): string {
+    const name = `$$${prefix}${this.slot++}`;
+    return name;
+  }
+
+  declare(specName: string, t: ET): string {
+    const js = localIdent(specName, new Set([...this.locals.values()].map((l) => l.js)));
+    this.locals.set(specName, { js, t });
+    return js;
+  }
+}
+
+function lookup(name: string, env: Env): TExpr | null {
+  const local = env.locals.get(name);
+  if (local) return { code: local.js, t: local.t };
+  const state = env.ctx.stateVars.get(name);
+  if (state) return { code: `${env.readingOld ? '$$specklOld' : '$$state'}.${propKey(name)}`, t: state };
+  if (env.rules) {
+    const input = env.ctx.inputFields.get(name);
+    const output = env.ctx.outputFields.get(name);
+    if (input && output) return null;
+    if (input) return { code: `$$input.${propKey(name)}`, t: input };
+    if (output) return { code: `$$output.${propKey(name)}`, t: output };
+  }
+  return null;
+}
+
+function translate(expr: IRExpr | undefined, env: Env, expected?: ET): TExpr | null {
+  if (!expr || typeof expr !== 'object' || !('kind' in expr)) return null;
+  switch (expr.kind) {
+    case 'bool_lit':
+      if (expr.parseFailed || expr.value === undefined) return null;
+      return { code: String(expr.value), t: BOOL };
+    case 'int_lit':
+      if (!Number.isSafeInteger(expr.value)) return null;
+      if (expected?.k === 'nat' && expr.value < 0) return null;
+      return { code: String(expr.value), t: expected && isNum(expected) ? expected : { k: 'int' } };
+    case 'float_lit':
+      if (!Number.isFinite(expr.value)) return null;
+      return { code: String(expr.value), t: REAL };
+    case 'string_lit':
+      return { code: JSON.stringify(expr.value), t: STRING };
+    case 'ident':
+      return translateIdent(expr.name, env, expected);
+    case 'field':
+      return translateField(expr.target, expr.field, env);
+    case 'index':
+      return translateIndex(expr.target, expr.index, env);
+    case 'unop':
+      return translateUnop(expr.op, expr.operand, env);
+    case 'binop':
+      return translateBinop(expr.op, expr.left, expr.right, env);
+    case 'call':
+      return translateCall(expr.fn, expr.args, env, expected);
+    default:
+      return null;
+  }
+}
+
+function translateIdent(name: string, env: Env, expected?: ET): TExpr | null {
+  if (['nil', 'null', 'none', 'None'].includes(name) && !env.locals.has(name) && !env.ctx.stateVars.has(name)) {
+    return { code: 'null', t: { k: 'nullable', inner: expected?.k === 'nullable' ? expected.inner : { k: 'unknown', name: 'null', why: 'null' } } };
+  }
+  if (name === 'true' || name === 'false') return { code: name, t: BOOL };
+  const found = lookup(name, env);
+  if (found) return found;
+  const owners = env.ctx.variants.get(name);
+  if (owners && owners.length > 0) {
+    const exp = expected?.k === 'nullable' ? expected.inner : expected;
+    const owner = exp?.k === 'literal' && exp.name && owners.includes(exp.name) ? exp.name
+      : exp?.k === 'literal' && exp.values.includes(name) ? (exp.name ?? owners[0])
+      : owners.length === 1 ? owners[0] : undefined;
+    if (!owner && !(exp?.k === 'literal' && exp.values.includes(name))) return null;
+    const values = env.ctx.enums.get(owner ?? '') ?? env.ctx.aliasResolved.get(owner ?? '');
+    const lit: ET = values && 'values' in (values as ET) && (values as ET).k === 'literal'
+      ? values as ET
+      : env.ctx.enums.has(owner ?? '')
+        ? { k: 'literal', name: owner, values: env.ctx.enums.get(owner!)! }
+        : exp?.k === 'literal' ? exp
+        : { k: 'literal', name: owner, values: [name] };
+    if (lit.k === 'literal' && !lit.values.includes(name)) return null;
+    return { code: JSON.stringify(name), t: lit };
+  }
+  if (expected?.k === 'literal' && expected.values.includes(name)) {
+    return { code: JSON.stringify(name), t: expected };
+  }
+  return null;
+}
+
+function ruleArgs(ctx: Ctx): string {
+  const args = ['{ state: $$state }'];
+  if (ctx.inputFields.size > 0) args.push('$$input');
+  if (ctx.outputFields.size > 0) args.push('$$output');
+  return args.join(', ');
+}
+
+function translateField(target: IRExpr, field: string, env: Env): TExpr | null {
+  if (target.kind === 'ident' && target.name === 'this') return lookup(field, env);
+  const obj = translate(target, env);
+  if (!obj) return null;
+  const inner = obj.t.k === 'nullable' ? null : obj.t;
+  if (!inner) return null;
+  if (inner.k === 'record') {
+    const f = env.ctx.records.get(inner.name)?.find((x) => x.name === field);
+    if (!f) return null;
+    return { code: `${obj.code}.${propKey(field)}`, t: f.type };
+  }
+  if (inner.k === 'map' && field === 'keys') return obj;
+  return null;
+}
+
+function translateIndex(target: IRExpr, index: IRExpr, env: Env): TExpr | null {
+  const obj = translate(target, env);
+  if (!obj) return null;
+  if (obj.t.k === 'map') {
+    const key = translate(index, env, obj.t.key);
+    if (!key || !sameType(key.t, obj.t.key) && !(isNum(key.t) && isNum(obj.t.key))) return null;
+    const k = coerce(key, obj.t.key);
+    if (k == null) return null;
+    return { code: `$$specklMapGet(${obj.code}, ${k})`, t: obj.t.val };
+  }
+  if (obj.t.k === 'list') {
+    const i = translate(index, env, NAT);
+    if (!i || !isNum(i.t)) return null;
+    return { code: `$$specklListGet(${obj.code}, ${i.code})`, t: obj.t.elem };
+  }
+  return null;
+}
+
+function translateUnop(op: string, operand: IRExpr, env: Env): TExpr | null {
+  const v = translate(operand, env);
+  if (!v) return null;
+  if ((op === '!' || op === 'not') && v.t.k === 'bool') return { code: `(!${v.code})`, t: BOOL };
+  if (op === '-' && isNum(v.t)) return { code: `(-${v.code})`, t: v.t.k === 'nat' ? INT : v.t };
+  return null;
+}
+
+function translateBinop(op: string, left: IRExpr, right: IRExpr, env: Env): TExpr | null {
+  if (op === 'in' || op === '!in' || op === 'notIn' || op === 'notin') {
+    return translateIn(op, left, right, env);
+  }
+  const l0 = translate(left, env);
+  const r0 = translate(right, env, l0?.t);
+  const l = l0 ?? (r0 ? translate(left, env, r0.t) : null);
+  const r = r0 ?? (l ? translate(right, env, l.t) : null);
+  if (!l || !r) return null;
+  const cmp = op === '==' || op === '!=' || op === '<' || op === '<=' || op === '>' || op === '>=';
+  if ((op === '&&' || op === 'and' || op === '||' || op === 'or') && l.t.k === 'bool' && r.t.k === 'bool') {
+    return { code: `(${l.code} ${op === '||' || op === 'or' ? '||' : '&&'} ${r.code})`, t: BOOL };
+  }
+  if ((op === 'implies' || op === '=>' || op === '->') && l.t.k === 'bool' && r.t.k === 'bool') {
+    return { code: `(!${l.code} || ${r.code})`, t: BOOL };
+  }
+  if (op === '+' && isNum(l.t) && isNum(r.t)) {
+    return { code: `(${l.code} + ${r.code})`, t: numJoin(l.t, r.t) };
+  }
+  if (op === '+' && (l.t.k === 'string' || r.t.k === 'string' || l.t.k === 'literal' || r.t.k === 'literal')) {
+    return { code: `\`\${$$specklShow(${l.code})}\${$$specklShow(${r.code})}\``, t: STRING };
+  }
+  if ((op === '-' || op === '*' || op === '/' || op === '%') && isNum(l.t) && isNum(r.t)) {
+    const t = op === '/' ? REAL : numJoin(l.t, r.t);
+    return { code: `(${l.code} ${op} ${r.code})`, t };
+  }
+  if (cmp && isNum(l.t) && isNum(r.t)) return { code: `(${l.code} ${jsCmp(op)} ${r.code})`, t: BOOL };
+  if (cmp && (l.t.k === 'string' || l.t.k === 'literal') && (r.t.k === 'string' || r.t.k === 'literal') && (op === '==' || op === '!=')) {
+    return { code: `(${l.code} ${jsCmp(op)} ${r.code})`, t: BOOL };
+  }
+  if ((op === '==' || op === '!=') && (l.t.k === 'nullable' || r.t.k === 'nullable' || l.code === 'null' || r.code === 'null')) {
+    const other = l.code === 'null' ? r : l;
+    if (other.code === 'null') return { code: op === '==' ? 'true' : 'false', t: BOOL };
+    return { code: `(${other.code} ${op === '==' ? '===' : '!=='} null)`, t: BOOL };
+  }
+  if ((op === '==' || op === '!=') && sameType(l.t, r.t)) {
+    const neg = op === '!=';
+    return { code: `${neg ? '!' : ''}($$specklEqual(${l.code}, ${r.code}))`, t: BOOL };
+  }
+  if (op === 'union' && l.t.k === 'set' && r.t.k === 'set' && sameType(l.t.elem, r.t.elem)) {
+    return { code: `$$effect.HashSet.union(${l.code}, ${r.code})`, t: l.t };
+  }
+  if ((op === 'diff' || op === '\\') && l.t.k === 'set' && r.t.k === 'set' && sameType(l.t, r.t)) {
+    return { code: `$$effect.HashSet.difference(${l.code}, ${r.code})`, t: l.t };
+  }
+  return null;
+}
+
+function translateIn(op: string, left: IRExpr, right: IRExpr, env: Env): TExpr | null {
+  const keysOf = right.kind === 'field' && right.field === 'keys' ? translate(right.target, env) : null;
+  const coll = keysOf?.t.k === 'map' ? keysOf : translate(right, env);
+  if (!coll) return null;
+  let code: string | null = null;
+  if (coll.t.k === 'map') {
+    const item = translate(left, env, coll.t.key);
+    const c = item && coerce(item, coll.t.key);
+    if (c == null) return null;
+    code = `$$effect.HashMap.has(${coll.code}, ${c})`;
+  } else if (coll.t.k === 'set') {
+    const item = translate(left, env, coll.t.elem);
+    const c = item && coerce(item, coll.t.elem);
+    if (c == null) return null;
+    code = `$$effect.HashSet.has(${coll.code}, ${c})`;
+  } else if (coll.t.k === 'list') {
+    const item = translate(left, env, coll.t.elem);
+    const c = item && coerce(item, coll.t.elem);
+    if (c == null) return null;
+    code = `$$specklIncludes(${coll.code}, ${c})`;
+  } else if (coll.t.k === 'string') {
+    const item = translate(left, env, STRING);
+    if (!item || item.t.k !== 'string') return null;
+    code = `${coll.code}.includes(${item.code})`;
+  }
+  if (!code) return null;
+  const neg = op !== 'in';
+  return { code: neg ? `(!${code})` : code, t: BOOL };
+}
+
+function numJoin(a: ET, b: ET): ET {
+  if (a.k === 'real' || b.k === 'real') return REAL;
+  if (a.k === 'int' || b.k === 'int') return INT;
+  return NAT;
+}
+
+function jsCmp(op: string): string {
+  if (op === '==') return '===';
+  if (op === '!=') return '!==';
+  return op;
+}
+
+function coerce(v: TExpr, target: ET): string | null {
+  if (target.k === 'nullable') {
+    if (v.code === 'null') return 'null';
+    if (v.t.k === 'nullable') return sameType(v.t, target) ? v.code : null;
+    const inner = coerce(v, target.inner);
+    return inner;
+  }
+  if (sameType(v.t, target) || (isNum(v.t) && isNum(target))) return v.code;
+  if (v.t.k === 'literal' && target.k === 'string') return v.code;
+  if (v.t.k === 'string' && target.k === 'literal' && v.code.startsWith('"')) {
+    try {
+      const value = JSON.parse(v.code) as string;
+      if (target.values.includes(value)) return v.code;
+    } catch { /* not a string literal */ }
+  }
+  return null;
+}
+
+function translateCall(fn: string, args: IRExpr[], env: Env, expected?: ET): TExpr | null {
+  if (['emptySet', 'emptyMap', 'emptyList', 'empty'].includes(fn)) {
+    if (!expected || args.length > 0) return null;
+    if ((fn === 'emptyList' || fn === 'empty') && expected.k === 'list') return { code: defaultValue(env.ctx, expected), t: expected };
+    if ((fn === 'emptySet' || fn === 'empty') && expected.k === 'set') return { code: defaultValue(env.ctx, expected), t: expected };
+    if ((fn === 'emptyMap' || fn === 'empty') && expected.k === 'map') return { code: defaultValue(env.ctx, expected), t: expected };
+    return null;
+  }
+  if (fn === 'now' && args.length === 0) return { code: '$$specklNow()', t: NAT };
+  if (fn === 'old' && args.length === 1) {
+    const prev = env.readingOld;
+    env.readingOld = true;
+    env.useOld = true;
+    const v = translate(args[0], env, expected);
+    env.readingOld = prev;
+    return v;
+  }
+  if (/^always$/i.test(fn) && args.length === 1) {
+    const v = translate(args[0], env, BOOL);
+    return v && v.t.k === 'bool' ? v : null;
+  }
+  const translated: TExpr[] = [];
+  for (const a of args) {
+    const v = translate(a, env);
+    if (!v) return null;
+    translated.push(v);
+  }
+  const [a, b] = translated;
+  switch (fn) {
+    case 'length':
+    case 'len':
+    case 'size':
+    case 'count':
+      if (translated.length !== 1) return null;
+      if (a.t.k === 'list' || a.t.k === 'string' || a.t.k === 'bytes') return { code: `${a.code}.length`, t: NAT };
+      if (a.t.k === 'set') return { code: `$$effect.HashSet.size(${a.code})`, t: NAT };
+      if (a.t.k === 'map') return { code: `$$effect.HashMap.size(${a.code})`, t: NAT };
+      return null;
+    case 'has': {
+      if (translated.length !== 2 || a.t.k !== 'map') return null;
+      const key = coerce(translate(args[1], env, a.t.key) ?? b, a.t.key);
+      return key == null ? null : { code: `$$effect.HashMap.has(${a.code}, ${key})`, t: BOOL };
+    }
+    case 'contains': {
+      if (translated.length !== 2) return null;
+      if (a.t.k === 'set') {
+        const item = coerce(translate(args[1], env, a.t.elem) ?? b, a.t.elem);
+        return item == null ? null : { code: `$$effect.HashSet.has(${a.code}, ${item})`, t: BOOL };
+      }
+      if (a.t.k === 'list') {
+        const item = coerce(translate(args[1], env, a.t.elem) ?? b, a.t.elem);
+        return item == null ? null : { code: `$$specklIncludes(${a.code}, ${item})`, t: BOOL };
+      }
+      if (a.t.k === 'string' && b.t.k === 'string') return { code: `${a.code}.includes(${b.code})`, t: BOOL };
+      return null;
+    }
+    case 'implies':
+      if (translated.length !== 2 || a.t.k !== 'bool' || b.t.k !== 'bool') return null;
+      return { code: `(!${a.code} || ${b.code})`, t: BOOL };
+    case 'min':
+    case 'max':
+      if (translated.length !== 2 || !isNum(a.t) || !isNum(b.t)) return null;
+      return { code: `Math.${fn}(${a.code}, ${b.code})`, t: numJoin(a.t, b.t) };
+    case 'append': {
+      if (translated.length !== 2 || a.t.k !== 'list') return null;
+      if (sameType(b.t, a.t)) return { code: `[...${a.code}, ...${b.code}]`, t: a.t };
+      const item = coerce(translate(args[1], env, a.t.elem) ?? b, a.t.elem);
+      if (item == null) return null;
+      return { code: `[...${a.code}, ${item}]`, t: a.t };
+    }
+    default:
+      return null;
+  }
+}
+
+function exprSource(expr: IRExpr | undefined): string {
+  if (!expr || typeof expr !== 'object' || !('kind' in expr)) return '<unknown expression>';
+  switch (expr.kind) {
+    case 'bool_lit':
+      if (expr.parseFailed || expr.value === undefined) return expr.source ?? '<unknown expression>';
+      return String(expr.value);
+    case 'int_lit':
+    case 'float_lit':
+      return String(expr.value);
+    case 'string_lit':
+      return JSON.stringify(expr.value);
+    case 'ident':
+      return expr.name;
+    case 'field':
+      return `${exprSource(expr.target)}.${expr.field}`;
+    case 'index':
+      return `${exprSource(expr.target)}[${exprSource(expr.index)}]`;
+    case 'binop':
+      return `${exprSource(expr.left)} ${expr.op} ${exprSource(expr.right)}`;
+    case 'unop':
+      return `${expr.op === '!' ? 'not ' : '-'}${exprSource(expr.operand)}`;
+    case 'call':
+      return `${expr.fn}(${expr.args.map(exprSource).join(', ')})`;
+    default:
+      return '<unknown expression>';
+  }
+}
+
+function stmtSource(stmt: IRStmt): string {
+  if (stmt.raw) return stmt.raw;
+  const v = stmt.value ?? stmt.expr;
+  switch (stmt.kind) {
+    case 'assign': {
+      const target = stmt.targetIndex && stmt.target?.endsWith('[...]')
+        ? `${stmt.target.slice(0, -5)}[${exprSource(stmt.targetIndex)}]`
+        : stmt.target;
+      return `${target} := ${exprSource(v)}`;
+    }
+    case 'let':
+      return `let ${stmt.letName} := ${exprSource(v)}`;
+    case 'emit':
+      return `emit ${stmt.event} { ${(stmt.fields ?? []).map((f) => `${f.name}: ${exprSource(f.value)}`).join(', ')} }`;
+    case 'return':
+      return v ? `return ${exprSource(v)}` : 'return';
+    case 'if':
+      return stmt.raw ? stmt.raw : `if ${exprSource(v)} { ... }`;
+    default:
+      return `${stmt.kind} ${exprSource(v)}`;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Statements
+// ─────────────────────────────────────────────────────────────────────
+
+const ERRORS = {
+  guard: '$$GuardFailed',
+  pre: '$$PreconditionFailed',
+  post: '$$PostconditionFailed',
+  inv: '$$InvariantViolated',
+  bad: '$$Untranslated',
+  index: '$$IndexOutOfRange',
+  adapter: '$$AdapterUnimplemented',
+} as const;
+
+function failExpr(cls: string, fields: Record<string, string>): string {
+  const body = Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join(', ');
+  return `yield* new ${cls}({ ${body} })`;
+}
+
+interface StmtOut {
+  lines: string[];
+  returned: boolean;
+  errors: Set<string>;
+}
+
+function translateStmts(stmts: IRStmt[], env: Env, action: string, ret: ET | undefined): StmtOut {
+  const lines: string[] = [];
+  const errors = new Set<string>();
+  let returned = false;
+  for (const stmt of stmts) {
+    const part = translateStmt(stmt, env, action, ret);
+    lines.push(...part.lines);
+    for (const e of part.errors) errors.add(e);
+    if (part.returned) {
+      returned = true;
+      break;
+    }
+  }
+  return { lines, returned, errors };
+}
+
+function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefined): StmtOut {
+  const errors = new Set<string>();
+  const bad = (source: string): StmtOut => {
+    env.failures.push(oneLine(source));
+    errors.add(ERRORS.bad);
+    return { lines: [`// SPECKL-UNTRANSLATED: ${jsDoc(source)}`], returned: false, errors };
+  };
+  const value = stmt.value ?? stmt.expr;
+  switch (stmt.kind) {
+    case 'assign': {
+      if (!value || !stmt.target) return bad(stmtSource(stmt));
+      if (stmt.target.endsWith('[...]')) {
+        const baseName = stmt.target.slice(0, -5);
+        const base = lookup(baseName, env);
+        if (!base || !stmt.targetIndex) return bad(stmtSource(stmt));
+        if (base.t.k === 'map') {
+          const key = translate(stmt.targetIndex, env, base.t.key);
+          const val = translate(value, env, base.t.val);
+          const k = key && coerce(key, base.t.key);
+          const v = val && coerce(val, base.t.val);
+          if (k == null || v == null) return bad(stmtSource(stmt));
+          const local = env.locals.get(baseName);
+          if (local) return { lines: [`${local.js} = $$effect.HashMap.set(${local.js}, ${k}, ${v});`], returned: false, errors };
+          return { lines: [`$$state = { ...$$state, ${propKey(baseName)}: $$effect.HashMap.set($$state.${propKey(baseName)}, ${k}, ${v}) };`], returned: false, errors };
+        }
+        if (base.t.k === 'list') {
+          const index = translate(stmt.targetIndex, env, NAT);
+          const val = translate(value, env, base.t.elem);
+          const v = val && coerce(val, base.t.elem);
+          if (!index || !isNum(index.t) || v == null) return bad(stmtSource(stmt));
+          errors.add(ERRORS.index);
+          const slot = env.fresh('idx');
+          const next = env.fresh('next');
+          const src = JSON.stringify(oneLine(stmtSource(stmt)));
+          const lines = [
+            `const ${slot} = ${index.code};`,
+            `if (!Number.isInteger(${slot}) || ${slot} < 0 || ${slot} >= ${base.code}.length) {`,
+            `  return ${failExpr(ERRORS.index, { action: JSON.stringify(action), detail: src })};`,
+            `}`,
+            `const ${next} = ${base.code}.slice();`,
+            `${next}[${slot}] = ${v};`,
+          ];
+          const local = env.locals.get(baseName);
+          if (local) lines.push(`${local.js} = ${next};`);
+          else lines.push(`$$state = { ...$$state, ${propKey(baseName)}: ${next} };`);
+          return { lines, returned: false, errors };
+        }
+        return bad(stmtSource(stmt));
+      }
+      const targetName = stmt.target.startsWith('this.') ? stmt.target.slice(5) : stmt.target;
+      const fromState = stmt.target.startsWith('this.');
+      const local = fromState ? undefined : env.locals.get(targetName);
+      const stateT = env.ctx.stateVars.get(targetName);
+      const dest = local ? { js: local.js, t: local.t, state: false } : stateT ? { js: propKey(targetName), t: stateT, state: true } : null;
+      if (!dest) return bad(stmtSource(stmt));
+      const v = translate(value, env, dest.t);
+      const code = v && coerce(v, dest.t);
+      if (code == null) return bad(stmtSource(stmt));
+      if (!dest.state) return { lines: [`${dest.js} = ${code};`], returned: false, errors };
+      return { lines: [`$$state = { ...$$state, ${dest.js}: ${code} };`], returned: false, errors };
+    }
+    case 'let': {
+      if (!value || !stmt.letName) return bad(stmtSource(stmt));
+      const v = translate(value, env);
+      if (!v || v.t.k === 'unit') return bad(stmtSource(stmt));
+      const js = env.declare(stmt.letName, v.t);
+      return { lines: [`let ${js}: ${tsType(v.t)} = ${v.code};`], returned: false, errors };
+    }
+    case 'require':
+    case 'precondition': {
+      const c = translate(value, env, BOOL);
+      if (!c || c.t.k !== 'bool') return bad(stmtSource(stmt));
+      const cls = stmt.kind === 'require' ? ERRORS.guard : ERRORS.pre;
+      errors.add(cls);
+      const src = exprSource(value);
+      return {
+        lines: [
+          `// ${stmt.kind}: ${jsDoc(src)}`,
+          `if (!(${c.code})) {`,
+          `  return ${failExpr(cls, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) })};`,
+          `}`,
+        ],
+        returned: false,
+        errors,
+      };
+    }
+    case 'postcondition':
+      return { lines: [`// postcondition is checked at each return: ${jsDoc(exprSource(value))}`], returned: false, errors };
+    case 'emit': {
+      const fields = stmt.event ? env.ctx.records.get(stmt.event) : undefined;
+      if (!fields || !stmt.event || !env.ctx.events.has(stmt.event)) return bad(stmtSource(stmt));
+      const given = new Map((stmt.fields ?? []).map((f) => [f.name, f.value]));
+      if ([...given.keys()].some((k) => !fields.some((f) => f.name === k))) return bad(stmtSource(stmt));
+      const inits: string[] = [];
+      for (const f of fields) {
+        if (f.name === '_tag') {
+          inits.push(`_tag: ${JSON.stringify(stmt.event)}`);
+          continue;
+        }
+        const g = given.get(f.name);
+        const v = g ? translate(g, env, f.type) : null;
+        const code = v && coerce(v, f.type);
+        if (code == null) return bad(stmtSource(stmt));
+        inits.push(`${propKey(f.name)}: ${code}`);
+      }
+      return {
+        lines: [`// emit ${jsDoc(stmt.event)}`, `$$log = [...$$log, { ${inits.join(', ')} }];`],
+        returned: false,
+        errors,
+      };
+    }
+    case 'return': {
+      let valueCode = 'undefined';
+      if (value) {
+        const v = translate(value, env, ret && ret.k !== 'unit' ? ret : undefined);
+        if (!v || v.t.k === 'unit') return bad(stmtSource(stmt));
+        if (ret && ret.k !== 'unit') {
+          const c = coerce(v, ret);
+          if (c == null) return bad(stmtSource(stmt));
+          valueCode = c;
+        } else {
+          valueCode = v.code;
+        }
+      } else if (ret && ret.k !== 'unit') return bad(stmtSource(stmt));
+      return {
+        lines: [`return { state: $$state, decisionLog: $$log, value: ${valueCode} };`],
+        returned: true,
+        errors,
+      };
+    }
+    case 'if': {
+      if (stmt.raw || !value || !stmt.thenBlock) return bad(stmt.raw ?? stmtSource(stmt));
+      const c = translate(value, env, BOOL);
+      if (!c || c.t.k !== 'bool') return bad(stmtSource(stmt));
+      const thenPart = translateStmts(stmt.thenBlock, env, action, ret);
+      const elsePart = stmt.elseBlock ? translateStmts(stmt.elseBlock, env, action, ret) : null;
+      for (const e of thenPart.errors) errors.add(e);
+      for (const e of elsePart?.errors ?? []) errors.add(e);
+      const thenBody = thenPart.lines.map((l) => `  ${l}`).join('\n');
+      let code = `if (${c.code}) {\n${thenBody}\n}`;
+      if (elsePart) code += ` else {\n${elsePart.lines.map((l) => `  ${l}`).join('\n')}\n}`;
+      return { lines: [code], returned: false, errors };
+    }
+    default:
+      return bad(stmtSource(stmt));
+  }
+}
+
+function postLines(posts: IRStmt[], env: Env, action: string): { lines: string[]; errors: Set<string> } {
+  const lines: string[] = [];
+  const errors = new Set<string>();
+  for (const stmt of posts) {
+    const src = exprSource(stmt.value ?? stmt.expr);
+    const c = translate(stmt.value ?? stmt.expr, env, BOOL);
+    if (!c || c.t.k !== 'bool') {
+      env.failures.push(oneLine(`postcondition: ${src}`));
+      errors.add(ERRORS.bad);
+      lines.push(`// SPECKL-UNTRANSLATED: postcondition: ${jsDoc(src)}`);
+      continue;
+    }
+    errors.add(ERRORS.post);
+    lines.push(
+      `if (!(${c.code})) {`,
+      `  return ${failExpr(ERRORS.post, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) })};`,
+      `}`,
+    );
+  }
+  return { lines, errors };
+}
+
+interface ActionEmit {
+  name: string;
+  exportName: string;
+  params: { spec: string; js: string; t: ET }[];
+  ret: ET;
+  errors: string[];
+  body: string[];
+  failed: boolean;
+}
+
+function emitAction(ctx: Ctx, action: IRAction, exportName: string): ActionEmit {
+  const posts = action.statements.filter((s) => s.kind === 'postcondition');
+  const bodyStmts = action.statements.filter((s) => s.kind !== 'postcondition');
+  const probe = new Env(ctx);
+  for (const p of action.params) probe.declare(p.name, resolveParam(ctx, action, p.name));
+  // Return type: first translated return, else unit.
+  let ret: ET = { k: 'unit' };
+  const findRet = (stmts: IRStmt[]): ET | undefined => {
+    for (const s of stmts) {
+      if (s.kind === 'return') {
+        if (!s.expr && !s.value) return { k: 'unit' };
+        const v = translate(s.value ?? s.expr, probe);
+        return v && v.t.k !== 'unit' ? v.t : undefined;
+      }
+      const nested = findRet(s.thenBlock ?? []) ?? findRet(s.elseBlock ?? []);
+      if (nested) return nested;
+    }
+    return undefined;
+  };
+  const found = findRet(bodyStmts);
+  if (found) ret = found;
+
+  const withPosts = new Env(ctx);
+  const params = action.params.map((p) => {
+    const t = resolveParam(ctx, action, p.name);
+    const js = withPosts.declare(p.name, t);
+    return { spec: p.name, js, t };
+  });
+  const rerun = translateStmtsCheckingPosts(bodyStmts, withPosts, action.name, ret, posts);
+  const errors = new Set<string>([...rerun.errors, ...withPosts.failures.length ? [ERRORS.bad] : []]);
+  const lines = [...rerun.lines];
+  if (!rerun.returned) {
+    const tail = postLines(posts, withPosts, action.name);
+    for (const e of tail.errors) errors.add(e);
+    lines.push(...tail.lines);
+    if (ret.k === 'unit') lines.push(`return { state: $$state, decisionLog: $$log, value: undefined };`);
+    else {
+      withPosts.failures.push(`${action.name} ended without returning a value`);
+      errors.add(ERRORS.bad);
+      lines.push(`// SPECKL-UNTRANSLATED: ${action.name} ended without returning a value`);
+    }
+  }
+  if (withPosts.failures.length > 0) {
+    errors.add(ERRORS.bad);
+    const detail = `${action.name}: ${withPosts.failures.length} untranslated statement${withPosts.failures.length === 1 ? '' : 's'}, first: ${withPosts.failures[0]}`;
+    lines.unshift(
+      `// This decision fails closed until every statement below is translated.`,
+      `return ${failExpr(ERRORS.bad, { where: JSON.stringify(action.name), detail: JSON.stringify(oneLine(detail)) })};`,
+    );
+  }
+  return {
+    name: action.name,
+    exportName,
+    params,
+    ret,
+    errors: [...errors],
+    body: lines,
+    failed: withPosts.failures.length > 0,
+  };
+}
+
+function resolveParam(ctx: Ctx, action: IRAction, name: string): ET {
+  const astAction = ctx.ast?.members.find((m): m is ActionNode => m.type === 'action' && m.name === action.name);
+  const astParam = astAction?.params.find((p) => p.name === name);
+  if (astParam) return resolveTypeExpr(ctx, astParam.type, `${action.name}.${name}`);
+  const ir = action.params.find((p) => p.name === name);
+  return resolveIr(ctx, ir?.type, `${action.name}.${name}`);
+}
+
+function translateStmtsCheckingPosts(stmts: IRStmt[], env: Env, action: string, ret: ET, posts: IRStmt[]): StmtOut {
+  const lines: string[] = [];
+  const errors = new Set<string>();
+  let returned = false;
+  for (const stmt of stmts) {
+    if (stmt.kind === 'return') {
+      const part = translateStmt(stmt, env, action, ret);
+      // translateStmt's return does not include posts (it looks them up
+      // wrong). Prepend the real checks.
+      const checks = postLines(posts, env, action);
+      for (const e of checks.errors) errors.add(e);
+      for (const e of part.errors) errors.add(e);
+      const retLines = part.lines.filter((l) => !l.startsWith('// postcondition is checked'));
+      lines.push(...checks.lines, ...retLines);
+      returned = true;
+      break;
+    }
+    if (stmt.kind === 'if' && stmt.thenBlock) {
+      const c = translate(stmt.expr ?? stmt.value, env, BOOL);
+      if (!c || c.t.k !== 'bool') {
+        env.failures.push(oneLine(stmt.raw ?? stmtSource(stmt)));
+        errors.add(ERRORS.bad);
+        lines.push(`// SPECKL-UNTRANSLATED: ${jsDoc(stmt.raw ?? stmtSource(stmt))}`);
+        continue;
+      }
+      const thenPart = translateStmtsCheckingPosts(stmt.thenBlock, env, action, ret, posts);
+      const elsePart = stmt.elseBlock ? translateStmtsCheckingPosts(stmt.elseBlock, env, action, ret, posts) : null;
+      for (const e of thenPart.errors) errors.add(e);
+      if (elsePart) for (const e of elsePart.errors) errors.add(e);
+      let code = `if (${c.code}) {\n${thenPart.lines.map((l) => `  ${l}`).join('\n')}\n}`;
+      if (elsePart) code += ` else {\n${elsePart.lines.map((l) => `  ${l}`).join('\n')}\n}`;
+      lines.push(code);
+      continue;
+    }
+    const part = translateStmt(stmt, env, action, ret);
+    lines.push(...part.lines);
+    for (const e of part.errors) errors.add(e);
+    if (part.returned) {
+      returned = true;
+      break;
+    }
+  }
+  return { lines, returned, errors };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Rules
+// ─────────────────────────────────────────────────────────────────────
+
+interface RuleEmit {
+  exportName: string;
+  specName: string;
+  source: string;
+  body: string[];
+  errors: string[];
+  temporal: boolean;
+}
+
+function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, source: string, temporal: 'state' | 'eventually' | 'other'): RuleEmit {
+  if (expr.kind === 'ident') {
+    const named = ctx.rules.get(expr.name);
+    if (named) {
+      return {
+        exportName,
+        specName,
+        source,
+        temporal: false,
+        errors: [ERRORS.inv, ERRORS.bad],
+        body: [`// ${jsDoc(source)}`, `return yield* ${named}(${ruleArgs(ctx)});`],
+      };
+    }
+  }
+  const env = new Env(ctx, true);
+  if (temporal === 'eventually' || temporal === 'other') {
+    return {
+      exportName,
+      specName,
+      source,
+      temporal: true,
+      errors: [ERRORS.bad],
+      body: [
+        `// ${jsDoc(source)}`,
+        `return ${failExpr(ERRORS.bad, { where: JSON.stringify(exportName), detail: JSON.stringify(oneLine(source)) })};`,
+      ],
+    };
+  }
+  const v = translate(expr, env, BOOL);
+  if (!v || v.t.k !== 'bool' || env.failures.length > 0) {
+    const detail = source;
+    return {
+      exportName,
+      specName,
+      source,
+      temporal: false,
+      errors: [ERRORS.bad],
+      body: [
+        `// SPECKL-UNTRANSLATED: ${jsDoc(detail)}`,
+        `return ${failExpr(ERRORS.bad, { where: JSON.stringify(specName || exportName), detail: JSON.stringify(oneLine(detail)) })};`,
+      ],
+    };
+  }
+  // A verify that is only `yield* someRule(...)` is an effect, not a bool.
+  if (v.code.startsWith('(yield*')) {
+    return {
+      exportName,
+      specName,
+      source,
+      temporal: false,
+      errors: [ERRORS.inv, ERRORS.bad],
+      body: [`// ${jsDoc(source)}`, `return ${v.code.slice(1, -1)};`],
+    };
+  }
+  return {
+    exportName,
+    specName,
+    source,
+    temporal: false,
+    errors: [ERRORS.inv],
+    body: [
+      `// ${jsDoc(source)}`,
+      `if (!(${v.code})) {`,
+      `  return ${failExpr(ERRORS.inv, { name: JSON.stringify(specName || exportName), detail: JSON.stringify(oneLine(source)) })};`,
+      `}`,
+    ],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Module assembly
+// ─────────────────────────────────────────────────────────────────────
+
+function buildContext(speck: IRSpeck, ast: SpeckNode | undefined): Ctx {
+  const ctx = new Ctx(speck, ast);
+  const astInterfaces = (ast?.members ?? []).filter((m): m is InterfaceNode => m.type === 'interface');
+  const astEvents = (ast?.members ?? []).filter((m): m is EventNode => m.type === 'event');
+  let sourceTypes = { aliases: new Map<string, string>(), records: new Map<string, string>() };
+  if (speck.sourcePath) {
+    try {
+      sourceTypes = readSourceTypes(fs.readFileSync(speck.sourcePath, 'utf-8'));
+    } catch {
+      sourceTypes = { aliases: new Map(), records: new Map() };
+    }
+  }
+
+  for (const [name, t] of speck.facets.typed_schema.types) {
+    if (t.kind === 'enum' && !sourceTypes.records.has(name)) {
+      const id = claimTypeName(ctx, name);
+      if (id !== name) ctx.fail(`cannot map enum ${name}: \`${id}\` would rename it and the spec name is not a legal Effect export`);
+      ctx.enums.set(name, t.variants);
+      ctx.usedExports.add(name);
+      for (const v of t.variants) ctx.ownVariant(name, v);
+    }
+  }
+
+  const recordNames: string[] = [];
+  for (const [name, t] of speck.facets.typed_schema.types) {
+    if (t.kind === 'record' && !speck.facets.behavior.events.some((e) => e.name === name)) {
+      claimTypeName(ctx, name);
+      ctx.records.set(name, []);
+      recordNames.push(name);
+    }
+  }
+  for (const name of sourceTypes.records.keys()) {
+    if (ctx.records.has(name) || ctx.events.has(name)) continue;
+    claimTypeName(ctx, name);
+    ctx.records.set(name, []);
+    recordNames.push(name);
+  }
+  for (const ev of speck.facets.behavior.events) {
+    claimTypeName(ctx, ev.name);
+    ctx.records.set(ev.name, []);
+    ctx.events.add(ev.name);
+  }
+
+  const taken = new Set<string>([...ctx.records.keys(), ...ctx.enums.keys(), ...ctx.events]);
+  for (const [name, rhs] of sourceTypes.aliases) {
+    if (taken.has(name)) continue;
+    claimTypeName(ctx, name);
+    ctx.aliases.set(name, rhs);
+  }
+  for (const name of ctx.aliases.keys()) resolveAlias(ctx, name, new Set());
+
+  for (const name of recordNames) {
+    const sourceBody = sourceTypes.records.get(name);
+    const astIface = astInterfaces.find((i) => i.name === name);
+    const ir = speck.facets.typed_schema.types.get(name);
+    const fields: RecField[] = sourceBody !== undefined
+      ? fieldsFromSource(ctx, name, sourceBody)
+      : astIface
+      ? astIface.fields.map((f) => ({
+        name: f.name,
+        optional: false,
+        type: resolveTypeExpr(ctx, f.type, `${name}.${f.name}`),
+      }))
+      : (ir && ir.kind === 'record' ? ir.fields : []).map((f) => ({
+        name: f.name,
+        optional: f.optional,
+        type: resolveIr(ctx, f.type, `${name}.${f.name}`),
+      }));
+    if (fields.some((f) => f.name === '_tag')) ctx.fail(`record ${name} field _tag collides with the tagged-event discriminant`);
+    ctx.records.set(name, dedupeFields(ctx, name, fields));
+  }
+  for (const ev of speck.facets.behavior.events) {
+    const astEv = astEvents.find((e) => e.name === ev.name);
+    const payload: RecField[] = astEv
+      ? astEv.fields.map((f) => ({ name: f.name, optional: false, type: resolveTypeExpr(ctx, f.type, `${ev.name}.${f.name}`) }))
+      : ev.fields.map((f) => ({ name: f.name, optional: f.optional, type: resolveIr(ctx, f.type, `${ev.name}.${f.name}`) }));
+    if (payload.some((f) => f.name === '_tag')) ctx.fail(`event ${ev.name} field _tag collides with the tagged-union discriminant`);
+    ctx.records.set(ev.name, [
+      { name: '_tag', optional: false, type: { k: 'literal', values: [ev.name] } },
+      ...payload,
+    ]);
+  }
+
+  const astState = ast?.members.find((m): m is StateNode => m.type === 'state');
+  for (const sv of speck.facets.behavior.stateVars) {
+    const astVar = astState?.variables.find((v) => v.name === sv.name);
+    const t = astVar ? resolveTypeExpr(ctx, astVar.typeExpr, sv.name) : resolveIr(ctx, sv.type, sv.name);
+    ctx.stateVars.set(sv.name, t);
+  }
+
+  const input = recordFromIo(ctx, ast, 'input');
+  const output = recordFromIo(ctx, ast, 'output');
+  for (const f of input) ctx.inputFields.set(f.name, f.type);
+  for (const f of output) ctx.outputFields.set(f.name, f.type);
+
+  for (const a of speck.facets.behavior.actions) {
+    for (const p of a.params) resolveParam(ctx, a, p.name);
+  }
+  return ctx;
+}
+
+function dedupeFields(ctx: Ctx, record: string, fields: RecField[]): RecField[] {
+  const byName = new Map<string, RecField>();
+  for (const f of fields) {
+    const prev = byName.get(f.name);
+    if (!prev) {
+      byName.set(f.name, f);
+      continue;
+    }
+    // A second copy whose type did not parse is the parser reading past the
+    // record. The unresolved marker stays on its own schema; the field keeps
+    // the type that parsed.
+    if (f.type.k === 'unknown') continue;
+    if (prev.type.k === 'unknown') {
+      byName.set(f.name, f);
+      continue;
+    }
+    if (!sameType(prev.type, f.type)) {
+      ctx.fail(`record ${record} field ${f.name} is declared twice with different types`);
+    }
+  }
+  return [...byName.values()];
+}
+
+function fieldsFromSource(ctx: Ctx, record: string, body: string): RecField[] {
+  const chunks = fieldChunks(body);
+  const fields: RecField[] = [];
+  for (const chunk of chunks) {
+    const m = chunk.match(/^(\w+)\s*:\s*([\s\S]+)$/);
+    if (!m) continue;
+    fields.push({
+      name: m[1],
+      optional: false,
+      type: parseTypeSource(ctx, m[2].trim(), `${record}.${m[1]}`, new Set()),
+    });
+  }
+  return fields;
+}
+
+function fieldChunks(body: string): string[] {
+  const commaParts = splitTop(body, ',') ?? [body];
+  const chunks: string[] = [];
+  for (const part of commaParts) {
+    const lines = part.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (lines.length <= 1) {
+      if (part.trim()) chunks.push(part.trim());
+      continue;
+    }
+    for (const line of lines) chunks.push(line.replace(/,\s*$/, ''));
+  }
+  return chunks;
+}
+
+function claimTypeName(ctx: Ctx, name: string): string {
+  if (!/^[A-Za-z_]\w*$/.test(name) || TS_RESERVED.has(name) || TS_TYPE_WORDS.has(name)) {
+    ctx.fail(`cannot map type ${name}: not a legal TypeScript export name`);
+  }
+  if (ctx.usedExports.has(name)) ctx.fail(`cannot map type ${name}: the export name is already used`);
+  ctx.usedExports.add(name);
+  return name;
+}
+
+function recordFromIo(ctx: Ctx, ast: SpeckNode | undefined, kind: 'input' | 'output'): RecField[] {
+  const members = (ast?.members ?? []).filter((m): m is InputNode | OutputNode => m.type === kind);
+  if (members.length > 1) ctx.fail(`cannot map ${kind}: more than one ${kind} block`);
+  if (members.length === 0) return [];
+  const t = members[0].typeExpr;
+  if (t.type !== 'record' || !t.fields) ctx.fail(`cannot map ${kind}: expected a record type, got ${t.type}`);
+  return t.fields.map((f) => ({
+    name: f.name,
+    optional: false,
+    type: resolveTypeExpr(ctx, f.type, `${kind}.${f.name}`),
+  }));
+}
+
+function emitModule(speck: IRSpeck, ast: SpeckNode | undefined): string {
+  const ctx = buildContext(speck, ast);
+  rejectUnsupported(ctx, ast);
+
+  const stateName = exportIdent(`${pascal(speck.name)}State`, ctx.usedExports, true);
+  const eventName = exportIdent(`${pascal(speck.name)}Event`, ctx.usedExports, true);
+  const machineName = exportIdent(`${pascal(speck.name)}Machine`, ctx.usedExports, true);
+  const decisionName = exportIdent(`${pascal(speck.name)}Decision`, ctx.usedExports, true);
+  const capName = exportIdent(`${pascal(speck.name)}Capability`, ctx.usedExports, true);
+  const liveName = exportIdent(`${camel(speck.name)}Live`, ctx.usedExports);
+  const inputName = ctx.inputFields.size > 0 ? exportIdent(`${pascal(speck.name)}Input`, ctx.usedExports, true) : '';
+  const outputName = ctx.outputFields.size > 0 ? exportIdent(`${pascal(speck.name)}Output`, ctx.usedExports, true) : '';
+
+  const fnUsed = new Set<string>(['getState', 'boot', 'nextActions', 'lifecycle', 'agentConfig']);
+  const actions = speck.facets.behavior.actions.map((a) => {
+    const exportName = exportIdent(camel(a.name) || 'action', fnUsed);
+    return emitAction(ctx, a, exportName);
+  });
+
+  const invariants = (ast?.members ?? []).filter((m): m is InvariantMemberNode => m.type === 'invariant');
+  const rules: RuleEmit[] = [];
+  for (const inv of invariants) {
+    const exportName = exportIdent(`check${pascal(inv.name)}`, fnUsed);
+    ctx.rules.set(inv.name, exportName);
+    const expr = parseRuleExpr(inv.expr);
+    rules.push(emitRule(ctx, exportName, inv.name, expr, inv.expr, 'state'));
+  }
+  speck.facets.formal_spec.constraints.forEach((c, i) => {
+    const specName = c.name ?? `constraint ${i + 1}`;
+    const exportName = exportIdent(c.name ? `check${pascal(c.name)}` : `checkConstraint${i + 1}`, fnUsed);
+    if (c.name) ctx.rules.set(c.name, exportName);
+    rules.push(emitRule(ctx, exportName, specName, c.expr, exprSource(c.expr), 'state'));
+  });
+  const verifies: RuleEmit[] = speck.facets.formal_spec.verifies.map((v, i) => {
+    const exportName = exportIdent(v.name ? `verify${pascal(v.name)}` : `verify${i + 1}`, fnUsed);
+    const kind = temporalKind(v.temporalExpr);
+    const inner = kind === 'state' ? unwrapAlways(v.temporalExpr) : v.temporalExpr;
+    return emitRule(ctx, exportName, v.name, inner, exprSource(v.temporalExpr), kind);
+  });
+
+  const sections: string[] = [];
+  sections.push(header(speck));
+  sections.push(helpers());
+  sections.push(errorClasses());
+  sections.push(...emitNamedSchemas(ctx));
+  if (inputName) sections.push(emitStruct(ctx, inputName, [...ctx.inputFields].map(([name, type]) => ({ name, type, optional: false })), `Declared input of ${speck.name}.`));
+  if (outputName) sections.push(emitStruct(ctx, outputName, [...ctx.outputFields].map(([name, type]) => ({ name, type, optional: false })), `Declared output of ${speck.name}.`));
+  sections.push(emitStruct(ctx, stateName, [...ctx.stateVars].map(([name, type]) => ({ name, type, optional: false })), `State of ${speck.name}.`));
+  sections.push(emitEventUnion(ctx, eventName));
+  sections.push(emitMachineTypes(machineName, stateName, eventName, decisionName));
+  sections.push(emitBoot(ctx, stateName, machineName));
+  for (const a of actions) sections.push(emitActionFn(ctx, a, machineName, decisionName, stateName, eventName));
+  for (const r of [...rules, ...verifies]) sections.push(emitRuleFn(ctx, r, stateName, inputName, outputName));
+  sections.push(emitCapability(ctx, capName, liveName, machineName, stateName, actions, [...rules, ...verifies], inputName, outputName));
+  sections.push(...emitServices(ctx, ast));
+  if (speck.facets.behavior.next) {
+    sections.push(`/** Actions the spec allows at each step, in source order. */\nexport const nextActions = ${JSON.stringify(speck.facets.behavior.next)} as const;`);
+  }
+  const life = emitLifecycle(speck);
+  if (life) sections.push(life);
+  const agent = emitAgent(speck);
+  if (agent) sections.push(agent);
+  return sections.filter(Boolean).join('\n\n') + '\n';
+}
+
+function parseRuleExpr(src: string): IRExpr {
+  // Invariants are not in the IR, so parse them here. A failure is an
+  // untranslated placeholder, which the rule emitter reports.
+  try {
+    return parseStringToIRExpr(src);
+  } catch {
+    return { kind: 'bool_lit', value: false, parseFailed: true, source: src };
+  }
+}
+
+function temporalKind(expr: IRExpr): 'state' | 'eventually' | 'other' {
+  if (expr.kind === 'call' && /^always$/i.test(expr.fn)) return 'state';
+  if (expr.kind === 'call' && /^eventually$/i.test(expr.fn)) return 'eventually';
+  if (expr.kind === 'ident') return 'state';
+  if (expr.kind === 'bool_lit' && expr.parseFailed) return 'other';
+  return 'state';
+}
+
+function unwrapAlways(expr: IRExpr): IRExpr {
+  if (expr.kind === 'call' && /^always$/i.test(expr.fn) && expr.args.length === 1) return expr.args[0];
+  return expr;
+}
+
+function rejectUnsupported(ctx: Ctx, ast: SpeckNode | undefined): void {
+  let source = '';
+  try {
+    source = fs.readFileSync(ctx.speck.sourcePath, 'utf-8');
+  } catch {
+    source = '';
+  }
+  const imports = (ast?.members ?? []).filter((m) => m.type === 'import');
+  if (imports.length > 0 || /^\s*import\s+/m.test(source)) {
+    const first = imports[0] as { path?: string } | undefined;
+    ctx.fail(`cannot map import${first?.path ? ` ${first.path}` : ''}: cross-spec imports are not resolved, so the Effect module would silently miss them`);
+  }
+  if ((ast?.members ?? []).some((m) => m.type === 'oneof') || /^\s*oneof\s+/m.test(source)) {
+    ctx.fail('cannot map oneof: a tagged union of payload variants is not lowered into the IR, and emitting the surrounding records without it would drop the discriminator');
+  }
+  if ((ast?.members ?? []).some((m) => m.type === 'transition') || /^\s*transition\s+/m.test(source)) {
+    ctx.fail('cannot map transition: the envelope is a wire-format construct this target does not lower');
+  }
+  if (ctx.speck.facets.validation.rules.size > 0) {
+    ctx.fail('cannot map validation rules: the IR carried field rules and this target has no Schema filter for them yet');
+  }
+  for (const svc of (ast?.members ?? []).filter((m): m is ServiceNode => m.type === 'service')) {
+    for (const rpc of svc.rpcs) {
+      if (rpc.clientStreaming || rpc.serverStreaming) {
+        const which = [rpc.clientStreaming ? 'client' : '', rpc.serverStreaming ? 'server' : ''].filter(Boolean).join(' and ');
+        ctx.fail(`cannot map streaming RPC ${svc.name}.${rpc.name}: ${which} streaming has no Effect mapping yet (refusing to drop the stream)`);
+      }
+    }
+  }
+}
+
+function header(speck: IRSpeck): string {
+  return `// Generated by speckl from ${jsDoc(speck.name)}. Do not edit.
+// Effect ${EFFECT_VERSION}. Import \`effect\` yourself; this file only typechecks against it.
+//
+// Schemas are the values other components decode. Decisions and rules
+// return Effect. The capability is a Context.Tag; the Live layer is the
+// adapter that holds state in a Ref. Anything this target cannot translate
+// fails with SpecklUntranslated (or EffectTargetError at generation time)
+// instead of emitting a guess.
+import * as $$effect from "effect";`;
+}
+
+function helpers(): string {
+  return `const $$specklNat = $$effect.Schema.Number.pipe($$effect.Schema.int(), $$effect.Schema.nonNegative());
+const $$specklInt = $$effect.Schema.Number.pipe($$effect.Schema.int());
+const $$specklReal = $$effect.Schema.Finite;
+
+/** Unix time in seconds. Speckl \`now()\` is a Nat of seconds, matching the other backends. */
+const $$specklNow = (): number => Math.floor(Date.now() / 1000);
+
+const $$specklShow = (value: unknown): string => (typeof value === "string" ? value : String(value));
+
+/** Structural equality for records, lists, and Effect collections. Numbers and strings already use ===. */
+const $$specklEqual = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
+  if (left instanceof Date || right instanceof Date) return left instanceof Date && right instanceof Date && left.getTime() === right.getTime();
+  if (left instanceof Uint8Array || right instanceof Uint8Array) {
+    if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array) || left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+    return true;
+  }
+  if ($$effect.HashSet.isHashSet(left) || $$effect.HashSet.isHashSet(right)) {
+    return $$effect.HashSet.isHashSet(left) && $$effect.HashSet.isHashSet(right) && $$effect.Equal.equals(left, right);
+  }
+  if ($$effect.HashMap.isHashMap(left) || $$effect.HashMap.isHashMap(right)) {
+    return $$effect.HashMap.isHashMap(left) && $$effect.HashMap.isHashMap(right) && $$effect.Equal.equals(left, right);
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) if (!$$specklEqual(left[i], right[i])) return false;
+    return true;
+  }
+  const lk = Object.keys(left).sort();
+  const rk = Object.keys(right).sort();
+  if (lk.length !== rk.length) return false;
+  for (let i = 0; i < lk.length; i++) {
+    if (lk[i] !== rk[i]) return false;
+    if (!$$specklEqual((left as Record<string, unknown>)[lk[i]], (right as Record<string, unknown>)[rk[i]])) return false;
+  }
+  return true;
+};
+
+const $$specklIncludes = <A>(list: ReadonlyArray<A>, item: A): boolean => list.some((candidate) => $$specklEqual(candidate, item));
+
+/** A missing key is a defect: an expression has no typed error channel to fail into. */
+const $$specklMapGet = <K, V>(map: $$effect.HashMap.HashMap<K, V>, key: K): V => {
+  const got = $$effect.HashMap.get(map, key);
+  if ($$effect.Option.isNone(got)) {
+    throw new Error("SPECKL: missing map key");
+  }
+  return got.value;
+};
+
+const $$specklListGet = <A>(list: ReadonlyArray<A>, index: number): A => {
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+    throw new Error("SPECKL: list index out of range");
+  }
+  return list[index];
+};`;
+}
+
+function errorClasses(): string {
+  const decl = (cls: string, tag: string, fields: string) =>
+    `export class ${cls} extends $$effect.Schema.TaggedError<${cls}>()(${JSON.stringify(tag)}, {\n${fields}\n}) {}`;
+  return [
+    decl('$$GuardFailed', 'GuardFailed', '  action: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
+    decl('$$PreconditionFailed', 'PreconditionFailed', '  action: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
+    decl('$$PostconditionFailed', 'PostconditionFailed', '  action: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
+    decl('$$InvariantViolated', 'InvariantViolated', '  name: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
+    decl('$$Untranslated', 'Untranslated', '  where: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
+    decl('$$IndexOutOfRange', 'IndexOutOfRange', '  action: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
+    decl('$$AdapterUnimplemented', 'AdapterUnimplemented', '  service: $$effect.Schema.String,\n  method: $$effect.Schema.String,'),
+  ].join('\n\n');
+}
+
+function emitNamedSchemas(ctx: Ctx): string[] {
+  const out: string[] = [];
+  for (const [name, variants] of ctx.enums) {
+    const t: ET = { k: 'literal', name, values: variants };
+    out.push(`/** Enum ${name}. */\nexport const ${name} = ${schemaExpr(t)};\nexport type ${name} = $$effect.Schema.Schema.Type<typeof ${name}>;`);
+  }
+  for (const [name, t] of ctx.aliasResolved) {
+    if (ctx.enums.has(name) || ctx.records.has(name)) continue;
+    const expr = t.k === 'literal' ? schemaExpr(t) : schemaRef(ctx, t);
+    out.push(`/** Alias ${name} = ${jsDoc(ctx.aliases.get(name) ?? '')}. */\nexport const ${name} = ${expr};\nexport type ${name} = $$effect.Schema.Schema.Type<typeof ${name}>;`);
+  }
+  for (const [name, why] of ctx.opaque) {
+    out.push(`/** SPECKL-UNRESOLVED: ${jsDoc(why)}. Values are \`unknown\` and generated code does not construct them. */\nexport const ${name} = $$effect.Schema.Unknown;\nexport type ${name} = unknown;`);
+  }
+  // Interfaces first so recursive records can name each other, then schemas.
+  const iface: string[] = [];
+  const schemas: string[] = [];
+  for (const [name, fields] of ctx.records) {
+    const doc = ctx.events.has(name) ? `Event ${name}.` : `Record ${name}.`;
+    iface.push(emitIface(name, fields, doc));
+    schemas.push(emitSchemaConst(ctx, name, fields));
+  }
+  if (iface.length) out.push(iface.join('\n\n'));
+  if (schemas.length) out.push(schemas.join('\n\n'));
+  return out;
+}
+
+function emitIface(name: string, fields: RecField[], doc: string): string {
+  const body = fields.map((f) => `  readonly ${propKey(f.name)}${f.optional ? '?' : ''}: ${tsType(f.type)};`).join('\n');
+  return `/** ${jsDoc(doc)} */\nexport interface ${name} {\n${body}\n}`;
+}
+
+function emitSchemaConst(ctx: Ctx, name: string, fields: RecField[]): string {
+  const body = fields.map((f) => `  ${propKey(f.name)}: ${fieldSchema(ctx, f)},`).join('\n');
+  return `export const ${name}: $$effect.Schema.Schema<${name}> = $$effect.Schema.Struct({\n${body}\n});`;
+}
+
+function emitStruct(ctx: Ctx, name: string, fields: RecField[], doc: string): string {
+  return `${emitIface(name, fields, doc)}\n\n${emitSchemaConst(ctx, name, fields)}`;
+}
+
+function emitEventUnion(ctx: Ctx, eventName: string): string {
+  const names = [...ctx.events];
+  if (names.length === 0) {
+    return `/** This speck declares no events. */\nexport const ${eventName} = $$effect.Schema.Never;\nexport type ${eventName} = never;`;
+  }
+  return `/** Every event the decision log can record. */\nexport const ${eventName} = $$effect.Schema.Union(${names.join(', ')});\nexport type ${eventName} = $$effect.Schema.Schema.Type<typeof ${eventName}>;`;
+}
+
+function emitMachineTypes(machine: string, state: string, event: string, decision: string): string {
+  return `export interface ${machine} {
+  readonly state: ${state};
+  readonly decisionLog: ReadonlyArray<${event}>;
+}
+
+export interface ${decision}<A> {
+  readonly state: ${state};
+  readonly decisionLog: ReadonlyArray<${event}>;
+  readonly value: A;
+}`;
+}
+
+function emitBoot(ctx: Ctx, stateName: string, machineName: string): string {
+  const env = new Env(ctx);
+  const failures: string[] = [];
+  const literal: string[] = [];
+  const later: string[] = [];
+  const assigned = new Set<string>();
+  for (const a of ctx.speck.facets.behavior.init) {
+    const t = ctx.stateVars.get(a.target);
+    const src = `init ${a.target} := ${exprSource(a.expr)}`;
+    if (!t) { failures.push(src); continue; }
+    env.readingOld = false;
+    const before = env.useOld;
+    const v = translate(a.expr, env, t);
+    const code = v && coerce(v, t);
+    if (code == null) { failures.push(src); continue; }
+    assigned.add(a.target);
+    const readsState = /\$\$state\./.test(code) || later.length > 0;
+    if (readsState || before) later.push(`$$state = { ...$$state, ${propKey(a.target)}: ${code} };`);
+    else literal.push(`${propKey(a.target)}: ${code}`);
+  }
+  for (const [name, t] of ctx.stateVars) {
+    if (literal.some((l) => l.startsWith(`${propKey(name)}:`))) continue;
+    literal.push(`${propKey(name)}: ${defaultValue(ctx, t)}`);
+  }
+  const lines: string[] = [];
+  if (failures.length > 0) {
+    const detail = `${ctx.speck.name} init: ${failures.length} untranslated assignment${failures.length === 1 ? '' : 's'}, first: ${oneLine(failures[0])}`;
+    lines.push(...failures.map((f) => `// SPECKL-UNTRANSLATED: ${jsDoc(f)}`));
+    lines.push(`return ${failExpr(ERRORS.bad, { where: JSON.stringify('init'), detail: JSON.stringify(detail) })};`);
+  }
+  lines.push(`let $$state: ${stateName} = { ${literal.join(', ')} };`);
+  lines.push(...later);
+  lines.push(`return { state: $$state, decisionLog: [] };`);
+  const err = failures.length > 0 ? '$$Untranslated' : 'never';
+  return `/** A machine in its initial state. Untranslated init fails instead of inventing a value. */
+export const boot: $$effect.Effect.Effect<${machineName}, ${err}> = $$effect.Effect.gen(function* () {
+  ${lines.join('\n  ')}
+});`;
+}
+
+function emitActionFn(ctx: Ctx, action: ActionEmit, machine: string, decision: string, _state: string, _event: string): string {
+  const params = [`machine: ${machine}`, ...action.params.map((p) => `${p.js}: ${tsType(p.t)}`)];
+  const err = action.errors.length > 0 ? action.errors.join(' | ') : 'never';
+  const retTs = action.ret.k === 'unit' ? 'undefined' : tsType(action.ret);
+  const body = [
+    `const $$specklOld = { ...machine.state };`,
+    `let $$state = { ...machine.state };`,
+    `let $$log = machine.decisionLog;`,
+    ...action.body,
+  ];
+  return `/** Decision ${jsDoc(action.name)}. */
+export const ${action.exportName} = (${params.join(', ')}): $$effect.Effect.Effect<${decision}<${retTs}>, ${err}> =>
+  $$effect.Effect.gen(function* () {
+    ${body.join('\n    ')}
+  });`;
+}
+
+function emitRuleFn(ctx: Ctx, rule: RuleEmit, stateName: string, inputName: string, outputName: string): string {
+  const params = [`machine: { readonly state: ${stateName} }`];
+  if (inputName) params.push(`$$input: ${inputName}`);
+  if (outputName) params.push(`$$output: ${outputName}`);
+  const err = rule.errors.join(' | ') || 'never';
+  const body = [
+    `const $$state = machine.state;`,
+    ...rule.body,
+  ];
+  // $$log is only there so a rule that mentions the decision log typechecks.
+  // Rules do not take the log today; the binding keeps old() off the table.
+  void ctx;
+  return `/** Rule ${jsDoc(rule.specName)}: ${jsDoc(rule.source)} */
+export const ${rule.exportName} = (${params.join(', ')}): $$effect.Effect.Effect<void, ${err}> =>
+  $$effect.Effect.gen(function* () {
+    ${body.join('\n    ')}
+  });`;
+}
+
+function emitCapability(
+  ctx: Ctx,
+  capName: string,
+  liveName: string,
+  machineName: string,
+  stateName: string,
+  actions: ActionEmit[],
+  rules: RuleEmit[],
+  inputName: string,
+  outputName: string,
+): string {
+  const shape: string[] = [];
+  shape.push(`readonly getState: $$effect.Effect.Effect<${stateName}>`);
+  for (const a of actions) {
+    const args = a.params.map((p) => `${p.js}: ${tsType(p.t)}`).join(', ');
+    const err = a.errors.length > 0 ? a.errors.join(' | ') : 'never';
+    const ret = a.ret.k === 'unit' ? 'undefined' : tsType(a.ret);
+    shape.push(`readonly ${a.exportName}: (${args}) => $$effect.Effect.Effect<${ret}, ${err}>`);
+  }
+  for (const r of rules) {
+    const extra = [inputName ? `input: ${inputName}` : '', outputName ? `output: ${outputName}` : ''].filter(Boolean).join(', ');
+    const err = r.errors.join(' | ') || 'never';
+    shape.push(`readonly ${r.exportName}: (${extra}) => $$effect.Effect.Effect<void, ${err}>`);
+  }
+  const id = `@speckl/${ctx.speck.name}`;
+  const bootErr = ctx.speck.facets.behavior.init.length > 0 ? '$$Untranslated | never' : 'never';
+  // The layer's error is whatever boot can fail with. We read it off boot's
+  // annotation by construction: boot is Effect<Machine, $$Untranslated> when
+  // init had a failure, else Effect<Machine, never>. The annotation below
+  // uses a union so both shapes assign. A success-only boot still assigns
+  // to Effect<Machine, $$Untranslated | never>.
+  const methods = [
+    `getState: $$effect.Effect.map($$effect.Ref.get(ref), (machine) => machine.state),`,
+    ...actions.map((a) => {
+      const args = a.params.map((p) => p.js).join(', ');
+      const params = a.params.map((p) => `${p.js}: ${tsType(p.t)}`).join(', ');
+      const call = args ? `current, ${args}` : 'current';
+      return `${a.exportName}: (${params}) => $$effect.Effect.gen(function* () {
+        const current = yield* $$effect.Ref.get(ref);
+        const decided = yield* ${a.exportName}(${call});
+        yield* $$effect.Ref.set(ref, { state: decided.state, decisionLog: decided.decisionLog });
+        return decided.value;
+      }),`;
+    }),
+    ...rules.map((r) => {
+      const extraArgs = [inputName ? 'input' : '', outputName ? 'output' : ''].filter(Boolean);
+      const params = [inputName ? `input: ${inputName}` : '', outputName ? `output: ${outputName}` : ''].filter(Boolean).join(', ');
+      return `${r.exportName}: (${params}) => $$effect.Effect.flatMap($$effect.Ref.get(ref), (machine) => ${r.exportName}(machine${extraArgs.length ? ', ' + extraArgs.join(', ') : ''})),`;
+    }),
+  ];
+  return `/** Capability other components depend on. Methods are the decisions and rules. */
+export class ${capName} extends $$effect.Context.Tag(${JSON.stringify(id)})<${capName}, {
+  ${shape.join('\n  ')}
+}>() {}
+
+/** Adapter: runs the decisions against a Ref of the machine. */
+export const ${liveName}: $$effect.Layer.Layer<${capName}, ${bootErr}> = $$effect.Layer.effect(
+  ${capName},
+  $$effect.Effect.gen(function* () {
+    const initial = yield* boot;
+    const ref = yield* $$effect.Ref.make<${machineName}>(initial);
+    return {
+      ${methods.join('\n      ')}
+    };
+  }),
+);`;
+}
+
+function emitServices(ctx: Ctx, ast: SpeckNode | undefined): string[] {
+  const services = (ast?.members ?? []).filter((m): m is ServiceNode => m.type === 'service');
+  return services.map((svc) => {
+    const cls = exportIdent(pascal(svc.name), ctx.usedExports, true);
+    const layer = exportIdent(`${camel(svc.name)}Unimplemented`, ctx.usedExports);
+    const used = new Set<string>();
+    const specs = svc.rpcs.map((rpc) => {
+      const req = resolveServiceType(ctx, rpc.requestType, `${svc.name}.${rpc.name} request`);
+      const res = resolveServiceType(ctx, rpc.responseType, `${svc.name}.${rpc.name} response`);
+      const exportName = exportIdent(camel(rpc.name) || 'call', used);
+      return { exportName, rpc: rpc.name, req, res };
+    });
+    const shape = specs.map((m) => `readonly ${m.exportName}: (request: ${tsType(m.req)}) => $$effect.Effect.Effect<${tsType(m.res)}, $$AdapterUnimplemented>`).join('\n  ');
+    const body = specs.map((m) => `${m.exportName}: (_request: ${tsType(m.req)}) => $$effect.Effect.fail(new $$AdapterUnimplemented({ service: ${JSON.stringify(svc.name)}, method: ${JSON.stringify(m.rpc)} })),`).join('\n      ');
+    return `/** Service ${jsDoc(svc.name)}. The spec declares the capability and no adapter, so the layer fails closed. */
+export class ${cls} extends $$effect.Context.Tag(${JSON.stringify(`@speckl/service/${svc.name}`)})<${cls}, {
+  ${shape}
+}>() {}
+
+export const ${layer}: $$effect.Layer.Layer<${cls}> = $$effect.Layer.succeed(${cls}, {
+      ${body}
+    });`;
+  });
+}
+
+function resolveServiceType(ctx: Ctx, name: string, hint: string): ET {
+  if (!/^[A-Za-z_]\w*$/.test(name)) return unresolved(ctx, `${hint}: type ${name} is not an identifier`);
+  // An undeclared request or response stays Schema.Unknown (SPECKL-UNRESOLVED)
+  // and the adapter still fails closed. The module typechecks.
+  return resolveIdent(ctx, name, hint, new Set());
+}
+
+function emitLifecycle(speck: IRSpeck): string | null {
+  const life = speck.facets.resource_lifecycle;
+  const status = life.status?.doc;
+  if (life.conditions.length === 0 && life.finalizers.length === 0 && !life.ownerReferences && !status) return null;
+  const value = {
+    conditions: life.conditions,
+    finalizers: life.finalizers,
+    ownerReferences: life.ownerReferences,
+    ...(status ? { statusText: status } : {}),
+  };
+  return `/** Resource lifecycle carried on the spec. statusText is the source text; it is not a parsed schema. */\nexport const lifecycle = ${JSON.stringify(value, null, 2)} as const;`;
+}
+
+function emitAgent(speck: IRSpeck): string | null {
+  const agent = speck.facets.behavior.agent;
+  if (!agent) return null;
+  const value = JSON.stringify({
+    stages: agent.stages ?? null,
+    tools: agent.tools,
+    awaits: agent.awaits,
+    pendingTimeout: agent.pendingTimeout ?? null,
+  }, (_k, v) => v === undefined ? null : v, 2);
+  return `/** Agent block, as data. Rails (hooks, harness adapters) stay on the agent target; this is the declared configuration so it is not dropped. */\nexport const agentConfig = ${value} as const;`;
+}
+
+function packageJson(name: string): string {
+  const pkg = snake(name) || 'speck';
+  return JSON.stringify({
+    name: `speckl-${pkg}`,
+    private: true,
+    type: 'module',
+    description: `Generated by speckl from ${name}. Depends on effect ${EFFECT_VERSION}.`,
+    dependencies: { effect: EFFECT_VERSION },
+  }, null, 2) + '\n';
+}
+
+function tsconfig(): string {
+  return JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      target: 'ES2022',
+      module: 'NodeNext',
+      moduleResolution: 'NodeNext',
+      skipLibCheck: true,
+      noEmit: true,
+      forceConsistentCasingInFileNames: true,
+    },
+    include: ['src'],
+  }, null, 2) + '\n';
+}
+
+function snake(s: string): string {
+  return s
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z\d])([A-Z])/g, '$1_$2')
+    .replace(/[^a-zA-Z0-9_]/g, '_')
+    .toLowerCase()
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+/**
+ * Generate an Effect module for every speck. `ast` supplies invariants,
+ * services, and the original type expressions (so `Set` stays a HashSet
+ * and inline unions are visible). The IR supplies expression trees.
+ */
+export function generateEffect(ir: IR, outputDir: string, ast?: AST): void {
+  for (const speck of ir.specks) {
+    const astSpeck = ast?.specks.find((s) => s.name === speck.name);
+    const code = emitModule(speck, astSpeck);
+    const dir = path.join(outputDir, speck.name);
+    const srcDir = path.join(dir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    const file = path.join(srcDir, 'index.ts');
+    fs.writeFileSync(file, code);
+    fs.writeFileSync(path.join(dir, 'package.json'), packageJson(speck.name));
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), tsconfig());
+    console.log(`Generated Effect module: ${file}`);
+  }
+}

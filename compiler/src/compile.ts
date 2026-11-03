@@ -11,6 +11,7 @@ import { generateZ3FromIR } from './generators/z3-from-ir.js';
 import { generateRust } from './generators/rust.js';
 import { generateGo } from './generators/go.js';
 import { generateElm } from './generators/elm.js';
+import { generateEffect } from './generators/effect.js';
 import { generateK8sCRD } from './generators/k8s-crd.js';
 import { generateProvenanceFromIR } from './generators/provenance-from-ir.js';
 import { lower } from './ir/lower.js';
@@ -24,7 +25,7 @@ import path from 'path';
 export interface CompileOptions {
   outputDir: string;
   bomFormat: 'cdx' | 'spdx' | 'both';
-  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'agent' | 'all' | 'all-ir';
+  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'effect' | 'agent' | 'all' | 'all-ir';
   verifyDepth: number;
 }
 
@@ -77,6 +78,12 @@ export function compileSpec(file: string, options: CompileOptions): void {
     generateRust(irAst, options.outputDir, ast);
   }
 
+  // Effect (Schema, tagged errors, Context.Tag + Layer)
+  if (options.target === 'effect' || options.target === 'all') {
+    console.log('\nGenerating Effect module...');
+    generateEffect(irAst, options.outputDir, ast);
+  }
+
   // Elm
   if (options.target === 'elm' || options.target === 'all') {
     generateElm(ast, options.outputDir);
@@ -89,7 +96,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
 
   // Provenance (core output)
-  if (options.target !== 'z3' && options.target !== 'rust') {
+  if (options.target !== 'z3' && options.target !== 'rust' && options.target !== 'effect') {
     console.log('\nGenerating provenance graph (PROV-O JSON-LD) from IR...');
     generateProvenanceFromIR(irAst, options.outputDir);
   }
@@ -123,7 +130,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
 
   // TypeScript state machine + BOMs
-  if (options.target !== 'z3' && options.target !== 'rust') {
+  if (options.target !== 'z3' && options.target !== 'rust' && options.target !== 'effect') {
     console.log('\nGenerating TypeScript state machine...');
     generateTypeScriptStateMachine(ast, options.outputDir);
 

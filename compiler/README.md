@@ -3,7 +3,7 @@
 The Speckl compiler for SpeckDL, a specification language for state machines.
 One spec compiles to:
 
-- TypeScript, Rust, Go and Elm machines
+- TypeScript, Rust, Go, Elm and Effect (Effect 3.x) machines
 - Z3 SMT-LIB2 bounded model checking
 - Protobuf, Kubernetes CRDs, OpenAPI 3.1 and Apache Camel routes
 - agent rails: `AGENTS.md`, `tools.json`, a pre/post tool hook, and adapters for Claude Code, Cursor, Codex CLI and Gemini CLI

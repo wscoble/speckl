@@ -401,7 +401,7 @@ speckl-compile <file.speckdl> [options]
 | Flag | Meaning | Default |
 |------|---------|---------|
 | `-o, --output-dir <dir>` | Output directory for artifacts | `./out` |
-| `-t, --target <t>` | `typescript`, `z3`, `rust`, `protobuf`, `k8s`, `openapi`, `all`, `all-ir` | `typescript` |
+| `-t, --target <t>` | `typescript`, `z3`, `rust`, `go`, `elm`, `effect`, `protobuf`, `k8s`, `openapi`, `camel`, `agent`, `all`, `all-ir` | `typescript` |
 | `-d, --verify-depth <n>` | BMC depth for Z3 verification | `10` |
 | `-b, --bom-format <f>` | `cdx`, `spdx`, or `both` | `both` |
 
