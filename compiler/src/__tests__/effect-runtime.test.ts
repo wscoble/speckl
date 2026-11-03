@@ -856,4 +856,127 @@ console.log("RESULT " + JSON.stringify(value));
 `);
     expect(result).toEqual({ open: 'InvariantViolated', accounts: 0, read: 'IndexOutOfRange', at: 'IndexOutOfRange', need: 'GuardFailed' });
   });
+
+  it('treats a missing map read as unknown and fails a let before the Nat check', () => {
+    const root = generate(`
+speck Kleene {
+  state { accounts: Set(Nat), balances: Map(Nat, Nat), xs: List(Nat), n: Nat }
+  init {
+    accounts := emptySet()
+    balances := emptyMap()
+    xs := emptyList()
+    n := 0
+  }
+  invariant Hit { exists id in accounts: balances[id] >= 0 }
+  invariant Ok { forall id in accounts: balances[id] >= 0 or true }
+  invariant Mix { forall id in accounts: (not (false and balances[id] >= 0)) implies true }
+  action Seed() {
+    accounts := accounts union {1}
+    accounts := accounts union {2}
+    balances[2] := 5
+    return 0
+  }
+  action Guard(id: Nat) {
+    require balances[id] >= 0 or true
+    n := n + 1
+    return n
+  }
+  action Bound(id: Nat): Nat {
+    let v := balances[id]
+    return v
+  }
+  action MissGuard(id: Nat) {
+    require balances[id] >= 0
+    n := n + 1
+    return n
+  }
+  action TooSmall(id: Nat) {
+    require balances[id] >= 10
+    n := n + 1
+    return n
+  }
+  action Wipe() {
+    balances := emptyMap()
+    return 0
+  }
+  action AtGuard() {
+    require xs[0] >= 0 or true
+    return 0
+  }
+  action Plain(): Bool {
+    if n >= 0 or n >= 1 {
+      n := n
+    }
+    if n >= 0 and n >= 0 {
+      n := n
+    }
+    if n >= 0 implies true {
+      n := n
+    }
+    if not (n >= 0) {
+      n := n
+    }
+    return implies(n >= 0, true)
+  }
+  action AsBool(): Bool {
+    return forall id in accounts: balances[id] >= 0 or true
+  }
+  action AsSome(): Bool {
+    return exists id in accounts: not (balances[id] >= 0 and false) implies true
+  }
+}
+`);
+    expect(typechecks(root, 'Kleene')).toBe(true);
+    const src = readFileSync(join(root, 'out', 'Kleene', 'src', 'index.ts'), 'utf-8');
+    expect(src).toContain('$$kExists');
+    expect(src).toContain('$$kForall');
+    expect(src).toContain('$$kOr');
+    expect(src).toContain('$$kAnd');
+    expect(src).toContain('$$kNot');
+    expect(src).toContain('$$kImplies');
+    expect(src).toContain('$$specklBoolGet');
+    expect(src).toContain('$$specklBoolAt');
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import { HashMap, HashSet, Option } from "effect";
+import * as M from "./out/Kleene/src/index.ts";
+const tag = (e: { _tag: string } & { left?: { _tag: string; detail?: string } }) =>
+  e._tag === "Left" ? { tag: e.left!._tag, detail: e.left!.detail ?? "" } : { tag: "Right", detail: "" };
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.KleeneCapability;
+  const seed = tag(yield* Effect.Effect.either(svc.seed()));
+  const guard = tag(yield* Effect.Effect.either(svc.guard(1)));
+  const afterGuard = yield* svc.getState;
+  const bound = tag(yield* Effect.Effect.either(svc.bound(1)));
+  const miss = tag(yield* Effect.Effect.either(svc.missGuard(1)));
+  const small = tag(yield* Effect.Effect.either(svc.tooSmall(2)));
+  const wipe = tag(yield* Effect.Effect.either(svc.wipe()));
+  const end = yield* svc.getState;
+  const got = HashMap.get(end.balances, 2);
+  return {
+    seed, guard, nGuard: afterGuard.n,
+    bound, miss, small, wipe,
+    n: end.n,
+    has1: HashSet.has(end.accounts, 1),
+    has2: HashSet.has(end.accounts, 2),
+    bal2: Option.isSome(got) ? got.value : null,
+  };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.kleeneLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({
+      seed: { tag: 'Right', detail: '' },
+      guard: { tag: 'Right', detail: '' },
+      nGuard: 1,
+      bound: { tag: 'IndexOutOfRange', detail: 'missing map key' },
+      miss: { tag: 'GuardFailed', detail: 'missing map key' },
+      small: { tag: 'GuardFailed', detail: 'balances[id] >= 10' },
+      wipe: { tag: 'InvariantViolated', detail: 'missing map key' },
+      n: 1,
+      has1: true,
+      has2: true,
+      bal2: 5,
+    });
+  });
 });

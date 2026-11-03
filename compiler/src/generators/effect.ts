@@ -867,7 +867,12 @@ function propRead(base: string, name: string): string {
 // Expressions
 // ─────────────────────────────────────────────────────────────────────
 
-interface TExpr { code: string; t: ET }
+interface TExpr {
+  code: string;
+  t: ET;
+  /** The expression is `boolean | "unknown"` and does not throw `$$SpecklMiss`. */
+  kleene?: boolean;
+}
 
 class Env {
   readonly locals = new Map<string, { js: string; t: ET }>();
@@ -882,6 +887,12 @@ class Env {
   readingFormula = false;
   /** When set, map and list reads report a miss on `$$lookup` instead of throwing. */
   trackLookup = false;
+  /**
+   * Boolean formulas use Kleene's third value. A missing read throws
+   * `$$SpecklMiss`, which the atom catches as `"unknown"`. It does not
+   * set `$$lookup`, so a sibling that already decided the formula is kept.
+   */
+  bool3 = false;
   slot = 0;
 
   constructor(readonly ctx: Ctx, rules = false) {
@@ -1317,21 +1328,34 @@ function translateSubset(leftSrc: string, rightSrc: string, env: Env): TExpr | n
 function evalFormula(node: Formula, env: Env): TExpr | null {
   if (node.k === 'atom') {
     const sub = splitWord(node.src, 'subsetOf');
-    if (sub) return translateSubset(sub[0], sub[1], env);
+    if (sub) {
+      const set = translateSubset(sub[0], sub[1], env);
+      return set && env.bool3 ? closeBool(set) : set;
+    }
     const v = translate(parseStringToIRExpr(node.src), env, BOOL);
-    return v && v.t.k === 'bool' ? v : null;
+    if (!v || v.t.k !== 'bool') return null;
+    return env.bool3 ? closeBool(v) : v;
   }
   if (node.k === 'not') {
     const inner = evalFormula(node.inner, env);
-    return inner && inner.t.k === 'bool' ? { code: `(!${inner.code})`, t: BOOL } : null;
+    if (!inner || inner.t.k !== 'bool') return null;
+    if (!env.bool3) return { code: `(!${inner.code})`, t: BOOL };
+    return { code: `$$kNot(${closeBool(inner).code})`, t: BOOL, kleene: true };
   }
   if (node.k === 'and' || node.k === 'or' || node.k === 'implies') {
     const left = evalFormula(node.left, env);
     const right = evalFormula(node.right, env);
     if (!left || !right || left.t.k !== 'bool' || right.t.k !== 'bool') return null;
-    if (node.k === 'and') return { code: `(${left.code} && ${right.code})`, t: BOOL };
-    if (node.k === 'or') return { code: `(${left.code} || ${right.code})`, t: BOOL };
-    return { code: `(!${left.code} || ${right.code})`, t: BOOL };
+    if (!env.bool3) {
+      if (node.k === 'and') return { code: `(${left.code} && ${right.code})`, t: BOOL };
+      if (node.k === 'or') return { code: `(${left.code} || ${right.code})`, t: BOOL };
+      return { code: `(!${left.code} || ${right.code})`, t: BOOL };
+    }
+    const l = closeBool(left).code;
+    const r = closeBool(right).code;
+    if (node.k === 'and') return { code: `$$kAnd(${l}, ${r})`, t: BOOL, kleene: true };
+    if (node.k === 'or') return { code: `$$kOr(${l}, ${r})`, t: BOOL, kleene: true };
+    return { code: `$$kImplies(${l}, ${r})`, t: BOOL, kleene: true };
   }
   if (node.k !== 'quant') return null;
   const domain = translateDomain(node.domain, env);
@@ -1342,8 +1366,19 @@ function evalFormula(node: Formula, env: Env): TExpr | null {
   if (previous) env.locals.set(node.name, previous);
   else env.locals.delete(node.name);
   if (!body || body.t.k !== 'bool') return null;
-  const method = node.kind === 'forall' ? 'every' : 'some';
-  return { code: `${domain.code}.${method}((${js}: ${tsType(domain.elem)}) => (${body.code}))`, t: BOOL };
+  if (!env.bool3) {
+    const method = node.kind === 'forall' ? 'every' : 'some';
+    return { code: `${domain.code}.${method}((${js}: ${tsType(domain.elem)}) => (${body.code}))`, t: BOOL };
+  }
+  // The domain read is outside the element callback. A miss there makes
+  // the whole quantifier unknown. A miss inside one element stays there:
+  // `$$kForall` / `$$kExists` catch it and keep looking.
+  const fn = node.kind === 'forall' ? '$$kForall' : '$$kExists';
+  return {
+    code: `$$atom(() => ${fn}(${domain.code}, (${js}: ${tsType(domain.elem)}) => (${body.code})))`,
+    t: BOOL,
+    kleene: true,
+  };
 }
 
 function translateFormulaSource(src: string, env: Env): TExpr | null {
@@ -1464,12 +1499,12 @@ function translateIndex(target: IRExpr, index: IRExpr, env: Env): TExpr | null {
     if (!key || !sameType(key.t, obj.t.key) && !(isNum(key.t) && isNum(obj.t.key))) return null;
     const k = coerce(key, obj.t.key);
     if (k == null) return null;
-    return { code: `$$specklMapGet(${obj.code}, ${k}${lookupArg(env)})`, t: obj.t.val };
+    return { code: indexRead(env, 'map', obj.code, k), t: obj.t.val };
   }
   if (obj.t.k === 'list') {
     const i = translate(index, env, NAT);
     if (!i || !isNum(i.t)) return null;
-    return { code: `$$specklListGet(${obj.code}, ${i.code}${lookupArg(env)})`, t: obj.t.elem };
+    return { code: indexRead(env, 'list', obj.code, i.code), t: obj.t.elem };
   }
   return null;
 }
@@ -1478,14 +1513,46 @@ function lookupArg(env: Env): string {
   return env.trackLookup ? ', $$lookup' : '';
 }
 
-/** A boolean check that also fails when a map or list read missed. The formula runs first, so a miss is visible. */
-function lookupGuard(hold: string, cond: string, cls: string, fields: Record<string, string>): string[] {
-  const detail = fields.detail;
-  const rest = { ...fields, detail: `$$lookup.failed ? $$lookup.detail : ${detail}` };
+/** Boolean context throws a local miss. Everywhere else records it on `$$lookup`. */
+function indexRead(env: Env, kind: 'map' | 'list', obj: string, key: string): string {
+  if (env.bool3) return `${kind === 'map' ? '$$specklBoolGet' : '$$specklBoolAt'}(${obj}, ${key})`;
+  return `${kind === 'map' ? '$$specklMapGet' : '$$specklListGet'}(${obj}, ${key}${lookupArg(env)})`;
+}
+
+/** A boolean operand. A thrown miss becomes `"unknown"` and does not escape the operand. */
+function closeBool(expr: TExpr): TExpr {
+  if (expr.kleene) return expr;
+  return { code: `$$atom(() => (${expr.code}))`, t: BOOL, kleene: true };
+}
+
+/**
+ * Translate a guard, postcondition, or invariant. Map and list reads in
+ * this tree are Kleene-unknown, not a sticky `$$lookup` failure.
+ */
+function translateBool(expr: IRExpr | undefined, env: Env): TExpr | null {
+  const prev = env.bool3;
+  env.bool3 = true;
+  try {
+    const v = translate(expr, env, BOOL);
+    if (!v || v.t.k !== 'bool') return v;
+    return closeBool(v);
+  } finally {
+    env.bool3 = prev;
+  }
+}
+
+/**
+ * A decided false uses the formula text. A final unknown is the only
+ * missing-read failure, and its detail is `missing map key`.
+ */
+function kleeneGuard(hold: string, cond: string, cls: string, fields: Record<string, string>): string[] {
+  const unknown = { ...fields, detail: JSON.stringify('missing map key') };
   return [
-    `const ${hold} = (${cond});`,
-    `if ($$lookup.failed || !(${hold})) {`,
-    `  return ${failExpr(cls, rest)};`,
+    `const ${hold}: $$K = (${cond});`,
+    `if (${hold} === "unknown") {`,
+    `  return ${failExpr(cls, unknown)};`,
+    `} else if (!${hold}) {`,
+    `  return ${failExpr(cls, fields)};`,
     `}`,
   ];
 }
@@ -1493,7 +1560,10 @@ function lookupGuard(hold: string, cond: string, cls: string, fields: Record<str
 function translateUnop(op: string, operand: IRExpr, env: Env): TExpr | null {
   const v = translate(operand, env);
   if (!v) return null;
-  if ((op === '!' || op === 'not') && v.t.k === 'bool') return { code: `(!${v.code})`, t: BOOL };
+  if ((op === '!' || op === 'not') && v.t.k === 'bool') {
+    if (!env.bool3) return { code: `(!${v.code})`, t: BOOL };
+    return { code: `$$kNot(${closeBool(v).code})`, t: BOOL, kleene: true };
+  }
   if (op === '-' && isNum(v.t)) return { code: `(-${v.code})`, t: v.t.k === 'nat' ? INT : v.t };
   return null;
 }
@@ -1509,10 +1579,13 @@ function translateBinop(op: string, left: IRExpr, right: IRExpr, env: Env): TExp
   if (!l || !r) return null;
   const cmp = op === '==' || op === '!=' || op === '<' || op === '<=' || op === '>' || op === '>=';
   if ((op === '&&' || op === 'and' || op === '||' || op === 'or') && l.t.k === 'bool' && r.t.k === 'bool') {
-    return { code: `(${l.code} ${op === '||' || op === 'or' ? '||' : '&&'} ${r.code})`, t: BOOL };
+    if (!env.bool3) return { code: `(${l.code} ${op === '||' || op === 'or' ? '||' : '&&'} ${r.code})`, t: BOOL };
+    const fn = op === '||' || op === 'or' ? '$$kOr' : '$$kAnd';
+    return { code: `${fn}(${closeBool(l).code}, ${closeBool(r).code})`, t: BOOL, kleene: true };
   }
   if ((op === 'implies' || op === '=>' || op === '->') && l.t.k === 'bool' && r.t.k === 'bool') {
-    return { code: `(!${l.code} || ${r.code})`, t: BOOL };
+    if (!env.bool3) return { code: `(!${l.code} || ${r.code})`, t: BOOL };
+    return { code: `$$kImplies(${closeBool(l).code}, ${closeBool(r).code})`, t: BOOL, kleene: true };
   }
   if (op === '+' && isNum(l.t) && isNum(r.t)) {
     return { code: `(${l.code} + ${r.code})`, t: numJoin(l.t, r.t) };
@@ -1669,7 +1742,8 @@ function translateCall(fn: string, args: IRExpr[], env: Env, expected?: ET): TEx
     }
     case 'implies':
       if (translated.length !== 2 || a.t.k !== 'bool' || b.t.k !== 'bool') return null;
-      return { code: `(!${a.code} || ${b.code})`, t: BOOL };
+      if (!env.bool3) return { code: `(!${a.code} || ${b.code})`, t: BOOL };
+      return { code: `$$kImplies(${closeBool(a).code}, ${closeBool(b).code})`, t: BOOL, kleene: true };
     case 'min':
     case 'max':
       if (translated.length !== 2 || !isNum(a.t) || !isNum(b.t)) return null;
@@ -2015,11 +2089,17 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
       const v = translate(value, env);
       if (!v || v.t.k === 'unit') return bad(stmtSource(stmt));
       const js = env.declare(stmt.letName, v.t);
-      return { lines: [`let ${js}: ${tsType(v.t)} = ${v.code};`], returned: false, errors };
+      // A miss is an index error at the binding, before a later `return v`
+      // range-checks the stand-in and reports it as "not a Nat".
+      return {
+        lines: [`let ${js}: ${tsType(v.t)} = ${v.code};`, ...lookupBail(env, v.code, action, errors)],
+        returned: false,
+        errors,
+      };
     }
     case 'require':
     case 'precondition': {
-      const c = translate(value, env, BOOL);
+      const c = translateBool(value, env);
       if (!c || c.t.k !== 'bool') return bad(stmtSource(stmt));
       const cls = stmt.kind === 'require' ? ERRORS.guard : ERRORS.pre;
       errors.add(cls);
@@ -2027,7 +2107,7 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
       return {
         lines: [
           `// ${stmt.kind}: ${jsDoc(src)}`,
-          ...lookupGuard(env.fresh('hold'), c.code, cls, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) }),
+          ...kleeneGuard(env.fresh('hold'), c.code, cls, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) }),
         ],
         returned: false,
         errors,
@@ -2107,7 +2187,7 @@ function postLines(posts: IRStmt[], env: Env, action: string): { lines: string[]
   const errors = new Set<string>();
   for (const stmt of posts) {
     const src = exprSource(stmt.value ?? stmt.expr);
-    const c = translate(stmt.value ?? stmt.expr, env, BOOL);
+    const c = translateBool(stmt.value ?? stmt.expr, env);
     if (!c || c.t.k !== 'bool') {
       env.failures.push(oneLine(`postcondition: ${src}`));
       errors.add(ERRORS.bad);
@@ -2116,7 +2196,7 @@ function postLines(posts: IRStmt[], env: Env, action: string): { lines: string[]
     }
     errors.add(ERRORS.post);
     lines.push(
-      ...lookupGuard(env.fresh('hold'), c.code, ERRORS.post, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) }),
+      ...kleeneGuard(env.fresh('hold'), c.code, ERRORS.post, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) }),
     );
   }
   return { lines, errors };
@@ -2311,7 +2391,7 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
       ],
     };
   }
-  const v = translate(expr, env, BOOL);
+  const v = translateBool(expr, env);
   const needsOld = env.useOld;
   if (!v || v.t.k !== 'bool' || env.failures.length > 0) {
     const detail = source;
@@ -2352,7 +2432,7 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
     errors: [ERRORS.inv],
     body: [
       `// ${jsDoc(source)}`,
-      ...lookupGuard(env.fresh('hold'), v.code, ERRORS.inv, { name: JSON.stringify(specName || exportName), detail: JSON.stringify(oneLine(source)) }),
+      ...kleeneGuard(env.fresh('hold'), v.code, ERRORS.inv, { name: JSON.stringify(specName || exportName), detail: JSON.stringify(oneLine(source)) }),
     ],
   };
 }
@@ -2788,6 +2868,81 @@ const $$specklListGet = <A>(list: ReadonlyArray<A>, index: number, miss?: { fail
     }
     throw new Error("SPECKL: list index out of range");
   }
+  return list[index];
+};
+
+/** Kleene value. A missing boolean read is \`"unknown"\`, not true or false. */
+type $$K = boolean | "unknown";
+
+class $$SpecklMiss extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "SpecklMiss";
+  }
+}
+
+/** One boolean operand. A miss becomes \`"unknown"\` and stays inside this operand. */
+const $$atom = (thunk: () => $$K): $$K => {
+  try {
+    return thunk();
+  } catch (e) {
+    if (e instanceof $$SpecklMiss) return "unknown";
+    throw e;
+  }
+};
+
+const $$kNot = (v: $$K): $$K => (v === "unknown" ? "unknown" : !v);
+
+const $$kAnd = (l: $$K, r: $$K): $$K => (l === false || r === false ? false : l === "unknown" || r === "unknown" ? "unknown" : true);
+
+const $$kOr = (l: $$K, r: $$K): $$K => (l === true || r === true ? true : l === "unknown" || r === "unknown" ? "unknown" : false);
+
+const $$kImplies = (l: $$K, r: $$K): $$K => $$kOr($$kNot(l), r);
+
+const $$kForall = <A>(xs: ReadonlyArray<A>, f: (a: A) => $$K): $$K => {
+  let unknown = false;
+  for (const x of xs) {
+    let v: $$K;
+    try {
+      v = f(x);
+    } catch (e) {
+      if (!(e instanceof $$SpecklMiss)) throw e;
+      unknown = true;
+      continue;
+    }
+    if (v === false) return false;
+    if (v === "unknown") unknown = true;
+  }
+  return unknown ? "unknown" : true;
+};
+
+const $$kExists = <A>(xs: ReadonlyArray<A>, f: (a: A) => $$K): $$K => {
+  let unknown = false;
+  for (const x of xs) {
+    let v: $$K;
+    try {
+      v = f(x);
+    } catch (e) {
+      if (!(e instanceof $$SpecklMiss)) throw e;
+      unknown = true;
+      continue;
+    }
+    if (v === true) return true;
+    if (v === "unknown") unknown = true;
+  }
+  return unknown ? "unknown" : false;
+};
+
+/** A boolean map read. A miss throws, so the operand can catch it as unknown. */
+const $$specklBoolGet = <K, V>(map: $$effect.HashMap.HashMap<K, V>, key: K): V => {
+  const got = $$effect.HashMap.get(map, key);
+  if ($$effect.Option.isNone(got)) throw new $$SpecklMiss("missing map key");
+  return got.value;
+};
+
+/** A boolean list read. A miss throws, so the operand can catch it as unknown. */
+const $$specklBoolAt = <A>(list: ReadonlyArray<A>, index: number): A => {
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) throw new $$SpecklMiss("list index out of range");
   return list[index];
 };`;
 }
