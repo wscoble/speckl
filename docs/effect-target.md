@@ -32,10 +32,11 @@ export class $$GuardFailed extends $$effect.Schema.TaggedError<$$GuardFailed>()(
   detail: $$effect.Schema.String,
 }) {}
 
-export const turnOn = (machine: ToggleSwitchMachine): $$effect.Effect.Effect<ToggleSwitchDecision<boolean>, $$GuardFailed> =>
+export const turnOn = ($$machine: ToggleSwitchMachine): $$effect.Effect.Effect<ToggleSwitchDecision<boolean>, $$GuardFailed> =>
   $$effect.Effect.gen(function* () {
-    let $$state = { ...machine.state };
-    let $$log = machine.decisionLog;
+    const $$specklOld = { ...$$machine.state };
+    let $$state = { ...$$machine.state };
+    let $$log = $$machine.decisionLog;
     if (!((!$$state.isOn))) {
       return yield* new $$GuardFailed({ action: "TurnOn", detail: "not isOn" });
     }
@@ -51,14 +52,14 @@ export class ToggleSwitchCapability extends $$effect.Context.Tag("@speckl/Toggle
 export const toggleSwitchLive: $$effect.Layer.Layer<ToggleSwitchCapability, never> = $$effect.Layer.effect(
   ToggleSwitchCapability,
   $$effect.Effect.gen(function* () {
-    const initial = yield* boot;
-    const ref = yield* $$effect.Ref.make<ToggleSwitchMachine>(initial);
+    const initial = yield* $$boot;
+    const $$held = yield* $$effect.Ref.make<ToggleSwitchMachine>(initial);
     return {
-      getState: $$effect.Effect.map($$effect.Ref.get(ref), (m) => m.state),
+      getState: $$effect.Effect.map($$effect.Ref.get($$held), ($$machine) => $$machine.state),
       turnOn: () => $$effect.Effect.gen(function* () {
-        const current = yield* $$effect.Ref.get(ref);
-        const decided = yield* turnOn(current);
-        yield* $$effect.Ref.set(ref, { state: decided.state, decisionLog: decided.decisionLog });
+        const $$current = yield* $$effect.Ref.get($$held);
+        const decided = yield* turnOn($$current);
+        yield* $$effect.Ref.set($$held, { state: decided.state, decisionLog: decided.decisionLog });
         return decided.value;
       }),
     };
@@ -66,7 +67,7 @@ export const toggleSwitchLive: $$effect.Layer.Layer<ToggleSwitchCapability, neve
 );
 ```
 
-`boot` builds the initial machine. A `service` block becomes its own `Context.Tag` plus a layer that fails with `$$AdapterUnimplemented`, because the spec declares the capability and no adapter.
+`$$boot` builds the initial machine. `name == expr` is an initializer, same as `name := expr`, and an initializer that reads another field waits until that field has been written. A `service` block becomes its own `Context.Tag` plus a layer that fails with `$$AdapterUnimplemented`, because the spec declares the capability and no adapter. Generated bindings are `$$machine`, `$$held`, `$$current`, and `$$boot`, so a parameter or a type with one of those names still compiles.
 
 ## Type mapping
 
@@ -87,7 +88,7 @@ export const toggleSwitchLive: $$effect.Layer.Layer<ToggleSwitchCapability, neve
 | `interface` enum | `Schema.Literal` of the variant names |
 | `"a" \| "b"` and `Follower \| Candidate \| Leader` | `Schema.Literal` |
 | `type Name = <type>` | a named schema (and a type alias) |
-| undeclared or unparseable type | `Schema.Unknown`, commented `SPECKL-UNRESOLVED` |
+| bare name that is not declared | `Schema.Unknown`, commented `SPECKL-UNRESOLVED` |
 | event | tagged struct (`_tag` plus fields); the decision log is a `Schema.Union` of them |
 | `require` / `precondition` / `postcondition` | `Schema.TaggedError` (`$$GuardFailed`, `$$PreconditionFailed`, `$$PostconditionFailed`) |
 | invariant, constraint, `verify` | `Effect` that fails with `$$InvariantViolated` |
@@ -95,7 +96,9 @@ export const toggleSwitchLive: $$effect.Layer.Layer<ToggleSwitchCapability, neve
 | the speck | `Context.Tag` (`<Name>Capability`) and `Layer` (`<name>Live`) over a `Ref` |
 | `service` RPC | `Context.Tag` plus an unimplemented `Layer` (`$$AdapterUnimplemented`) |
 
-`Nat` and `Int` decode as `number` (the filters do not brand), so generated arithmetic stays ordinary TypeScript. Collections are the in-memory Effect values (`HashSetFromSelf`, `HashMapFromSelf`), not JSON arrays.
+`Nat` and `Int` decode as `number` (the filters do not brand), so generated arithmetic stays ordinary TypeScript. A write of a `Nat`, `Int`, or `Real` that is not in range fails the effect with `$$SchemaViolation` and the `Ref` keeps the previous machine. Collections are the in-memory Effect values (`HashSetFromSelf`, `HashMapFromSelf`), not JSON arrays. A field named `__proto__` is stored with a computed key.
+
+An invariant that translates to a boolean is checked at the end of every action, against the pre-state when it calls `old(...)`. The action fails with `$$InvariantViolated` and the layer does not publish the new state. An invariant that cannot be translated is left as `$$Untranslated` and is not injected, so it cannot fail every action.
 
 A single-line `type Name = { ... }` is read from the source. The parser otherwise drops the closing brace and can turn the record into an enum; the Effect target keeps the record.
 
@@ -108,6 +111,10 @@ Generation throws `EffectTargetError` for:
 - a streaming RPC (`stream` on the request or the response)
 - validation rules, if the IR ever carries them
 - a record field declared twice with two different parsed types
+- a type expression that does not parse (unbalanced brackets, or a shape that is not a type)
+- a union arm that is a bare word mixed with a real type (`String | Ntoe`). `Follower | Candidate | Leader` and `"red" | "blue"` stay `Schema.Literal`
+
+A bare name the spec never declares (`Operation`, a service request type) stays `Schema.Unknown` with a `SPECKL-UNRESOLVED` comment. That is an open slot an integrator fills. A type we failed to parse, or a typo sitting next to a real type, is a generator error instead: emitting `Schema.Unknown` there would look like a successful mapping.
 
 An expression or statement with no Effect form does not become a guess. The decision or rule returns `$$Untranslated` (`Schema.TaggedError`) before it changes state, and the source text is in the error. `eventually(...)` is one of these: it cannot be judged from the current state. A missing map key or list index inside an expression throws `SPECKL: ...` — there is no typed error channel in expression position.
 

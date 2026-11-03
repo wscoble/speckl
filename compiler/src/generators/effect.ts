@@ -82,7 +82,8 @@ type ET =
   | { k: 'set'; elem: ET }
   | { k: 'map'; key: ET; val: ET }
   | { k: 'nullable'; inner: ET }
-  | { k: 'union'; members: ET[] };
+  | { k: 'union'; members: ET[] }
+  | { k: 'unbound'; name: string };
 
 interface RecField {
   name: string;
@@ -165,7 +166,12 @@ class Ctx {
   readonly outputFields = new Map<string, ET>();
   /** Invariant or constraint export name, for verify blocks that name one. */
   readonly rules = new Map<string, string>();
+  readonly ruleNeedsOld = new Map<string, boolean>();
   readonly usedExports = new Set<string>();
+  /** `==` / `:=` initializers read from this speck's source. Null when the speck has no init block. */
+  sourceInits: { name: string; expr: IRExpr; raw: string }[] | null = null;
+  servicePlans: { name: string; rpcs: { rpc: string; req: ET; res: ET }[] }[] = [];
+  bootErr = 'never';
 
   constructor(readonly speck: IRSpeck, readonly ast: SpeckNode | undefined) {}
 
@@ -273,6 +279,115 @@ function unquote(src: string): string | null {
   }
 }
 
+function stripBlockComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '));
+}
+
+function speckText(speck: IRSpeck, ast: SpeckNode | undefined): string {
+  let text = '';
+  try {
+    text = fs.readFileSync(speck.sourcePath, 'utf-8');
+  } catch {
+    return '';
+  }
+  text = stripBlockComments(text);
+  if (ast?.startLine && ast.endLine) {
+    text = text.split('\n').slice(ast.startLine - 1, ast.endLine).join('\n');
+  }
+  return text.split('\n').map(stripCodeComment).join('\n');
+}
+
+/** Body of the first `state` or `init` block in this speck's source. */
+function extractBlock(source: string, keyword: 'state' | 'init'): string | null {
+  const re = new RegExp(`(?:^|\\n)\\s*${keyword}\\s*(?::\\s*)?\\{`);
+  const m = re.exec(source);
+  if (!m) return null;
+  let depth = 1;
+  for (let i = m.index + m[0].length; i < source.length; i++) {
+    const c = source[i];
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return source.slice(m.index + m[0].length, i);
+    }
+  }
+  return null;
+}
+
+function stripInitializer(src: string): string {
+  let depth = 0;
+  let brace = 0;
+  let bracket = 0;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '<') depth++;
+    else if (c === ')' || c === '>') depth--;
+    else if (c === '{') brace++;
+    else if (c === '}') brace--;
+    else if (c === '[') bracket++;
+    else if (c === ']') bracket--;
+    else if (depth === 0 && brace === 0 && bracket === 0 && (src.startsWith(':=', i) || src.startsWith('==', i))) {
+      return src.slice(0, i).trim().replace(/,\s*$/, '');
+    }
+  }
+  return src.trim().replace(/,\s*$/, '');
+}
+
+/** `name: Type` declarations, keeping commas that sit inside `Map(K, V)`. */
+function readFieldTypes(body: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let name = '';
+  let type = '';
+  const flush = () => {
+    if (name && type.trim()) out.set(name, stripInitializer(type));
+  };
+  for (const chunk of fieldChunks(body)) {
+    const piece = chunk.trim();
+    if (!piece || piece === '{' || piece === '}') continue;
+    const m = piece.match(/^(\w+)\s*:\s*([\s\S]*)$/);
+    if (m && (!name || balancedType(type))) {
+      flush();
+      name = m[1];
+      type = m[2];
+    } else if (name) {
+      type += `\n${piece}`;
+    }
+  }
+  flush();
+  return out;
+}
+
+/** Init statements. `name == expr` is an initializer here, same as `name := expr`. */
+function readInitAssignments(body: string): { name: string; expr: string; raw: string }[] {
+  const lines = body.split('\n').map((l) => l.trim()).filter((l) => l && l !== '{' && l !== '}');
+  const stmts: string[] = [];
+  let cur: string | null = null;
+  for (const line of lines) {
+    if (/^\w+\s*(?::=|==)/.test(line) || cur === null) {
+      if (cur) stmts.push(cur);
+      cur = line;
+    } else {
+      cur += ` ${line}`;
+    }
+  }
+  if (cur) stmts.push(cur);
+  const out: { name: string; expr: string; raw: string }[] = [];
+  for (const stmt of stmts) {
+    const m = stmt.match(/^(\w+)\s*(?::=|==)\s*([\s\S]+)$/);
+    if (!m) continue;
+    const expr = m[2].replace(/,\s*$/, '').trim();
+    out.push({ name: m[1], expr, raw: `${m[1]} ${stmt.includes(':=') ? ':=' : '=='} ${expr}` });
+  }
+  return out;
+}
+
 function stripCodeComment(line: string): string {
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < line.length; i++) {
@@ -319,13 +434,13 @@ function readSourceTypes(source: string): { aliases: Map<string, string>; record
   return { aliases, records };
 }
 
-/** A type the spec wrote but this target cannot map. Marked in the module; not a guess. */
-function unresolved(ctx: Ctx, why: string): ET {
-  let name = 'SpecklUnparsed';
-  for (let n = 2; ctx.usedExports.has(name) || ctx.opaque.has(name); n++) name = `SpecklUnparsed${n}`;
-  claimTypeName(ctx, name);
-  ctx.opaque.set(name, why);
-  return { k: 'unknown', name, why };
+/**
+ * A type expression this target cannot parse. That is a generator failure,
+ * not a value. A bare name the spec never declares is different: see
+ * `opaqueType`.
+ */
+function unresolved(ctx: Ctx, why: string): never {
+  ctx.fail(`cannot map ${why}`);
 }
 
 function resolveTypeExpr(ctx: Ctx, t: TypeExpr | undefined, hint: string, seen: Set<string> = new Set()): ET {
@@ -419,13 +534,27 @@ function parseTypeSource(ctx: Ctx, src: string, hint: string, seen: Set<string>)
     const parsed = arms.map((a) => parseTypeAtom(ctx, a, `${hint} union`, seen));
     const nonNull = parsed.filter((p): p is ET => p !== 'null');
     const nulls = parsed.length - nonNull.length;
-    if (nulls > 0 && nonNull.length === 1) return { k: 'nullable', inner: nonNull[0] };
+    if (nulls > 0 && nonNull.length === 1 && nonNull[0].k !== 'unbound') return { k: 'nullable', inner: nonNull[0] };
     if (nulls > 0) return unresolved(ctx, `type \`${oneLine(expr)}\` (${hint}) mixes null with more than one arm`);
-    if (nonNull.every((p) => p.k === 'literal' && p.values.length === 1)) {
-      const values = nonNull.map((p) => (p as { k: 'literal'; values: string[] }).values[0]);
+    const unbound = nonNull.filter((p): p is { k: 'unbound'; name: string } => p.k === 'unbound');
+    const bound = nonNull.filter((p) => p.k !== 'unbound');
+    const bareLiteral = bound.every((p) => p.k === 'literal' && p.values.length === 1 && !p.name);
+    // `Follower | Candidate | Leader` and `"red" | "blue"` are string literals.
+    // `String | Ntoe` is a typo: Ntoe is not a variant just because it is a word.
+    if (unbound.length === 0 && bound.every((p) => p.k === 'literal' && p.values.length === 1)) {
+      return { k: 'literal', values: bound.flatMap((p) => (p as { values: string[] }).values) };
+    }
+    if (unbound.length > 0 && (bound.length === 0 || bareLiteral)) {
+      const values = [
+        ...bound.flatMap((p) => (p.k === 'literal' ? p.values : [])),
+        ...unbound.map((p) => p.name),
+      ];
       return { k: 'literal', values };
     }
-    return { k: 'union', members: nonNull };
+    if (unbound.length > 0) {
+      ctx.fail(`union arm ${unbound.map((p) => p.name).join(', ')} is not a declared type (${hint}); refusing to treat it as a string literal`);
+    }
+    return { k: 'union', members: bound };
   }
   const atom = parseTypeAtom(ctx, expr, hint, seen);
   if (atom === 'null') return unresolved(ctx, `type null (${hint})`);
@@ -467,9 +596,9 @@ function parseTypeAtom(ctx: Ctx, src: string, hint: string, seen: Set<string>): 
     if (ctx.enums.has(expr) || ctx.records.has(expr) || ctx.aliases.has(expr) || ctx.aliasResolved.has(expr) || PRIMITIVES[expr]) {
       return resolveIdent(ctx, expr, hint, seen);
     }
-    // A bare word in a union arm is a variant name, not a missing type.
-    // Callers that are not inside a union still go through resolveIdent.
-    if (hint.includes('union') || src.includes('|')) return { k: 'literal', values: [expr] };
+    // Held until the whole union is known. A word is a literal only when
+    // every arm is a word or a quoted string (`Follower | Candidate`).
+    if (hint.includes(' union')) return { k: 'unbound', name: expr };
     return resolveIdent(ctx, expr, hint, seen);
   }
   return unresolved(ctx, `type \`${oneLine(expr)}\` (${hint})`);
@@ -560,7 +689,13 @@ function schemaExpr(t: ET): string {
       if (t.members.length === 0) return '$$effect.Schema.Never';
       if (t.members.length === 1) return schemaExpr(t.members[0]);
       return `$$effect.Schema.Union(${t.members.map(schemaExpr).join(', ')})`;
+    case 'unbound':
+      return ctxFailSchema(t.name);
   }
+}
+
+function ctxFailSchema(name: string): string {
+  throw new Error(`speckl effect: unbound type ${name} reached schema emission`);
 }
 
 function tsType(t: ET): string {
@@ -585,6 +720,8 @@ function tsType(t: ET): string {
     case 'union':
       if (t.members.length === 0) return 'never';
       return t.members.map(tsType).join(' | ');
+    case 'unbound':
+      return 'never';
   }
 }
 
@@ -626,6 +763,9 @@ function defaultValue(ctx: Ctx, t: ET, seen: Set<string> = new Set()): string {
     case 'map': return `$$effect.HashMap.empty<${tsType(t.key)}, ${tsType(t.val)}>()`;
     case 'nullable': return 'null';
     case 'union': return defaultValue(ctx, t.members[0], seen);
+    case 'unbound':
+      ctx.fail(`cannot map unbound type ${t.name}`);
+      break;
     case 'record': {
       if (seen.has(t.name)) ctx.fail(`cannot build a default ${t.name}: the record contains itself and init does not set it`);
       const fields = ctx.records.get(t.name) ?? [];
@@ -640,7 +780,15 @@ function defaultValue(ctx: Ctx, t: ET, seen: Set<string> = new Set()): string {
 }
 
 function propKey(name: string): string {
-  return /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
+  // `{ __proto__: v }` sets the prototype. A computed key stores an own property.
+  if (name === '__proto__') return '["__proto__"]';
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return JSON.stringify(name);
+  return name;
+}
+
+function propRead(base: string, name: string): string {
+  if (name === '__proto__' || !/^[A-Za-z_$][\w$]*$/.test(name)) return `${base}[${JSON.stringify(name)}]`;
+  return `${base}.${name}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -656,6 +804,8 @@ class Env {
   readingOld = false;
   /** Rule bodies may read input and output fields. Actions may not. */
   readonly rules: boolean;
+  /** `old()` is a previous-state read. Rules that use it take that value as a parameter. */
+  allowOld = false;
   slot = 0;
 
   constructor(readonly ctx: Ctx, rules = false) {
@@ -678,22 +828,87 @@ function lookup(name: string, env: Env): TExpr | null {
   const local = env.locals.get(name);
   if (local) return { code: local.js, t: local.t };
   const state = env.ctx.stateVars.get(name);
-  if (state) return { code: `${env.readingOld ? '$$specklOld' : '$$state'}.${propKey(name)}`, t: state };
+  if (state) return { code: propRead(env.readingOld ? '$$specklOld' : '$$state', name), t: state };
   if (env.rules) {
     const input = env.ctx.inputFields.get(name);
     const output = env.ctx.outputFields.get(name);
     if (input && output) return null;
-    if (input) return { code: `$$input.${propKey(name)}`, t: input };
-    if (output) return { code: `$$output.${propKey(name)}`, t: output };
+    if (input) return { code: propRead('$$input', name), t: input };
+    if (output) return { code: propRead('$$output', name), t: output };
   }
   return null;
+}
+
+/**
+ * `{0: 0, 1: 0}` as a HashMap. Keys are expressions, except a bare word used
+ * as a string key (`{idle: 0}`). A value that is not the map's value type
+ * refuses the whole literal.
+ */
+function translateMapLiteral(src: string, env: Env, map: Extract<ET, { k: 'map' }>): TExpr | null {
+  const body = src.trim();
+  if (!body.startsWith('{') || !body.endsWith('}')) return null;
+  const inner = body.slice(1, -1).trim();
+  if (!inner) return { code: `$$effect.HashMap.empty<${tsType(map.key)}, ${tsType(map.val)}>()`, t: map };
+  if (!inner.includes(':')) return null;
+  const parts = splitTop(inner, ',');
+  if (!parts) return null;
+  const entries: string[] = [];
+  for (const part of parts) {
+    const colon = topLevelColon(part);
+    if (colon < 0) return null;
+    const keySrc = part.slice(0, colon).trim();
+    const valSrc = part.slice(colon + 1).trim();
+    if (!keySrc || !valSrc) return null;
+    const key = translateMapKey(keySrc, env, map.key);
+    const val = translate(parseStringToIRExpr(valSrc), env, map.val);
+    const k = key && coerce(key, map.key);
+    const v = val && coerce(val, map.val);
+    if (k == null || v == null) return null;
+    entries.push(`[${k}, ${v}]`);
+  }
+  return { code: `$$effect.HashMap.fromIterable([${entries.join(', ')}])`, t: map };
+}
+
+function translateMapKey(src: string, env: Env, keyT: ET): TExpr | null {
+  if ((keyT.k === 'string' || keyT.k === 'literal') && /^[A-Za-z_]\w*$/.test(src)) {
+    return { code: JSON.stringify(src), t: STRING };
+  }
+  return translate(parseStringToIRExpr(src), env, keyT);
+}
+
+function topLevelColon(src: string): number {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ':' && depth === 0) return i;
+  }
+  return -1;
 }
 
 function translate(expr: IRExpr | undefined, env: Env, expected?: ET): TExpr | null {
   if (!expr || typeof expr !== 'object' || !('kind' in expr)) return null;
   switch (expr.kind) {
     case 'bool_lit':
-      if (expr.parseFailed || expr.value === undefined) return null;
+      if (expr.parseFailed || expr.value === undefined) {
+        const src = expr.source?.trim() ?? '';
+        if (src && env.ctx.stateVars.has(src)) return lookup(src, env);
+        // `{0: 0}` is a map literal. The IR has no node for it, so the
+        // source is replayed when the destination is a map.
+        if (expected?.k === 'map') {
+          const lit = translateMapLiteral(src, env, expected);
+          if (lit) return lit;
+        }
+        return null;
+      }
       return { code: String(expr.value), t: BOOL };
     case 'int_lit':
       if (!Number.isSafeInteger(expr.value)) return null;
@@ -726,6 +941,9 @@ function translateIdent(name: string, env: Env, expected?: ET): TExpr | null {
     return { code: 'null', t: { k: 'nullable', inner: expected?.k === 'nullable' ? expected.inner : { k: 'unknown', name: 'null', why: 'null' } } };
   }
   if (name === 'true' || name === 'false') return { code: name, t: BOOL };
+  if (['emptyList', 'emptySet', 'emptyMap', 'empty'].includes(name)) {
+    return translateCall(name, [], env, expected);
+  }
   const found = lookup(name, env);
   if (found) return found;
   const owners = env.ctx.variants.get(name);
@@ -751,13 +969,6 @@ function translateIdent(name: string, env: Env, expected?: ET): TExpr | null {
   return null;
 }
 
-function ruleArgs(ctx: Ctx): string {
-  const args = ['{ state: $$state }'];
-  if (ctx.inputFields.size > 0) args.push('$$input');
-  if (ctx.outputFields.size > 0) args.push('$$output');
-  return args.join(', ');
-}
-
 function translateField(target: IRExpr, field: string, env: Env): TExpr | null {
   if (target.kind === 'ident' && target.name === 'this') return lookup(field, env);
   const obj = translate(target, env);
@@ -767,7 +978,7 @@ function translateField(target: IRExpr, field: string, env: Env): TExpr | null {
   if (inner.k === 'record') {
     const f = env.ctx.records.get(inner.name)?.find((x) => x.name === field);
     if (!f) return null;
-    return { code: `${obj.code}.${propKey(field)}`, t: f.type };
+    return { code: propRead(obj.code, field), t: f.type };
   }
   if (inner.k === 'map' && field === 'keys') return obj;
   return null;
@@ -829,10 +1040,14 @@ function translateBinop(op: string, left: IRExpr, right: IRExpr, env: Env): TExp
   if (cmp && (l.t.k === 'string' || l.t.k === 'literal') && (r.t.k === 'string' || r.t.k === 'literal') && (op === '==' || op === '!=')) {
     return { code: `(${l.code} ${jsCmp(op)} ${r.code})`, t: BOOL };
   }
-  if ((op === '==' || op === '!=') && (l.t.k === 'nullable' || r.t.k === 'nullable' || l.code === 'null' || r.code === 'null')) {
+  if ((op === '==' || op === '!=') && (l.code === 'null' || r.code === 'null')) {
+    if (l.code === 'null' && r.code === 'null') return { code: op === '==' ? 'true' : 'false', t: BOOL };
     const other = l.code === 'null' ? r : l;
-    if (other.code === 'null') return { code: op === '==' ? 'true' : 'false', t: BOOL };
     return { code: `(${other.code} ${op === '==' ? '===' : '!=='} null)`, t: BOOL };
+  }
+  if ((op === '==' || op === '!=') && (l.t.k === 'nullable' || r.t.k === 'nullable')) {
+    const neg = op === '!=';
+    return { code: `${neg ? '!' : ''}($$specklEqual(${l.code}, ${r.code}))`, t: BOOL };
   }
   if ((op === '==' || op === '!=') && sameType(l.t, r.t)) {
     const neg = op === '!=';
@@ -917,6 +1132,7 @@ function translateCall(fn: string, args: IRExpr[], env: Env, expected?: ET): TEx
   }
   if (fn === 'now' && args.length === 0) return { code: '$$specklNow()', t: NAT };
   if (fn === 'old' && args.length === 1) {
+    if (!env.allowOld) return null;
     const prev = env.readingOld;
     env.readingOld = true;
     env.useOld = true;
@@ -1045,7 +1261,34 @@ const ERRORS = {
   bad: '$$Untranslated',
   index: '$$IndexOutOfRange',
   adapter: '$$AdapterUnimplemented',
+  schema: '$$SchemaViolation',
 } as const;
+
+function numericKind(t: ET): 'nat' | 'int' | 'real' | null {
+  if (t.k === 'nullable') return numericKind(t.inner);
+  if (t.k === 'nat' || t.k === 'int' || t.k === 'real') return t.k;
+  return null;
+}
+
+/** A Nat/Int/Real write that misses the schema filter fails the effect instead of being stored. */
+function constrain(env: Env, t: ET, code: string, where: string, errors: Set<string>): { lines: string[]; value: string } {
+  const kind = numericKind(t);
+  if (!kind || code === 'null') return { lines: [], value: code };
+  const id = env.fresh('chk');
+  const pred = kind === 'nat'
+    ? `!Number.isSafeInteger(${id}) || ${id} < 0`
+    : kind === 'int'
+      ? `!Number.isSafeInteger(${id})`
+      : `!Number.isFinite(${id})`;
+  errors.add(ERRORS.schema);
+  return {
+    lines: [
+      `const ${id} = ${code};`,
+      `if (${pred}) return ${failExpr(ERRORS.schema, { where: JSON.stringify(where), detail: JSON.stringify(`not a ${kind === 'nat' ? 'Nat' : kind === 'int' ? 'Int' : 'Real'}`) })};`,
+    ],
+    value: id,
+  };
+}
 
 function failExpr(cls: string, fields: Record<string, string>): string {
   const body = Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join(', ');
@@ -1097,7 +1340,8 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
           if (k == null || v == null) return bad(stmtSource(stmt));
           const local = env.locals.get(baseName);
           if (local) return { lines: [`${local.js} = $$effect.HashMap.set(${local.js}, ${k}, ${v});`], returned: false, errors };
-          return { lines: [`$$state = { ...$$state, ${propKey(baseName)}: $$effect.HashMap.set($$state.${propKey(baseName)}, ${k}, ${v}) };`], returned: false, errors };
+          const held = constrain(env, base.t.val, v, `${baseName}[:]`, errors);
+          return { lines: [...held.lines, `$$state = { ...$$state, ${propKey(baseName)}: $$effect.HashMap.set(${propRead('$$state', baseName)}, ${k}, ${held.value}) };`], returned: false, errors };
         }
         if (base.t.k === 'list') {
           const index = translate(stmt.targetIndex, env, NAT);
@@ -1108,13 +1352,15 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
           const slot = env.fresh('idx');
           const next = env.fresh('next');
           const src = JSON.stringify(oneLine(stmtSource(stmt)));
+          const held = constrain(env, base.t.elem, v, `${baseName}[${index.code}]`, errors);
           const lines = [
+            ...held.lines,
             `const ${slot} = ${index.code};`,
             `if (!Number.isInteger(${slot}) || ${slot} < 0 || ${slot} >= ${base.code}.length) {`,
             `  return ${failExpr(ERRORS.index, { action: JSON.stringify(action), detail: src })};`,
             `}`,
             `const ${next} = ${base.code}.slice();`,
-            `${next}[${slot}] = ${v};`,
+            `${next}[${slot}] = ${held.value};`,
           ];
           const local = env.locals.get(baseName);
           if (local) lines.push(`${local.js} = ${next};`);
@@ -1132,8 +1378,9 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
       const v = translate(value, env, dest.t);
       const code = v && coerce(v, dest.t);
       if (code == null) return bad(stmtSource(stmt));
-      if (!dest.state) return { lines: [`${dest.js} = ${code};`], returned: false, errors };
-      return { lines: [`$$state = { ...$$state, ${dest.js}: ${code} };`], returned: false, errors };
+      const held = constrain(env, dest.t, code, targetName, errors);
+      if (!dest.state) return { lines: [...held.lines, `${dest.js} = ${held.value};`], returned: false, errors };
+      return { lines: [...held.lines, `$$state = { ...$$state, ${dest.js}: ${held.value} };`], returned: false, errors };
     }
     case 'let': {
       if (!value || !stmt.letName) return bad(stmtSource(stmt));
@@ -1205,6 +1452,14 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
       };
     }
     case 'if': {
+      const dotted = stmt.raw?.match(/^this\.(\w+)\s*:=\s*([\s\S]+)$/);
+      if (dotted) {
+        return translateStmt({
+          kind: 'assign',
+          target: `this.${dotted[1]}`,
+          value: parseStringToIRExpr(dotted[2].trim()),
+        }, env, action, ret);
+      }
       if (stmt.raw || !value || !stmt.thenBlock) return bad(stmt.raw ?? stmtSource(stmt));
       const c = translate(value, env, BOOL);
       if (!c || c.t.k !== 'bool') return bad(stmtSource(stmt));
@@ -1277,6 +1532,7 @@ function emitAction(ctx: Ctx, action: IRAction, exportName: string): ActionEmit 
   if (found) ret = found;
 
   const withPosts = new Env(ctx);
+  withPosts.allowOld = true;
   const params = action.params.map((p) => {
     const t = resolveParam(ctx, action, p.name);
     const js = withPosts.declare(p.name, t);
@@ -1379,29 +1635,37 @@ interface RuleEmit {
   body: string[];
   errors: string[];
   temporal: boolean;
+  kind: 'invariant' | 'constraint' | 'verify';
+  needsOld: boolean;
 }
 
-function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, source: string, temporal: 'state' | 'eventually' | 'other'): RuleEmit {
+function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, source: string, temporal: 'state' | 'eventually' | 'other', kind: RuleEmit['kind']): RuleEmit {
   if (expr.kind === 'ident') {
     const named = ctx.rules.get(expr.name);
     if (named) {
+      const needsOld = ctx.ruleNeedsOld.get(expr.name) ?? false;
       return {
         exportName,
         specName,
         source,
         temporal: false,
+        kind,
+        needsOld,
         errors: [ERRORS.inv, ERRORS.bad],
-        body: [`// ${jsDoc(source)}`, `return yield* ${named}(${ruleArgs(ctx)});`],
+        body: [`// ${jsDoc(source)}`, `return yield* ${named}({ state: $$state }${needsOld ? ', $$specklOld' : ''});`],
       };
     }
   }
   const env = new Env(ctx, true);
+  env.allowOld = true;
   if (temporal === 'eventually' || temporal === 'other') {
     return {
       exportName,
       specName,
       source,
       temporal: true,
+      kind,
+      needsOld: false,
       errors: [ERRORS.bad],
       body: [
         `// ${jsDoc(source)}`,
@@ -1410,6 +1674,7 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
     };
   }
   const v = translate(expr, env, BOOL);
+  const needsOld = env.useOld;
   if (!v || v.t.k !== 'bool' || env.failures.length > 0) {
     const detail = source;
     return {
@@ -1417,6 +1682,8 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
       specName,
       source,
       temporal: false,
+      kind,
+      needsOld: false,
       errors: [ERRORS.bad],
       body: [
         `// SPECKL-UNTRANSLATED: ${jsDoc(detail)}`,
@@ -1431,6 +1698,8 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
       specName,
       source,
       temporal: false,
+      kind,
+      needsOld,
       errors: [ERRORS.inv, ERRORS.bad],
       body: [`// ${jsDoc(source)}`, `return ${v.code.slice(1, -1)};`],
     };
@@ -1440,6 +1709,8 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
     specName,
     source,
     temporal: false,
+    kind,
+    needsOld,
     errors: [ERRORS.inv],
     body: [
       `// ${jsDoc(source)}`,
@@ -1459,13 +1730,8 @@ function buildContext(speck: IRSpeck, ast: SpeckNode | undefined): Ctx {
   const astInterfaces = (ast?.members ?? []).filter((m): m is InterfaceNode => m.type === 'interface');
   const astEvents = (ast?.members ?? []).filter((m): m is EventNode => m.type === 'event');
   let sourceTypes = { aliases: new Map<string, string>(), records: new Map<string, string>() };
-  if (speck.sourcePath) {
-    try {
-      sourceTypes = readSourceTypes(fs.readFileSync(speck.sourcePath, 'utf-8'));
-    } catch {
-      sourceTypes = { aliases: new Map(), records: new Map() };
-    }
-  }
+  const text = speckText(speck, ast);
+  if (text) sourceTypes = readSourceTypes(text);
 
   for (const [name, t] of speck.facets.typed_schema.types) {
     if (t.kind === 'enum' && !sourceTypes.records.has(name)) {
@@ -1538,10 +1804,43 @@ function buildContext(speck: IRSpeck, ast: SpeckNode | undefined): Ctx {
   }
 
   const astState = ast?.members.find((m): m is StateNode => m.type === 'state');
+  const stateBody = extractBlock(text, 'state');
+  const stateTypes = stateBody !== null ? readFieldTypes(stateBody) : new Map<string, string>();
+  const declared = new Set<string>();
   for (const sv of speck.facets.behavior.stateVars) {
+    const fromSource = stateTypes.get(sv.name);
     const astVar = astState?.variables.find((v) => v.name === sv.name);
-    const t = astVar ? resolveTypeExpr(ctx, astVar.typeExpr, sv.name) : resolveIr(ctx, sv.type, sv.name);
+    const t = fromSource !== undefined
+      ? parseTypeSource(ctx, fromSource, sv.name, new Set())
+      : astVar
+        ? resolveTypeExpr(ctx, astVar.typeExpr, sv.name)
+        : resolveIr(ctx, sv.type, sv.name);
     ctx.stateVars.set(sv.name, t);
+    declared.add(sv.name);
+  }
+  // A one-line `state { a: T, b: U }` is split on commas by the parser and
+  // can arrive empty. The source field list is the one the module uses.
+  for (const [name, typeText] of stateTypes) {
+    if (declared.has(name)) continue;
+    ctx.stateVars.set(name, parseTypeSource(ctx, typeText, name, new Set()));
+  }
+  const initBody = extractBlock(text, 'init');
+  if (initBody !== null) {
+    ctx.sourceInits = readInitAssignments(initBody).map((a) => ({
+      name: a.name,
+      raw: a.raw,
+      expr: parseStringToIRExpr(a.expr),
+    }));
+  }
+  for (const svc of (ast?.members ?? []).filter((m): m is ServiceNode => m.type === 'service')) {
+    ctx.servicePlans.push({
+      name: svc.name,
+      rpcs: svc.rpcs.map((rpc) => ({
+        rpc: rpc.name,
+        req: resolveServiceType(ctx, rpc.requestType, `${svc.name}.${rpc.name} request`),
+        res: resolveServiceType(ctx, rpc.responseType, `${svc.name}.${rpc.name} response`),
+      })),
+    });
   }
 
   const input = recordFromIo(ctx, ast, 'input');
@@ -1602,7 +1901,10 @@ function fieldChunks(body: string): string[] {
       if (part.trim()) chunks.push(part.trim());
       continue;
     }
-    for (const line of lines) chunks.push(line.replace(/,\s*$/, ''));
+    // Keep commas. They separate fields of a record nested in this type
+    // (`Map(K, { a: A, b: B })`). Stripping each line's comma glued the
+    // record into one unreadable type.
+    for (const line of lines) chunks.push(line);
   }
   return chunks;
 }
@@ -1642,7 +1944,7 @@ function emitModule(speck: IRSpeck, ast: SpeckNode | undefined): string {
   const inputName = ctx.inputFields.size > 0 ? exportIdent(`${pascal(speck.name)}Input`, ctx.usedExports, true) : '';
   const outputName = ctx.outputFields.size > 0 ? exportIdent(`${pascal(speck.name)}Output`, ctx.usedExports, true) : '';
 
-  const fnUsed = new Set<string>(['getState', 'boot', 'nextActions', 'lifecycle', 'agentConfig']);
+  const fnUsed = new Set<string>([...ctx.usedExports, 'getState', 'nextActions', 'lifecycle', 'agentConfig']);
   const actions = speck.facets.behavior.actions.map((a) => {
     const exportName = exportIdent(camel(a.name) || 'action', fnUsed);
     return emitAction(ctx, a, exportName);
@@ -1654,19 +1956,21 @@ function emitModule(speck: IRSpeck, ast: SpeckNode | undefined): string {
     const exportName = exportIdent(`check${pascal(inv.name)}`, fnUsed);
     ctx.rules.set(inv.name, exportName);
     const expr = parseRuleExpr(inv.expr);
-    rules.push(emitRule(ctx, exportName, inv.name, expr, inv.expr, 'state'));
+    const rule = emitRule(ctx, exportName, inv.name, expr, inv.expr, 'state', 'invariant');
+    ctx.ruleNeedsOld.set(inv.name, rule.needsOld);
+    rules.push(rule);
   }
   speck.facets.formal_spec.constraints.forEach((c, i) => {
     const specName = c.name ?? `constraint ${i + 1}`;
     const exportName = exportIdent(c.name ? `check${pascal(c.name)}` : `checkConstraint${i + 1}`, fnUsed);
     if (c.name) ctx.rules.set(c.name, exportName);
-    rules.push(emitRule(ctx, exportName, specName, c.expr, exprSource(c.expr), 'state'));
+    rules.push(emitRule(ctx, exportName, specName, c.expr, exprSource(c.expr), 'state', 'constraint'));
   });
   const verifies: RuleEmit[] = speck.facets.formal_spec.verifies.map((v, i) => {
     const exportName = exportIdent(v.name ? `verify${pascal(v.name)}` : `verify${i + 1}`, fnUsed);
     const kind = temporalKind(v.temporalExpr);
     const inner = kind === 'state' ? unwrapAlways(v.temporalExpr) : v.temporalExpr;
-    return emitRule(ctx, exportName, v.name, inner, exprSource(v.temporalExpr), kind);
+    return emitRule(ctx, exportName, v.name, inner, exprSource(v.temporalExpr), kind, 'verify');
   });
 
   const sections: string[] = [];
@@ -1680,10 +1984,16 @@ function emitModule(speck: IRSpeck, ast: SpeckNode | undefined): string {
   sections.push(emitEventUnion(ctx, eventName));
   sections.push(emitMachineTypes(machineName, stateName, eventName, decisionName));
   sections.push(emitBoot(ctx, stateName, machineName));
-  for (const a of actions) sections.push(emitActionFn(ctx, a, machineName, decisionName, stateName, eventName));
+  const guards = rules
+    .filter((r) => r.kind === 'invariant' && !r.errors.includes(ERRORS.bad))
+    .map((r) => `yield* ${r.exportName}({ state: $$state }${r.needsOld ? ', $$specklOld' : ''});`);
+  if (guards.length > 0) {
+    for (const a of actions) if (!a.errors.includes(ERRORS.inv)) a.errors.push(ERRORS.inv);
+  }
+  for (const a of actions) sections.push(emitActionFn(ctx, a, machineName, decisionName, guards));
   for (const r of [...rules, ...verifies]) sections.push(emitRuleFn(ctx, r, stateName, inputName, outputName));
   sections.push(emitCapability(ctx, capName, liveName, machineName, stateName, actions, [...rules, ...verifies], inputName, outputName));
-  sections.push(...emitServices(ctx, ast));
+  sections.push(...emitServices(ctx));
   if (speck.facets.behavior.next) {
     sections.push(`/** Actions the spec allows at each step, in source order. */\nexport const nextActions = ${JSON.stringify(speck.facets.behavior.next)} as const;`);
   }
@@ -1831,6 +2141,7 @@ function errorClasses(): string {
     decl('$$Untranslated', 'Untranslated', '  where: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
     decl('$$IndexOutOfRange', 'IndexOutOfRange', '  action: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
     decl('$$AdapterUnimplemented', 'AdapterUnimplemented', '  service: $$effect.Schema.String,\n  method: $$effect.Schema.String,'),
+    decl('$$SchemaViolation', 'SchemaViolation', '  where: $$effect.Schema.String,\n  detail: $$effect.Schema.String,'),
   ].join('\n\n');
 }
 
@@ -1896,29 +2207,80 @@ export interface ${decision}<A> {
 }`;
 }
 
+function stateReads(expr: IRExpr | undefined, names: Set<string>, out: Set<string> = new Set()): Set<string> {
+  if (!expr || typeof expr !== 'object' || !('kind' in expr)) return out;
+  switch (expr.kind) {
+    case 'ident':
+      if (names.has(expr.name)) out.add(expr.name);
+      return out;
+    case 'field':
+      if (expr.target.kind === 'ident' && expr.target.name === 'this' && names.has(expr.field)) out.add(expr.field);
+      else stateReads(expr.target, names, out);
+      return out;
+    case 'index':
+      stateReads(expr.target, names, out);
+      stateReads(expr.index, names, out);
+      return out;
+    case 'unop':
+      return stateReads(expr.operand, names, out);
+    case 'binop':
+      stateReads(expr.left, names, out);
+      stateReads(expr.right, names, out);
+      return out;
+    case 'call':
+      if (expr.fn !== 'old') for (const a of expr.args) stateReads(a, names, out);
+      return out;
+    default:
+      return out;
+  }
+}
+
 function emitBoot(ctx: Ctx, stateName: string, machineName: string): string {
   const env = new Env(ctx);
   const failures: string[] = [];
-  const literal: string[] = [];
-  const later: string[] = [];
+  const names = new Set(ctx.stateVars.keys());
+  const fromSource = ctx.sourceInits;
+  const items = (fromSource ?? ctx.speck.facets.behavior.init.map((a) => ({
+    name: a.target,
+    expr: a.expr,
+    raw: `init ${a.target} := ${exprSource(a.expr)}`,
+  }))).map((a) => ({ ...a }));
+  // Evaluate an initializer only after every other initializer it reads.
+  const pending = items.slice();
+  const ordered: typeof items = [];
+  while (pending.length > 0) {
+    const idx = pending.findIndex((it, i) => [...stateReads(it.expr, names)].every(
+      (r) => !pending.some((p, j) => j !== i && p.name === r),
+    ));
+    if (idx < 0) {
+      failures.push(...pending.map((p) => p.raw));
+      pending.length = 0;
+      break;
+    }
+    ordered.push(pending.splice(idx, 1)[0]);
+  }
   const assigned = new Set<string>();
-  for (const a of ctx.speck.facets.behavior.init) {
-    const t = ctx.stateVars.get(a.target);
-    const src = `init ${a.target} := ${exprSource(a.expr)}`;
-    if (!t) { failures.push(src); continue; }
-    env.readingOld = false;
-    const before = env.useOld;
+  const writes: string[] = [];
+  let schema = false;
+  for (const a of ordered) {
+    const t = ctx.stateVars.get(a.name);
+    if (!t) { failures.push(a.raw); continue; }
     const v = translate(a.expr, env, t);
     const code = v && coerce(v, t);
-    if (code == null) { failures.push(src); continue; }
-    assigned.add(a.target);
-    const readsState = /\$\$state\./.test(code) || later.length > 0;
-    if (readsState || before) later.push(`$$state = { ...$$state, ${propKey(a.target)}: ${code} };`);
-    else literal.push(`${propKey(a.target)}: ${code}`);
+    if (code == null) { failures.push(a.raw); continue; }
+    assigned.add(a.name);
+    const held = constrain(env, t, code, a.name, new Set());
+    if (held.lines.length > 0) schema = true;
+    writes.push(...held.lines, `$$state = { ...$$state, ${propKey(a.name)}: ${held.value} };`);
   }
+  const literal: string[] = [];
   for (const [name, t] of ctx.stateVars) {
-    if (literal.some((l) => l.startsWith(`${propKey(name)}:`))) continue;
-    literal.push(`${propKey(name)}: ${defaultValue(ctx, t)}`);
+    if (t.k === 'unknown' && !assigned.has(name)) {
+      failures.push(`init ${name}: unresolved type has no value`);
+      literal.push(`${propKey(name)}: undefined as unknown`);
+      continue;
+    }
+    literal.push(`${propKey(name)}: ${assigned.has(name) ? defaultValue(ctx, t) : defaultValue(ctx, t)}`);
   }
   const lines: string[] = [];
   if (failures.length > 0) {
@@ -1927,25 +2289,32 @@ function emitBoot(ctx: Ctx, stateName: string, machineName: string): string {
     lines.push(`return ${failExpr(ERRORS.bad, { where: JSON.stringify('init'), detail: JSON.stringify(detail) })};`);
   }
   lines.push(`let $$state: ${stateName} = { ${literal.join(', ')} };`);
-  lines.push(...later);
+  lines.push(...writes);
   lines.push(`return { state: $$state, decisionLog: [] };`);
-  const err = failures.length > 0 ? '$$Untranslated' : 'never';
-  return `/** A machine in its initial state. Untranslated init fails instead of inventing a value. */
-export const boot: $$effect.Effect.Effect<${machineName}, ${err}> = $$effect.Effect.gen(function* () {
+  const errs = [failures.length > 0 ? '$$Untranslated' : '', schema ? '$$SchemaViolation' : ''].filter(Boolean);
+  ctx.bootErr = errs.length > 0 ? errs.join(' | ') : 'never';
+  return `/** A machine in its initial state. An initializer that cannot be translated fails the effect. \`name == expr\` is an initializer. */
+export const $$boot: $$effect.Effect.Effect<${machineName}, ${ctx.bootErr}> = $$effect.Effect.gen(function* () {
   ${lines.join('\n  ')}
 });`;
 }
 
-function emitActionFn(ctx: Ctx, action: ActionEmit, machine: string, decision: string, _state: string, _event: string): string {
-  const params = [`machine: ${machine}`, ...action.params.map((p) => `${p.js}: ${tsType(p.t)}`)];
-  const err = action.errors.length > 0 ? action.errors.join(' | ') : 'never';
+function emitActionFn(ctx: Ctx, action: ActionEmit, machine: string, decision: string, guards: string[]): string {
+  const params = [`$$machine: ${machine}`, ...action.params.map((p) => `${p.js}: ${tsType(p.t)}`)];
+  const errParts = [...action.errors];
+  if (guards.length > 0 && !errParts.includes(ERRORS.inv)) errParts.push(ERRORS.inv);
+  const err = errParts.length > 0 ? errParts.join(' | ') : 'never';
   const retTs = action.ret.k === 'unit' ? 'undefined' : tsType(action.ret);
+  const bodyLines = action.body.flatMap((line) => (
+    line.startsWith('return { state: $$state') ? [...guards, line] : [line]
+  ));
   const body = [
-    `const $$specklOld = { ...machine.state };`,
-    `let $$state = { ...machine.state };`,
-    `let $$log = machine.decisionLog;`,
-    ...action.body,
+    `const $$specklOld = { ...$$machine.state };`,
+    `let $$state = { ...$$machine.state };`,
+    `let $$log = $$machine.decisionLog;`,
+    ...bodyLines,
   ];
+  void ctx;
   return `/** Decision ${jsDoc(action.name)}. */
 export const ${action.exportName} = (${params.join(', ')}): $$effect.Effect.Effect<${decision}<${retTs}>, ${err}> =>
   $$effect.Effect.gen(function* () {
@@ -1955,6 +2324,7 @@ export const ${action.exportName} = (${params.join(', ')}): $$effect.Effect.Effe
 
 function emitRuleFn(ctx: Ctx, rule: RuleEmit, stateName: string, inputName: string, outputName: string): string {
   const params = [`machine: { readonly state: ${stateName} }`];
+  if (rule.needsOld) params.push(`$$specklOld: ${stateName}`);
   if (inputName) params.push(`$$input: ${inputName}`);
   if (outputName) params.push(`$$output: ${outputName}`);
   const err = rule.errors.join(' | ') || 'never';
@@ -1992,34 +2362,41 @@ function emitCapability(
     shape.push(`readonly ${a.exportName}: (${args}) => $$effect.Effect.Effect<${ret}, ${err}>`);
   }
   for (const r of rules) {
-    const extra = [inputName ? `input: ${inputName}` : '', outputName ? `output: ${outputName}` : ''].filter(Boolean).join(', ');
+    const extra = [
+      r.needsOld ? `previous: ${stateName}` : '',
+      inputName ? `input: ${inputName}` : '',
+      outputName ? `output: ${outputName}` : '',
+    ].filter(Boolean).join(', ');
     const err = r.errors.join(' | ') || 'never';
     shape.push(`readonly ${r.exportName}: (${extra}) => $$effect.Effect.Effect<void, ${err}>`);
   }
   const id = `@speckl/${ctx.speck.name}`;
-  const bootErr = ctx.speck.facets.behavior.init.length > 0 ? '$$Untranslated | never' : 'never';
-  // The layer's error is whatever boot can fail with. We read it off boot's
-  // annotation by construction: boot is Effect<Machine, $$Untranslated> when
-  // init had a failure, else Effect<Machine, never>. The annotation below
-  // uses a union so both shapes assign. A success-only boot still assigns
-  // to Effect<Machine, $$Untranslated | never>.
+  const bootErr = ctx.bootErr;
   const methods = [
-    `getState: $$effect.Effect.map($$effect.Ref.get(ref), (machine) => machine.state),`,
+    `getState: $$effect.Effect.map($$effect.Ref.get($$held), ($$machine) => $$machine.state),`,
     ...actions.map((a) => {
       const args = a.params.map((p) => p.js).join(', ');
       const params = a.params.map((p) => `${p.js}: ${tsType(p.t)}`).join(', ');
-      const call = args ? `current, ${args}` : 'current';
+      const call = args ? `$$current, ${args}` : '$$current';
       return `${a.exportName}: (${params}) => $$effect.Effect.gen(function* () {
-        const current = yield* $$effect.Ref.get(ref);
+        const $$current = yield* $$effect.Ref.get($$held);
         const decided = yield* ${a.exportName}(${call});
-        yield* $$effect.Ref.set(ref, { state: decided.state, decisionLog: decided.decisionLog });
+        yield* $$effect.Ref.set($$held, { state: decided.state, decisionLog: decided.decisionLog });
         return decided.value;
       }),`;
     }),
     ...rules.map((r) => {
-      const extraArgs = [inputName ? 'input' : '', outputName ? 'output' : ''].filter(Boolean);
-      const params = [inputName ? `input: ${inputName}` : '', outputName ? `output: ${outputName}` : ''].filter(Boolean).join(', ');
-      return `${r.exportName}: (${params}) => $$effect.Effect.flatMap($$effect.Ref.get(ref), (machine) => ${r.exportName}(machine${extraArgs.length ? ', ' + extraArgs.join(', ') : ''})),`;
+      const params = [
+        r.needsOld ? `previous: ${stateName}` : '',
+        inputName ? `input: ${inputName}` : '',
+        outputName ? `output: ${outputName}` : '',
+      ].filter(Boolean).join(', ');
+      const extraArgs = [
+        r.needsOld ? 'previous' : '',
+        inputName ? 'input' : '',
+        outputName ? 'output' : '',
+      ].filter(Boolean);
+      return `${r.exportName}: (${params}) => $$effect.Effect.flatMap($$effect.Ref.get($$held), ($$machine) => ${r.exportName}($$machine${extraArgs.length ? ', ' + extraArgs.join(', ') : ''})),`;
     }),
   ];
   return `/** Capability other components depend on. Methods are the decisions and rules. */
@@ -2031,8 +2408,8 @@ export class ${capName} extends $$effect.Context.Tag(${JSON.stringify(id)})<${ca
 export const ${liveName}: $$effect.Layer.Layer<${capName}, ${bootErr}> = $$effect.Layer.effect(
   ${capName},
   $$effect.Effect.gen(function* () {
-    const initial = yield* boot;
-    const ref = yield* $$effect.Ref.make<${machineName}>(initial);
+    const initial = yield* $$boot;
+    const $$held = yield* $$effect.Ref.make<${machineName}>(initial);
     return {
       ${methods.join('\n      ')}
     };
@@ -2040,17 +2417,14 @@ export const ${liveName}: $$effect.Layer.Layer<${capName}, ${bootErr}> = $$effec
 );`;
 }
 
-function emitServices(ctx: Ctx, ast: SpeckNode | undefined): string[] {
-  const services = (ast?.members ?? []).filter((m): m is ServiceNode => m.type === 'service');
-  return services.map((svc) => {
+function emitServices(ctx: Ctx): string[] {
+  return ctx.servicePlans.map((svc) => {
     const cls = exportIdent(pascal(svc.name), ctx.usedExports, true);
     const layer = exportIdent(`${camel(svc.name)}Unimplemented`, ctx.usedExports);
     const used = new Set<string>();
     const specs = svc.rpcs.map((rpc) => {
-      const req = resolveServiceType(ctx, rpc.requestType, `${svc.name}.${rpc.name} request`);
-      const res = resolveServiceType(ctx, rpc.responseType, `${svc.name}.${rpc.name} response`);
-      const exportName = exportIdent(camel(rpc.name) || 'call', used);
-      return { exportName, rpc: rpc.name, req, res };
+      const exportName = exportIdent(camel(rpc.rpc) || 'call', used);
+      return { exportName, rpc: rpc.rpc, req: rpc.req, res: rpc.res };
     });
     const shape = specs.map((m) => `readonly ${m.exportName}: (request: ${tsType(m.req)}) => $$effect.Effect.Effect<${tsType(m.res)}, $$AdapterUnimplemented>`).join('\n  ');
     const body = specs.map((m) => `${m.exportName}: (_request: ${tsType(m.req)}) => $$effect.Effect.fail(new $$AdapterUnimplemented({ service: ${JSON.stringify(svc.name)}, method: ${JSON.stringify(m.rpc)} })),`).join('\n      ');
