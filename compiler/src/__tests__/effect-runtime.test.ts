@@ -624,4 +624,138 @@ console.log("RESULT " + JSON.stringify(value));
 `);
     expect(result).toEqual({ ok: 4, n: 4, bad: 'SchemaViolation', after: 4 });
   });
+
+  it('keeps a block-comment lookalike inside a string', () => {
+    expect(boot(`
+speck StrComment {
+  state { s: String, n: Nat }
+  init {
+    s == "/* } */"
+    n == 5
+  }
+}
+`, 'StrComment')).toEqual({ s: '/* } */', n: 5 });
+  });
+
+  it('rejects a nested block comment and an unclosed string', () => {
+    const nested = `
+speck NestC {
+  state { n: Nat, m: Nat }
+  init {
+    n == 1
+    /* outer /* inner */ }
+    m == 2
+  }
+}
+`;
+    const open = `
+speck OpenStr {
+  state { s: String, n: Nat }
+  init {
+    s == "unterminated
+    n == 5
+  }
+}
+`;
+    for (const src of [nested, open]) {
+      const root = mkdtempSync(join(tmpdir(), 'speckl-eff-throw-'));
+      const file = join(root, 'spec.speckdl');
+      writeFileSync(file, src);
+      const ast = parseSpeckContent(src, file);
+      expect(() => generateEffect(lower(ast, { filePath: file, resolveImports: false }), join(root, 'out'), ast)).toThrow(EffectTargetError);
+    }
+    const root = mkdtempSync(join(tmpdir(), 'speckl-eff-throw-'));
+    const file = join(root, 'spec.speckdl');
+    writeFileSync(file, nested);
+    const ast = parseSpeckContent(nested, file);
+    try {
+      generateEffect(lower(ast, { filePath: file, resolveImports: false }), join(root, 'out'), ast);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/nested/);
+    }
+    writeFileSync(file, open);
+    const ast2 = parseSpeckContent(open, file);
+    try {
+      generateEffect(lower(ast2, { filePath: file, resolveImports: false }), join(root, 'out'), ast2);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/string literal is not closed/);
+    }
+  });
+
+  it('range-checks a Nat returned through a let', () => {
+    const root = generate(`
+speck LetNat {
+  state { n: Nat }
+  init { n := 0 }
+  action Bad() {
+    let v := n - 10
+    return v
+  }
+}
+`);
+    expect(typechecks(root, 'LetNat')).toBe(true);
+    const src = readFileSync(join(root, 'out', 'LetNat', 'src', 'index.ts'), 'utf-8');
+    expect(src).toContain('LetNatDecision<number>');
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import * as M from "./out/LetNat/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.LetNatCapability;
+  const step = yield* Effect.Effect.either(svc.bad());
+  const state = yield* svc.getState;
+  return { tag: step._tag === "Left" ? step.left._tag : step.right, n: state.n };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.letNatLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({ tag: 'SchemaViolation', n: 0 });
+  });
+
+  it('enforces a forall over a set and set membership', () => {
+    const root = generate(`
+speck ForallSet {
+  state { xs: Set(Nat), flag: Bool }
+  init {
+    xs := emptySet()
+    flag := false
+  }
+  invariant Small { forall x in xs: x < 10 }
+  invariant Flag { flag in {true, false} }
+  action Add(v: Nat) {
+    xs := xs union {v}
+    return v
+  }
+  action Turn() {
+    flag := true
+    return flag
+  }
+}
+`);
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import { HashSet } from "effect";
+import * as M from "./out/ForallSet/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.ForallSetCapability;
+  const ok = yield* Effect.Effect.either(svc.add(3));
+  const mid = yield* svc.getState;
+  const bad = yield* Effect.Effect.either(svc.add(10));
+  const after = yield* svc.getState;
+  const turn = yield* Effect.Effect.either(svc.turn());
+  const end = yield* svc.getState;
+  return {
+    ok: ok._tag,
+    has3: HashSet.has(mid.xs, 3),
+    bad: bad._tag === "Left" ? bad.left._tag : "ok",
+    still3: HashSet.has(after.xs, 3),
+    has10: HashSet.has(after.xs, 10),
+    turn: turn._tag,
+    flag: end.flag,
+  };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.forallSetLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({ ok: 'Right', has3: true, bad: 'InvariantViolated', still3: true, has10: false, turn: 'Right', flag: true });
+  });
 });

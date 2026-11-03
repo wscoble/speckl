@@ -60,7 +60,7 @@ describe('Effect target — ToggleSwitch', () => {
   });
 
   it('returns Effect from decisions and fails a guard with a tagged error', () => {
-    expect(src).toContain('export const turnOn = ($$machine: ToggleSwitchMachine): $$effect.Effect.Effect<ToggleSwitchDecision<boolean>, $$GuardFailed | $$Untranslated>');
+    expect(src).toContain('export const turnOn = ($$machine: ToggleSwitchMachine): $$effect.Effect.Effect<ToggleSwitchDecision<boolean>, $$GuardFailed | $$InvariantViolated>');
     expect(src).toContain('return yield* new $$GuardFailed({ action: "TurnOn", detail: "not isOn" })');
     expect(src).toContain('$$state = { ...$$state, isOn: true }');
     expect(src).toContain('class $$GuardFailed extends $$effect.Schema.TaggedError<$$GuardFailed>()("GuardFailed"');
@@ -68,7 +68,8 @@ describe('Effect target — ToggleSwitch', () => {
 
   it('fails an untranslatable rule closed instead of dropping it', () => {
     expect(src).toContain('export const checkSwitchConsistent');
-    expect(src).toContain('new $$Untranslated({ where: "SwitchConsistent", detail: "isOn in {true, false}" })');
+    expect(src).toContain('$$effect.HashSet.has');
+    expect(src).not.toContain('untranslated invariant: SwitchConsistent');
   });
 });
 

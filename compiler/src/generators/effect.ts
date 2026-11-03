@@ -237,25 +237,41 @@ function jsDoc(s: string): string {
 // Type parsing (AST + source aliases the parser drops)
 // ─────────────────────────────────────────────────────────────────────
 
+type ScanIssue = 'unclosed-string' | 'unclosed-comment' | 'nested-comment';
+
 /**
- * Indexes of characters that are code: not inside a string, a `//` comment,
- * or a block comment. Braces, commas, and `:=` are read from this list so a
- * `}` inside `"a}b"` or a comment cannot close a block. `null` means a
- * string or block comment was never closed.
+ * One walk for strings, `//` comments, and block comments. Code indexes skip
+ * all three, so a `}` inside `"a}b"` or a comment cannot close a block.
+ * Comments are blanked to spaces (newlines kept) without touching strings,
+ * which is what used to happen in a separate regex before this walk.
+ * A nested `/*` is reported rather than closed at the first star-slash:
+ * the main tokenizer does not nest, and guessing would drop the rest of init.
  */
-function codeIndexes(src: string): number[] | null {
-  const out: number[] = [];
+function scanSource(src: string): { indexes: number[]; blanked: string; issue: ScanIssue | null } {
+  const indexes: number[] = [];
+  const chars = [...src];
   let quote: '"' | "'" | null = null;
   let mode: 'code' | 'line' | 'block' = 'code';
+  let issue: ScanIssue | null = null;
+  const blankAt = (i: number) => { if (chars[i] !== '\n') chars[i] = ' '; };
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
     const n = src[i + 1];
     if (mode === 'line') {
       if (c === '\n') mode = 'code';
+      else blankAt(i);
       continue;
     }
     if (mode === 'block') {
-      if (c === '*' && n === '/') { mode = 'code'; i++; }
+      if (c === '/' && n === '*' && !issue) issue = 'nested-comment';
+      if (c === '*' && n === '/') {
+        blankAt(i);
+        blankAt(i + 1);
+        mode = 'code';
+        i++;
+        continue;
+      }
+      blankAt(i);
       continue;
     }
     if (quote) {
@@ -263,13 +279,38 @@ function codeIndexes(src: string): number[] | null {
       if (c === quote) quote = null;
       continue;
     }
-    if (c === '/' && n === '/') { mode = 'line'; i++; continue; }
-    if (c === '/' && n === '*') { mode = 'block'; i++; continue; }
+    if (c === '/' && n === '/') {
+      blankAt(i);
+      blankAt(i + 1);
+      mode = 'line';
+      i++;
+      continue;
+    }
+    if (c === '/' && n === '*') {
+      blankAt(i);
+      blankAt(i + 1);
+      mode = 'block';
+      i++;
+      continue;
+    }
     if (c === '"' || c === "'") { quote = c; continue; }
-    out.push(i);
+    indexes.push(i);
   }
-  if (quote || mode === 'block') return null;
-  return out;
+  if (!issue && quote) issue = 'unclosed-string';
+  if (!issue && mode === 'block') issue = 'unclosed-comment';
+  return { indexes, blanked: chars.join(''), issue };
+}
+
+function codeIndexes(src: string): number[] | null {
+  const scanned = scanSource(src);
+  if (scanned.issue) return null;
+  return scanned.indexes;
+}
+
+function scanIssueMessage(issue: ScanIssue): string {
+  if (issue === 'nested-comment') return 'a block comment contains a nested /*; refusing to guess where the comment ends';
+  if (issue === 'unclosed-string') return 'a string literal is not closed';
+  return 'a block comment is not closed';
 }
 
 function splitTop(src: string, sep: string): string[] | null {
@@ -308,10 +349,6 @@ function unquote(src: string): string | null {
   }
 }
 
-function stripBlockComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '));
-}
-
 function speckText(speck: IRSpeck, ast: SpeckNode | undefined): string {
   let text = '';
   try {
@@ -319,11 +356,14 @@ function speckText(speck: IRSpeck, ast: SpeckNode | undefined): string {
   } catch {
     return '';
   }
-  text = stripBlockComments(text);
   if (ast?.startLine && ast.endLine) {
     text = text.split('\n').slice(ast.startLine - 1, ast.endLine).join('\n');
   }
-  return text.split('\n').map(stripCodeComment).join('\n');
+  const scanned = scanSource(text);
+  if (scanned.issue) {
+    throw new EffectTargetError(speck.name, `cannot read source: ${scanIssueMessage(scanned.issue)}`);
+  }
+  return scanned.blanked;
 }
 
 /** Body of the first `state` or `init` block in this speck's source. */
@@ -838,6 +878,8 @@ class Env {
   readonly rules: boolean;
   /** `old()` is a previous-state read. Rules that use it take that value as a parameter. */
   allowOld = false;
+  /** Set while a formula is being read, so a failed atom does not parse itself again. */
+  readingFormula = false;
   slot = 0;
 
   constructor(readonly ctx: Ctx, rules = false) {
@@ -921,6 +963,399 @@ function topLevelColon(src: string): number {
   return -1;
 }
 
+/** `{true, false}` and `{"a", "b"}` as a HashSet. The IR has no set-literal node. */
+function translateSetLiteral(src: string, env: Env, expected?: ET): TExpr | null {
+  const body = src.trim();
+  if (!body.startsWith('{') || !body.endsWith('}')) return null;
+  const inner = body.slice(1, -1).trim();
+  if (!inner) {
+    if (expected?.k !== 'set') return null;
+    return { code: `$$effect.HashSet.empty<${tsType(expected.elem)}>()`, t: expected };
+  }
+  if (splitTop(inner, ',')?.some((part) => part.includes(':') || part.includes('->'))) return null;
+  const parts = splitTop(inner, ',');
+  if (!parts || parts.length === 0) return null;
+  const elemExpected = expected?.k === 'set' ? expected.elem : undefined;
+  const elems: TExpr[] = [];
+  for (const part of parts) {
+    const v = translate(parseStringToIRExpr(part), env, elemExpected);
+    if (!v || v.t.k === 'unit') return null;
+    elems.push(v);
+  }
+  const elem = elems.reduce<ET>((acc, el) => (isNum(acc) && isNum(el.t) ? numJoin(acc, el.t) : acc), elems[0].t);
+  if (!elems.every((el) => sameType(el.t, elem) || (isNum(el.t) && isNum(elem)))) return null;
+  const codes = elems.map((el) => coerce(el, elem));
+  if (codes.some((c) => c == null)) return null;
+  return { code: `$$effect.HashSet.fromIterable([${codes.join(', ')}])`, t: { k: 'set', elem } };
+}
+
+type Formula =
+  | { k: 'atom'; src: string }
+  | { k: 'not'; inner: Formula }
+  | { k: 'and' | 'or' | 'implies'; left: Formula; right: Formula }
+  | { k: 'quant'; kind: 'forall' | 'exists'; name: string; domain: string; body: Formula };
+
+function skipWsAt(src: string, i: number): number {
+  while (i < src.length && /\s/.test(src[i])) i++;
+  return i;
+}
+
+function keywordAt(src: string, i: number): string | null {
+  const words = ['implies', 'forall', 'exists', 'subsetOf', 'and', 'or', 'not', 'in'];
+  for (const kw of words) {
+    if (!src.startsWith(kw, i)) continue;
+    const before = i === 0 ? '' : src[i - 1];
+    const after = src[i + kw.length] ?? '';
+    if ((before === '' || !/[\w$]/.test(before)) && !/[\w$]/.test(after)) return kw;
+  }
+  if (src.startsWith('->', i)) return '->';
+  if (src.startsWith('=>', i)) return '=>';
+  if (src.startsWith('&&', i)) return '&&';
+  if (src.startsWith('||', i)) return '||';
+  return null;
+}
+
+function scanBalanced(src: string, i: number, open: string, close: string): number {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === open) depth++;
+    else if (c === close) {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return i;
+}
+
+function scanString(src: string, i: number): number {
+  const q = src[i];
+  i++;
+  while (i < src.length) {
+    if (src[i] === '\\') { i += 2; continue; }
+    if (src[i] === q) return i + 1;
+    i++;
+  }
+  return i;
+}
+
+/** A comparison, membership, or arithmetic chain. `and` / `forall` stay outside it. */
+function readFormulaAtom(src: string, i: number): { src: string; i: number } | null {
+  const start = skipWsAt(src, i);
+  const primaryEnd = (at: number): number => {
+    at = skipWsAt(src, at);
+    if (at >= src.length) return at;
+    const c = src[at];
+    if (c === '"' || c === "'") return scanString(src, at);
+    if (c === '{') return scanBalanced(src, at, '{', '}');
+    if (c === '[') return scanBalanced(src, at, '[', ']');
+    if (c === '(') return scanBalanced(src, at, '(', ')');
+    if (!/[\w$]/.test(c)) return at;
+    let j = at;
+    while (j < src.length && /[\w$]/.test(src[j])) j++;
+    while (true) {
+      if (src[j] === '.') {
+        j++;
+        while (j < src.length && /[\w$]/.test(src[j])) j++;
+        continue;
+      }
+      if (src[j] === '[') { j = scanBalanced(src, j, '[', ']'); continue; }
+      if (src[j] === '(') { j = scanBalanced(src, j, '(', ')'); continue; }
+      break;
+    }
+    return j;
+  };
+  const infixLen = (at: number): number => {
+    const j = skipWsAt(src, at);
+    const words = ['subsetOf', 'notIn', 'in'];
+    for (const w of words) {
+      if (keywordAt(src, j) === w) return j + w.length - at;
+    }
+    const syms = ['==', '!=', '<=', '>=', '&&', '||', '<', '>', '+', '-', '*', '/', '%'];
+    for (const s of syms) {
+      if (src.startsWith(s, j)) return j + s.length - at;
+    }
+    return 0;
+  };
+  let end = primaryEnd(start);
+  if (end === start) return null;
+  while (true) {
+    const n = infixLen(end);
+    if (n === 0) break;
+    const afterOp = end + n;
+    const next = primaryEnd(afterOp);
+    if (next === skipWsAt(src, afterOp)) break;
+    end = next;
+  }
+  const text = src.slice(start, end).trim();
+  if (!text) return null;
+  return { src: text, i: end };
+}
+
+function readDomain(src: string, i: number): { src: string; i: number } | null {
+  const start = i;
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  while (i < src.length) {
+    const c = src[i];
+    if (quote) {
+      if (c === '\\') { i += 2; continue; }
+      if (c === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; i++; continue; }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ':' && depth === 0) break;
+    i++;
+  }
+  const text = src.slice(start, i).trim();
+  if (!text || src[i] !== ':') return null;
+  return { src: text, i: i + 1 };
+}
+
+function parseImpliesF(src: string, i: number): { node: Formula; i: number } | null {
+  const left = parseOrF(src, i);
+  if (!left) return null;
+  const j = skipWsAt(src, left.i);
+  const kw = keywordAt(src, j);
+  if (kw !== 'implies' && kw !== '->' && kw !== '=>') return { node: left.node, i: j };
+  const right = parseImpliesF(src, skipWsAt(src, j + kw.length));
+  if (!right) return null;
+  return { node: { k: 'implies', left: left.node, right: right.node }, i: right.i };
+}
+
+function parseOrF(src: string, i: number): { node: Formula; i: number } | null {
+  let left = parseAndF(src, i);
+  if (!left) return null;
+  while (true) {
+    const j = skipWsAt(src, left.i);
+    const kw = keywordAt(src, j);
+    if (kw !== 'or' && kw !== '||') return { node: left.node, i: j };
+    const right = parseAndF(src, skipWsAt(src, j + kw.length));
+    if (!right) return null;
+    left = { node: { k: 'or', left: left.node, right: right.node }, i: right.i };
+  }
+}
+
+function parseAndF(src: string, i: number): { node: Formula; i: number } | null {
+  let left = parseUnaryF(src, i);
+  if (!left) return null;
+  while (true) {
+    const j = skipWsAt(src, left.i);
+    const kw = keywordAt(src, j);
+    if (kw !== 'and' && kw !== '&&') return { node: left.node, i: j };
+    const right = parseUnaryF(src, skipWsAt(src, j + kw.length));
+    if (!right) return null;
+    left = { node: { k: 'and', left: left.node, right: right.node }, i: right.i };
+  }
+}
+
+function parseUnaryF(src: string, i: number): { node: Formula; i: number } | null {
+  const j = skipWsAt(src, i);
+  const kw = keywordAt(src, j);
+  if (kw === 'not') {
+    const inner = parseUnaryF(src, j + kw.length);
+    if (!inner) return null;
+    return { node: { k: 'not', inner: inner.node }, i: inner.i };
+  }
+  if (src[j] === '!' && src[j + 1] !== '=') {
+    const inner = parseUnaryF(src, j + 1);
+    if (!inner) return null;
+    return { node: { k: 'not', inner: inner.node }, i: inner.i };
+  }
+  if (src[j] === '(') {
+    const inner = parseImpliesF(src, j + 1);
+    if (!inner) return null;
+    const close = skipWsAt(src, inner.i);
+    if (src[close] !== ')') return null;
+    return { node: inner.node, i: close + 1 };
+  }
+  if (kw === 'forall' || kw === 'exists') {
+    let k = skipWsAt(src, j + kw.length);
+    const name = src.slice(k).match(/^(\w+)/);
+    if (!name) return null;
+    k = skipWsAt(src, k + name[1].length);
+    if (keywordAt(src, k) !== 'in') return null;
+    k = skipWsAt(src, k + 2);
+    const domain = readDomain(src, k);
+    if (!domain) return null;
+    // The body is the following formula, including juxtaposed comparisons.
+    // A later quantifier is a sibling conjunct, not part of this body:
+    // `forall a: P(a)` over an empty domain must not swallow the next formula.
+    const body = parseSeq(src, domain.i, true);
+    if (!body) return null;
+    return { node: { k: 'quant', kind: kw, name: name[1], domain: domain.src, body: body.node }, i: body.i };
+  }
+  const atom = readFormulaAtom(src, j);
+  if (!atom) return null;
+  return { node: { k: 'atom', src: atom.src }, i: atom.i };
+}
+
+/**
+ * Adjacent formulas are a conjunction. `stopAtQuant` keeps a quantifier
+ * body from absorbing the next `forall` / `exists`.
+ */
+function parseSeq(src: string, i: number, stopAtQuant: boolean): { node: Formula; i: number } | null {
+  let cur = parseImpliesF(src, i);
+  if (!cur) return null;
+  while (true) {
+    const j = skipWsAt(src, cur.i);
+    if (j >= src.length || src[j] === ')') return { node: cur.node, i: j };
+    const kw = keywordAt(src, j);
+    if (stopAtQuant && (kw === 'forall' || kw === 'exists')) return { node: cur.node, i: j };
+    if (kw === 'and' || kw === 'or' || kw === 'implies' || kw === '->' || kw === '=>' || kw === '&&' || kw === '||') return null;
+    const next = parseImpliesF(src, j);
+    if (!next || next.i === j) return null;
+    cur = { node: { k: 'and', left: cur.node, right: next.node }, i: next.i };
+  }
+}
+
+function parseRangeEnds(src: string): { start: string; end: string } | null {
+  const t = src.trim();
+  if (!t.startsWith('[') || !t.endsWith(']')) return null;
+  const inner = t.slice(1, -1);
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < inner.length - 1; i++) {
+    const c = inner[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (depth === 0 && c === '.' && inner[i + 1] === '.') {
+      const start = inner.slice(0, i).trim();
+      const end = inner.slice(i + 2).trim();
+      if (start && end) return { start, end };
+      return null;
+    }
+  }
+  return null;
+}
+
+function translateDomain(src: string, env: Env): { code: string; elem: ET } | null {
+  const range = parseRangeEnds(src);
+  if (range) {
+    const start = translate(parseStringToIRExpr(range.start), env, NAT);
+    const end = translate(parseStringToIRExpr(range.end), env, NAT);
+    if (!start || !end || !isNum(start.t) || !isNum(end.t)) return null;
+    const code = `Array.from({ length: Math.max(0, (${end.code}) - (${start.code}) + 1) }, (_, $$i) => (${start.code}) + $$i)`;
+    return { code, elem: NAT };
+  }
+  const dotted = src.match(/^([\s\S]+)\.(keys|values|indices)$/);
+  if (dotted) {
+    const base = translate(parseStringToIRExpr(dotted[1].trim()), env);
+    if (!base) return null;
+    if (dotted[2] === 'keys' && base.t.k === 'map') return { code: `Array.from($$effect.HashMap.keys(${base.code}))`, elem: base.t.key };
+    if (dotted[2] === 'values' && base.t.k === 'map') return { code: `Array.from($$effect.HashMap.values(${base.code}))`, elem: base.t.val };
+    if (dotted[2] === 'indices' && (base.t.k === 'list' || base.t.k === 'string')) {
+      return { code: `Array.from(${base.code}.keys())`, elem: NAT };
+    }
+    return null;
+  }
+  const base = translate(parseStringToIRExpr(src), env);
+  if (!base) return null;
+  if (base.t.k === 'list') return { code: base.code, elem: base.t.elem };
+  if (base.t.k === 'set') return { code: `Array.from($$effect.HashSet.values(${base.code}))`, elem: base.t.elem };
+  if (base.t.k === 'map') return { code: `Array.from($$effect.HashMap.keys(${base.code}))`, elem: base.t.key };
+  return null;
+}
+
+function splitWord(src: string, kw: string): [string, string] | null {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (depth === 0 && keywordAt(src, i) === kw) {
+      const left = src.slice(0, i).trim();
+      const right = src.slice(i + kw.length).trim();
+      if (left && right) return [left, right];
+      return null;
+    }
+  }
+  return null;
+}
+
+function translateSubset(leftSrc: string, rightSrc: string, env: Env): TExpr | null {
+  const left = translateDomain(leftSrc, env);
+  const right = translate(parseStringToIRExpr(rightSrc), env);
+  if (!left || !right || right.t.k !== 'set') return null;
+  const elemOk = sameType(left.elem, right.t.elem)
+    || (isNum(left.elem) && isNum(right.t.elem))
+    || (left.elem.k === 'string' && (right.t.elem.k === 'string' || right.t.elem.k === 'literal'))
+    || (left.elem.k === 'literal' && (right.t.elem.k === 'string' || right.t.elem.k === 'literal'));
+  if (!elemOk) return null;
+  const el = '$$el';
+  return {
+    code: `${left.code}.every((${el}: ${tsType(left.elem)}) => $$effect.HashSet.has(${right.code}, ${el}))`,
+    t: BOOL,
+  };
+}
+
+function evalFormula(node: Formula, env: Env): TExpr | null {
+  if (node.k === 'atom') {
+    const sub = splitWord(node.src, 'subsetOf');
+    if (sub) return translateSubset(sub[0], sub[1], env);
+    const v = translate(parseStringToIRExpr(node.src), env, BOOL);
+    return v && v.t.k === 'bool' ? v : null;
+  }
+  if (node.k === 'not') {
+    const inner = evalFormula(node.inner, env);
+    return inner && inner.t.k === 'bool' ? { code: `(!${inner.code})`, t: BOOL } : null;
+  }
+  if (node.k === 'and' || node.k === 'or' || node.k === 'implies') {
+    const left = evalFormula(node.left, env);
+    const right = evalFormula(node.right, env);
+    if (!left || !right || left.t.k !== 'bool' || right.t.k !== 'bool') return null;
+    if (node.k === 'and') return { code: `(${left.code} && ${right.code})`, t: BOOL };
+    if (node.k === 'or') return { code: `(${left.code} || ${right.code})`, t: BOOL };
+    return { code: `(!${left.code} || ${right.code})`, t: BOOL };
+  }
+  if (node.k !== 'quant') return null;
+  const domain = translateDomain(node.domain, env);
+  if (!domain) return null;
+  const js = env.declare(node.name, domain.elem);
+  const body = evalFormula(node.body, env);
+  env.locals.delete(node.name);
+  if (!body || body.t.k !== 'bool') return null;
+  const method = node.kind === 'forall' ? 'every' : 'some';
+  return { code: `${domain.code}.${method}((${js}: ${tsType(domain.elem)}) => (${body.code}))`, t: BOOL };
+}
+
+function translateFormulaSource(src: string, env: Env): TExpr | null {
+  if (env.readingFormula) return null;
+  const text = src.trim();
+  if (!text) return null;
+  env.readingFormula = true;
+  try {
+    const parsed = parseSeq(text, 0, false);
+    if (!parsed || skipWsAt(text, parsed.i) < text.length) return null;
+    return evalFormula(parsed.node, env);
+  } finally {
+    env.readingFormula = false;
+  }
+}
+
 function translate(expr: IRExpr | undefined, env: Env, expected?: ET): TExpr | null {
   if (!expr || typeof expr !== 'object' || !('kind' in expr)) return null;
   switch (expr.kind) {
@@ -928,11 +1363,17 @@ function translate(expr: IRExpr | undefined, env: Env, expected?: ET): TExpr | n
       if (expr.parseFailed || expr.value === undefined) {
         const src = expr.source?.trim() ?? '';
         if (src && env.ctx.stateVars.has(src)) return lookup(src, env);
+        const setLit = translateSetLiteral(src, env, expected);
+        if (setLit) return setLit;
         // `{0: 0}` is a map literal. The IR has no node for it, so the
         // source is replayed when the destination is a map.
         if (expected?.k === 'map') {
           const lit = translateMapLiteral(src, env, expected);
           if (lit) return lit;
+        }
+        if (!env.readingFormula) {
+          const formula = translateFormulaSource(src, env);
+          if (formula) return formula;
         }
         return null;
       }
@@ -1667,19 +2108,32 @@ function emitAction(ctx: Ctx, action: IRAction, exportName: string): ActionEmit 
   const bodyStmts = action.statements.filter((s) => s.kind !== 'postcondition');
   const probe = new Env(ctx);
   for (const p of action.params) probe.declare(p.name, resolveParam(ctx, action, p.name));
-  // Return type: first translated return, else unit.
+  // Return type: first translated return, else unit. Lets are in scope,
+  // so `let v := n - 10; return v` is a number and gets the Nat check.
   let ret: ET = { k: 'unit' };
   const findRet = (stmts: IRStmt[]): ET | undefined => {
-    for (const s of stmts) {
-      if (s.kind === 'return') {
-        if (!s.expr && !s.value) return { k: 'unit' };
-        const v = translate(s.value ?? s.expr, probe);
-        return v && v.t.k !== 'unit' ? v.t : undefined;
+    const added: string[] = [];
+    const result = ((): ET | undefined => {
+      for (const s of stmts) {
+        if (s.kind === 'let' && s.letName && !probe.locals.has(s.letName)) {
+          const bound = translate(s.value ?? s.expr, probe);
+          if (bound && bound.t.k !== 'unit') {
+            probe.declare(s.letName, bound.t);
+            added.push(s.letName);
+          }
+        }
+        if (s.kind === 'return') {
+          if (!s.expr && !s.value) return { k: 'unit' };
+          const v = translate(s.value ?? s.expr, probe);
+          return v && v.t.k !== 'unit' ? v.t : undefined;
+        }
+        const nested = findRet(s.thenBlock ?? []) ?? findRet(s.elseBlock ?? []);
+        if (nested) return nested;
       }
-      const nested = findRet(s.thenBlock ?? []) ?? findRet(s.elseBlock ?? []);
-      if (nested) return nested;
-    }
-    return undefined;
+      return undefined;
+    })();
+    for (const name of added) probe.locals.delete(name);
+    return result;
   };
   const found = findRet(bodyStmts);
   if (found) ret = found;
