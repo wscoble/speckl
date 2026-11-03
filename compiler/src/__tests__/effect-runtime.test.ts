@@ -758,4 +758,102 @@ console.log("RESULT " + JSON.stringify(value));
 `);
     expect(result).toEqual({ ok: 'Right', has3: true, bad: 'InvariantViolated', still3: true, has10: false, turn: 'Right', flag: true });
   });
+
+  it('restores an outer quantifier binding shadowed by an inner one', () => {
+    const root = generate(`
+speck Shadow {
+  state { xs: Set(Nat), ys: Set(Nat) }
+  init {
+    xs := emptySet()
+    ys := emptySet()
+  }
+  invariant Both { forall x in xs: (forall x in ys: x > 0) and x > 10 }
+  action AddX(v: Nat) {
+    xs := xs union {v}
+    return v
+  }
+  action AddY(v: Nat) {
+    ys := ys union {v}
+    return v
+  }
+}
+`);
+    const src = readFileSync(join(root, 'out', 'Shadow', 'src', 'index.ts'), 'utf-8');
+    expect(src).not.toContain('untranslated invariant: Both');
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import { HashSet } from "effect";
+import * as M from "./out/Shadow/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.ShadowCapability;
+  const y = yield* Effect.Effect.either(svc.addY(1));
+  const x = yield* Effect.Effect.either(svc.addX(11));
+  const mid = yield* svc.getState;
+  const bad = yield* Effect.Effect.either(svc.addX(5));
+  const end = yield* svc.getState;
+  return {
+    y: y._tag,
+    x: x._tag,
+    has11: HashSet.has(mid.xs, 11),
+    bad: bad._tag === "Left" ? bad.left._tag : "ok",
+    still11: HashSet.has(end.xs, 11),
+    has5: HashSet.has(end.xs, 5),
+  };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.shadowLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({ y: 'Right', x: 'Right', has11: true, bad: 'InvariantViolated', still11: true, has5: false });
+  });
+
+  it('keeps a missing map key and a bad list index on the typed channel', () => {
+    const root = generate(`
+speck Miss {
+  state { accounts: Set(Nat), balances: Map(Nat, Nat), xs: List(Nat) }
+  init {
+    accounts := emptySet()
+    balances := emptyMap()
+    xs := emptyList()
+  }
+  invariant NonNeg { forall id in accounts: balances[id] >= 0 }
+  action Open(id: Nat) {
+    accounts := accounts union {id}
+    return id
+  }
+  action Read(id: Nat): Nat {
+    return balances[id]
+  }
+  action At(i: Nat): Nat {
+    return xs[i]
+  }
+  action Need(id: Nat): Nat {
+    require balances[id] >= 0
+    return balances[id]
+  }
+}
+`);
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import { HashSet } from "effect";
+import * as M from "./out/Miss/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.MissCapability;
+  const open = yield* Effect.Effect.either(svc.open(1));
+  const afterOpen = yield* svc.getState;
+  const read = yield* Effect.Effect.either(svc.read(1));
+  const at = yield* Effect.Effect.either(svc.at(0));
+  const need = yield* Effect.Effect.either(svc.need(1));
+  return {
+    open: open._tag === "Left" ? open.left._tag : "ok",
+    accounts: HashSet.size(afterOpen.accounts),
+    read: read._tag === "Left" ? read.left._tag : "ok",
+    at: at._tag === "Left" ? at.left._tag : "ok",
+    need: need._tag === "Left" ? need.left._tag : "ok",
+  };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.missLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({ open: 'InvariantViolated', accounts: 0, read: 'IndexOutOfRange', at: 'IndexOutOfRange', need: 'GuardFailed' });
+  });
 });

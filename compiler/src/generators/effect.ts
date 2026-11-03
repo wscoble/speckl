@@ -880,6 +880,8 @@ class Env {
   allowOld = false;
   /** Set while a formula is being read, so a failed atom does not parse itself again. */
   readingFormula = false;
+  /** When set, map and list reads report a miss on `$$lookup` instead of throwing. */
+  trackLookup = false;
   slot = 0;
 
   constructor(readonly ctx: Ctx, rules = false) {
@@ -1334,9 +1336,11 @@ function evalFormula(node: Formula, env: Env): TExpr | null {
   if (node.k !== 'quant') return null;
   const domain = translateDomain(node.domain, env);
   if (!domain) return null;
+  const previous = env.locals.get(node.name);
   const js = env.declare(node.name, domain.elem);
   const body = evalFormula(node.body, env);
-  env.locals.delete(node.name);
+  if (previous) env.locals.set(node.name, previous);
+  else env.locals.delete(node.name);
   if (!body || body.t.k !== 'bool') return null;
   const method = node.kind === 'forall' ? 'every' : 'some';
   return { code: `${domain.code}.${method}((${js}: ${tsType(domain.elem)}) => (${body.code}))`, t: BOOL };
@@ -1460,14 +1464,30 @@ function translateIndex(target: IRExpr, index: IRExpr, env: Env): TExpr | null {
     if (!key || !sameType(key.t, obj.t.key) && !(isNum(key.t) && isNum(obj.t.key))) return null;
     const k = coerce(key, obj.t.key);
     if (k == null) return null;
-    return { code: `$$specklMapGet(${obj.code}, ${k})`, t: obj.t.val };
+    return { code: `$$specklMapGet(${obj.code}, ${k}${lookupArg(env)})`, t: obj.t.val };
   }
   if (obj.t.k === 'list') {
     const i = translate(index, env, NAT);
     if (!i || !isNum(i.t)) return null;
-    return { code: `$$specklListGet(${obj.code}, ${i.code})`, t: obj.t.elem };
+    return { code: `$$specklListGet(${obj.code}, ${i.code}${lookupArg(env)})`, t: obj.t.elem };
   }
   return null;
+}
+
+function lookupArg(env: Env): string {
+  return env.trackLookup ? ', $$lookup' : '';
+}
+
+/** A boolean check that also fails when a map or list read missed. The formula runs first, so a miss is visible. */
+function lookupGuard(hold: string, cond: string, cls: string, fields: Record<string, string>): string[] {
+  const detail = fields.detail;
+  const rest = { ...fields, detail: `$$lookup.failed ? $$lookup.detail : ${detail}` };
+  return [
+    `const ${hold} = (${cond});`,
+    `if ($$lookup.failed || !(${hold})) {`,
+    `  return ${failExpr(cls, rest)};`,
+    `}`,
+  ];
 }
 
 function translateUnop(op: string, operand: IRExpr, env: Env): TExpr | null {
@@ -1753,6 +1773,18 @@ function containsConstrained(env: Env, t: ET, seen = new Set<string>()): boolean
   return false;
 }
 
+/** After a read, a miss fails on the typed channel before a stand-in value is range-checked. */
+function lookupBail(env: Env, code: string, where: string, errors: Set<string>): string[] {
+  if (!env.trackLookup) return [];
+  if (!code.includes('$$specklMapGet') && !code.includes('$$specklListGet')) return [];
+  errors.add(ERRORS.index);
+  return [
+    `if ($$lookup.failed) {`,
+    `  return ${failExpr(ERRORS.index, { action: JSON.stringify(where), detail: '$$lookup.detail' })};`,
+    `}`,
+  ];
+}
+
 /** A Nat/Int/Real write that misses the schema filter fails the effect instead of being stored. */
 function constrain(env: Env, t: ET, code: string, where: string, errors: Set<string>): { lines: string[]; value: string } {
   const kind = numericKind(t);
@@ -1767,6 +1799,7 @@ function constrain(env: Env, t: ET, code: string, where: string, errors: Set<str
   return {
     lines: [
       `const ${id} = ${code};`,
+      ...lookupBail(env, code, where, errors),
       `if (${pred}) return ${failExpr(ERRORS.schema, { where: JSON.stringify(where), detail: JSON.stringify(`not a ${kind === 'nat' ? 'Nat' : kind === 'int' ? 'Int' : 'Real'}`) })};`,
     ],
     value: id,
@@ -1782,7 +1815,7 @@ function constrainStored(env: Env, t: ET, code: string, where: string, errors: S
   if (code.trim() === 'null' || !containsConstrained(env, t)) return { lines: [], value: code };
   if (numericKind(t)) return constrain(env, t, code, where, errors);
   const id = env.fresh('col');
-  return { lines: [`const ${id} = ${code};`, ...checkStored(env, t, id, where, errors, new Set())], value: id };
+  return { lines: [`const ${id} = ${code};`, ...lookupBail(env, code, where, errors), ...checkStored(env, t, id, where, errors, new Set())], value: id };
 }
 
 function checkStored(env: Env, t: ET, id: string, where: string, errors: Set<string>, seen: Set<string>): string[] {
@@ -1994,9 +2027,7 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
       return {
         lines: [
           `// ${stmt.kind}: ${jsDoc(src)}`,
-          `if (!(${c.code})) {`,
-          `  return ${failExpr(cls, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) })};`,
-          `}`,
+          ...lookupGuard(env.fresh('hold'), c.code, cls, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) }),
         ],
         returned: false,
         errors,
@@ -2085,9 +2116,7 @@ function postLines(posts: IRStmt[], env: Env, action: string): { lines: string[]
     }
     errors.add(ERRORS.post);
     lines.push(
-      `if (!(${c.code})) {`,
-      `  return ${failExpr(ERRORS.post, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) })};`,
-      `}`,
+      ...lookupGuard(env.fresh('hold'), c.code, ERRORS.post, { action: JSON.stringify(action), detail: JSON.stringify(oneLine(src)) }),
     );
   }
   return { lines, errors };
@@ -2140,6 +2169,7 @@ function emitAction(ctx: Ctx, action: IRAction, exportName: string): ActionEmit 
 
   const withPosts = new Env(ctx);
   withPosts.allowOld = true;
+  withPosts.trackLookup = true;
   const params = action.params.map((p) => {
     const t = resolveParam(ctx, action, p.name);
     const js = withPosts.declare(p.name, t);
@@ -2265,6 +2295,7 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
   }
   const env = new Env(ctx, true);
   env.allowOld = true;
+  env.trackLookup = true;
   if (temporal === 'eventually' || temporal === 'other') {
     return {
       exportName,
@@ -2321,9 +2352,7 @@ function emitRule(ctx: Ctx, exportName: string, specName: string, expr: IRExpr, 
     errors: [ERRORS.inv],
     body: [
       `// ${jsDoc(source)}`,
-      `if (!(${v.code})) {`,
-      `  return ${failExpr(ERRORS.inv, { name: JSON.stringify(specName || exportName), detail: JSON.stringify(oneLine(source)) })};`,
-      `}`,
+      ...lookupGuard(env.fresh('hold'), v.code, ERRORS.inv, { name: JSON.stringify(specName || exportName), detail: JSON.stringify(oneLine(source)) }),
     ],
   };
 }
@@ -2732,17 +2761,31 @@ const $$specklEqual = (left: unknown, right: unknown): boolean => {
 
 const $$specklIncludes = <A>(list: ReadonlyArray<A>, item: A): boolean => list.some((candidate) => $$specklEqual(candidate, item));
 
-/** A missing key is a defect: an expression has no typed error channel to fail into. */
-const $$specklMapGet = <K, V>(map: $$effect.HashMap.HashMap<K, V>, key: K): V => {
+/**
+ * A miss is recorded on \`miss\` and a stand-in is returned, so the caller
+ * can fail the Effect on its typed channel. Without \`miss\` the read still
+ * throws: there is no channel to fail into.
+ */
+const $$specklMapGet = <K, V>(map: $$effect.HashMap.HashMap<K, V>, key: K, miss?: { failed: boolean; detail: string }): V => {
   const got = $$effect.HashMap.get(map, key);
   if ($$effect.Option.isNone(got)) {
+    if (miss) {
+      miss.failed = true;
+      miss.detail = "missing map key";
+      return undefined as V;
+    }
     throw new Error("SPECKL: missing map key");
   }
   return got.value;
 };
 
-const $$specklListGet = <A>(list: ReadonlyArray<A>, index: number): A => {
+const $$specklListGet = <A>(list: ReadonlyArray<A>, index: number, miss?: { failed: boolean; detail: string }): A => {
   if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+    if (miss) {
+      miss.failed = true;
+      miss.detail = "list index out of range";
+      return undefined as A;
+    }
     throw new Error("SPECKL: list index out of range");
   }
   return list[index];
@@ -2856,6 +2899,7 @@ function stateReads(expr: IRExpr | undefined, names: Set<string>, out: Set<strin
 
 function emitBoot(ctx: Ctx, stateName: string, machineName: string): string {
   const env = new Env(ctx);
+  env.trackLookup = true;
   const failures: string[] = [];
   const names = new Set(ctx.stateVars.keys());
   const fromSource = ctx.sourceInits;
@@ -2907,10 +2951,17 @@ function emitBoot(ctx: Ctx, stateName: string, machineName: string): string {
     lines.push(...failures.map((f) => `// SPECKL-UNTRANSLATED: ${jsDoc(f)}`));
     lines.push(`return ${failExpr(ERRORS.bad, { where: JSON.stringify('init'), detail: JSON.stringify(detail) })};`);
   }
+  const usesLookup = writes.some((line) => line.includes('$$specklMapGet') || line.includes('$$specklListGet'));
+  lines.push(`const $$lookup: { failed: boolean; detail: string } = { failed: false, detail: "" };`);
   lines.push(`let $$state: ${stateName} = { ${literal.join(', ')} };`);
   lines.push(...writes);
+  if (usesLookup) {
+    lines.push(`if ($$lookup.failed) {`);
+    lines.push(`  return ${failExpr(ERRORS.index, { action: JSON.stringify('init'), detail: '$$lookup.detail' })};`);
+    lines.push(`}`);
+  }
   lines.push(`return { state: $$state, decisionLog: [] };`);
-  const errs = [failures.length > 0 ? '$$Untranslated' : '', schema ? '$$SchemaViolation' : ''].filter(Boolean);
+  const errs = [failures.length > 0 ? '$$Untranslated' : '', schema ? '$$SchemaViolation' : '', usesLookup ? '$$IndexOutOfRange' : ''].filter(Boolean);
   ctx.bootErr = errs.length > 0 ? errs.join(' | ') : 'never';
   return `/** A machine in its initial state. An initializer that cannot be translated fails the effect. \`name == expr\` is an initializer. */
 export const $$boot: $$effect.Effect.Effect<${machineName}, ${ctx.bootErr}> = $$effect.Effect.gen(function* () {
@@ -2920,18 +2971,31 @@ export const $$boot: $$effect.Effect.Effect<${machineName}, ${ctx.bootErr}> = $$
 
 function emitActionFn(ctx: Ctx, action: ActionEmit, machine: string, decision: string, guards: string[]): string {
   const params = [`$$machine: ${machine}`, ...action.params.map((p) => `${p.js}: ${tsType(p.t)}`)];
-  const errParts = [...action.errors];
-  if (guards.length > 0 && !errParts.includes(ERRORS.inv)) errParts.push(ERRORS.inv);
-  const err = errParts.length > 0 ? errParts.join(' | ') : 'never';
+  if (guards.length > 0 && !action.errors.includes(ERRORS.inv)) action.errors.push(ERRORS.inv);
   const retTs = action.ret.k === 'unit' ? 'undefined' : tsType(action.ret);
   const bodyLines = action.body.flatMap((line) => (
     line.startsWith('return { state: $$state') ? [...guards, line] : [line]
   ));
+  const usesLookup = bodyLines.some((line) => line.includes('$$specklMapGet') || line.includes('$$specklListGet'));
+  if (usesLookup && !action.errors.includes(ERRORS.index)) action.errors.push(ERRORS.index);
+  const errParts = [...action.errors];
+  const err = errParts.length > 0 ? errParts.join(' | ') : 'never';
+  const checked = bodyLines.flatMap((line) => (
+    usesLookup && line.startsWith('return { state: $$state')
+      ? [
+        `if ($$lookup.failed) {`,
+        `  return ${failExpr(ERRORS.index, { action: JSON.stringify(action.name), detail: '$$lookup.detail' })};`,
+        `}`,
+        line,
+      ]
+      : [line]
+  ));
   const body = [
+    `const $$lookup: { failed: boolean; detail: string } = { failed: false, detail: "" };`,
     `const $$specklOld = { ...$$machine.state };`,
     `let $$state = { ...$$machine.state };`,
     `let $$log = $$machine.decisionLog;`,
-    ...bodyLines,
+    ...checked,
   ];
   void ctx;
   return `/** Decision ${jsDoc(action.name)}. */
@@ -2948,6 +3012,7 @@ function emitRuleFn(ctx: Ctx, rule: RuleEmit, stateName: string, inputName: stri
   if (outputName) params.push(`$$output: ${outputName}`);
   const err = rule.errors.join(' | ') || 'never';
   const body = [
+    `const $$lookup: { failed: boolean; detail: string } = { failed: false, detail: "" };`,
     `const $$state = machine.state;`,
     ...rule.body,
   ];
