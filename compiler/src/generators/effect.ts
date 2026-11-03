@@ -237,21 +237,51 @@ function jsDoc(s: string): string {
 // Type parsing (AST + source aliases the parser drops)
 // ─────────────────────────────────────────────────────────────────────
 
-function splitTop(src: string, sep: string): string[] | null {
-  const parts: string[] = [];
-  let start = 0;
-  let depth = 0;
-  let brace = 0;
-  let bracket = 0;
+/**
+ * Indexes of characters that are code: not inside a string, a `//` comment,
+ * or a block comment. Braces, commas, and `:=` are read from this list so a
+ * `}` inside `"a}b"` or a comment cannot close a block. `null` means a
+ * string or block comment was never closed.
+ */
+function codeIndexes(src: string): number[] | null {
+  const out: number[] = [];
   let quote: '"' | "'" | null = null;
+  let mode: 'code' | 'line' | 'block' = 'code';
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
+    const n = src[i + 1];
+    if (mode === 'line') {
+      if (c === '\n') mode = 'code';
+      continue;
+    }
+    if (mode === 'block') {
+      if (c === '*' && n === '/') { mode = 'code'; i++; }
+      continue;
+    }
     if (quote) {
       if (c === '\\') { i++; continue; }
       if (c === quote) quote = null;
       continue;
     }
+    if (c === '/' && n === '/') { mode = 'line'; i++; continue; }
+    if (c === '/' && n === '*') { mode = 'block'; i++; continue; }
     if (c === '"' || c === "'") { quote = c; continue; }
+    out.push(i);
+  }
+  if (quote || mode === 'block') return null;
+  return out;
+}
+
+function splitTop(src: string, sep: string): string[] | null {
+  const idxs = codeIndexes(src);
+  if (!idxs) return null;
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let brace = 0;
+  let bracket = 0;
+  for (const i of idxs) {
+    const c = src[i];
     if (c === '(' || c === '<') depth++;
     else if (c === ')' || c === '>') depth--;
     else if (c === '{') brace++;
@@ -260,11 +290,10 @@ function splitTop(src: string, sep: string): string[] | null {
     else if (c === ']') bracket--;
     else if (depth === 0 && brace === 0 && bracket === 0 && src.startsWith(sep, i)) {
       parts.push(src.slice(start, i).trim());
-      i += sep.length - 1;
-      start = i + 1;
+      start = i + sep.length;
     }
   }
-  if (quote || depth !== 0 || brace !== 0 || bracket !== 0) return null;
+  if (depth !== 0 || brace !== 0 || bracket !== 0) return null;
   parts.push(src.slice(start).trim());
   return parts;
 }
@@ -299,34 +328,37 @@ function speckText(speck: IRSpeck, ast: SpeckNode | undefined): string {
 
 /** Body of the first `state` or `init` block in this speck's source. */
 function extractBlock(source: string, keyword: 'state' | 'init'): string | null {
-  const re = new RegExp(`(?:^|\\n)\\s*${keyword}\\s*(?::\\s*)?\\{`);
-  const m = re.exec(source);
-  if (!m) return null;
+  const idxs = codeIndexes(source);
+  if (!idxs) return null;
+  const code = new Set(idxs);
+  const re = new RegExp(`(?:^|\\n)([ \\t]*)${keyword}\\s*(?::\\s*)?\\{`, 'g');
+  let open = -1;
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    const kw = m.index + (source[m.index] === '\n' ? 1 : 0) + m[1].length;
+    const braceAt = m.index + m[0].length - 1;
+    if (code.has(kw) && code.has(braceAt)) { open = braceAt + 1; break; }
+  }
+  if (open < 0) return null;
   let depth = 1;
-  for (let i = m.index + m[0].length; i < source.length; i++) {
-    const c = source[i];
-    if (c === '{') depth++;
-    else if (c === '}') {
+  for (const i of idxs) {
+    if (i < open) continue;
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
       depth--;
-      if (depth === 0) return source.slice(m.index + m[0].length, i);
+      if (depth === 0) return source.slice(open, i);
     }
   }
   return null;
 }
 
 function stripInitializer(src: string): string {
+  const idxs = codeIndexes(src);
+  if (!idxs) return src.trim().replace(/,\s*$/, '');
   let depth = 0;
   let brace = 0;
   let bracket = 0;
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < src.length; i++) {
+  for (const i of idxs) {
     const c = src[i];
-    if (quote) {
-      if (c === '\\') { i++; continue; }
-      if (c === quote) quote = null;
-      continue;
-    }
-    if (c === '"' || c === "'") { quote = c; continue; }
     if (c === '(' || c === '<') depth++;
     else if (c === ')' || c === '>') depth--;
     else if (c === '{') brace++;
@@ -877,19 +909,14 @@ function translateMapKey(src: string, env: Env, keyT: ET): TExpr | null {
 }
 
 function topLevelColon(src: string): number {
+  const idxs = codeIndexes(src);
+  if (!idxs) return -1;
   let depth = 0;
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < src.length; i++) {
+  for (const i of idxs) {
     const c = src[i];
-    if (quote) {
-      if (c === '\\') { i++; continue; }
-      if (c === quote) quote = null;
-      continue;
-    }
-    if (c === '"' || c === "'") { quote = c; continue; }
     if (c === '(' || c === '[' || c === '{') depth++;
     else if (c === ')' || c === ']' || c === '}') depth--;
-    else if (c === ':' && depth === 0) return i;
+    else if (c === ':' && depth === 0 && src[i + 1] !== '=') return i;
   }
   return -1;
 }
@@ -1270,6 +1297,21 @@ function numericKind(t: ET): 'nat' | 'int' | 'real' | null {
   return null;
 }
 
+function containsConstrained(env: Env, t: ET, seen = new Set<string>()): boolean {
+  if (numericKind(t)) return true;
+  if (t.k === 'nullable') return containsConstrained(env, t.inner, seen);
+  if (t.k === 'list' || t.k === 'set') return containsConstrained(env, t.elem, seen);
+  if (t.k === 'map') return containsConstrained(env, t.key, seen) || containsConstrained(env, t.val, seen);
+  if (t.k === 'union') return t.members.some((m) => containsConstrained(env, m, seen));
+  if (t.k === 'record') {
+    if (seen.has(t.name)) return false;
+    const next = new Set(seen);
+    next.add(t.name);
+    return (env.ctx.records.get(t.name) ?? []).some((f) => containsConstrained(env, f.type, next));
+  }
+  return false;
+}
+
 /** A Nat/Int/Real write that misses the schema filter fails the effect instead of being stored. */
 function constrain(env: Env, t: ET, code: string, where: string, errors: Set<string>): { lines: string[]; value: string } {
   const kind = numericKind(t);
@@ -1288,6 +1330,79 @@ function constrain(env: Env, t: ET, code: string, where: string, errors: Set<str
     ],
     value: id,
   };
+}
+
+/**
+ * A value stored into a List, Set, Map, or record is checked at every
+ * numeric leaf. Assigning the collection itself is not enough: `append`
+ * and a local map copy would otherwise carry a negative Nat in.
+ */
+function constrainStored(env: Env, t: ET, code: string, where: string, errors: Set<string>): { lines: string[]; value: string } {
+  if (code.trim() === 'null' || !containsConstrained(env, t)) return { lines: [], value: code };
+  if (numericKind(t)) return constrain(env, t, code, where, errors);
+  const id = env.fresh('col');
+  return { lines: [`const ${id} = ${code};`, ...checkStored(env, t, id, where, errors, new Set())], value: id };
+}
+
+function checkStored(env: Env, t: ET, id: string, where: string, errors: Set<string>, seen: Set<string>): string[] {
+  const kind = numericKind(t);
+  if (kind) return constrain(env, t, id, where, errors).lines;
+  if (t.k === 'nullable') {
+    if (!containsConstrained(env, t.inner, seen)) return [];
+    // A fresh binding with an assertion stays non-null even in code that
+    // follows an earlier return, where control-flow narrowing does not.
+    const nn = env.fresh('nn');
+    const inner = checkStored(env, t.inner, nn, where, errors, seen);
+    if (inner.length === 0) return [];
+    return [
+      `if (${id} != null) {`,
+      `  const ${nn} = ${id} as Exclude<typeof ${id}, null | undefined>;`,
+      ...inner.map((l) => `  ${l}`),
+      `}`,
+    ];
+  }
+  if (t.k === 'list' || t.k === 'set') {
+    if (!containsConstrained(env, t.elem)) return [];
+    const item = env.fresh('item');
+    const iter = t.k === 'list' ? id : `$$effect.HashSet.values(${id})`;
+    const inner = checkStored(env, t.elem, item, `${where}[]`, errors, seen);
+    return [`for (const ${item} of ${iter}) {`, ...inner.map((l) => `  ${l}`), `}`];
+  }
+  if (t.k === 'map') {
+    const lines: string[] = [];
+    if (containsConstrained(env, t.key)) {
+      const item = env.fresh('key');
+      const inner = checkStored(env, t.key, item, `${where} key`, errors, seen);
+      lines.push(`for (const ${item} of $$effect.HashMap.keys(${id})) {`, ...inner.map((l) => `  ${l}`), `}`);
+    }
+    if (containsConstrained(env, t.val)) {
+      const item = env.fresh('val');
+      const inner = checkStored(env, t.val, item, `${where} value`, errors, seen);
+      lines.push(`for (const ${item} of $$effect.HashMap.values(${id})) {`, ...inner.map((l) => `  ${l}`), `}`);
+    }
+    return lines;
+  }
+  if (t.k === 'record') {
+    if (seen.has(t.name)) return [];
+    const next = new Set(seen);
+    next.add(t.name);
+    const lines: string[] = [];
+    for (const f of env.ctx.records.get(t.name) ?? []) {
+      if (!containsConstrained(env, f.type, next)) continue;
+      const item = env.fresh('fld');
+      lines.push(`const ${item} = ${propRead(id, f.name)};`);
+      lines.push(...checkStored(env, f.type, item, `${where}.${f.name}`, errors, next));
+    }
+    return lines;
+  }
+  if (t.k === 'union') {
+    const numeric = t.members.map((m) => numericKind(m)).filter((k): k is 'nat' | 'int' | 'real' => k != null);
+    if (numeric.length === 0) return [];
+    const strict: 'nat' | 'int' | 'real' = numeric.includes('nat') ? 'nat' : numeric.includes('int') ? 'int' : 'real';
+    const inner = constrain(env, { k: strict }, id, where, errors).lines;
+    return [`if (typeof ${id} === "number") {`, ...inner.map((l) => `  ${l}`), `}`];
+  }
+  return [];
 }
 
 function failExpr(cls: string, fields: Record<string, string>): string {
@@ -1317,6 +1432,40 @@ function translateStmts(stmts: IRStmt[], env: Env, action: string, ret: ET | und
   return { lines, returned, errors };
 }
 
+function nestUpdate(base: string, fields: string[], value: string): string {
+  if (fields.length === 0) return value;
+  const [head, ...rest] = fields;
+  return `{ ...${base}, ${propKey(head)}: ${nestUpdate(propRead(base, head), rest, value)} }`;
+}
+
+/** `box.n := v` updates the record and checks a Nat field before it is stored. */
+function assignDotted(path: string, value: IRExpr, env: Env, errors: Set<string>): StmtOut | null {
+  const parts = path.split('.').filter(Boolean);
+  if (parts.length === 0) return null;
+  const rootName = parts[0];
+  const local = env.locals.get(rootName);
+  const stateT = env.ctx.stateVars.get(rootName);
+  const rootT = local?.t ?? stateT;
+  if (!rootT) return null;
+  let t: ET = rootT;
+  for (const field of parts.slice(1)) {
+    if (t.k !== 'record') return null;
+    const found = env.ctx.records.get(t.name)?.find((x) => x.name === field);
+    if (!found) return null;
+    t = found.type;
+  }
+  const translated = translate(value, env, t);
+  const code = translated && coerce(translated, t);
+  if (code == null) return null;
+  const held = constrainStored(env, t, code, path, errors);
+  const lines = [...held.lines];
+  if (local && parts.length === 1) lines.push(`${local.js} = ${held.value};`);
+  else if (local) lines.push(`${local.js} = ${nestUpdate(local.js, parts.slice(1), held.value)};`);
+  else if (parts.length === 1) lines.push(`$$state = { ...$$state, ${propKey(rootName)}: ${held.value} };`);
+  else lines.push(`$$state = { ...$$state, ${propKey(rootName)}: ${nestUpdate(propRead('$$state', rootName), parts.slice(1), held.value)} };`);
+  return { lines, returned: false, errors };
+}
+
 function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefined): StmtOut {
   const errors = new Set<string>();
   const bad = (source: string): StmtOut => {
@@ -1338,10 +1487,12 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
           const k = key && coerce(key, base.t.key);
           const v = val && coerce(val, base.t.val);
           if (k == null || v == null) return bad(stmtSource(stmt));
+          const held = constrainStored(env, base.t.val, v, `${baseName}[:]`, errors);
           const local = env.locals.get(baseName);
-          if (local) return { lines: [`${local.js} = $$effect.HashMap.set(${local.js}, ${k}, ${v});`], returned: false, errors };
-          const held = constrain(env, base.t.val, v, `${baseName}[:]`, errors);
-          return { lines: [...held.lines, `$$state = { ...$$state, ${propKey(baseName)}: $$effect.HashMap.set(${propRead('$$state', baseName)}, ${k}, ${held.value}) };`], returned: false, errors };
+          const mapBase = local ? local.js : propRead('$$state', baseName);
+          const next = `$$effect.HashMap.set(${mapBase}, ${k}, ${held.value})`;
+          if (local) return { lines: [...held.lines, `${local.js} = ${next};`], returned: false, errors };
+          return { lines: [...held.lines, `$$state = { ...$$state, ${propKey(baseName)}: ${next} };`], returned: false, errors };
         }
         if (base.t.k === 'list') {
           const index = translate(stmt.targetIndex, env, NAT);
@@ -1352,7 +1503,7 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
           const slot = env.fresh('idx');
           const next = env.fresh('next');
           const src = JSON.stringify(oneLine(stmtSource(stmt)));
-          const held = constrain(env, base.t.elem, v, `${baseName}[${index.code}]`, errors);
+          const held = constrainStored(env, base.t.elem, v, `${baseName}[${index.code}]`, errors);
           const lines = [
             ...held.lines,
             `const ${slot} = ${index.code};`,
@@ -1370,6 +1521,9 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
         return bad(stmtSource(stmt));
       }
       const targetName = stmt.target.startsWith('this.') ? stmt.target.slice(5) : stmt.target;
+      if (targetName.includes('.')) {
+        return assignDotted(targetName.replace(/^this\./, ''), value, env, errors) ?? bad(stmtSource(stmt));
+      }
       const fromState = stmt.target.startsWith('this.');
       const local = fromState ? undefined : env.locals.get(targetName);
       const stateT = env.ctx.stateVars.get(targetName);
@@ -1378,7 +1532,7 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
       const v = translate(value, env, dest.t);
       const code = v && coerce(v, dest.t);
       if (code == null) return bad(stmtSource(stmt));
-      const held = constrain(env, dest.t, code, targetName, errors);
+      const held = constrainStored(env, dest.t, code, targetName, errors);
       if (!dest.state) return { lines: [...held.lines, `${dest.js} = ${held.value};`], returned: false, errors };
       return { lines: [...held.lines, `$$state = { ...$$state, ${dest.js}: ${held.value} };`], returned: false, errors };
     }
@@ -1445,20 +1599,19 @@ function translateStmt(stmt: IRStmt, env: Env, action: string, ret: ET | undefin
           valueCode = v.code;
         }
       } else if (ret && ret.k !== 'unit') return bad(stmtSource(stmt));
+      const held = ret ? constrainStored(env, ret, valueCode, 'return', errors) : { lines: [] as string[], value: valueCode };
       return {
-        lines: [`return { state: $$state, decisionLog: $$log, value: ${valueCode} };`],
+        lines: [...held.lines, `return { state: $$state, decisionLog: $$log, value: ${held.value} };`],
         returned: true,
         errors,
       };
     }
     case 'if': {
-      const dotted = stmt.raw?.match(/^this\.(\w+)\s*:=\s*([\s\S]+)$/);
-      if (dotted) {
-        return translateStmt({
-          kind: 'assign',
-          target: `this.${dotted[1]}`,
-          value: parseStringToIRExpr(dotted[2].trim()),
-        }, env, action, ret);
+      const dotted = stmt.raw?.match(/^(?:this\.)?((?:\w+\.)*\w+)\s*:=\s*([\s\S]+)$/);
+      if (dotted && !dotted[1].includes('[')) {
+        const written = assignDotted(dotted[1], parseStringToIRExpr(dotted[2].trim()), env, errors);
+        if (written) return written;
+        return bad(stmt.raw ?? stmtSource(stmt));
       }
       if (stmt.raw || !value || !stmt.thenBlock) return bad(stmt.raw ?? stmtSource(stmt));
       const c = translate(value, env, BOOL);
@@ -1984,6 +2137,18 @@ function emitModule(speck: IRSpeck, ast: SpeckNode | undefined): string {
   sections.push(emitEventUnion(ctx, eventName));
   sections.push(emitMachineTypes(machineName, stateName, eventName, decisionName));
   sections.push(emitBoot(ctx, stateName, machineName));
+  const skippedInvariants = rules.filter((r) => r.kind === 'invariant' && r.errors.includes(ERRORS.bad));
+  if (skippedInvariants.length > 0) {
+    // forall and the other untranslated forms are used by the shipped
+    // examples, so generation still succeeds. An action must not commit
+    // while one of those invariants was skipped.
+    const detail = JSON.stringify(`untranslated invariant: ${skippedInvariants.map((r) => r.specName).join(', ')}`);
+    const line = `return ${failExpr(ERRORS.bad, { where: JSON.stringify('invariant'), detail })};`;
+    for (const a of actions) {
+      a.body.unshift('// An invariant could not be translated, so this action cannot commit.', line);
+      if (!a.errors.includes(ERRORS.bad)) a.errors.push(ERRORS.bad);
+    }
+  }
   const guards = rules
     .filter((r) => r.kind === 'invariant' && !r.errors.includes(ERRORS.bad))
     .map((r) => `yield* ${r.exportName}({ state: $$state }${r.needsOld ? ', $$specklOld' : ''});`);

@@ -287,7 +287,7 @@ const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|precondition:|postcondi
  * statement only at depth 0, outside strings, and only once the text before
  * it is already a finished statement.
  */
-function splitSameLineStatements(line: string): string[] {
+export function splitSameLineStatements(line: string): string[] {
   const parts: string[] = [];
   let start = 0;
   let depth = 0;
@@ -319,13 +319,15 @@ function splitSameLineStatements(line: string): string[] {
 }
 
 function statementClosed(text: string): boolean {
+  // `let x :=` has no right-hand side yet. `... } else` is waiting for the other branch.
+  if (/:=\s*$/.test(text) || /\belse\s*$/.test(text)) return false;
   const assign = text.match(/^(?:let\s+[\w.]+\s*:=\s*|[\w.]+(?:\[[^\]]*\])?\s*:=\s*)([\s\S]+)$/);
   if (assign) return !exprLooksIncomplete(assign[1]);
   const kw = text.match(/^(?:return|require|emit|if|forall)\b\s*([\s\S]*)$/);
   if (kw) return kw[1].trim().length > 0 && !exprLooksIncomplete(kw[1]);
   const pre = text.match(/^(?:precondition|postcondition):\s*([\s\S]+)$/);
   if (pre) return !exprLooksIncomplete(pre[1]);
-  return !exprLooksIncomplete(text);
+  return false;
 }
 
 function collectExpression(lines: string[], startIdx: number, prefixLen: number, continuationPfx: string): CollectResult {

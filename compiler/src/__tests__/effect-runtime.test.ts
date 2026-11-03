@@ -452,4 +452,176 @@ console.log("RESULT " + JSON.stringify(value));
 `);
     expect(result).toEqual({ a: 1, b: 2, read: 3 });
   });
+
+  it('keeps braces inside strings and comments inside init', () => {
+    expect(boot(`
+speck Brace {
+  state { s: String, n: Nat }
+  init {
+    s == "a}b" // }
+    n == 5
+  }
+}
+`, 'Brace')).toEqual({ s: 'a}b', n: 5 });
+
+    expect(boot(`
+speck BraceOpen {
+  state { s: String, n: Nat }
+  init {
+    s == "a{b"
+    n == 5
+  }
+}
+`, 'BraceOpen')).toEqual({ s: 'a{b', n: 5 });
+
+    expect(boot(`
+speck BraceType {
+  state { mode: "a}" | "b" }
+  init { mode == "a}" }
+}
+`, 'BraceType')).toEqual({ mode: 'a}' });
+  });
+
+  it('rejects a Nat stored by append or by copying a local map', () => {
+    const root = generate(`
+speck App {
+  state { xs: List(Nat), m: Map(String, Nat) }
+  init {
+    xs := emptyList()
+    m := emptyMap()
+  }
+  action Push(v: Int) { xs := append(xs, v) return v }
+  action Put(v: Int) {
+    let tmp := m
+    tmp["a"] := v
+    m := tmp
+    return v
+  }
+}
+`);
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import { HashMap } from "effect";
+import * as M from "./out/App/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.AppCapability;
+  const badPush = yield* Effect.Effect.either(svc.push(-1));
+  const afterBad = yield* svc.getState;
+  const okPush = yield* Effect.Effect.either(svc.push(2));
+  const afterOk = yield* svc.getState;
+  const badPut = yield* Effect.Effect.either(svc.put(-4));
+  const afterPut = yield* svc.getState;
+  const okPut = yield* Effect.Effect.either(svc.put(3));
+  const done = yield* svc.getState;
+  const got = HashMap.get(done.m, "a");
+  return {
+    badPush: badPush._tag === "Left" ? badPush.left._tag : "ok",
+    lenAfterBad: afterBad.xs.length,
+    okPush: okPush._tag,
+    lenAfterOk: afterOk.xs.length,
+    badPut: badPut._tag === "Left" ? badPut.left._tag : "ok",
+    sizeAfterBad: HashMap.size(afterPut.m),
+    okPut: okPut._tag,
+    stored: got._tag === "Some" ? got.value : null,
+  };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.appLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({
+      badPush: 'SchemaViolation',
+      lenAfterBad: 0,
+      okPush: 'Right',
+      lenAfterOk: 1,
+      badPut: 'SchemaViolation',
+      sizeAfterBad: 0,
+      okPut: 'Right',
+      stored: 3,
+    });
+  });
+
+  it('fails every action while an invariant cannot be translated', () => {
+    const root = generate(`
+speck SkipInv {
+  state { n: Nat }
+  init { n := 0 }
+  invariant AllNonNeg { forall x in xs: x >= 0 }
+  action Inc() { n := n + 1 return n }
+}
+`);
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import * as M from "./out/SkipInv/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.SkipInvCapability;
+  const step = yield* Effect.Effect.either(svc.inc());
+  const state = yield* svc.getState;
+  return { tag: step._tag === "Left" ? step.left._tag : "ok", n: state.n };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.skipInvLive)));
+console.log("RESULT " + JSON.stringify(value));
+`) as { tag: string; n: number };
+    expect(result).toEqual({ tag: 'Untranslated', n: 0 });
+  });
+
+  it('range-checks a returned Nat', () => {
+    const root = generate(`
+speck RetNat {
+  state { n: Nat }
+  init { n := 0 }
+  action Bad() { return n - 10 }
+  action Write(x: Int) { n := x return n }
+}
+`);
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import * as M from "./out/RetNat/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.RetNatCapability;
+  const bad = yield* Effect.Effect.either(svc.bad());
+  const afterBad = yield* svc.getState;
+  const write = yield* Effect.Effect.either(svc.write(-3));
+  const afterWrite = yield* svc.getState;
+  return {
+    bad: bad._tag === "Left" ? bad.left._tag : bad.right,
+    n: afterBad.n,
+    write: write._tag === "Left" ? write.left._tag : "ok",
+    afterWrite: afterWrite.n,
+  };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.retNatLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({ bad: 'SchemaViolation', n: 0, write: 'SchemaViolation', afterWrite: 0 });
+  });
+
+  it('updates a nested record field and checks Nat', () => {
+    const root = generate(`
+speck Nest {
+  type Box = { n: Nat }
+  state { box: Box }
+  action Set(v: Int) { box.n := v return box.n }
+}
+`);
+    const result = runProgram(root, `
+import * as Effect from "effect";
+import * as M from "./out/Nest/src/index.ts";
+const program = Effect.Effect.gen(function* () {
+  const svc = yield* M.NestCapability;
+  const ok = yield* Effect.Effect.either(svc.set(4));
+  const afterOk = yield* svc.getState;
+  const bad = yield* Effect.Effect.either(svc.set(-1));
+  const afterBad = yield* svc.getState;
+  return {
+    ok: ok._tag === "Right" ? ok.right : ok.left._tag,
+    n: afterOk.box.n,
+    bad: bad._tag === "Left" ? bad.left._tag : "ok",
+    after: afterBad.box.n,
+  };
+});
+const value = await Effect.Effect.runPromise(program.pipe(Effect.Effect.provide(M.nestLive)));
+console.log("RESULT " + JSON.stringify(value));
+`);
+    expect(result).toEqual({ ok: 4, n: 4, bad: 'SchemaViolation', after: 4 });
+  });
 });

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { splitSameLineStatements } from './expr/stmt-parser.js';
 
 // AST node types for SpeckDL
 export interface SpeckNode {
@@ -1717,7 +1718,13 @@ function parseActionBlockMultiline(lines: string[], startIndex: number, startBra
     const stmtOrNull = bodyLines[i];
     // Skip blank line separators
     if (stmtOrNull === null) continue;
-    const stmt = stmtOrNull;
+    const pieces = splitSameLineStatements(stmtOrNull);
+    if (pieces.length > 1) {
+      bodyLines.splice(i, 1, ...pieces);
+      i--;
+      continue;
+    }
+    const stmt = pieces[0] ?? stmtOrNull;
     // precondition: expr
     if (stmt.startsWith('precondition:')) {
       let expr = stmt.substring(13).trim();
