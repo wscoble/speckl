@@ -5,6 +5,15 @@ Fetch, upload, drafting and platform updates must be implemented and integrated
 by the caller. The state machine records stages, not actual metadata values or
 platform outcomes.
 
+The generated `agent/AGENTS.md` includes a **How to do the work** brief:
+read the transcript, draft grounded and spell-checked metadata with the saved
+contact links, and present the exact canonical call for signed host approval.
+`agent/tools.json` includes descriptions for the metadata tools. These are
+advisory prompts, not content validation or external platform implementations.
+In an `agent` block, repeat `instruction "..."` for ordered paragraphs and add
+`description "..."` after a tool's effect for its description. Both use JSON
+string escaping; omitted fields retain the existing generated output.
+
 ## Workflow and approval
 
 `fetch_assets`, `start_uploads`, and `draft_metadata` lead to
@@ -12,8 +21,13 @@ platform outcomes.
 reviews the exact intended `apply_metadata` tool and arguments, including title
 and description, and signs the call digest. The earlier `draft_metadata`
 arguments are not stored or bound: they are not proof of what was reviewed.
-Approval goes to `Approved`; rejection or the seven-day timeout goes to `Idle`.
-A successful apply spends the binding and advances to `MetadataLive`.
+Approval goes to `Approved`; rejection or the seven-day timeout goes to `Idle`
+and marks the run rejected, so its act tools remain blocked. A successful apply
+spends the binding and advances to `MetadataLive`. After rejection, start a fresh
+run and redraft rather than treating rejected text as approved. A rejected
+correction cannot resume in the same model state: a fresh run starts with
+`metadataLive` false. The integrator must reconcile recovery without bypassing
+fresh approval for any metadata change.
 
 To correct metadata, call `request_fix` (which changes no platform metadata),
 then get a **fresh** host approval bound to the exact `fix_metadata` call. A

@@ -59,6 +59,22 @@ describe('parseDurationToMs', () => {
 });
 
 describe('agent { } parser', () => {
+  it('round-trips escaped advisory instructions and tool descriptions', () => {
+    const instruction = 'Read "all" } notes and use \\ safely.\nNext line.';
+    const description = 'Describe "the" { call \\ accurately.';
+    const src = MINIMAL.replace('tool go -> Go effect act', `// unmatched quote " in a comment\n        instruction ${JSON.stringify(instruction)}\n        tool go -> Go effect act description ${JSON.stringify(description)}`);
+    const ast = parseSpeckContent(src);
+    const agent = ast.specks[0].members.find(m => m.type === 'agent') as any;
+    expect(agent.instructions).toEqual([instruction]);
+    expect(agent.tools[0].description).toBe(description);
+    const again = parseSpeckContent(printAST(ast)).specks[0].members.find(m => m.type === 'agent');
+    expect(again).toEqual(expect.objectContaining({ instructions: agent.instructions, tools: agent.tools, awaits: agent.awaits }));
+  });
+
+  it('rejects malformed advisory strings', () => {
+    expect(() => parseSpeckContent(MINIMAL.replace('tool go -> Go effect act', 'instruction "bad\\q"'))).toThrow();
+    expect(() => parseSpeckContent(MINIMAL.replace('effect act', 'effect act description missing'))).toThrow();
+  });
   it('parses tools, stages, await, timeout', () => {
     const ast = parseSpeckContent(MINIMAL);
     const agent = ast.specks[0].members.find(m => m.type === 'agent');

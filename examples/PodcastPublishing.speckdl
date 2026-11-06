@@ -63,6 +63,12 @@ speck PodcastPublishing {
         return true
     }
     agent {
+        instruction "Read the transcript first with read_transcript. Fetch the episode assets and start the uploads; the integrator implements these operations."
+        instruction "Use draft_metadata to draft a concise title (within typical podcast title limits and about 100 characters for YouTube) and description based on what was actually said in the transcript. Summarize the episode, include the host's saved contact links exactly, and check spelling. Do not invent facts, URLs, guests, or products."
+        instruction "Present the exact canonical apply_metadata call, including its title and description, to the host for review. Wait for signed approval of that call's digest; nothing goes live before that approval. The draft arguments are not stored or bound."
+        instruction "After approval, apply the same approved arguments. The integrator implements platform APIs and must use the same title and description for video and audio. These instructions and rails do not themselves publish or verify external updates."
+        instruction "On rejection or timeout, this run is rejected and cannot continue. Start a fresh run and redraft; never treat a rejected draft as approved. A rejected correction cannot resume in this model: the integrator must reconcile recovery without bypassing fresh approval for any metadata change."
+        instruction "For corrections, use request_fix, present the exact canonical fix_metadata call for host review, and wait for a fresh signed approval of its digest before executing those exact arguments."
         stages stage {
             Idle = 0
             AssetsReady = 1
@@ -73,10 +79,10 @@ speck PodcastPublishing {
         }
         tool fetch_assets    -> FetchAssets     effect act
         tool start_uploads   -> StartUploads    effect act
-        tool draft_metadata  -> DraftMetadata   effect act
-        tool apply_metadata  -> ApplyMetadata   effect act
+        tool draft_metadata  -> DraftMetadata   effect act description "Draft a transcript-grounded title and description with the saved contact links for host review."
+        tool apply_metadata  -> ApplyMetadata   effect act description "Apply the exact title and description in the host-approved call through the integrator."
         tool request_fix     -> RequestFix      effect act
-        tool fix_metadata    -> FixMetadata     effect act
+        tool fix_metadata    -> FixMetadata     effect act description "Apply a correction only with fresh approval bound to this exact call."
         tool read_transcript -> ReadTranscript  effect observe
         await AwaitingApproval {
             signal host_approval

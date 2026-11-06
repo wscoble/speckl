@@ -289,7 +289,7 @@ function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
       }
       return {
         name: t.name,
-        description: `SpeckDL action ${t.action} (${t.effect})`,
+        description: t.description ?? `SpeckDL action ${t.action} (${t.effect})`,
         inputSchema: {
           type: 'object',
           properties,
@@ -335,6 +335,16 @@ function buildAgentsMd(
   lines.push(`- Spec hash: \`${specHash.slice(0, 16)}…\``);
   lines.push(`- Stage variable: \`${config.stageVariable}\``);
   lines.push('');
+  if (agent.instructions?.length) {
+    lines.push('## How to do the work');
+    lines.push('');
+    lines.push('These instructions are advisory; the hooks enforce the rails below.');
+    lines.push('');
+    for (const instruction of agent.instructions) {
+      lines.push(instruction);
+      lines.push('');
+    }
+  }
   lines.push('## Tools');
   lines.push('');
   lines.push('| Tool | Action | Effect |');

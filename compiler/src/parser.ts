@@ -311,6 +311,8 @@ export interface AgentMemberNode {
   stages?: AgentStagesMap;
   tools: AgentToolBinding[];
   awaits: AgentAwaitSpec[];
+  /** Optional ordered work-brief paragraphs (advisory, not enforced). */
+  instructions?: string[];
   /** Optional `pending timeout <dur>`: an in-flight tool call older than this
    *  is cleared as failed (state not advanced). Runtime default: 10m. */
   pendingTimeout?: { durationMs: number; durationText: string };
@@ -359,6 +361,8 @@ export interface AgentToolBinding {
   /** `act` = side-effecting (refused while awaiting in both modes);
    *  `observe` = read-only (allowed in `near` / HNTL while awaiting). */
   effect: 'act' | 'observe';
+  /** Optional advisory tool description. */
+  description?: string;
 }
 
 export interface AgentAwaitSpec {
@@ -693,7 +697,18 @@ function findBlockEnd(lines: string[], startIndex: number, startBraceCount: numb
   let i = startIndex;
   while (i < lines.length) {
     const line = lines[i];
+    // Agent advisory strings may contain braces. Preserve legacy counting for
+    // all other lines (including comments and existing expression syntax).
+    const advisory = /^\s*(?:instruction\s+"|tool\s+.*\sdescription\s+")/.test(line);
+    let quoted = false;
+    let escaped = false;
     for (const ch of line) {
+      if (advisory) {
+        if (escaped) { escaped = false; continue; }
+        if (quoted && ch === '\\') { escaped = true; continue; }
+        if (ch === '"') { quoted = !quoted; continue; }
+        if (quoted) continue;
+      }
       if (ch === '{') braceCount++;
       if (ch === '}') {
         braceCount--;
@@ -2665,6 +2680,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   const bodyLines = lines.slice(startIndex + 1, endIndex);
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
+  const instructions: string[] = [];
   let stages: AgentStagesMap | undefined;
   let pendingTimeout: AgentMemberNode['pendingTimeout'];
   const harnesses: AgentHarnessSpec[] = [];
@@ -2709,10 +2725,20 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       continue;
     }
 
-    // tool name -> Action effect act|observe
-    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_]\w*)\s+effect\s+(act|observe)\s*$/);
+    // JSON string literals provide unambiguous escaping and printer round trips.
+    const instructionMatch = line.match(/^instruction\s+("(?:[^"\\]|\\.)*")\s*$/);
+    if (instructionMatch) {
+      instructions.push(JSON.parse(instructionMatch[1]));
+      i++;
+      continue;
+    }
+
+    // tool name -> Action effect act|observe [description "..."]
+    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_]\w*)\s+effect\s+(act|observe)(?:\s+description\s+("(?:[^"\\]|\\.)*"))?\s*$/);
     if (toolMatch) {
-      tools.push({ name: toolMatch[1], action: toolMatch[2], effect: toolMatch[3] as 'act' | 'observe' });
+      const tool: AgentToolBinding = { name: toolMatch[1], action: toolMatch[2], effect: toolMatch[3] as 'act' | 'observe' };
+      if (toolMatch[4] !== undefined) tool.description = JSON.parse(toolMatch[4]);
+      tools.push(tool);
       i++;
       continue;
     }
@@ -2903,6 +2929,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   }
 
   const node: AgentMemberNode = { type: 'agent', stages, tools, awaits };
+  if (instructions.length) node.instructions = instructions;
   if (pendingTimeout) node.pendingTimeout = pendingTimeout;
   if (harnesses.length > 0) node.harnesses = harnesses;
   return node;

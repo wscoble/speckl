@@ -299,8 +299,9 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
     }
     lines.push('    }');
   }
+  for (const instruction of member.instructions ?? []) lines.push(`    instruction ${JSON.stringify(instruction)}`);
   for (const t of member.tools) {
-    lines.push(`    tool ${t.name} -> ${t.action} effect ${t.effect}`);
+    lines.push(`    tool ${t.name} -> ${t.action} effect ${t.effect}${t.description !== undefined ? ` description ${JSON.stringify(t.description)}` : ''}`);
   }
   if (member.pendingTimeout) {
     lines.push(`    pending timeout ${member.pendingTimeout.durationText}`);

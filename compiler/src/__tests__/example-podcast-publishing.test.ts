@@ -88,6 +88,17 @@ beforeAll(() => {
 }, 90_000);
 
 describe('examples/PodcastPublishing.speckdl', () => {
+  it('generates advisory work instructions and useful tool descriptions', () => {
+    const md = readFileSync(join(agentDir, 'AGENTS.md'), 'utf-8');
+    for (const text of ['How to do the work', 'read_transcript', 'saved contact links exactly', 'Do not invent facts', 'Wait for signed approval', 'exact canonical fix_metadata', 'Start a fresh run and redraft']) expect(md).toContain(text);
+    const tools = read(join(agentDir, 'tools.json')).tools;
+    for (const name of ['draft_metadata', 'apply_metadata', 'fix_metadata']) {
+      const tool = tools.find((t: { name: string }) => t.name === name);
+      expect(tool.description).toBeTruthy();
+      expect(tool.description).not.toMatch(/^SpeckDL action/);
+    }
+    expect(tools.find((t: { name: string }) => t.name === 'fetch_assets').description).toBe('SpeckDL action FetchAssets (act)');
+  });
   it('declares the approve outcome call-bound in the generated config and docs', () => {
     const cfg = JSON.parse(readFileSync(join(agentDir, 'agent-config.json'), 'utf-8'));
     expect(cfg.awaits).toHaveLength(1);
