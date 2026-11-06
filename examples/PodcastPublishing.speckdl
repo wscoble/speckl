@@ -1,0 +1,95 @@
+speck PodcastPublishing {
+    // Models workflow stages, not actual uploads or platform API operations.
+    // Approval binds one exact tool and argument object, not the earlier draft.
+    // A host must review the canonical call before signing it.
+    state {
+        stage: Nat
+        assetsReady: Bool
+        uploadsStarted: Bool
+        metadataDrafted: Bool
+        metadataLive: Bool
+        appliedFromApproved: Bool
+        fixCount: Nat
+    }
+    init {
+        stage := 0
+        assetsReady := false
+        uploadsStarted := false
+        metadataDrafted := false
+        metadataLive := false
+        appliedFromApproved := false
+        fixCount := 0
+    }
+    invariant ApplyFromApproved {
+        stage != 5 or appliedFromApproved
+    }
+    invariant LiveNeedsFlow {
+        metadataLive implies (metadataDrafted and uploadsStarted)
+    }
+    action FetchAssets {
+        require stage == 0
+        assetsReady := true
+        stage := 1
+    }
+    action StartUploads {
+        require stage == 1
+        uploadsStarted := true
+        stage := 2
+    }
+    action DraftMetadata(title: String, description: String) {
+        require stage == 2
+        metadataDrafted := true
+        stage := 3
+    }
+    action ApplyMetadata(title: String, description: String) {
+        require stage == 4
+        appliedFromApproved := stage == 4
+        metadataLive := true
+        stage := 5
+    }
+    // A correction must return to the same approval gate. It does not alter
+    // metadata itself; the host signs the exact subsequent fix_metadata call.
+    action RequestFix {
+        require stage == 5
+        stage := 3
+    }
+    action FixMetadata(title: String, description: String) {
+        require stage == 4
+        require metadataLive
+        fixCount := fixCount + 1
+        stage := 5
+    }
+    action ReadTranscript {
+        return true
+    }
+    agent {
+        stages stage {
+            Idle = 0
+            AssetsReady = 1
+            Uploading = 2
+            AwaitingApproval = 3
+            Approved = 4
+            MetadataLive = 5
+        }
+        tool fetch_assets    -> FetchAssets     effect act
+        tool start_uploads   -> StartUploads    effect act
+        tool draft_metadata  -> DraftMetadata   effect act
+        tool apply_metadata  -> ApplyMetadata   effect act
+        tool request_fix     -> RequestFix      effect act
+        tool fix_metadata    -> FixMetadata     effect act
+        tool read_transcript -> ReadTranscript  effect observe
+        await AwaitingApproval {
+            signal host_approval
+            mode in
+            require outcome in { approve, reject! }
+            require claims { host: String }
+            bind call on approve
+            on approve -> Approved
+            on reject  -> Idle
+            timeout 7d -> reject
+        }
+    }
+    next: FetchAssets | StartUploads | DraftMetadata | ApplyMetadata | RequestFix | FixMetadata | ReadTranscript
+    verify Always(ApplyFromApproved) { depth 8 }
+    verify Always(LiveNeedsFlow) { depth 8 }
+}

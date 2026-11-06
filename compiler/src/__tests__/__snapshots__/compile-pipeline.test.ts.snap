@@ -491,6 +491,83 @@ exports[`generated output is pinned for every example > Paxos.speckdl -t all-ir 
 }
 `;
 
+exports[`generated output is pinned for every example > PodcastPublishing.speckdl -t all 1`] = `
+{
+  "PodcastPublishing.ir.smt2": "b41600d0bf3837be",
+  "PodcastPublishing.prov.jsonld": "d5ad3d6f7f7414d0",
+  "PodcastPublishing.smt2": "767fc71480dba7bd",
+  "PodcastPublishing.specbom.cdx.json": "8622cc942ca9df89",
+  "PodcastPublishing.specbom.spdx.json": "57be45ea3998b8f2",
+  "PodcastPublishing.ts": "e77af7a7be576779",
+  "PodcastPublishing/Cargo.toml": "f4435e2c5eeb8371",
+  "PodcastPublishing/src/lib.rs": "c308c00a72987c49",
+  "agent/AGENTS.md": "180e61314660c4fc",
+  "agent/PodcastPublishing.mjs": "91e25a4de22d6871",
+  "agent/PodcastPublishing.ts": "ea0d32e04bfefb49",
+  "agent/README.md": "b2d4f5448503715a",
+  "agent/agent-config.json": "5c4fd186674ad77a",
+  "agent/hook.mjs": "6317cb2d27b3145d",
+  "agent/signal.mjs": "88d2fa039e7335f6",
+  "agent/spec.sha256": "86907c5f31da093e",
+  "agent/state-integrity.mjs": "189e26e0a997f292",
+  "agent/tools.json": "16f2754a77221997",
+  "agent/verifiers/cli.mjs": "071c27c640ebe414",
+  "agent/verifiers/file-drop.mjs": "e83130b57f8b37cc",
+  "camel/podcast-publishing/pom.xml": "e231a8de00049f89",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/PodcastPublishingRoutes.java": "85d203ca5470987b",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/PodcastPublishingState.java": "dabd89633c4ca34c",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/SpecklRuntime.java": "ef39440245f4d79f",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/ApplyMetadataProcessor.java": "42c2c226be47552d",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/DraftMetadataProcessor.java": "40d430c7dd4b9562",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/FetchAssetsProcessor.java": "892409567f6cf276",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/FixMetadataProcessor.java": "074c7c89df36dd9b",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/ReadTranscriptProcessor.java": "8ecf58a79358d4af",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/RequestFixProcessor.java": "f73ff14cfdce7c1e",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/StartUploadsProcessor.java": "e64d559597a7e45a",
+  "camel/podcast-publishing/src/main/resources/application.properties": "39fa52bf09b763d6",
+  "k8s/all-crds.yaml": "01ba4719c80b6fe9",
+  "openapi/podcastpublishing.openapi.json": "beefe3d593180b86",
+  "podcast_publishing-elm/elm.json": "ad72359d7379fd62",
+  "podcast_publishing-elm/index.html": "6d45a2032fbd6d17",
+  "podcast_publishing-elm/src/Main.elm": "abc67849c9aad7ef",
+  "podcast_publishing-elm/src/PodcastPublishingMachine.elm": "2eac3915c72cc607",
+  "podcast_publishing-elm/src/Prelude.elm": "06453db0a5497e0d",
+  "podcast_publishing-elm/src/Types.elm": "795a0a5b337f39da",
+  "podcast_publishing.proto": "9e282518170740dd",
+  "podcast_publishing/Dockerfile": "e22ef9c8c12c9b0b",
+  "podcast_publishing/cmd/server/main.go": "44435cbb2c6ecd21",
+  "podcast_publishing/go.mod": "093cd54a133bbc17",
+  "podcast_publishing/handlers.go": "1b7c848c25b85c6c",
+  "podcast_publishing/podcast_publishing.go": "aaaba621eb350934",
+  "podcast_publishing/prelude.go": "d4fcfe3d4619aeb1",
+  "podcast_publishing/store.go": "c9e4c91b1435a1d6",
+}
+`;
+
+exports[`generated output is pinned for every example > PodcastPublishing.speckdl -t all-ir 1`] = `
+{
+  "PodcastPublishing.ir.smt2": "b41600d0bf3837be",
+  "PodcastPublishing.prov.jsonld": "d5ad3d6f7f7414d0",
+  "PodcastPublishing.specbom.cdx.json": "8622cc942ca9df89",
+  "PodcastPublishing.specbom.spdx.json": "57be45ea3998b8f2",
+  "PodcastPublishing.ts": "e77af7a7be576779",
+  "camel/podcast-publishing/pom.xml": "e231a8de00049f89",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/PodcastPublishingRoutes.java": "85d203ca5470987b",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/PodcastPublishingState.java": "dabd89633c4ca34c",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/SpecklRuntime.java": "ef39440245f4d79f",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/ApplyMetadataProcessor.java": "42c2c226be47552d",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/DraftMetadataProcessor.java": "40d430c7dd4b9562",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/FetchAssetsProcessor.java": "892409567f6cf276",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/FixMetadataProcessor.java": "074c7c89df36dd9b",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/ReadTranscriptProcessor.java": "8ecf58a79358d4af",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/RequestFixProcessor.java": "f73ff14cfdce7c1e",
+  "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/StartUploadsProcessor.java": "e64d559597a7e45a",
+  "camel/podcast-publishing/src/main/resources/application.properties": "39fa52bf09b763d6",
+  "k8s/all-crds.yaml": "01ba4719c80b6fe9",
+  "openapi/podcastpublishing.openapi.json": "beefe3d593180b86",
+}
+`;
+
 exports[`generated output is pinned for every example > PreconditionTest.speckdl -t all 1`] = `
 {
   "PreconditionTest.ir.smt2": "ead92a3987b70237",

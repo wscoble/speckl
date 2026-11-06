@@ -14,6 +14,12 @@ alias.
 
 ### Added
 
+- **`examples/PodcastPublishing.speckdl`.** A podcast metadata workflow
+  with call-bound host approval for initial updates and corrections. Two
+  model invariants are checked to depth 8, with a weakened-guard regression
+  test. The example models the workflow; platform integrations and content
+  validation remain the implementer's responsibility. See
+  `examples/PodcastPublishing.md` and `example-podcast-publishing.test.ts`.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
