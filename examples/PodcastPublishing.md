@@ -12,7 +12,14 @@ contact links, and present the exact canonical call for signed host approval.
 advisory prompts, not content validation or external platform implementations.
 In an `agent` block, repeat `instruction "..."` for ordered paragraphs and add
 `description "..."` after a tool's effect for its description. Both use JSON
-string escaping; omitted fields retain the existing generated output.
+string escaping; omitted fields retain the existing generated output. For longer
+prompts, use `instruction file "PodcastPublishing-work.txt"` (as this example
+does) or `description file "tool-description.txt"`. Paths are local and
+relative to the spec, not the current working directory. Files must exist at
+agent compile time; their UTF-8 contents are embedded in the generated bundle.
+Absolute paths and URL references are rejected. The spec hash fingerprints the
+spec text only, **not** referenced prompt files: track those files alongside the
+spec and rebuild when they change to reproduce generated prompts.
 
 ## Workflow and approval
 

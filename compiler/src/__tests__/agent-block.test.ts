@@ -1,11 +1,15 @@
 // Parser / printer / IR diagnostics for agent { } blocks.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { join } from 'node:path';
 import { parseSpeckContent, parseDurationToMs } from '../parser.js';
 import { printAST } from '../printer.js';
 import { lower } from '../ir/lower.js';
+import { generateAgent } from '../generators/agent/index.js';
 import { injectSignalActions } from '../generators/agent/inject-signals.js';
 
 const MINIMAL = `speck Mini {
@@ -141,5 +145,69 @@ describe('agent { } parser', () => {
     expect(actions).toContain('__signal_review_reject');
     const next = inj.specks[0].members.find(m => m.type === 'next') as any;
     expect(next.actions).toContain('__signal_review_approve');
+  });
+});
+
+
+describe('file-backed advisory prompts', () => {
+  it('round-trips references and embeds file contents alongside inline prompts', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-prompts-'));
+    try {
+      const file = join(dir, 'spec.speckdl');
+      const src = MINIMAL.replace('tool go -> Go effect act', `instruction "inline"\n        instruction file "brief{.txt"\n        tool go -> Go effect act description file "tool.txt"`);
+      writeFileSync(file, src);
+      writeFileSync(join(dir, 'brief{.txt'), 'First work brief');
+      writeFileSync(join(dir, 'tool.txt'), 'First tool description');
+      const ast = parseSpeckContent(src, file);
+      const printed = printAST(ast);
+      expect(printed).toContain('instruction file "brief{.txt"');
+      expect(printed).toContain('description file "tool.txt"');
+      expect(printAST(parseSpeckContent(printed))).toBe(printed);
+      const out = join(dir, 'out');
+      generateAgent(ast, { outputDir: out, sourcePath: file });
+      const md = () => readFileSync(join(out, 'agent', 'AGENTS.md'), 'utf8');
+      const tools = () => JSON.parse(readFileSync(join(out, 'agent', 'tools.json'), 'utf8')).tools;
+      expect(md()).toContain('inline');
+      expect(md()).toContain('First work brief');
+      expect(tools()[0].description).toBe('First tool description');
+      const hash = readFileSync(join(out, 'agent', 'spec.sha256'), 'utf8');
+      writeFileSync(join(dir, 'brief{.txt'), 'Changed brief');
+      writeFileSync(join(dir, 'tool.txt'), 'Changed description');
+      generateAgent(ast, { outputDir: out, sourcePath: file });
+      expect(md()).toContain('Changed brief');
+      expect(tools()[0].description).toBe('Changed description');
+      expect(readFileSync(join(out, 'agent', 'spec.sha256'), 'utf8')).toBe(hash);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('compiles from a different working directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-cwd-'));
+    try {
+      const file = join(dir, 'spec.speckdl');
+      writeFileSync(file, MINIMAL.replace('tool go -> Go effect act', 'instruction file "brief.txt"\n        tool go -> Go effect act description file "brief.txt"'));
+      writeFileSync(join(dir, 'brief.txt'), 'located beside spec');
+      const compiler = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+      const out = join(dir, 'out');
+      const run = spawnSync(process.execPath, [join(compiler, 'node_modules/vite-node/vite-node.mjs'), join(compiler, 'src/index.ts'), file, '-t', 'agent', '-o', out], { cwd: compiler, encoding: 'utf8' });
+      expect(run.status, run.stderr + run.stdout).toBe(0);
+      expect(readFileSync(join(out, 'agent', 'AGENTS.md'), 'utf8')).toContain('located beside spec');
+      expect(JSON.parse(readFileSync(join(out, 'agent', 'tools.json'), 'utf8')).tools[0].description).toBe('located beside spec');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('fails clearly for missing, nonlocal, and source-less references', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-prompts-'));
+    try {
+      const file = join(dir, 'spec.speckdl');
+      for (const reference of ['instruction file "missing.txt"', 'tool go -> Go effect act description file "missing.txt"']) {
+        const ast = parseSpeckContent(MINIMAL.replace('tool go -> Go effect act', reference));
+        expect(() => generateAgent(ast, { outputDir: join(dir, 'out'), sourcePath: file })).toThrow(/Cannot read prompt file.*missing.txt/);
+        expect(() => generateAgent(ast, { outputDir: join(dir, 'out') })).toThrow(/without a spec source path/);
+      }
+      for (const ref of ['/tmp/prompt', 'https://example.invalid/prompt']) {
+        const ast = parseSpeckContent(MINIMAL.replace('tool go -> Go effect act', `instruction file ${JSON.stringify(ref)}`));
+        expect(() => generateAgent(ast, { outputDir: join(dir, 'out'), sourcePath: file })).toThrow(/relative local path/);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

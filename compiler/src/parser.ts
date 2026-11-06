@@ -312,7 +312,7 @@ export interface AgentMemberNode {
   tools: AgentToolBinding[];
   awaits: AgentAwaitSpec[];
   /** Optional ordered work-brief paragraphs (advisory, not enforced). */
-  instructions?: string[];
+  instructions?: AgentPrompt[];
   /** Optional `pending timeout <dur>`: an in-flight tool call older than this
    *  is cleared as failed (state not advanced). Runtime default: 10m. */
   pendingTimeout?: { durationMs: number; durationText: string };
@@ -353,6 +353,8 @@ export interface AgentStagesMap {
   labels: { name: string; value: number }[];
 }
 
+export type AgentPrompt = string | { file: string };
+
 export interface AgentToolBinding {
   /** Tool name exposed to the agent runtime (e.g. run_tests). */
   name: string;
@@ -362,7 +364,7 @@ export interface AgentToolBinding {
    *  `observe` = read-only (allowed in `near` / HNTL while awaiting). */
   effect: 'act' | 'observe';
   /** Optional advisory tool description. */
-  description?: string;
+  description?: AgentPrompt;
 }
 
 export interface AgentAwaitSpec {
@@ -699,7 +701,7 @@ function findBlockEnd(lines: string[], startIndex: number, startBraceCount: numb
     const line = lines[i];
     // Agent advisory strings may contain braces. Preserve legacy counting for
     // all other lines (including comments and existing expression syntax).
-    const advisory = /^\s*(?:instruction\s+"|tool\s+.*\sdescription\s+")/.test(line);
+    const advisory = /^\s*(?:instruction\s+(?:file\s+)?"|tool\s+.*\sdescription\s+(?:file\s+)?")/.test(line);
     let quoted = false;
     let escaped = false;
     for (const ch of line) {
@@ -2680,7 +2682,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   const bodyLines = lines.slice(startIndex + 1, endIndex);
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
-  const instructions: string[] = [];
+  const instructions: AgentPrompt[] = [];
   let stages: AgentStagesMap | undefined;
   let pendingTimeout: AgentMemberNode['pendingTimeout'];
   const harnesses: AgentHarnessSpec[] = [];
@@ -2726,18 +2728,18 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
     }
 
     // JSON string literals provide unambiguous escaping and printer round trips.
-    const instructionMatch = line.match(/^instruction\s+("(?:[^"\\]|\\.)*")\s*$/);
+    const instructionMatch = line.match(/^instruction\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*")\s*$/);
     if (instructionMatch) {
-      instructions.push(JSON.parse(instructionMatch[1]));
+      instructions.push(instructionMatch[1] ? { file: JSON.parse(instructionMatch[2]) } : JSON.parse(instructionMatch[2]));
       i++;
       continue;
     }
 
     // tool name -> Action effect act|observe [description "..."]
-    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_]\w*)\s+effect\s+(act|observe)(?:\s+description\s+("(?:[^"\\]|\\.)*"))?\s*$/);
+    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_]\w*)\s+effect\s+(act|observe)(?:\s+description\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*"))?\s*$/);
     if (toolMatch) {
       const tool: AgentToolBinding = { name: toolMatch[1], action: toolMatch[2], effect: toolMatch[3] as 'act' | 'observe' };
-      if (toolMatch[4] !== undefined) tool.description = JSON.parse(toolMatch[4]);
+      if (toolMatch[5] !== undefined) tool.description = toolMatch[4] ? { file: JSON.parse(toolMatch[5]) } : JSON.parse(toolMatch[5]);
       tools.push(tool);
       i++;
       continue;
