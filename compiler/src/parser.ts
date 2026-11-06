@@ -499,6 +499,11 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     k8sVersion?: string;
   } = {};
 
+  // Resolve the orientation of tool aliases against actions in this speck,
+  // including actions declared after the agent block.
+  const speckEnd = findBlockEnd(lines, startIndex + 1, 1);
+  const actionNames = new Set(lines.slice(startIndex + 1, speckEnd)
+    .flatMap(line => { const m = line.match(/^\s*action\s+(\w+)\b/); return m ? [m[1]] : []; }));
   let i = startIndex + 1;
   let braceCount = 1;
   let speckEndLine = Math.min(lines.length, startIndex + 1);
@@ -614,7 +619,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     if (isBlockStarter && openCount > 0) {
       // Multi-line block: parse it and skip to its end
       const blockStartLine = i + 1;
-      const member = parseMemberBlock(lines, i);
+      const member = parseMemberBlock(lines, i, actionNames);
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (closeCount < openCount) {
         const endIdx = findBlockEnd(lines, i + 1, braceCount + openCount);
@@ -747,7 +752,7 @@ function isExpressionComplete(expr: string): boolean {
   return braces === 0 && parens === 0 && brackets === 0;
 }
 
-function parseMemberBlock(lines: string[], startIndex: number): MemberNode | null {
+function parseMemberBlock(lines: string[], startIndex: number, actionNames: Set<string>): MemberNode | null {
   const firstLine = lines[startIndex].trim();
   const startBraceCount = (firstLine.match(/{/g) || []).length;
   
@@ -814,7 +819,7 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
     return parseServiceBlockMultiline(lines, startIndex, startBraceCount);
   }
   if (firstLine.startsWith('agent ') || firstLine === 'agent' || firstLine.startsWith('agent {')) {
-    return parseAgentBlockMultiline(lines, startIndex, startBraceCount);
+    return parseAgentBlockMultiline(lines, startIndex, startBraceCount, actionNames);
   }
   if (firstLine.startsWith('provenance ')) {
     // Parse the provenance block body. Each clause is one of:
@@ -2680,13 +2685,20 @@ export function parseNextRelation(lines: string[], startIndex: number): { node: 
  * Parse `agent { ... }` into an AgentMemberNode.
  * Body forms:
  *   stages <var> { Name = n ... }
- *   tool <name> -> <Action> effect act|observe
+ *   tool <Action> [-> <name>] effect act|observe
+ *   tool <name> -> <Action> effect act|observe  (legacy)
  *   pending timeout <dur>
  *   await <State> { signal ...; mode near|in; require outcome in { approve, reject! };
  *                   require claims { k: T }; bind call [on outcome, ...];
  *                   on outcome -> Target; timeout <dur> -> reject }
  */
-function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): AgentMemberNode {
+/** Derive the agent-facing tool name from an action, preserving acronym boundaries. */
+export function inferAgentToolName(action: string): string {
+  return action.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number, actionNames: Set<string>): AgentMemberNode {
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const bodyLines = lines.slice(startIndex + 1, endIndex);
   const tools: AgentToolBinding[] = [];
@@ -2755,10 +2767,16 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       continue;
     }
 
-    // tool name -> Action effect act|observe [description "..."]
-    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_]\w*)\s+effect\s+(act|observe)(?:\s+description\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*"))?\s*$/);
+    // Action-first syntax, with the historical lowercase tool -> Action form.
+    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)(?:\s*->\s*([A-Za-z_][\w-]*))?\s+effect\s+(act|observe)(?:\s+description\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*"))?\s*$/);
     if (toolMatch) {
-      const tool: AgentToolBinding = { name: toolMatch[1], action: toolMatch[2], effect: toolMatch[3] as 'act' | 'observe' };
+      const first = toolMatch[1], second = toolMatch[2];
+      // When only one side names a declared action its position is decisive.
+      // If both (or neither) do, preserve the historical name -> action form.
+      const legacy = second !== undefined && (!actionNames.has(first) || actionNames.has(second));
+      const action = legacy ? second : first;
+      const name = legacy ? first : (second ?? inferAgentToolName(action));
+      const tool: AgentToolBinding = { name, action, effect: toolMatch[3] as 'act' | 'observe' };
       if (toolMatch[5] !== undefined) tool.description = toolMatch[4] ? { file: JSON.parse(toolMatch[5]) } : JSON.parse(toolMatch[5]);
       tools.push(tool);
       i++;

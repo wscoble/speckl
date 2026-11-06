@@ -14,6 +14,11 @@ alias.
 
 ### Added
 
+- **Agent tool short form.** `tool FetchAssets effect act` infers the
+  agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
+  custom_name effect act` specifies an alias. Effects remain required and the
+  existing `tool custom_name -> FetchAssets effect act` form remains supported.
+  Prompt tool references use the agent-facing name.
 - **`examples/PodcastPublishing.speckdl`.** A podcast metadata workflow
   with call-bound host approval for initial updates and corrections. Two
   model invariants are checked to depth 8, with a weakened-guard regression

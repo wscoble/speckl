@@ -77,13 +77,13 @@ speck PodcastPublishing {
             Approved = 4
             MetadataLive = 5
         }
-        tool fetch_assets    -> FetchAssets     effect act
-        tool start_uploads   -> StartUploads    effect act
-        tool draft_metadata  -> DraftMetadata   effect act
-        tool apply_metadata  -> ApplyMetadata   effect act description "Apply the exact title and description in the host-approved call through the integrator."
-        tool request_fix     -> RequestFix      effect act
-        tool fix_metadata    -> FixMetadata     effect act description "Apply a correction only with fresh approval bound to this exact call."
-        tool read_transcript -> ReadTranscript  effect observe
+        tool FetchAssets    effect act
+        tool StartUploads   effect act
+        tool DraftMetadata  effect act
+        tool ApplyMetadata  effect act description "Apply the exact title and description in the host-approved call through the integrator."
+        tool RequestFix     effect act
+        tool FixMetadata    effect act description "Apply a correction only with fresh approval bound to this exact call."
+        tool ReadTranscript effect observe
         await AwaitingApproval {
             signal host_approval
             mode in

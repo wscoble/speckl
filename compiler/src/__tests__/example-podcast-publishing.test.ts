@@ -88,6 +88,24 @@ beforeAll(() => {
 }, 90_000);
 
 describe('examples/PodcastPublishing.speckdl', () => {
+  it('uses action short forms and preserves every agent-facing tool name', () => {
+    const source = readFileSync(example, 'utf8');
+    const names = [
+      ['FetchAssets', 'fetch_assets', 'act'],
+      ['StartUploads', 'start_uploads', 'act'],
+      ['DraftMetadata', 'draft_metadata', 'act'],
+      ['ApplyMetadata', 'apply_metadata', 'act'],
+      ['RequestFix', 'request_fix', 'act'],
+      ['FixMetadata', 'fix_metadata', 'act'],
+      ['ReadTranscript', 'read_transcript', 'observe'],
+    ];
+    for (const [action, , effect] of names) {
+      expect(source).toMatch(new RegExp(`\\btool\\s+${action}\\s+effect\\s+${effect}\\b`));
+    }
+    const tools = read(join(agentDir, 'tools.json')).tools;
+    expect(tools.map((tool: { name: string }) => tool.name).sort())
+      .toEqual(names.map(([, name]) => name).sort());
+  });
   it('generates advisory work instructions and useful tool descriptions', () => {
     const md = readFileSync(join(agentDir, 'AGENTS.md'), 'utf-8');
     for (const text of ['How to do the work', 'read_transcript', 'saved contact links exactly', 'Do not invent facts', 'signed approval', 'exact canonical fix_metadata', 'start a fresh run and redraft']) expect(md).toContain(text);

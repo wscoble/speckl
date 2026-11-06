@@ -7,7 +7,15 @@ platform outcomes.
 
 The generated `agent/AGENTS.md` groups advisory prompts under their tools or
 associated await; `agent/tools.json` embeds each tool's own prompts in its
-description. For example, `prompt tool draft_metadata stage Uploading file
+description. The declaration `tool DraftMetadata effect act` infers the
+agent-facing name `draft_metadata`; `tool ReadTranscript effect observe`
+similarly exposes `read_transcript`. An explicit alias can instead use
+`tool ActionName -> custom_name effect act`; the older
+`tool custom_name -> ActionName effect act` form remains supported. When both
+sides of an arrow name declared actions, the legacy tool-first interpretation
+wins; choose an alias that is not another action name to avoid ambiguity. The effect
+is required and determines hook behavior while waiting. Prompts refer to the
+agent-facing name. For example, `prompt tool draft_metadata stage Uploading file
 "PodcastPublishing-work.txt"` binds the sibling draft brief to that tool and
 stage. Use `prompt tool NAME await STATE "..."` for a wait association, or
 specify both `stage LABEL await STATE`. These labels are advisory associations,

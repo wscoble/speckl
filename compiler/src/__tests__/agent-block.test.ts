@@ -63,6 +63,36 @@ describe('parseDurationToMs', () => {
 });
 
 describe('agent { } parser', () => {
+  it.each([
+    ['FetchAssets', 'fetch_assets'], ['ReadTranscript', 'read_transcript'], ['OpenPR', 'open_pr'],
+  ])('infers %s as %s and preserves prompt bindings', (action, name) => {
+    const src = MINIMAL.replace(/\bGo\b/g, action)
+      .replace(`tool go -> ${action} effect act`, `prompt tool ${name} "brief"\n        tool ${action} effect act`);
+    const ast = parseSpeckContent(src);
+    const agent = ast.specks[0].members.find(m => m.type === 'agent') as any;
+    expect(agent.tools[0]).toMatchObject({ name, action, effect: 'act' });
+    expect(agent.prompts[0].tool).toBe(name);
+    const printed = printAST(ast);
+    expect(printed).toContain(`tool ${action} effect act`);
+    expect((parseSpeckContent(printed).specks[0].members.find(m => m.type === 'agent') as any).tools).toEqual(agent.tools);
+  });
+
+  it.each([
+    ['tool Go -> launch effect act description "Launch it"', 'Launch it'],
+    ['tool Go -> launch effect act description file "launch.txt"', { file: 'launch.txt' }],
+    ['tool launch -> Go effect act description "Launch it"', 'Launch it'],
+    ['tool launch -> Go effect act description file "launch.txt"', { file: 'launch.txt' }],
+    ['tool Go effect act description "Launch it"', 'Launch it'],
+    ['tool Go effect act description file "launch.txt"', { file: 'launch.txt' }],
+  ])('parses and prints %s', (declaration, description) => {
+    const ast = parseSpeckContent(MINIMAL.replace('tool go -> Go effect act', declaration));
+    const agent = ast.specks[0].members.find(m => m.type === 'agent') as any;
+    const alias = declaration.includes('launch ->') || declaration.includes('-> launch');
+    expect(agent.tools[0]).toEqual({ name: alias ? 'launch' : 'go', action: 'Go', effect: 'act', description });
+    const printed = printAST(ast);
+    expect(printed).toContain(`tool Go${alias ? ' -> launch' : ''} effect act description`);
+    expect((parseSpeckContent(printed).specks[0].members.find(m => m.type === 'agent') as any).tools).toEqual(agent.tools);
+  });
   it('round-trips escaped advisory instructions and tool descriptions', () => {
     const instruction = 'Read "all" } notes and use \\ safely.\nNext line.';
     const description = 'Describe "the" { call \\ accurately.';
