@@ -41,6 +41,7 @@ export function generateAgent(ast: AST, options: AgentGenerateOptions): void {
     const resolvedAgent: AgentMemberNode = {
       ...agent,
       instructions: agent.instructions?.map(p => resolvePrompt(p, options.sourcePath)),
+      prompts: agent.prompts?.map(p => ({ ...p, prompt: resolvePrompt(p.prompt, options.sourcePath) })),
       tools: agent.tools.map(t => t.description === undefined ? t : { ...t, description: resolvePrompt(t.description, options.sourcePath) }),
     };
     emitAgentForSpeck(speck, resolvedAgent, options);
@@ -307,7 +308,7 @@ function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[], sourcePat
       }
       return {
         name: t.name,
-        description: t.description !== undefined ? resolvePrompt(t.description, sourcePath) : `SpeckDL action ${t.action} (${t.effect})`,
+        description: [t.description !== undefined ? resolvePrompt(t.description, sourcePath) : '', ...(agent.prompts ?? []).filter(p => p.tool === t.name).map(p => { const scope = [p.stage && `stage ${p.stage}`, p.await && `await ${p.await}`].filter(Boolean).join(', '); return (scope ? `[Advisory: ${scope}]\n` : '') + resolvePrompt(p.prompt, sourcePath); })].filter(Boolean).join('\n\n') || `SpeckDL action ${t.action} (${t.effect})`,
         inputSchema: {
           type: 'object',
           properties,
@@ -372,6 +373,18 @@ function buildAgentsMd(
     lines.push(`| \`${t.name}\` | \`${t.action}\` | ${t.effect} |`);
   }
   lines.push('');
+  for (const t of agent.tools) {
+    const prompts = (agent.prompts ?? []).filter(p => p.tool === t.name && !p.await);
+    if (t.description === undefined && prompts.length === 0) continue;
+    lines.push(`### Tool \`${t.name}\``);
+    lines.push('');
+    if (t.description !== undefined) { lines.push(resolvePrompt(t.description, sourcePath)); lines.push(''); }
+    for (const p of prompts) {
+      const binding = [p.stage && `stage \`${p.stage}\``, p.await && `await \`${p.await}\``].filter(Boolean).join(', ');
+      if (binding) lines.push(`_Applies to ${binding} (advisory)._`, '');
+      lines.push(resolvePrompt(p.prompt, sourcePath), '');
+    }
+  }
   lines.push('Unlisted actions are **refused** (fail closed).');
   lines.push('');
   lines.push('## Wait states (HITL / HNTL)');
@@ -397,6 +410,10 @@ function buildAgentsMd(
       }
       if (a.bindCall.length > 0) {
         lines.push(`- Call-bound: ${a.bindCall.map(o => `\`${o}\``).join(', ')} (the signed drop carries \`call\`, the sha256 of one canonical tool call; the hook allows that call once)`);
+      }
+      for (const p of (agent.prompts ?? []).filter(p => p.await === a.state)) {
+        lines.push(`#### Tool \`${p.tool}\`${p.stage ? ` — stage \`${p.stage}\`` : ''}`);
+        lines.push('', resolvePrompt(p.prompt, sourcePath), '');
       }
       lines.push('');
     }

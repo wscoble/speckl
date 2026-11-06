@@ -5,21 +5,21 @@ Fetch, upload, drafting and platform updates must be implemented and integrated
 by the caller. The state machine records stages, not actual metadata values or
 platform outcomes.
 
-The generated `agent/AGENTS.md` includes a **How to do the work** brief:
-read the transcript, draft grounded and spell-checked metadata with the saved
-contact links, and present the exact canonical call for signed host approval.
-`agent/tools.json` includes descriptions for the metadata tools. These are
-advisory prompts, not content validation or external platform implementations.
-In an `agent` block, repeat `instruction "..."` for ordered paragraphs and add
-`description "..."` after a tool's effect for its description. Both use JSON
-string escaping; omitted fields retain the existing generated output. For longer
-prompts, use `instruction file "PodcastPublishing-work.txt"` (as this example
-does) or `description file "tool-description.txt"`. Paths are local and
-relative to the spec, not the current working directory. Files must exist at
-agent compile time; their UTF-8 contents are embedded in the generated bundle.
-Absolute paths and URL references are rejected. The spec hash fingerprints the
-spec text only, **not** referenced prompt files: track those files alongside the
-spec and rebuild when they change to reproduce generated prompts.
+The generated `agent/AGENTS.md` groups advisory prompts under their tools or
+associated await; `agent/tools.json` embeds each tool's own prompts in its
+description. For example, `prompt tool draft_metadata stage Uploading file
+"PodcastPublishing-work.txt"` binds the sibling draft brief to that tool and
+stage. Use `prompt tool NAME await STATE "..."` for a wait association, or
+specify both `stage LABEL await STATE`. These labels are advisory associations,
+not runtime enforcement or conditional filtering. A prompt always names a
+declared tool; stage labels must be declared in the `stages` map and await labels must name a declared await (enum-only stage labels are not supported here). `instruction
+"..."` is reserved for standing defaults. Existing tool `description "..."`
+and `description file "..."` are also tool-specific. Inline text uses JSON
+string escaping. Prompt file paths are local and relative to the spec, not the
+current working directory; UTF-8 contents are embedded at compile time.
+Absolute paths and URLs are rejected. The spec hash fingerprints the spec text
+only, **not** referenced prompt files: track those files alongside the spec and
+rebuild when they change.
 
 ## Workflow and approval
 

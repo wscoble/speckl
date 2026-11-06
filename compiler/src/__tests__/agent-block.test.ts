@@ -75,6 +75,45 @@ describe('agent { } parser', () => {
     expect(again).toEqual(expect.objectContaining({ instructions: agent.instructions, tools: agent.tools, awaits: agent.awaits }));
   });
 
+  it('binds prompts to tools, stage and await without bleeding', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-bound-'));
+    try {
+      const file = join(dir, 'spec.speckdl');
+      const src = MINIMAL.replace('tool go -> Go effect act', `prompt tool go stage Idle file "brief.txt"\n        prompt tool go stage Idle await AwaitingReview "review ONLY go"\n        prompt tool peek await AwaitingReview "review ONLY peek"\n        tool go -> Go effect act`);
+      writeFileSync(file, src);
+      writeFileSync(join(dir, 'brief.txt'), 'GO FILE BRIEF');
+      const ast = parseSpeckContent(src, file);
+      expect(printAST(parseSpeckContent(printAST(ast)))).toBe(printAST(ast));
+      const out = join(dir, 'out');
+      generateAgent(ast, { outputDir: out, sourcePath: file });
+      const tools = JSON.parse(readFileSync(join(out, 'agent', 'tools.json'), 'utf8')).tools;
+      expect(tools[0].description).toContain('[Advisory: stage Idle]\nGO FILE BRIEF');
+      expect(tools[0].description).toContain('[Advisory: stage Idle, await AwaitingReview]\nreview ONLY go');
+      expect(tools[0].description).not.toContain('review ONLY peek');
+      expect(tools[1].description).toContain('[Advisory: await AwaitingReview]\nreview ONLY peek');
+      expect(tools[1].description).not.toContain('GO FILE BRIEF');
+      const md = readFileSync(join(out, 'agent', 'AGENTS.md'), 'utf8');
+      expect(md).toContain('### Tool `go`');
+      expect(md).toContain('stage `Idle`');
+      expect(md.indexOf('review ONLY go')).toBeGreaterThan(md.indexOf('### `AwaitingReview`'));
+      expect(md).toContain('#### Tool `peek`');
+      expect(() => parseSpeckContent(src.replace('prompt tool go stage Idle', 'prompt tool missing stage Idle'))).toThrow(/unknown tool/);
+      expect(() => parseSpeckContent(src.replace('stage Idle file', 'stage Missing file'))).toThrow(/unknown stage/);
+      expect(() => parseSpeckContent(src.replace('await AwaitingReview "review ONLY peek"', 'await Missing "review ONLY peek"'))).toThrow(/unknown await/);
+      expect(() => parseSpeckContent(src.replace(/        stages stage \{[\s\S]*?        \}\n/, ''))).toThrow(/unknown stage/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('ignores unbalanced braces and escaped quotes in bound prompts', () => {
+    const text = 'literal } } and escaped " quote';
+    const src = MINIMAL.replace('tool go -> Go effect act', `prompt tool go ${JSON.stringify(text)}\n        prompt tool peek file "path{.txt"\n        tool go -> Go effect act`);
+    const ast = parseSpeckContent(src);
+    expect((ast.specks[0].members.find(m => m.type === 'agent') as any).prompts).toEqual([
+      { tool: 'go', prompt: text }, { tool: 'peek', prompt: { file: 'path{.txt' } },
+    ]);
+    expect(printAST(parseSpeckContent(printAST(ast)))).toBe(printAST(ast));
+  });
+
   it('rejects malformed advisory strings', () => {
     expect(() => parseSpeckContent(MINIMAL.replace('tool go -> Go effect act', 'instruction "bad\\q"'))).toThrow();
     expect(() => parseSpeckContent(MINIMAL.replace('effect act', 'effect act description missing'))).toThrow();

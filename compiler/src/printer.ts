@@ -300,6 +300,9 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
     lines.push('    }');
   }
   for (const instruction of member.instructions ?? []) lines.push(`    instruction ${typeof instruction === 'string' ? JSON.stringify(instruction) : `file ${JSON.stringify(instruction.file)}`}`);
+  for (const p of member.prompts ?? []) {
+    lines.push(`    prompt tool ${p.tool}${p.stage ? ` stage ${p.stage}` : ''}${p.await ? ` await ${p.await}` : ''} ${typeof p.prompt === 'string' ? JSON.stringify(p.prompt) : `file ${JSON.stringify(p.prompt.file)}`}`);
+  }
   for (const t of member.tools) {
     lines.push(`    tool ${t.name} -> ${t.action} effect ${t.effect}${t.description !== undefined ? ` description ${typeof t.description === 'string' ? JSON.stringify(t.description) : `file ${JSON.stringify(t.description.file)}`}` : ''}`);
   }

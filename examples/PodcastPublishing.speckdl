@@ -63,7 +63,12 @@ speck PodcastPublishing {
         return true
     }
     agent {
-        instruction file "PodcastPublishing-work.txt"
+        instruction "Do not invent facts, URLs, guests, or products. The integrator implements external operations; these instructions do not verify platform updates."
+        prompt tool draft_metadata stage Uploading file "PodcastPublishing-work.txt"
+        prompt tool read_transcript "Read the transcript before drafting metadata and extract only facts actually stated."
+        prompt tool apply_metadata await AwaitingApproval "Present the exact canonical apply_metadata call, including its title and description, to the host for review. Nothing goes live until signed approval of that call's digest; apply only those exact arguments. The integrator must use the same approved title and description for video and audio. The draft arguments are not stored or bound. On rejection or timeout, start a fresh run and redraft."
+        prompt tool request_fix stage MetadataLive "For corrections, use request_fix, which changes no platform metadata; then present the exact canonical fix_metadata call for fresh host review and signed approval."
+        prompt tool fix_metadata await AwaitingApproval "Wait for fresh signed approval bound to the exact canonical fix_metadata tool and arguments before executing. On rejection or timeout, start a fresh run and redraft; the integrator must reconcile correction recovery without bypassing approval."
         stages stage {
             Idle = 0
             AssetsReady = 1
@@ -74,7 +79,7 @@ speck PodcastPublishing {
         }
         tool fetch_assets    -> FetchAssets     effect act
         tool start_uploads   -> StartUploads    effect act
-        tool draft_metadata  -> DraftMetadata   effect act description "Draft a transcript-grounded title and description with the saved contact links for host review."
+        tool draft_metadata  -> DraftMetadata   effect act
         tool apply_metadata  -> ApplyMetadata   effect act description "Apply the exact title and description in the host-approved call through the integrator."
         tool request_fix     -> RequestFix      effect act
         tool fix_metadata    -> FixMetadata     effect act description "Apply a correction only with fresh approval bound to this exact call."

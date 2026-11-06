@@ -313,6 +313,8 @@ export interface AgentMemberNode {
   awaits: AgentAwaitSpec[];
   /** Optional ordered work-brief paragraphs (advisory, not enforced). */
   instructions?: AgentPrompt[];
+  /** Advisory prompts bound to a tool, optionally qualified by stage or await. */
+  prompts?: AgentBoundPrompt[];
   /** Optional `pending timeout <dur>`: an in-flight tool call older than this
    *  is cleared as failed (state not advanced). Runtime default: 10m. */
   pendingTimeout?: { durationMs: number; durationText: string };
@@ -354,6 +356,13 @@ export interface AgentStagesMap {
 }
 
 export type AgentPrompt = string | { file: string };
+
+export interface AgentBoundPrompt {
+  tool: string;
+  stage?: string;
+  await?: string;
+  prompt: AgentPrompt;
+}
 
 export interface AgentToolBinding {
   /** Tool name exposed to the agent runtime (e.g. run_tests). */
@@ -701,7 +710,7 @@ function findBlockEnd(lines: string[], startIndex: number, startBraceCount: numb
     const line = lines[i];
     // Agent advisory strings may contain braces. Preserve legacy counting for
     // all other lines (including comments and existing expression syntax).
-    const advisory = /^\s*(?:instruction\s+(?:file\s+)?"|tool\s+.*\sdescription\s+(?:file\s+)?")/.test(line);
+    const advisory = /^\s*(?:instruction\s+(?:file\s+)?"|prompt\s+tool\s+[^"\n]*"|tool\s+.*\sdescription\s+(?:file\s+)?")/.test(line);
     let quoted = false;
     let escaped = false;
     for (const ch of line) {
@@ -2683,6 +2692,7 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
   const instructions: AgentPrompt[] = [];
+  const prompts: AgentBoundPrompt[] = [];
   let stages: AgentStagesMap | undefined;
   let pendingTimeout: AgentMemberNode['pendingTimeout'];
   const harnesses: AgentHarnessSpec[] = [];
@@ -2731,6 +2741,16 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
     const instructionMatch = line.match(/^instruction\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*")\s*$/);
     if (instructionMatch) {
       instructions.push(instructionMatch[1] ? { file: JSON.parse(instructionMatch[2]) } : JSON.parse(instructionMatch[2]));
+      i++;
+      continue;
+    }
+
+    // prompt tool <name> [stage <label>] [await <state>] [file] "..."
+    const promptMatch = line.match(/^prompt\s+tool\s+([A-Za-z_][\w-]*)(?:\s+stage\s+(\w+))?(?:\s+await\s+(\w+))?\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*")\s*$/);
+    if (promptMatch) {
+      prompts.push({ tool: promptMatch[1], ...(promptMatch[2] ? { stage: promptMatch[2] } : {}),
+        ...(promptMatch[3] ? { await: promptMatch[3] } : {}),
+        prompt: promptMatch[4] ? { file: JSON.parse(promptMatch[5]) } : JSON.parse(promptMatch[5]) });
       i++;
       continue;
     }
@@ -2932,6 +2952,12 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
 
   const node: AgentMemberNode = { type: 'agent', stages, tools, awaits };
   if (instructions.length) node.instructions = instructions;
+  for (const p of prompts) {
+    if (!tools.some(t => t.name === p.tool)) throw new Error(`Parse error in agent prompt: unknown tool ${p.tool}`);
+    if (p.stage && !stages?.labels.some(l => l.name === p.stage)) throw new Error(`Parse error in agent prompt: unknown stage ${p.stage}`);
+    if (p.await && !awaits.some(a => a.state === p.await)) throw new Error(`Parse error in agent prompt: unknown await ${p.await}`);
+  }
+  if (prompts.length) node.prompts = prompts;
   if (pendingTimeout) node.pendingTimeout = pendingTimeout;
   if (harnesses.length > 0) node.harnesses = harnesses;
   return node;
