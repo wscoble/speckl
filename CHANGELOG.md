@@ -19,6 +19,22 @@ alias.
   custom_name effect act` specifies an alias. Effects remain required and the
   existing `tool custom_name -> FetchAssets effect act` form remains supported.
   Prompt tool references use the agent-facing name.
+- **`prompt tool`.** `prompt tool NAME` attaches an advisory work brief to a
+  declared agent-facing tool. NAME is that tool's agent-facing name, such as
+  `draft_metadata`, not the action name. The brief may be inline text (a JSON
+  string) or a relative file, and may also name a declared stage and/or await
+  (`stage` before `await` when both are present). At compile time the text is
+  written into that tool's `tools.json` description and the matching
+  `AGENTS.md` section: the tool section, or the named await's section when an
+  await is set. Hooks and Z3 do not execute the prompt text. Stage and await
+  labels are associations on the compiled brief, not runtime filters. Unknown
+  tool, stage, or await names are rejected at parse time. A stage qualifier
+  requires a `stages` map. Prompt file paths are local and relative to the
+  spec, not the current working directory; absolute paths and URLs are
+  rejected at compile time. The spec hash fingerprints the spec text, not
+  referenced prompt files. `instruction` remains for standing agent-level
+  defaults. Existing tool `description` and `description file` remain
+  supported.
 - **`examples/PodcastPublishing.speckdl`.** A podcast metadata workflow
   with call-bound host approval for initial updates and corrections. Two
   model invariants are checked to depth 8, with a weakened-guard regression
