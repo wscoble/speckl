@@ -8,7 +8,7 @@
 // does not contain them), as are `next:` relations (parsed separately from
 // raw source) and `type` aliases (not captured as members).
 
-import { AST, SpeckNode, MemberNode, TypeExpr } from './parser.js';
+import { AST, SpeckNode, MemberNode, TypeExpr, inferAgentToolName } from './parser.js';
 
 /** Render a parsed AST back to SpeckDL source. */
 export function printAST(ast: AST): string {
@@ -27,8 +27,9 @@ function printSpeck(speck: SpeckNode): string {
   if (speck.eventSuffix) lines.push(`    event_suffix: "${speck.eventSuffix}"`);
   if (speck.k8sGroup) lines.push(`    k8s_group: "${speck.k8sGroup}"`);
   if (speck.k8sVersion) lines.push(`    k8s_version: "${speck.k8sVersion}"`);
+  const actionNames = new Set(speck.members.filter(m => m.type === 'action').map(m => m.name));
   for (const member of speck.members) {
-    for (const line of printMember(member)) {
+    for (const line of printMember(member, actionNames)) {
       lines.push(`    ${line}`);
     }
   }
@@ -36,7 +37,7 @@ function printSpeck(speck: SpeckNode): string {
   return lines.join('\n');
 }
 
-function printMember(member: MemberNode): string[] {
+function printMember(member: MemberNode, actionNames: Set<string>): string[] {
   switch (member.type) {
     case 'import': {
       let s = `import "${member.path}"`;
@@ -73,7 +74,7 @@ function printMember(member: MemberNode): string[] {
     case 'next':
       return [member.anyAction ? 'next: { }' : `next: ${member.actions.join(' | ')}`];
     case 'agent':
-      return printAgent(member);
+      return printAgent(member, actionNames);
     case 'event': {
       const lines = [`event ${member.name} {`];
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
@@ -290,7 +291,7 @@ function printType(t: TypeExpr | undefined): string {
       return 'Unknown';
   }
 }
-function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
+function printAgent(member: Extract<MemberNode, { type: 'agent' }>, actionNames: Set<string>): string[] {
   const lines: string[] = ['agent {'];
   if (member.stages) {
     lines.push(`    stages ${member.stages.variable} {`);
@@ -299,8 +300,14 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>): string[] {
     }
     lines.push('    }');
   }
+  for (const instruction of member.instructions ?? []) lines.push(`    instruction ${typeof instruction === 'string' ? JSON.stringify(instruction) : `file ${JSON.stringify(instruction.file)}`}`);
+  for (const p of member.prompts ?? []) {
+    lines.push(`    prompt tool ${p.tool}${p.stage ? ` stage ${p.stage}` : ''}${p.await ? ` await ${p.await}` : ''} ${typeof p.prompt === 'string' ? JSON.stringify(p.prompt) : `file ${JSON.stringify(p.prompt.file)}`}`);
+  }
   for (const t of member.tools) {
-    lines.push(`    tool ${t.name} -> ${t.action} effect ${t.effect}`);
+    const binding = t.name === inferAgentToolName(t.action) ? t.action
+      : !actionNames.has(t.action) || actionNames.has(t.name) ? `${t.name} -> ${t.action}` : `${t.action} -> ${t.name}`;
+    lines.push(`    tool ${binding} effect ${t.effect}${t.description !== undefined ? ` description ${typeof t.description === 'string' ? JSON.stringify(t.description) : `file ${JSON.stringify(t.description.file)}`}` : ''}`);
   }
   if (member.pendingTimeout) {
     lines.push(`    pending timeout ${member.pendingTimeout.durationText}`);
