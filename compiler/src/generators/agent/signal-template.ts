@@ -31,11 +31,18 @@ const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-config.jso
 let lockHeld = null;
 
 function releaseLock() {
-  if (lockHeld) {
-    try { fs.unlinkSync(lockHeld); } catch { /* ignore */ }
-    lockHeld = null;
-  }
+  if (!lockHeld) return;
+  const lp = lockHeld;
+  lockHeld = null;
+  try { fs.unlinkSync(lp); } catch { /* ignore */ }
+  try { releaseGate(lp); } catch { /* ignore */ }
 }
+function onStop() {
+  releaseLock();
+  process.exit(1);
+}
+process.on('SIGTERM', onStop);
+process.on('SIGINT', onStop);
 
 function fail(msg, code = 1) {
   const err = new Error(msg);
@@ -83,24 +90,187 @@ function atomicWrite(file, data) {
 
 function lockPath(s) { return s + '.lock'; }
 
+function randomSuffix() {
+  return process.pid + '.' + Date.now().toString(36) + '.' + Math.random().toString(36).slice(2);
+}
+function readLockText(file) {
+  try { return fs.readFileSync(file, 'utf-8'); } catch { return null; }
+}
+function pidFromText(text) {
+  if (typeof text !== 'string') return null;
+  const pid = parseInt(text.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return pid;
+}
+function pidIsDead(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (e) { return !!(e && e.code === 'ESRCH'); }
+}
+function linkUnsupported(e) {
+  const c = e && e.code;
+  return c === 'EPERM' || c === 'ENOTSUP' || c === 'ENOSYS' || c === 'EOPNOTSUPP' || c === 'EXDEV';
+}
+function gatePath(lp) { return lp + '.break'; }
+function takeGate(lp) {
+  const gp = gatePath(lp);
+  try { fs.mkdirSync(gp); }
+  catch (e) {
+    if (e && e.code === 'EEXIST') return false;
+    throw e;
+  }
+  let fd = -1;
+  try {
+    fd = fs.openSync(path.join(gp, 'pid'), 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(path.join(gp, 'pid')); } catch { /* ignore */ }
+    try { fs.rmdirSync(gp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  return true;
+}
+function releaseGate(lp) {
+  const gp = gatePath(lp);
+  const mine = String(process.pid);
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  if (readLockText(path.join(dest, 'pid')) !== mine) return;
+  try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+  try { fs.rmdirSync(dest); } catch { /* ignore */ }
+}
+function clearDeadGate(lp) {
+  const gp = gatePath(lp);
+  let before;
+  try { before = fs.statSync(gp); } catch { return; }
+  const text = readLockText(path.join(gp, 'pid'));
+  const pid = pidFromText(text);
+  const dead = pid !== null && pidIsDead(pid);
+  const old = Date.now() - before.mtimeMs > 30000;
+  if (!dead && !old) return;
+  const dest = lp + '.break.stale.' + randomSuffix();
+  try { fs.renameSync(gp, dest); }
+  catch { return; }
+  let after;
+  try { after = fs.statSync(dest); } catch { return; }
+  const now = readLockText(path.join(dest, 'pid'));
+  const nowDead = pidFromText(now) !== null && pidIsDead(pidFromText(now));
+  const same = before.ino === after.ino && before.dev === after.dev && now === text;
+  if (!(same && (nowDead || old))) return;
+  try { fs.unlinkSync(path.join(dest, 'pid')); } catch { /* ignore */ }
+  try { fs.rmdirSync(dest); } catch { try { fs.unlinkSync(dest); } catch { /* ignore */ } }
+}
+function breakLockIfUnchanged(lp, expected) {
+  if (typeof expected !== 'string') return;
+  const dest = lp + '.stale.' + randomSuffix();
+  try { fs.renameSync(lp, dest); }
+  catch { return; }
+  if (readLockText(dest) !== expected) return;
+  try { fs.unlinkSync(dest); } catch { /* already gone */ }
+}
+function sweepOne(full) {
+  try { fs.unlinkSync(path.join(full, 'pid')); } catch { /* no pid file */ }
+  try { fs.rmdirSync(full); } catch { try { fs.unlinkSync(full); } catch { /* best effort */ } }
+}
+function sweepLockTemps(lp) {
+  const dir = path.dirname(lp);
+  const base = path.basename(lp);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const now = Date.now();
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (name.indexOf(base + '.') !== 0) continue;
+    if (name.indexOf('.tmp.') < 0 && name.indexOf('.stale.') < 0) continue;
+    const full = path.join(dir, name);
+    let st;
+    try { st = fs.lstatSync(full); } catch { continue; }
+    const old = now - st.mtimeMs > 30000;
+    if (st.isDirectory()) {
+      const raw = readLockText(path.join(full, 'pid'));
+      const pid = pidFromText(raw);
+      const pidless = raw == null || String(raw).trim() === '';
+      if ((pid !== null && pid !== process.pid && pidIsDead(pid)) || (pidless && old)) sweepOne(full);
+      continue;
+    }
+    const raw = readLockText(full);
+    const pid = pidFromText(raw);
+    const empty = raw == null || String(raw).trim() === '';
+    if ((pid !== null && pid !== process.pid && pidIsDead(pid)) || (empty && old)) {
+      try { fs.unlinkSync(full); } catch { /* best effort */ }
+    }
+  }
+}
+function claimLock(lp) {
+  const tmp = lp + '.tmp.' + randomSuffix();
+  let fd = -1;
+  try {
+    fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, String(process.pid));
+    fs.fsyncSync(fd);
+  } catch (e) {
+    try { if (fd >= 0) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  try {
+    fs.linkSync(tmp, lp);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    if (!linkUnsupported(e)) throw e;
+    fd = fs.openSync(lp, 'wx');
+    try { fs.writeSync(fd, String(process.pid)); fs.fsyncSync(fd); }
+    catch (writeErr) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      throw writeErr;
+    }
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    lockHeld = lp;
+    return;
+  }
+  try { fs.unlinkSync(tmp); } catch { /* the lock inode already holds the pid */ }
+  lockHeld = lp;
+}
+
 async function acquireLock(stateFile) {
   const lp = lockPath(stateFile);
   const start = Date.now();
+  try { sweepLockTemps(lp); } catch { /* best effort */ }
   while (true) {
+    let gate = false;
     try {
-      const fd = fs.openSync(lp, 'wx');
-      fs.closeSync(fd);
-      lockHeld = lp;
-      return;
+      try { clearDeadGate(lp); } catch { /* best effort */ }
+      gate = takeGate(lp);
+      if (gate) {
+        if (fs.existsSync(lp)) {
+          const text = readLockText(lp);
+          const pid = pidFromText(text);
+          let stale = false;
+          try { stale = Date.now() - fs.statSync(lp).mtimeMs > 30000; } catch { stale = false; }
+          if (text !== null && ((pid !== null && pidIsDead(pid)) || stale)) breakLockIfUnchanged(lp, text);
+        }
+        if (!fs.existsSync(lp)) {
+          claimLock(lp);
+          return;
+        }
+        releaseGate(lp);
+        gate = false;
+      }
     } catch (e) {
+      if (gate) { try { releaseGate(lp); } catch { /* ignore */ } }
+      if (lockHeld === lp) {
+        lockHeld = null;
+        try { fs.unlinkSync(lp); } catch { /* ignore */ }
+      }
       if (e && e.code !== 'EEXIST') throw e;
-      // Break a lock left behind by a crashed holder (older than 30s).
-      try {
-        if (Date.now() - fs.statSync(lp).mtimeMs > 30000) { fs.unlinkSync(lp); continue; }
-      } catch { /* raced with release; retry */ }
-      if (Date.now() - start > 5000) throw new Error('state lock timeout');
-      await new Promise(r => setTimeout(r, 10));
     }
+    if (Date.now() - start > 5000) throw new Error('state lock timeout');
+    await new Promise(r => setTimeout(r, 10));
   }
 }
 

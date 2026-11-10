@@ -38,6 +38,35 @@ export function emitAdapterMjs(speckName: string, harnesses: string[]): string {
  *
  * Fail closed: unmapped tools, malformed payloads, protected paths and hook
  * errors deny (exit 2 + stderr, plus the harness's own deny JSON).
+ * An adapter-stage denial (before hook.mjs pre/post) is also appended to the
+ * decision record by \`hook.mjs deny\` once the state verifies. Exit 0 from
+ * that command means the line was appended. Any failure to append exits
+ * nonzero, and this adapter prints a notice. The call stays denied either
+ * way. A notice is a whole stderr line that begins with
+ * "(denial not recorded:" or "(denial may not be recorded:". The timeout
+ * form says "may not": under load the line can already have been appended.
+ * A tool name can quote the same words inside the reason. A denial waits
+ * at most 1 second for the state lock. pre and post wait 5. The lock is
+ * published with link() only after the pid is on disk. The temp name has a
+ * random suffix. If link() cannot make a hard link, publish falls back to
+ * an exclusive create. A temp whose pid is dead is removed on a later
+ * acquire. An empty temp or a pid-less stale file is removed once it is
+ * 30 seconds old. A temp whose pid is alive in another container looks
+ * dead and is removed; that holder then fails to publish. Claim and break
+ * share a lock.break directory; a dead lock is renamed aside and discarded
+ * only when the renamed bytes are still that pid. A renamed gate is not
+ * moved back. Until a live or unreadable lock file is 30 seconds old by
+ * mtime, every allowed call waits 5 seconds and exits 2, and every denial
+ * waits 1 second and prints the notice. The next call after that breaks
+ * the lock. A holder paused for more than 30 seconds (SIGSTOP or sleep)
+ * loses the gate and the lock; on resume it does not append and the
+ * adapter prints a notice. A holder in another pid namespace looks dead
+ * and its lock is broken. Split or re-encoded copies of the key are not
+ * detected.
+ * A timeout sends SIGTERM. SPECKL_HOOK_TIMEOUT_MS defaults to 20 seconds.
+ * Whoever holds the state key can append deny lines; that is the same HMAC
+ * trust as pre and post. An agent that can read the key file can forge
+ * the record. A 16-hex run from that key is not stored as text.
  * Do not edit: regenerate with speckl-compile <spec> -t agent.
  */
 import crypto from 'node:crypto';
@@ -68,7 +97,9 @@ const deps = {
     // wiring) so a hung hook.mjs is answered with a deny, not a fail-open.
     const t = Number(process.env.SPECKL_HOOK_TIMEOUT_MS);
     const timeout = Number.isFinite(t) && t > 0 ? t : 20000;
-    const r = spawnSync(process.execPath, args, { input: JSON.stringify(msg), encoding: 'utf-8', timeout, killSignal: 'SIGKILL' });
+    // SIGTERM, not SIGKILL: hook.mjs drops the state lock in its SIGTERM
+    // handler. SIGKILL cannot be caught and would leave the lock behind.
+    const r = spawnSync(process.execPath, args, { input: JSON.stringify(msg), encoding: 'utf-8', timeout, killSignal: 'SIGTERM' });
     const why = r.error
       ? (r.error.code === 'ETIMEDOUT' ? 'hook.mjs timed out after ' + timeout + 'ms' : 'hook.mjs could not be started')
       : (r.signal ? 'hook.mjs killed by ' + r.signal : '');

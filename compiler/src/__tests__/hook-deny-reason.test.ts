@@ -410,7 +410,7 @@ describe('deny text keeps each harness format', () => {
     const calls: unknown[] = [];
     const deps = {
       calls,
-      runHook(cmd: 'pre' | 'post', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
+      runHook(cmd: 'pre' | 'post' | 'deny', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
         calls.push({ cmd, msg, statePath, keyPath });
         return { status: 2, stdout: JSON.stringify({ decision: 'deny', reason: reasonLine }) + '\n', stderr: '' };
       },
@@ -450,7 +450,7 @@ describe('deny text keeps each harness format', () => {
     expect(blocked.stderr).toContain('off limits');
     expect(blocked.stderr).not.toContain(key);
     expect(blocked.stderr).toContain('<keyfile>');
-    expect(deps.calls).toHaveLength(2);
+    expect(deps.calls.map(c => (c as { cmd: string }).cmd)).toEqual(['pre', 'pre', 'deny']);
   });
 
   it('redacts a resolved key path, the key file contents, and a signer key on each adapter denial', () => {
