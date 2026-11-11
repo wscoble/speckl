@@ -173,7 +173,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - `speck A {` with no closing brace is missing final "}" at column 9. It used to parse as an empty speck.
 - An extra `}` after a closed speck is extra "}" at line 3 column 1. It used to be ignored.
 - Text after a speck's `}` (`} junk`) is text after a speck's "}" at column 3. It used to be ignored.
-- `speck A { } speck B { }` is a second speck on one line at column 13. Speck B used to be dropped. An unrecognized member line is still accepted.
+- `speck A { } speck B { }` is a second speck on one line at column 13. Speck B used to be dropped.
 - A member line the parser does not recognize (`garbage line here`, `actoin go {`, `enum`, a description line, a bare `x :=`) is unrecognized member. It used to be dropped or folded into a neighbor.
 
 ## Documentation
