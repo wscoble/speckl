@@ -86,9 +86,12 @@ alias.
   `parser-main-corpus.test.ts` cover this.
 - **Direct generator check.** `generate` for OpenAPI, CycloneDX, SPDX, and
   the TypeScript IR backend calls the conservation check before it writes.
-  A direct call cannot drop a `oneof`. `compiler/src/__tests__/generator-guard.test.ts`
-  calls those generators without `compileSpec`.
-- **Direct schema check.** Provenance, Kubernetes CRDs, and Protobuf call the conservation check before they write. Protobuf emits `oneof`. The other two reject it. `generator-guard.test.ts` calls them without `compileSpec`.
+  A direct call cannot drop a `oneof`. A missing member list
+  (`sourceMemberTypes` on IR, `members` on an AST) is an error, and so is a
+  type the table does not name. An empty list is a speck with no members.
+  `lower` records `sourceMemberTypes`. `compiler/src/__tests__/generator-guard.test.ts`
+  and `guard-fail-closed-small.test.ts` call those generators without `compileSpec`.
+- **Direct schema check.** Provenance, Kubernetes CRDs, and Protobuf call the conservation check before they write. Protobuf emits `oneof`. The other two reject it. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls them without `compileSpec`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

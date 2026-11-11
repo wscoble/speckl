@@ -21,7 +21,7 @@ import path from 'path';
  * Generate TypeScript state machine runtime from a SpeckDL spec, via the IR.
  *
  * @param ir The lowered IR for the spec. A speck with no `sourceMemberTypes`
- *   skips the conservation guard; lowered IR always sets that field.
+ *   is an error. `lower` sets that field.
  * @param outputDir Where to write the generated .ts file.
  */
 export function generateTypeScriptFromIR(ir: IR, outputDir: string): void {
