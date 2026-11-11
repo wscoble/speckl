@@ -30,7 +30,7 @@ const ON: { [name: string]: boolean } = {
   memberTail: true,
   braceLine: true,
   state: true,
-  init: false,
+  init: true,
   comment: false,
   cr: false,
   section: false,
