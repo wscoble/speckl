@@ -93,7 +93,12 @@ alias.
   example output pin moved for that reason. See
   `compiler/review/findings-invariant-comment.txt`.
 - **One-line state.** `state { x: Nat }` and `init { x := 0 }` store the
-  field and the assignment. The line walker left both lists empty. See
+  field and the assignment. The line walker left both lists empty. An empty
+  `state { }` stores no fields. A comment after the closing brace is not
+  part of the field. A `}` inside `//` does not close the block. A comma in
+  `state { x: Nat, y: Nat }` stays in the type. Example output does not
+  change, so the output pin stays
+  `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
   `compiler/review/findings-oneline-state.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
