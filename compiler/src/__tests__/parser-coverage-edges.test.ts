@@ -43,10 +43,9 @@ describe('parser edges the examples do not reach', () => {
     expect(stripInvariantExpr('x  /* c */  >= 0 // t\n && s != "a  b"')).toContain('"a  b"');
   });
 
-  it('rejects a top-level line that is not a speck or an import', () => {
-    expect(() => parseWalker('hello\n', 'h.speckdl')).not.toThrow();
-    expect(() => parseSpeckContent('hello\n', 'h.speckdl')).toThrow(
-      'Parse error at h.speckdl:1: unrecognized top-level "hello" (column 1)',
-    );
+  it('rejects a top-level line that is not a speck or an import, as the line walker does', () => {
+    const expected = 'Parse error at h.speckdl:1: unrecognized top-level "hello" (column 1)';
+    expect(() => parseWalker('hello\n', 'h.speckdl')).toThrow(expected);
+    expect(() => parseSpeckContent('hello\n', 'h.speckdl')).toThrow(expected);
   });
 });
