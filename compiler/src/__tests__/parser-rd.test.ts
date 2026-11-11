@@ -6,15 +6,19 @@ import { spawnSync } from 'node:child_process';
 import { parseSpeckContent } from '../parser.js';
 import { lexSpeck } from '../speck-lex.js';
 import { compileSpec } from '../compile.js';
+import { parseSpeckContent as parseWalker } from '../line-walker/parser.js';
+
+function walkerAccepted(src: string, file: string, strict: string): void {
+  expect(() => parseWalker(src, file), src).not.toThrow();
+  expect(() => parseSpeckContent(src, file), src).toThrow(strict);
+}
+
+function walkerThrew(src: string, file: string, walker: string, strict: string): void {
+  expect(() => parseWalker(src, file), src).toThrow(walker);
+  expect(() => parseSpeckContent(src, file), src).toThrow(strict);
+}
 
 const hasZ3 = spawnSync('z3', ['--version']).status === 0;
-
-function firstNonAsciiColumn(line: string): number {
-  for (let i = 0; i < line.length; i++) {
-    if (line.charCodeAt(i) > 127) return i + 1;
-  }
-  throw new Error(`no non-ASCII character in ${JSON.stringify(line)}`);
-}
 
 const machine = [
   'speck Gate {',
@@ -29,15 +33,16 @@ const machine = [
 ].join('\n');
 
 describe('token parser', () => {
-  it('rejects a non-ASCII identifier with line and column', () => {
-    const src = 'speck Größe {\n    state { n: Nat }\n}\n';
-    const column = firstNonAsciiColumn(src.split('\n')[0]);
-    expect(() => parseSpeckContent(src, 'id.speckdl')).toThrow(
-      new RegExp(`Parse error at id\\.speckdl:1: identifier must be ASCII \\(column ${column}\\)`),
+  it('rejects a non-ASCII identifier the line walker accepted', () => {
+    walkerAccepted(
+      'speck Größe {\n    state { n: Nat }\n}\n',
+      'id.speckdl',
+      'Parse error at id.speckdl:1: identifier must be ASCII (column 9)',
     );
-    const action = '    action Größe { n := 1 }';
-    expect(() => parseSpeckContent(`speck S {\n    state { n: Nat }\n${action}\n}\n`)).toThrow(
-      new RegExp(`Parse error at line 3: identifier must be ASCII \\(column ${firstNonAsciiColumn(action)}\\)`),
+    walkerAccepted(
+      'speck S {\n    state { n: Nat }\n    action Größe { n := 1 }\n}\n',
+      'id.speckdl',
+      'Parse error at id.speckdl:3: identifier must be ASCII (column 14)',
     );
   });
 
@@ -57,17 +62,21 @@ describe('token parser', () => {
     expect(parseSpeckContent(src).specks.map(s => s.name)).toEqual(['S']);
   });
 
-  it('reports an unterminated string with line and column', () => {
-    const src = 'speck S {\n    state { n: Nat }\n    init { s := "abc }\n}\n';
-    expect(() => parseSpeckContent(src, 'bad.speckdl')).toThrow(
-      /Parse error at bad\.speckdl:3: unterminated string \(column /,
+  it('adds the column to an unterminated string', () => {
+    walkerThrew(
+      'speck S {\n    state { n: Nat }\n    init { s := "abc }\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: unterminated string',
+      'Parse error at bad.speckdl:3: unterminated string (column 17)',
     );
   });
 
-  it('reports an unterminated block comment with line and column', () => {
-    const src = 'speck S {\n    state { n: Nat }\n    /* never\n}\n';
-    expect(() => parseSpeckContent(src, 'bad.speckdl')).toThrow(
-      /Parse error at bad\.speckdl:3: unterminated block comment \(column 5\)/,
+  it('adds the column to an unterminated block comment', () => {
+    walkerThrew(
+      'speck S {\n    state { n: Nat }\n    /* never\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: unterminated block comment',
+      'Parse error at bad.speckdl:3: unterminated block comment (column 5)',
     );
   });
 
@@ -78,10 +87,11 @@ describe('token parser', () => {
     );
   });
 
-  it('rejects an unexpected non-ASCII mark outside a comment', () => {
-    const src = 'speck S {\n    state { n: Nat }\n    →\n}\n';
-    expect(() => parseSpeckContent(src, 'mark.speckdl')).toThrow(
-      /Parse error at mark\.speckdl:3: unexpected character "→" \(column 5\)/,
+  it('rejects an unexpected non-ASCII mark the line walker skipped', () => {
+    walkerAccepted(
+      'speck S {\n    state { n: Nat }\n    →\n}\n',
+      'mark.speckdl',
+      'Parse error at mark.speckdl:3: unexpected character "→" (column 5)',
     );
   });
 
@@ -156,19 +166,42 @@ describe('token parser', () => {
     expect(smt).toContain('(assert Small)');
   });
 
-  it('rejects structure the token stream can see', () => {
-    const cases: [string, RegExp][] = [
-      ['speck A {\n    state { x: Nat }\n', /missing final "}"/],
-      ['speck A {\n    state { x: Nat }\n}}\n', /extra "}"/],
-      ['speck A {\n    state { x: Nat }\n} junk\n', /text after a speck's "}"/],
-      ['speck A { } speck B { }\n', /a second speck on one line/],
-      ['speck A {\n    /* c */ action go {\n        x := 1\n    }\n    state { x: Nat }\n}\n', /code after \*\/ on a line that starts with \/\*/],
-      ['/* note */ speck A {\n    state { x: Nat }\n}\n', /code after \*\/ on a line that starts with \/\*/],
-      ['speck A {\r    state { x: Nat }\r}\r', /CR-only line endings are not supported/],
-    ];
-    for (const [src, re] of cases) {
-      expect(() => parseSpeckContent(src, 'bad.speckdl'), src).toThrow(re);
-    }
+  it('rejects structure the line walker accepted', () => {
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:1: missing final "}" (column 9)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n}}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: extra "}" (column 2)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n} junk\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: text after a speck\'s "}" (column 3)',
+    );
+    walkerAccepted(
+      'speck A { } speck B { }\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:1: a second speck on one line (column 13)',
+    );
+    walkerAccepted(
+      'speck A {\n    /* c */ action go {\n        x := 1\n    }\n    state { x: Nat }\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13)',
+    );
+    walkerAccepted(
+      '/* note */ speck A {\n    state { x: Nat }\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:1: code after */ on a line that starts with /* (column 12)',
+    );
+    walkerAccepted(
+      'speck A {\r    state { x: Nat }\r}\r',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10)',
+    );
   });
 
   it('strips one leading BOM and still parses the speck', () => {
@@ -200,11 +233,27 @@ describe('token parser', () => {
     expect(() => parseSpeckContent('speck A {\n    invariant P {}\n}\n', 'empty.speckdl')).toThrow(/invariant expression is empty/);
   });
 
-  it('rejects a second block or other text after a member close', () => {
-    expect(() => parseSpeckContent('speck A {\n    invariant P { x >= 0 } invariant Q { x < 0 }\n}\n', 'two.speckdl')).toThrow(/text after a member's "}"/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat } init { x := 0 }\n}\n', 'two.speckdl')).toThrow(/text after a member's "}"/);
-    expect(() => parseSpeckContent('speck A {\n    invariant P { x >= 0 } junk\n}\n', 'junk.speckdl')).toThrow(/text after a member's "}"/);
-    expect(() => parseSpeckContent('speck A {\n    state {\n        x: Nat\n    } junk\n}\n', 'junk.speckdl')).toThrow(/text after a member's "}"/);
+  it('rejects text after a member close the line walker kept', () => {
+    walkerAccepted(
+      'speck A {\n    invariant P { x >= 0 } invariant Q { x < 0 }\n}\n',
+      'two.speckdl',
+      'Parse error at two.speckdl:2: text after a member\'s "}" (column 28)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat } init { x := 0 }\n}\n',
+      'two.speckdl',
+      'Parse error at two.speckdl:2: text after a member\'s "}" (column 22)',
+    );
+    walkerAccepted(
+      'speck A {\n    invariant P { x >= 0 } junk\n}\n',
+      'junk.speckdl',
+      'Parse error at junk.speckdl:2: text after a member\'s "}" (column 28)',
+    );
+    walkerAccepted(
+      'speck A {\n    state {\n        x: Nat\n    } junk\n}\n',
+      'junk.speckdl',
+      'Parse error at junk.speckdl:4: text after a member\'s "}" (column 7)',
+    );
   });
 
   it('strips a block comment out of a one-line invariant', () => {
@@ -220,25 +269,44 @@ describe('token parser', () => {
     expect(init.assignments).toEqual([]);
   });
 
-  it('accepts a tab after speck and rejects a name that starts with a digit', () => {
+  it('accepts a tab after speck and rejects a digit name the walker stored', () => {
     expect(parseSpeckContent('speck\tA {\n    state { x: Nat }\n}\n').specks.map(s => s.name)).toEqual(['A']);
-    expect(() => parseSpeckContent('speck 9A {\n}\n', 'dig.speckdl')).toThrow(/identifier must not start with a digit/);
+    walkerAccepted(
+      'speck 9A {\n}\n',
+      'dig.speckdl',
+      'Parse error at dig.speckdl:1: identifier must not start with a digit (column 7)',
+    );
   });
 
-  it('rejects an unrecognized member line, naming the line and column', () => {
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    actoin go {\n        x := 1\n    }\n}\n', 'bad.speckdl'))
-      .toThrow(/bad\.speckdl:3: unrecognized member "actoin go \{" \(column 5\)/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    Action go {\n        x := 1\n    }\n}\n', 'bad.speckdl'))
-      .toThrow(/unrecognized member "Action go \{"/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    invarient P { y >= 0 }\n}\n', 'bad.speckdl'))
-      .toThrow(/unrecognized member "invarient P \{ y >= 0 \}"/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    garbage line here\n}\n', 'bad.speckdl'))
-      .toThrow(/bad\.speckdl:3: unrecognized member "garbage line here" \(column 5\)/);
+  it('rejects an unrecognized member line the line walker skipped', () => {
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    actoin go {\n        x := 1\n    }\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: unrecognized member "actoin go {" (column 5)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    Action go {\n        x := 1\n    }\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: unrecognized member "Action go {" (column 5)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    invarient P { y >= 0 }\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: unrecognized member "invarient P { y >= 0 }" (column 5)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    garbage line here\n}\n',
+      'bad.speckdl',
+      'Parse error at bad.speckdl:3: unrecognized member "garbage line here" (column 5)',
+    );
   });
 
-  it('rejects a member whose opening brace is on the next line', () => {
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    invariant P\n    {\n        x >= 0\n    }\n}\n', 'allman.speckdl'))
-      .toThrow(/allman\.speckdl:3: opening "\{" must be on the same line as the member header \(column 5\)/);
+  it('rejects a member brace on the next line', () => {
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    invariant P\n    {\n        x >= 0\n    }\n}\n',
+      'allman.speckdl',
+      'Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5)',
+    );
   });
 
   it('keeps a constraint block, including text on the closing line', () => {
@@ -260,17 +328,32 @@ describe('token parser', () => {
     expect(inv.expr).toBe('s != "a  b"');
   });
 
-  it('does not skip lines after a constraint or verify', () => {
-    const src = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n    constraint: x >= 0\n    actoin go {\n        x := 1\n    }\n    action ok {\n        x := 2\n    }\n}\n';
-    expect(() => parseSpeckContent(src, 'skip.speckdl')).toThrow(/unrecognized member "actoin go \{"/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    constraint: x >= 0\n    garbage line here\n}\n', 'g.speckdl')).toThrow(/unrecognized member/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    verify: always(x >= 0)\n    invarient P { x >= 0 }\n}\n', 'v.speckdl')).toThrow(/unrecognized member/);
+  it('rejects the member after a constraint or verify instead of skipping it', () => {
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    init { x := 0 }\n    constraint: x >= 0\n    actoin go {\n        x := 1\n    }\n    action ok {\n        x := 2\n    }\n}\n',
+      'skip.speckdl',
+      'Parse error at skip.speckdl:5: unrecognized member "actoin go {" (column 5)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    constraint: x >= 0\n    garbage line here\n}\n',
+      'g.speckdl',
+      'Parse error at g.speckdl:4: unrecognized member "garbage line here" (column 5)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    verify: always(x >= 0)\n    invarient P { x >= 0 }\n}\n',
+      'v.speckdl',
+      'Parse error at v.speckdl:4: unrecognized member "invarient P { x >= 0 }" (column 5)',
+    );
     const kept = parseSpeckContent('speck A {\n    output: { y: Nat }\n    constraint: y >= 0\n    input: { x: Nat }\n}\n');
     expect(kept.specks[0].members.map(m => m.type)).toContain('input');
   });
 
-  it('does not fold the next member into a finished named constraint', () => {
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    constraint C: x >= 0\n    Action go {\n        x := 1\n    }\n}\n', 'c.speckdl')).toThrow(/unrecognized member "Action go \{"/);
+  it('rejects the member after a named constraint instead of folding it in', () => {
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    constraint C: x >= 0\n    Action go {\n        x := 1\n    }\n}\n',
+      'c.speckdl',
+      'Parse error at c.speckdl:4: unrecognized member "Action go {" (column 5)',
+    );
     const wal = parseSpeckContent('speck A {\n    state { x: Nat }\n    constraint ReadConsistency: forall r in [0..4]:\n        (x >= 0)\n    constraint WriteSerialization:\n        (x >= 0)\n}\n');
     const exprs = wal.specks[0].members.filter(m => m.type === 'constraint').map(m => (m as { expr: string }).expr);
     expect(exprs[0]).toBe('forall r in [0..4]: (x >= 0)');
@@ -278,14 +361,34 @@ describe('token parser', () => {
   });
 
   it('rejects a malformed line inside state or init', () => {
-    expect(() => parseSpeckContent('speck A {\n    state {\n        x: Nat\n        y Nat\n    }\n}\n', 'st.speckdl')).toThrow(/unrecognized state field/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        garbage line\n    }\n}\n', 'in.speckdl')).toThrow(/unrecognized init line/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        y = 0\n    }\n}\n', 'in.speckdl')).toThrow(/unrecognized init line/);
+    walkerAccepted(
+      'speck A {\n    state {\n        x: Nat\n        y Nat\n    }\n}\n',
+      'st.speckdl',
+      'Parse error at st.speckdl:2: unrecognized state field "y Nat"',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        garbage line\n    }\n}\n',
+      'in.speckdl',
+      'Parse error at in.speckdl:3: unrecognized init line "garbage line"',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        y = 0\n    }\n}\n',
+      'in.speckdl',
+      'Parse error at in.speckdl:3: unrecognized init line "y = 0"',
+    );
   });
 
   it('rejects a misspelled top-level speck and a garbage type alias', () => {
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n}\nspek B {\n    state { y: Nat }\n}\n', 'p.speckdl')).toThrow(/unrecognized top-level "spek B \{"/);
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    type T = this is not a type !!\n}\n', 't.speckdl')).toThrow(/unrecognized member/);
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n}\nspek B {\n    state { y: Nat }\n}\n',
+      'p.speckdl',
+      'Parse error at p.speckdl:4: unrecognized top-level "spek B {" (column 1)',
+    );
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    type T = this is not a type !!\n}\n',
+      't.speckdl',
+      'Parse error at t.speckdl:3: unrecognized member "type T = this is not a type !!" (column 5)',
+    );
     expect(parseSpeckContent('speck A {\n    type State = Follower | Candidate | Leader\n    state { x: Nat }\n}\n').specks[0].name).toBe('A');
   });
 
@@ -398,14 +501,21 @@ describe('token parser', () => {
     expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    type T = Nat // c\n}\n')).not.toThrow();
   });
 
-  it('reports a brace on the next line after a block comment', () => {
-    expect(() => parseSpeckContent('speck A {\n    state { x: Nat }\n    invariant P\n    /* c\n    still */\n    { x >= 0 }\n}\n', 'br.speckdl')).toThrow(/same line/);
+  it('rejects a brace on the next line after a block comment', () => {
+    walkerAccepted(
+      'speck A {\n    state { x: Nat }\n    invariant P\n    /* c\n    still */\n    { x >= 0 }\n}\n',
+      'br.speckdl',
+      'Parse error at br.speckdl:3: opening "{" must be on the same line as the member header (column 5)',
+    );
   });
 
-  it('reports a numeric literal instead of a digit-identifier for scientific, hex, and unit forms', () => {
+  it('rejects scientific, hex, and unit forms the line walker stored', () => {
     for (const lit of ['1e5', '1e3', '1.e5', '1.5e3', '0x1F', '0b101', '1_000', '5min', '2w', '7days', '10sec', '1hr', '1h30m']) {
-      expect(() => parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P { x <= ${lit} }\n}\n`, 'num.speckdl'), lit)
-        .toThrow(new RegExp(`unsupported numeric literal "${lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+      walkerAccepted(
+        `speck A {\n    state { x: Nat }\n    invariant P { x <= ${lit} }\n}\n`,
+        'num.speckdl',
+        `Parse error at num.speckdl:3: unsupported numeric literal "${lit}" (column 24)`,
+      );
     }
     for (const lit of ['24h', '500ms', '30s', '3d', '5m', '1.5h']) {
       const inv = parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P {\n        x <= ${lit}\n    }\n}\n`).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
