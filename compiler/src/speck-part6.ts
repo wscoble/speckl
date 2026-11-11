@@ -8,6 +8,9 @@ import { takeExpressionLines } from './speck-span.js';
 export function parseInterfaceBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InterfaceNode {
   const firstLine = lines[startIndex].trim();
   const header = parseInterface(firstLine);
+  // A one-line record closes on its header. The line walker started on the
+  // next line and kept the following state fields. Those fields are not
+  // part of the record.
   const inline = inlineActionBody(firstLine);
   const innerLines = inline !== null
     ? (inline.trim() ? [inline.trim()] : [])
