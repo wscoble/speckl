@@ -1,7 +1,7 @@
 Reviewer findings: fail closed on malformed spec structure
 Question: why does this parser reject input the line walker accepted?
 
-The line walker silently accepted a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`. It returned an AST and did not say the spec was broken. A spec with those errors compiled as if the bad text were not there. This change turns that off. `MATCH_LINE_WALKER` in `compiler/src/rd-parser.ts` is false. The token parser's error is the result. Example specs still lower to the same IR, and the output pin stays `9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1`.
+The line walker silently accepted a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`. It returned an AST and did not say the spec was broken. A spec with those errors compiled as if the bad text were not there. This change turns that off. `MATCH_LINE_WALKER` in `compiler/src/rd-parser.ts` is false. The token parser's error is the result. Example specs still lower to the same IR. Rejecting malformed structure does not change those files' output.
 
 `compiler/src/__tests__/parser-malformed.test.ts` runs the line walker and `parseSpeck` on the same source. The walker column is the before. This parser's message is the after.
 
