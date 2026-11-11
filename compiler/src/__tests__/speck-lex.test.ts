@@ -70,6 +70,21 @@ describe('speck lexer', () => {
     expect(lexSpeck('\uFEFFspeck S {\n}\n').tokens[0]).toMatchObject({ kind: 'ident', text: 'speck', column: 1 });
   });
 
+  it('rejects a byte-order mark after the first line and keeps a NUL as a token', () => {
+    let bom = '';
+    try {
+      lexSpeck('speck S {\n  \uFEFFx\n}\n', 'n.speckdl');
+    } catch (err) {
+      bom = (err as Error).message;
+    }
+    expect(bom).toBe('Parse error at n.speckdl:2: unexpected character "\uFEFF" (column 3)');
+
+    const nul = lexSpeck('speck S {\n  x\u0000\n}\n', 'n.speckdl').tokens.find(t => t.text === '\0');
+    expect(nul).toMatchObject({ kind: 'punct', line: 2, column: 4 });
+    expect(lexSpeck('speck S { s := "a\u0000b" }\n').tokens.find(t => t.kind === 'string')?.text).toBe('"a\u0000b"');
+    expect(lexSpeck('// a\u0000b\nspeck S {\n}\n').tokens.some(t => t.text.includes('\0'))).toBe(false);
+  });
+
   it('treats CRLF as a line break and does not let a comment swallow the next line', () => {
     const src = 'speck S {\r\n  // brace }\r\n  state { n: Nat }\r\n}\r\n';
     const braces = lexSpeck(src).tokens.filter(t => t.kind === '{' || t.kind === '}').map(t => `${t.kind}@${t.line}`);
