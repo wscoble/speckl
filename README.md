@@ -179,6 +179,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - `invariant P { x >= 0 } junk` is text after a member's "}" at column 28. The predicate used to be dropped.
 - A member whose `{` is on the next line is opening "{" must be on the same line as the member header. The member used to be dropped.
 - `y Nat` inside `state` is unrecognized state field "y Nat" on the state header's line, with no column. It used to be appended to the previous type.
+- `y = 0` and `garbage line` inside `init` are unrecognized init line on the init header's line, with no column. They used to be appended to the previous expression. `x := 0` is still stored.
 
 ## Documentation
 
