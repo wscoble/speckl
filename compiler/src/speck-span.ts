@@ -1,3 +1,7 @@
+// Span helpers for `rd-parser.ts`. `parseSpeckContent` calls that parser,
+// which calls these helpers. `parser.ts` re-exports this module. Coverage
+// includes this file.
+
 import { LexState, lexStart } from './speck-part0.js';
 import { maskCode, isExpressionComplete } from './speck-part1.js';
 import { exprIncomplete } from './speck-part4.js';
