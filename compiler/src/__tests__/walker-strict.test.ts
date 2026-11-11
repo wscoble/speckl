@@ -101,6 +101,28 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:1: a second speck on one line (column 13)');
   });
 
+  it('rejects an unrecognized member', () => {
+    const garbage = 'speck A {\n    garbage line here\n}\n';
+    expect(stored(garbage)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(garbage)).toBe('Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5)');
+
+    const actoin = 'speck A {\n    actoin go {\n        x := 1\n    }\n}\n';
+    expect(stored(actoin)).toBe('[{"name":"A","endLine":5,"members":[]}]');
+    expect(message(actoin)).toBe('Parse error at bad.speckdl:2: unrecognized member "actoin go {" (column 5)');
+
+    const enumerated = 'speck NullableIdentTest {\n  enum Status { Active, Inactive }\n  type Foo = {\n    status: Status | null\n  }\n}\n';
+    expect(stored(enumerated)).toBe('[{"name":"NullableIdentTest","endLine":6,"members":[{"type":"interface","name":"Foo"}]}]');
+    expect(message(enumerated)).toBe('Parse error at bad.speckdl:2: unrecognized member "enum Status { Active, Inactive }" (column 3)');
+
+    const described = 'speck A {\n    description: "} speck B {"\n    state { x: Nat }\n    init { x := 0 }\n}\n';
+    expect(stored(described)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[]},{"type":"init","asg":[]}]}]');
+    expect(message(described)).toBe('Parse error at bad.speckdl:2: unrecognized member "description: "} speck B {"" (column 5)');
+
+    const bare = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n    x := x + 3\n}\n';
+    expect(stored(bare)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[["x",{"type":"ident","name":"= x + 3"}]]},{"type":"init","asg":[{"name":"x","expr":"x + 3"}]}]}]');
+    expect(message(bare)).toBe('Parse error at bad.speckdl:4: unrecognized member "x := x + 3" (column 5)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
