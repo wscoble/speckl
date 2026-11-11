@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
 import { lower } from '../ir/lower.js';
@@ -435,14 +435,21 @@ describe('import resolution', () => {
 
   it('rejects a URL and a file URL without leaving the entry directory', () => {
     const folder = dir();
+    const staysInFolder = (file: string, spec: string, tail: string) => {
+      let message = '';
+      try {
+        expandImports(parseSpeckFile(file), file);
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message.startsWith(`Parse error: cannot read import "${spec}" (resolved `)).toBe(true);
+      expect(message.includes(basename(folder))).toBe(true);
+      expect(message.endsWith(`${tail})`)).toBe(true);
+    };
     const https = write(folder, 'https.speckdl', 'import "https://example.invalid/lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n}\n');
-    expect(() => expandImports(parseSpeckFile(https), https)).toThrow(
-      `Parse error: cannot read import "https://example.invalid/lib.speckdl" (resolved ${join(folder, 'https:/example.invalid/lib.speckdl')})`,
-    );
+    staysInFolder(https, 'https://example.invalid/lib.speckdl', 'https:/example.invalid/lib.speckdl');
     const fileUrl = write(folder, 'fileurl.speckdl', 'import "file:///etc/hostname" as L\nspeck Root {\n    state { n: Nat }\n}\n');
-    expect(() => expandImports(parseSpeckFile(fileUrl), fileUrl)).toThrow(
-      `Parse error: cannot read import "file:///etc/hostname" (resolved ${join(folder, 'file:/etc/hostname')})`,
-    );
+    staysInFolder(fileUrl, 'file:///etc/hostname', 'file:/etc/hostname');
   });
 
   it('rejects a directory import', () => {
@@ -521,23 +528,31 @@ describe('import resolution', () => {
     const fs = createRequire(import.meta.url)('node:fs');
     const origReal = fs.realpathSync;
     const origStat = fs.statSync;
+    const origRead = fs.readFileSync;
+    const libReal = String(origReal.call(fs, lib));
+    const isLib = (p: unknown) => {
+      const s = String(p);
+      return s === lib || s === libReal;
+    };
     const gone = () => {
       const e = new Error('ENOENT') as NodeJS.ErrnoException;
       e.code = 'ENOENT';
       throw e;
     };
     const run = (mode: 'realpath' | 'stat-before' | 'stat-after') => {
-      let stats = 0;
+      let read = false;
       fs.realpathSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
-        if (mode === 'realpath' && String(p) === lib) gone();
+        if (mode === 'realpath' && isLib(p)) gone();
         return origReal.call(this, p, ...rest);
       };
+      fs.readFileSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+        const out = origRead.call(this, p, ...rest);
+        if (typeof p === 'number') read = true;
+        return out;
+      };
       fs.statSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
-        if (String(p) === lib && mode.startsWith('stat')) {
-          stats += 1;
-          if (mode === 'stat-before' && stats === 1) gone();
-          if (mode === 'stat-after' && stats === 2) gone();
-        }
+        if (isLib(p) && mode === 'stat-before') gone();
+        if (isLib(p) && mode === 'stat-after' && read) gone();
         return origStat.call(this, p, ...rest);
       };
       syncBuiltinESMExports();
@@ -546,6 +561,7 @@ describe('import resolution', () => {
       } finally {
         fs.realpathSync = origReal;
         fs.statSync = origStat;
+        fs.readFileSync = origRead;
         syncBuiltinESMExports();
       }
     };
