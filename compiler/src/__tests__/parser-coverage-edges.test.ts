@@ -1,6 +1,7 @@
 // Error and shape paths the example corpus does not reach.
 import { describe, expect, it } from 'vitest';
 import { parseSpeckContent } from '../parser.js';
+import { parseSpeckContent as parseWalker } from '../line-walker/parser.js';
 import { isAliasTypeText, stripInvariantExpr } from '../speck-span.js';
 
 describe('parser edges the examples do not reach', () => {
@@ -43,6 +44,9 @@ describe('parser edges the examples do not reach', () => {
   });
 
   it('rejects a top-level line that is not a speck or an import', () => {
-    expect(() => parseSpeckContent('hello\n', 'h.speckdl')).toThrow(/unrecognized top-level/);
+    expect(() => parseWalker('hello\n', 'h.speckdl')).not.toThrow();
+    expect(() => parseSpeckContent('hello\n', 'h.speckdl')).toThrow(
+      'Parse error at h.speckdl:1: unrecognized top-level "hello" (column 1)',
+    );
   });
 });
