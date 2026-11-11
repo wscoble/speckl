@@ -161,7 +161,6 @@ describe('line walker rejects malformed structure', () => {
     expect(message(garbage, 'in.speckdl')).toBe('Parse error at in.speckdl:3: unrecognized init line "garbage line"');
   });
 
-  // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
