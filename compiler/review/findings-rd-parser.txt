@@ -1,0 +1,10 @@
+Reviewer findings: recursive-descent parser vs the conservation branch
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the conservation branch, whose parser is still the line walker. This branch replaces parseSpeckContent with the token parser. The conservation check in compileSpec runs before each backend, so a member type the table rejects is an error rather than a silent drop.
+
+Compared with the earlier probe of the same parser against the brace-scan branch (210 identical, 62 different): the example differences are KafkaKRaft on every target and OAuth2AuthorizationCode on rust and all. LogEntry is a record of term and value, and the state fields stay on the state. Two OAuth invariants lose a trailing line comment. PodcastPublishing is unchanged.
+
+Malformed members, a missing close, and an extra close are now errors. An unclosed string or block comment names the column. A one-line state is stored, so a later assignment uses the field. A speck that closes on its header line does not absorb the next speck. A brace in a string, a comment, or an agent prompt does not drop the next action.
+
+Those are the parser fixes. No example other than KafkaKRaft and the two OAuth comments changed its compiled output.
