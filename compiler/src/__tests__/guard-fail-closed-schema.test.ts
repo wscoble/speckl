@@ -39,7 +39,7 @@ describe('provenance, Kubernetes, and Protobuf fail closed', () => {
 
     const noMembers = { specks: [{ type: 'speck', name: 'S' }] } as unknown as AST;
     expect(() => generateProtobuf(noMembers, out)).toThrow(/members are missing on speck "S"/);
-    const odd = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'not-a-member' } as MemberNode] }] } as AST;
+    const odd = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'not-a-member' } as unknown as MemberNode] }] } as unknown as AST;
     expect(() => generateProtobuf(odd, out)).toThrow(unknown);
     const oneofAst = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'oneof', name: 'Payload', variants: [] }] }] } as AST;
     let protobuf: Error | undefined;
