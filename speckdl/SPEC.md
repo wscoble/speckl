@@ -142,6 +142,7 @@ The line walker used to accept each input below and store a program that dropped
 - An identifier that starts with a digit. `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `24h` and `500ms` stay durations.
 - A non-ASCII identifier. `naïve` used to be dropped, and the file parsed as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). Non-ASCII text inside a string or a comment is kept.
 - An unsupported numeric literal. `state { t: 1h30m }` used to parse as speck A whose state stored no fields. The diagnostic is: Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16). `24h` stays a duration.
+- The column of an unclosed string or comment. `x: "ab` with no closer was already Parse error at bad.speckdl:2: unterminated string. It is now Parse error at bad.speckdl:2: unterminated string (column 8). `/* c` with no closer was unterminated block comment and is now Parse error at bad.speckdl:2: unterminated block comment (column 5).
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
