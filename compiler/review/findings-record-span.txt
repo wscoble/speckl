@@ -1,0 +1,10 @@
+Reviewer findings: one-line record span
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the byte-identical parser swap. Working: a one-line `type Name = { ... }` stores only the fields inside that brace span.
+
+The line walker started reading on the next line, so `type LogEntry = { term: Nat, value: Value }` in `examples/KafkaKRaft.speckdl` became a mixed interface whose fields were the following state fields (currentTerm, state, votedFor, log, commitIndex, nextIndex, matchIndex, votesGranted, and duplicates of several of those). That was wrong. LogEntry is the record `{ term, value }`. The state still lists its own eight names.
+
+`compiler/src/__tests__/parser-intended-diff.test.ts` pins the after-value and asserts `currentTerm` is not a LogEntry field. The example output pin moved because every target's digest for KafkaKRaft changes. The new pin is sha256 d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73. It was updated on purpose. The other examples are unchanged.
+
+OAuth trailing comments, a header-line `}`, and a one-line state still match the line walker.
