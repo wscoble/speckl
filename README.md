@@ -185,6 +185,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - `§` is unexpected character "§" at column 2, and `→` is unexpected character "→" at column 7. The speck used to be stored with no members. Text inside a string or a comment is kept.
 - `speck 9A` is identifier must not start with a digit at column 7. It used to be stored under that name. `state { t: 24h }` still parses.
 - `naïve` is identifier must be ASCII at column 7. It used to be dropped. Non-ASCII text inside a string or a comment is kept.
+- `1h30m` is unsupported numeric literal "1h30m" at column 16. The state used to be stored with no fields.
 
 ## Documentation
 
