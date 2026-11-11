@@ -32,7 +32,7 @@ describe('direct Z3 limits', () => {
     const noMembers = { specks: [{ type: 'speck', name: 'S' }] } as unknown as AST;
     expect(() => generateZ3(noMembers, dir)).toThrow(/members are missing on speck "S"/);
     expect(existsSync(join(dir, 'S.smt2'))).toBe(false);
-    const odd = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'not-a-member' } as MemberNode] }] } as AST;
+    const odd = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'not-a-member' } as unknown as MemberNode] }] } as unknown as AST;
     expect(() => generateZ3(odd, dir)).toThrow(/no handler for AST node type "not-a-member"/);
     const oneof = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'oneof', name: 'Payload', variants: [] } as MemberNode] }] } as AST;
     expect(() => generateZ3(oneof, dir)).toThrow(/z3 backend rejects AST node type "oneof"/);
