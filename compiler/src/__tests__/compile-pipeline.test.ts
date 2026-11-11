@@ -87,6 +87,21 @@ describe('generated output is pinned for every example', () => {
     const hash = createHash('sha256').update(JSON.stringify(pinned)).digest('hex');
     expect(hash).toBe(OUTPUT_SHA256);
   }, 180_000);
+
+  it('a one-byte change in generated output changes that file digest and the pin', () => {
+    const spec = join(examplesDir, 'ReviewGate.speckdl');
+    const out = run(spec, 'z3');
+    const before = digests(out);
+    const file = walk(out)[0];
+    const rel = relative(out, file);
+    writeFileSync(file, `${readFileSync(file, 'utf8')}\n`);
+    const after = digests(out);
+    expect(after[rel]).not.toBe(before[rel]);
+    const beforeHash = createHash('sha256').update(JSON.stringify({ 'ReviewGate.speckdl -t z3': before })).digest('hex');
+    const afterHash = createHash('sha256').update(JSON.stringify({ 'ReviewGate.speckdl -t z3': after })).digest('hex');
+    expect(afterHash).not.toBe(beforeHash);
+    expect(afterHash).not.toBe(OUTPUT_SHA256);
+  }, 60_000);
 });
 
 describe('target selection', () => {
