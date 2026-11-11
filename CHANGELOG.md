@@ -39,7 +39,9 @@ alias.
   or `init` header, that header is `header is not at the start of the
   line`. A header later on the line, after other text or after `/* ... */`,
   is outside this scan. A speck written entirely inside a block comment is
-  not a speck. There is no shared scanner module yet.
+  not a speck. Go still drops an `else if`, a nested `if`, a `for` inside
+  an `if`, and a `require` inside an `if`. That is unchanged from before
+  this scan. There is no shared scanner module yet.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
