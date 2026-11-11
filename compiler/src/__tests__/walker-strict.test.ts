@@ -203,6 +203,23 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16)');
   });
 
+  it('names the column of an unclosed string and an unclosed block comment', () => {
+    const unstr = 'speck A {\n    x: "ab\n}\n';
+    const uncmt = 'speck A {\n    /* c\n';
+    const old = (src: string) => {
+      try {
+        lineWalkerBefore(src, 'bad.speckdl');
+        return 'accept';
+      } catch (err) {
+        return (err as Error).message;
+      }
+    };
+    expect(old(unstr)).toBe('Parse error at bad.speckdl:2: unterminated string');
+    expect(message(unstr)).toBe('Parse error at bad.speckdl:2: unterminated string (column 8)');
+    expect(old(uncmt)).toBe('Parse error at bad.speckdl:2: unterminated block comment');
+    expect(message(uncmt)).toBe('Parse error at bad.speckdl:2: unterminated block comment (column 5)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
