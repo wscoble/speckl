@@ -183,6 +183,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - `/* c */ action go {` is code after */ on a line that starts with /* at column 13. The action used to be dropped.
 - A bare carriage return is CR-only line endings are not supported at column 10. The state used to be dropped. CRLF is still whitespace.
 - `§` is unexpected character "§" at column 2, and `→` is unexpected character "→" at column 7. The speck used to be stored with no members. Text inside a string or a comment is kept.
+- `speck 9A` is identifier must not start with a digit at column 7. It used to be stored under that name. `state { t: 24h }` still parses.
 
 ## Documentation
 

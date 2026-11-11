@@ -191,6 +191,15 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:1: identifier must not start with a digit (column 7)');
   });
 
+  it('still parses a duration', () => {
+    const src = 'speck A {\n    state { t: 24h }\n}\n';
+    const parsed = parseSpeckContent(src, 'dur.speckdl');
+    expect(parsed.specks.map(s => s.name)).toEqual(['A']);
+    const state = parsed.specks[0].members.find(m => m.type === 'state');
+    if (!state || state.type !== 'state') throw new Error('missing state');
+    expect(state.variables.map(v => v.name)).toEqual(['t']);
+  });
+
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
