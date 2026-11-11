@@ -25,11 +25,20 @@ function outline(): string {
 }
 
 const OUTLINE_SHA256 = '52680b9231245195f1320de8d2fcc0066b32ab89f7ba24228d531ecf087f9909';
+const goldenPath = fileURLToPath(new URL('./fixtures/line-walker-outline.txt', import.meta.url));
 
 describe('line walker move', () => {
-  it('keeps the example member outline', () => {
+  it('matches the member outline the walker produced before the move', () => {
     const text = outline();
-    const hash = createHash('sha256').update(text).digest('hex');
-    expect(hash).toBe(OUTLINE_SHA256);
+    const golden = readFileSync(goldenPath, 'utf8').replace(/\n$/, '');
+    expect(text).toBe(golden);
+    expect(createHash('sha256').update(text).digest('hex')).toBe(OUTLINE_SHA256);
+    expect(createHash('sha256').update(golden).digest('hex')).toBe(OUTLINE_SHA256);
+  });
+
+  it('a changed outline does not keep that hash', () => {
+    const text = outline();
+    const changed = `${text}\n  state:extra`;
+    expect(createHash('sha256').update(changed).digest('hex')).not.toBe(OUTLINE_SHA256);
   });
 });
