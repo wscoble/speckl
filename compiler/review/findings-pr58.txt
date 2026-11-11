@@ -1,0 +1,53 @@
+Reviewer findings: PR 58 vs its target
+Question: does every behaviour that is correct on the target stay correct on the working branch? No previously valid input newly rejected or compiled differently, and no input that was handled correctly now silently dropped.
+
+Target: PR 53 head ad432b2913eb5e3f4542b063ba9583e94638eaf4 (brace scan on main 4f1e7fa)
+Working: cursor/speckl-token-parser-b621 1032be1a206660a66e73d8cc5051e8c238e718bb
+Built both trees and ran compileSpec through each tree's own compiler/src/compile.ts.
+Examples: every examples/*.speckdl, targets typescript, z3, rust, go, protobuf, k8s, openapi, camel, elm, agent, all, all-ir.
+Probes: braces in strings and comments, unclosed string, unclosed block comment, one-line specks, malformed members, header after a block comment, prime notation, a brace in an agent instruction. Probe targets: typescript, go, z3, all.
+Before compare, ISO timestamps and absolute source/output paths were replaced.
+
+Result: 210 identical, 62 differ.
+Every example except KafkaKRaft and OAuth2AuthorizationCode is identical on every target. PodcastPublishing, including its tools, prompts, instructions, and awaits, is identical.
+
+Example differences:
+
+1. KafkaKRaft.speckdl, every target (typescript, z3, rust, go, protobuf, k8s, openapi, camel, elm, agent, all, all-ir). Both compile.
+   Target stores `type LogEntry = { term: Nat, value: Value }` as a mixed interface that also carries the following state fields, and emits LogEntry as an enum whose only variant is RequestVote. TypeScript guards compare `this.state === Candidate`, where Candidate is not the state enum.
+   Working emits LogEntry as a record with only term and value. State fields currentTerm, state, votedFor, log, commitIndex, nextIndex, matchIndex, and votesGranted stay on the state. TypeScript emits interface LogEntry { term, value } and const KafkaKRaftKafkaKRaftState { Candidate, Leader }. Guards compare KafkaKRaftState.Candidate. Provenance says speckl:kind record and speckl:fields "term, value" instead of enum RequestVote.
+   Classification: intended fix. The target compiled LogEntry incorrectly. Pinned by compiler/src/__tests__/parser-main-corpus.test.ts ("keeps Kafka state fields, and LogEntry is only term and value") against compiler/src/__tests__/fixtures/main-example-outline.json. Not a regression of a correct target output.
+
+2. OAuth2AuthorizationCode.speckdl, targets rust and all. Both compile. all-ir and the other targets are identical.
+   Working drops a trailing `//` from two invariant doc comments: TokenValidityBounded ("90 days max") and RedirectUriConsistency ("enforced in the ExchangeCode action"). The invariant text itself is unchanged.
+   Classification: intended. The line walker kept the comment tail; the token parser does not. Pinned by the same corpus test ("matches main except KafkaKRaft LogEntry and two OAuth comment tails").
+
+Probe differences:
+
+3. malformed-member.speckdl, malformed-state-field.speckdl, malformed-init-eq.speckdl, missing-close.speckdl, extra-close.speckdl (typescript, go, z3, all)
+   Target compiles and skips the bad line.
+   Working rejects, on every one of those targets:
+   - unrecognized member "actoin go {" (column 5)
+   - unrecognized state field "y Nat"
+   - unrecognized init line "y = 0"
+   - missing final "}" (column 9)
+   - extra "}" (column 2)
+   Classification: newly rejected bad input (fail-closed). The target's success was a silent skip, not a correct compile.
+
+4. unclosed-string.speckdl and unclosed-comment.speckdl (typescript, go, z3, all)
+   Both reject. Working adds the column: `unterminated string (column 24)` and `unterminated block comment (column 24)`. Same line, same reason.
+   Classification: message tightening. The input stays rejected. Not a behavior change.
+
+5. comment-and-string-braces.speckdl, agent-brace.speckdl, prime-and-string.speckdl, one-line-action-comment.speckdl (typescript, go, z3, all)
+   Both compile. Target still drops a one-line `state { x: Nat }`, so TypeScript has no field, no init, and `const x: any = {} as any; // FIXME: parser dropped let/forall`.
+   Working parses the field and the init. TypeScript emits `x!: number`, `this.x = 0`, and `this.x = this.x + N`. The following speck in the comment probe also gains its own field `y` and its init. Z3 changes because the state is now present.
+   Classification: intended parser fix. The target output was already wrong (empty state, FIXME local). Nothing that the target compiled correctly was dropped.
+
+6. one-line-then-next.speckdl (typescript, go, z3, all)
+   Both compile. Target absorbs the following speck into the header-closed speck and also parses that following speck again.
+   Working ends the header-closed speck with no members (endLine is the next line) and parses the following speck once, with its own field.
+   Classification: intended fix of the header-line close. A brace in a string or a `//` comment on that header line is not the close. Header-line members are still not stored, matching the target for a lone one-line speck (one-line-alone.speckdl is identical).
+
+Identical probes: one-line-alone.speckdl, header-after-comment.speckdl (both reject `header is not at the start of the line`).
+
+No previously correct example output was rejected or replaced, other than the two intended example differences above. No code change was required.
