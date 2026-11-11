@@ -51,8 +51,7 @@ alias.
   before its closer is `unterminated string` on the line where it opened.
   Non-ASCII text inside a string or a comment stays in that text. `1e5`, `0x1F`,
   `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
-  `24h` and `500ms` stay a number plus a unit. `parseSpeck` does not call
-  the lexer yet, so the line walker still parses every file.
+  `24h` and `500ms` stay a number plus a unit. The line walker rejects a non-ASCII identifier (`naïve` is identifier must be ASCII).
   `compiler/src/__tests__/speck-lex.test.ts` calls the lexer directly.
 - **Backend conservation.** `compiler/src/conservation.ts` lists every AST
   member type. Each backend marks each type `emit`, `reject`, or `n/a`.
@@ -424,6 +423,7 @@ Parse errors below are breaking changes. A file that used to compile now fails, 
 - **CR-only line endings are rejected.** A file of `speck A {` and a state joined by a bare carriage return used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still accepted. `rejects a CR-only file` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **An unexpected non-ASCII character is rejected.** `§` and `→` used to parse as speck A with no members. The diagnostics are unexpected character "§" at column 2 and unexpected character "→" at column 7. `rejects a section sign` and `rejects an arrow character` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **An identifier that starts with a digit is rejected.** `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `24h` is still a duration. `rejects a digit name` and `still parses a duration` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **A non-ASCII identifier is rejected.** `naïve` used to be dropped, leaving speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). `rejects a non-ASCII identifier` in `compiler/src/__tests__/walker-strict.test.ts`.
 
 ## [0.3.1] and earlier
 

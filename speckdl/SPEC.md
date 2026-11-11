@@ -120,7 +120,7 @@ header, that header is `header is not at the start of the line`. A header
 later on the line is outside this scan. A speck written entirely inside a
 block comment is not a speck. Go still drops an `else if`, a nested `if`,
 a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
-from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` does not call that lexer yet. The line walker still parses. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `parser.ts` still calls it, and example member outlines are unchanged.
+from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). The line walker rejects `naïve` with identifier must be ASCII at column 7. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `parser.ts` still calls it, and example member outlines are unchanged.
 
 ### 2.2.1 Rejected structure
 
@@ -140,6 +140,7 @@ The line walker used to accept each input below and store a program that dropped
 - A CR that is not part of CRLF. `speck A {` then a state, with a bare carriage return and no line feed, used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still whitespace.
 - An unexpected non-ASCII character outside a string or a comment. A line containing `§` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: unexpected character "§" (column 2). `→` is: Parse error at bad.speckdl:2: unexpected character "→" (column 7). Non-ASCII text inside a string or a comment is kept.
 - An identifier that starts with a digit. `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `24h` and `500ms` stay durations.
+- A non-ASCII identifier. `naïve` used to be dropped, and the file parsed as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). Non-ASCII text inside a string or a comment is kept.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

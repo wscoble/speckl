@@ -160,7 +160,7 @@ The parser counts `{` and `}` and skips a brace inside a finished `"` string, a 
 
 A one-line speck that packs its members on the header line can still absorb the next speck. That is the same as before this scan. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. That is unchanged from before this scan.
 
-`compiler/src/speck-lex.ts` tokenizes a file: a brace in a string or a comment is not a token, `'` is prime notation, and an unclosed string or block comment names the line and column where it opened. `\r\n` and a tab are whitespace. A non-ASCII identifier is an error. Non-ASCII text inside a string or a comment is kept. `parseSpeck` does not call it yet. The line walker still parses.
+`compiler/src/speck-lex.ts` tokenizes a file: a brace in a string or a comment is not a token, `'` is prime notation, and an unclosed string or block comment names the line and column where it opened. `\r\n` and a tab are whitespace. A non-ASCII identifier is an error. Non-ASCII text inside a string or a comment is kept. The line walker rejects `naïve` with identifier must be ASCII at column 7.
 
 `compiler/src/conservation.ts` marks every AST member type `emit`, `reject`, or `n/a` for every backend. `compileSpec` checks the table immediately before it calls that backend, and a reject throws. `import`, `oneof`, and `transition` are rejected except by Protobuf, which emits `oneof` and `transition`. A direct call to a generator does not run the check.
 
@@ -184,6 +184,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - A bare carriage return is CR-only line endings are not supported at column 10. The state used to be dropped. CRLF is still whitespace.
 - `§` is unexpected character "§" at column 2, and `→` is unexpected character "→" at column 7. The speck used to be stored with no members. Text inside a string or a comment is kept.
 - `speck 9A` is identifier must not start with a digit at column 7. It used to be stored under that name. `state { t: 24h }` still parses.
+- `naïve` is identifier must be ASCII at column 7. It used to be dropped. Non-ASCII text inside a string or a comment is kept.
 
 ## Documentation
 
