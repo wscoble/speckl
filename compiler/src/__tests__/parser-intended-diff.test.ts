@@ -54,15 +54,18 @@ describe('token parser matches the line walker', () => {
     expect(redirect).not.toContain('//');
   });
 
-  it('a header-line close still absorbs the next speck, as the line walker did', () => {
+  it('a header-line close ends the speck and does not absorb the next one', () => {
     const src = 'speck A { state { x: Nat } }\nspeck B {\n  state { y: Nat }\n}\n';
     const ast = parseSpeckContent(src, 'header.speckdl');
+    // The line walker ended A on line 3 with an empty state and gave B an
+    // empty state too. The `}` on the header line closes A. B is its own speck.
+    // B's one-line state is still empty; that is a separate change.
     expect(ast.specks.map(s => ({
       name: s.name,
       endLine: s.endLine,
       fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
     }))).toEqual([
-      { name: 'A', endLine: 3, fields: [] },
+      { name: 'A', endLine: 1, fields: [] },
       { name: 'B', endLine: 4, fields: [] },
     ]);
   });
