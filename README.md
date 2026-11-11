@@ -162,6 +162,8 @@ Two shapes in `examples/` differ from the line walker on main at `4f1e7fa`. `par
 
 `compiler/src/conservation.ts` makes every backend mark each AST member type `emit`, `reject`, or `n/a`. A reject throws before any file is written. `import`, `oneof`, and `transition` are rejected by every backend except Protobuf, which emits `oneof` and `transition`.
 
+Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. That is unchanged.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
