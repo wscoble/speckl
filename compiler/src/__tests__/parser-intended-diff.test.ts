@@ -15,15 +15,16 @@ function parseExample(name: string) {
 }
 
 describe('token parser matches the line walker', () => {
-  it('KafkaKRaft LogEntry keeps the fields the line walker stored', () => {
+  it('KafkaKRaft LogEntry is only the brace span, not the following state fields', () => {
     const speck = parseExample('KafkaKRaft.speckdl').specks[0];
     const logEntry = speck.members.find(m => m.type === 'interface' && m.name === 'LogEntry');
     if (logEntry?.type !== 'interface') throw new Error('missing LogEntry');
-    expect(logEntry.kind).toBe('mixed');
-    expect(logEntry.fields.map(f => f.name)).toEqual([
-      'currentTerm', 'state', 'votedFor', 'log', 'commitIndex', 'nextIndex', 'matchIndex', 'votesGranted',
-      'votesGranted', 'votedFor', 'state', 'commitIndex', 'log', 'log', 'commitIndex',
-    ]);
+    // The line walker stored a mixed interface whose fields were the state
+    // fields that follow the record, including currentTerm. That was wrong:
+    // `type LogEntry = { term: Nat, value: Value }` has two fields.
+    expect(logEntry.kind).toBe('record');
+    expect(logEntry.fields.map(f => f.name)).toEqual(['term', 'value']);
+    expect(logEntry.fields.map(f => f.name)).not.toContain('currentTerm');
     const state = speck.members.find(m => m.type === 'state');
     if (state?.type !== 'state') throw new Error('missing state');
     expect(state.variables.map(v => v.name)).toEqual([

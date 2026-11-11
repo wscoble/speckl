@@ -82,6 +82,11 @@ alias.
   `compiler/src/__tests__/parser-rd.test.ts`,
   `parser-main-corpus.test.ts`, and `parser-intended-diff.test.ts` cover
   this. `compiler/review/findings-rd-parser.txt` records that the output matches.
+- **One-line record span.** A `type Name = { ... }` that closes on its header
+  stores only that brace span. The line walker had kept the following state
+  fields, so KafkaKRaft `LogEntry` was not `{ term, value }`. The example
+  output pin moved for that reason. See
+  `compiler/review/findings-record-span.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
