@@ -7,7 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import {
-  AST, SpeckNode, ActionNode, AgentMemberNode, StateNode,
+  AST, SpeckNode, ActionNode, AgentMemberNode, AgentPrompt, StateNode,
 } from '../../parser.js';
 import { generateTypeScriptStateMachine } from '../typescript-state-machine.js';
 import { guardAst } from '../../conservation.js';
@@ -39,8 +39,27 @@ export function generateAgent(ast: AST, options: AgentGenerateOptions): void {
       console.log(`  skip ${speck.name}: no agent { } block`);
       continue;
     }
-    emitAgentForSpeck(speck, agent, options);
+    // Snapshot each prompt once, before any output is written.
+    const resolvedAgent: AgentMemberNode = {
+      ...agent,
+      instructions: agent.instructions?.map(p => resolvePrompt(p, options.sourcePath)),
+      prompts: agent.prompts?.map(p => ({ ...p, prompt: resolvePrompt(p.prompt, options.sourcePath) })),
+      tools: agent.tools.map(t => t.description === undefined ? t : { ...t, description: resolvePrompt(t.description, options.sourcePath) }),
+    };
+    emitAgentForSpeck(speck, resolvedAgent, options);
   }
+}
+
+function resolvePrompt(prompt: AgentPrompt, sourcePath?: string): string {
+  if (typeof prompt === 'string') return prompt;
+  const file = prompt.file;
+  if (!file || path.isAbsolute(file) || path.win32.isAbsolute(file) || /^[a-z][a-z\d+.-]*:/i.test(file)) {
+    throw new Error(`Prompt file must be a non-empty relative local path: ${JSON.stringify(file)}`);
+  }
+  if (!sourcePath) throw new Error(`Cannot resolve prompt file ${JSON.stringify(file)} without a spec source path`);
+  const resolved = path.resolve(path.dirname(sourcePath), file);
+  try { return fs.readFileSync(resolved, 'utf8'); }
+  catch (error) { throw new Error(`Cannot read prompt file ${JSON.stringify(file)} relative to spec ${JSON.stringify(sourcePath)}: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 function emitAgentForSpeck(
@@ -70,8 +89,8 @@ function emitAgentForSpeck(
   const config = buildConfig(speck, agent, actions, state, specHash);
   fs.writeFileSync(path.join(agentDir, 'agent-config.json'), JSON.stringify(config, null, 2) + '\n');
 
-  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(agent, actions), null, 2) + '\n');
-  fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), buildAgentsMd(speck, agent, config, specHash));
+  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(agent, actions, options.sourcePath), null, 2) + '\n');
+  fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), buildAgentsMd(speck, agent, config, specHash, options.sourcePath));
   fs.writeFileSync(path.join(agentDir, 'hook.mjs'), emitHookMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'signal.mjs'), emitSignalMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'state-integrity.mjs'), emitStateIntegrityMjs());
@@ -278,7 +297,7 @@ function listWords(words: string[]): string {
   return words.length <= 2 ? words.join(' and ') : words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
 }
 
-function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
+function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[], sourcePath?: string) {
   const byName = new Map(actions.map(a => [a.name, a]));
   return {
     tools: agent.tools.map(t => {
@@ -291,7 +310,7 @@ function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
       }
       return {
         name: t.name,
-        description: `SpeckDL action ${t.action} (${t.effect})`,
+        description: [t.description !== undefined ? resolvePrompt(t.description, sourcePath) : '', ...(agent.prompts ?? []).filter(p => p.tool === t.name).map(p => { const scope = [p.stage && `stage ${p.stage}`, p.await && `await ${p.await}`].filter(Boolean).join(', '); return (scope ? `[Advisory: ${scope}]\n` : '') + resolvePrompt(p.prompt, sourcePath); })].filter(Boolean).join('\n\n') || `SpeckDL action ${t.action} (${t.effect})`,
         inputSchema: {
           type: 'object',
           properties,
@@ -326,6 +345,7 @@ function buildAgentsMd(
   agent: AgentMemberNode,
   config: AgentRuntimeConfig,
   specHash: string,
+  sourcePath?: string,
 ): string {
   const lines: string[] = [];
   lines.push(`# AGENTS.md — ${speck.name}`);
@@ -337,6 +357,16 @@ function buildAgentsMd(
   lines.push(`- Spec hash: \`${specHash.slice(0, 16)}…\``);
   lines.push(`- Stage variable: \`${config.stageVariable}\``);
   lines.push('');
+  if (agent.instructions?.length) {
+    lines.push('## How to do the work');
+    lines.push('');
+    lines.push('These instructions are advisory; the hooks enforce the rails below.');
+    lines.push('');
+    for (const instruction of agent.instructions) {
+      lines.push(resolvePrompt(instruction, sourcePath));
+      lines.push('');
+    }
+  }
   lines.push('## Tools');
   lines.push('');
   lines.push('| Tool | Action | Effect |');
@@ -345,6 +375,18 @@ function buildAgentsMd(
     lines.push(`| \`${t.name}\` | \`${t.action}\` | ${t.effect} |`);
   }
   lines.push('');
+  for (const t of agent.tools) {
+    const prompts = (agent.prompts ?? []).filter(p => p.tool === t.name && !p.await);
+    if (t.description === undefined && prompts.length === 0) continue;
+    lines.push(`### Tool \`${t.name}\``);
+    lines.push('');
+    if (t.description !== undefined) { lines.push(resolvePrompt(t.description, sourcePath)); lines.push(''); }
+    for (const p of prompts) {
+      const binding = [p.stage && `stage \`${p.stage}\``, p.await && `await \`${p.await}\``].filter(Boolean).join(', ');
+      if (binding) lines.push(`_Applies to ${binding} (advisory)._`, '');
+      lines.push(resolvePrompt(p.prompt, sourcePath), '');
+    }
+  }
   lines.push('Unlisted actions are **refused** (fail closed).');
   lines.push('');
   lines.push('## Wait states (HITL / HNTL)');
@@ -370,6 +412,10 @@ function buildAgentsMd(
       }
       if (a.bindCall.length > 0) {
         lines.push(`- Call-bound: ${a.bindCall.map(o => `\`${o}\``).join(', ')} (the signed drop carries \`call\`, the sha256 of one canonical tool call; the hook allows that call once)`);
+      }
+      for (const p of (agent.prompts ?? []).filter(p => p.await === a.state)) {
+        lines.push(`#### Tool \`${p.tool}\`${p.stage ? ` — stage \`${p.stage}\`` : ''}`);
+        lines.push('', resolvePrompt(p.prompt, sourcePath), '');
       }
       lines.push('');
     }

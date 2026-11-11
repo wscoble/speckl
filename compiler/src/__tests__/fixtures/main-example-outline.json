@@ -1,0 +1,2501 @@
+{
+  "AccountLedger.speckdl": [
+    {
+      "name": "AccountLedger",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "balances:Map(Nat,Int)",
+            "accounts:Set(Nat)",
+            "pendingTransfers:Map(Nat,PendingTransfer)",
+            "inFlight:Set(Nat)"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "NoNegativeBalancesWithoutOverdraft",
+          "expr": "forall id in accounts: balances[id] >= 0"
+        },
+        {
+          "type": "invariant",
+          "name": "PendingConsistent",
+          "expr": "forall tid in inFlight: tid in pendingTransfers.keys"
+        },
+        {
+          "type": "action",
+          "name": "OpenAccount",
+          "params": [
+            "acctId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateTransfer",
+          "params": [
+            "tid",
+            "from",
+            "to",
+            "amount"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CommitTransfer",
+          "params": [
+            "tid"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "VoidTransfer",
+          "params": [
+            "tid"
+          ]
+        },
+        {
+          "type": "next"
+        }
+      ]
+    }
+  ],
+  "AgentPolicy.speckdl": [
+    {
+      "name": "AgentPolicy",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "stage:Nat",
+            "testsPassed:Bool",
+            "prFromApproved:Bool"
+          ]
+        },
+        {
+          "type": "init",
+          "init": [
+            "stage",
+            "testsPassed",
+            "prFromApproved"
+          ]
+        },
+        {
+          "type": "invariant",
+          "name": "PrNeedsApproval",
+          "expr": "stage != 5 or testsPassed"
+        },
+        {
+          "type": "invariant",
+          "name": "HoldOnJudge",
+          "expr": "stage != 5 or prFromApproved"
+        },
+        {
+          "type": "action",
+          "name": "RunTests",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "RequestReview",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "OpenPR",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "ReadFile",
+          "params": [
+            "path"
+          ]
+        },
+        {
+          "type": "agent",
+          "tools": [
+            "run_tests->RunTests:act",
+            "request_review->RequestReview:act",
+            "open_pr->OpenPR:act",
+            "read_file->ReadFile:observe"
+          ],
+          "prompts": [],
+          "instructions": 0,
+          "awaits": [
+            "AwaitingReview"
+          ]
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "PrNeedsApproval"
+        },
+        {
+          "type": "verify",
+          "name": "HoldOnJudge"
+        }
+      ]
+    }
+  ],
+  "ClaudeCodePolicy.speckdl": [
+    {
+      "name": "ClaudeCodePolicy",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "stage:Nat",
+            "testsPassed:Bool",
+            "prFromApproved:Bool"
+          ]
+        },
+        {
+          "type": "init",
+          "init": [
+            "stage",
+            "testsPassed",
+            "prFromApproved"
+          ]
+        },
+        {
+          "type": "invariant",
+          "name": "PrNeedsGreenTests",
+          "expr": "stage != 5 or testsPassed"
+        },
+        {
+          "type": "invariant",
+          "name": "PrNeedsApproval",
+          "expr": "stage != 5 or prFromApproved"
+        },
+        {
+          "type": "action",
+          "name": "EditCode",
+          "params": [
+            "path"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "RunTests",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "RequestReview",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "OpenPR",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "ReadFile",
+          "params": [
+            "path"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "Inspect",
+          "params": []
+        },
+        {
+          "type": "agent",
+          "tools": [
+            "edit_code->EditCode:act",
+            "run_tests->RunTests:act",
+            "request_review->RequestReview:act",
+            "open_pr->OpenPR:act",
+            "read_file->ReadFile:observe",
+            "inspect->Inspect:observe"
+          ],
+          "prompts": [],
+          "instructions": 0,
+          "awaits": [
+            "AwaitingReview"
+          ]
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "PrNeedsGreenTests"
+        },
+        {
+          "type": "verify",
+          "name": "PrNeedsApproval"
+        }
+      ]
+    }
+  ],
+  "DeployGate.speckdl": [
+    {
+      "name": "DeployGate",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "stage:Nat",
+            "checksPassed:Bool",
+            "deployFromApproved:Bool"
+          ]
+        },
+        {
+          "type": "init",
+          "init": [
+            "stage",
+            "checksPassed",
+            "deployFromApproved"
+          ]
+        },
+        {
+          "type": "invariant",
+          "name": "DeployNeedsChecks",
+          "expr": "stage != 4 or checksPassed"
+        },
+        {
+          "type": "invariant",
+          "name": "DeployNeedsApproval",
+          "expr": "stage != 4 or deployFromApproved"
+        },
+        {
+          "type": "action",
+          "name": "RunChecks",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "RequestDeploy",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "Deploy",
+          "params": [
+            "env"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ReadFile",
+          "params": [
+            "path"
+          ]
+        },
+        {
+          "type": "agent",
+          "tools": [
+            "run_checks->RunChecks:act",
+            "request_deploy->RequestDeploy:act",
+            "deploy->Deploy:act",
+            "read_file->ReadFile:observe"
+          ],
+          "prompts": [],
+          "instructions": 0,
+          "awaits": [
+            "AwaitingApproval"
+          ]
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "DeployNeedsChecks"
+        },
+        {
+          "type": "verify",
+          "name": "DeployNeedsApproval"
+        }
+      ]
+    }
+  ],
+  "KafkaKRaft.speckdl": [
+    {
+      "name": "KafkaKRaft",
+      "members": [
+        {
+          "type": "source"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "interface",
+          "name": "LogEntry",
+          "iface": {
+            "kind": "mixed",
+            "fields": [
+              "currentTerm",
+              "state",
+              "votedFor",
+              "log",
+              "commitIndex",
+              "nextIndex",
+              "matchIndex",
+              "votesGranted",
+              "votesGranted",
+              "votedFor",
+              "state",
+              "commitIndex",
+              "log",
+              "log",
+              "commitIndex"
+            ],
+            "methods": [
+              "RequestVote"
+            ]
+          }
+        },
+        {
+          "type": "state",
+          "vars": [
+            "currentTerm:Nat",
+            "state:State",
+            "votedFor:Option(NodeId)",
+            "log:List(LogEntry)",
+            "commitIndex:Nat",
+            "nextIndex:Map(NodeId,Nat)",
+            "matchIndex:Map(NodeId,Nat)",
+            "votesGranted:Set(NodeId)"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "ElectionSafety",
+          "expr": "state == Leader -> currentTerm > 0"
+        },
+        {
+          "type": "invariant",
+          "name": "LeaderCompleteness",
+          "expr": "commitIndex <= length(log)"
+        },
+        {
+          "type": "invariant",
+          "name": "LogMatching",
+          "expr": "forall i in log.indices: i > 0 && i <= length(log) && log[i-1].term == log[i-1].term -> log[i-1].value == log[i-1].value"
+        },
+        {
+          "type": "invariant",
+          "name": "LeaderAppendOnly",
+          "expr": "length(log') >= length(log)"
+        },
+        {
+          "type": "invariant",
+          "name": "TermMonotonicity",
+          "expr": "currentTerm' >= currentTerm"
+        },
+        {
+          "type": "invariant",
+          "name": "CommitSafety",
+          "expr": "commitIndex <= length(log)"
+        },
+        {
+          "type": "action",
+          "name": "RequestVote",
+          "params": [
+            "candidate",
+            "lastLogTerm",
+            "lastLogIndex"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "HandleRequestVoteRequest",
+          "params": [
+            "candidate",
+            "candidateTerm",
+            "lastLogTerm",
+            "lastLogIndex"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "BecomeLeader",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "AppendEntries",
+          "params": [
+            "follower"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "HandleAppendEntriesRequest",
+          "params": [
+            "leader",
+            "leaderTerm",
+            "prevLogIndex",
+            "prevLogTerm",
+            "entries",
+            "leaderCommit"
+          ]
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "TermMonotonicity"
+        },
+        {
+          "type": "verify",
+          "name": "CommitSafety"
+        },
+        {
+          "type": "verify",
+          "name": "LeaderCompleteness"
+        }
+      ]
+    }
+  ],
+  "OAuth2AuthorizationCode.speckdl": [
+    {
+      "name": "OAuth2AuthorizationCode",
+      "members": [
+        {
+          "type": "interface",
+          "name": "TokenResponse",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "access_token",
+              "token_type",
+              "expires_in",
+              "refresh_token",
+              "scope"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "AuthorizationRequest",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "client_id",
+              "redirect_uri",
+              "response_type",
+              "state",
+              "code_challenge",
+              "code_challenge_method",
+              "scope"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "TokenRequest",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "client_id",
+              "client_secret",
+              "code",
+              "redirect_uri",
+              "code_verifier"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "RefreshRequest",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "client_id",
+              "client_secret",
+              "refresh_token",
+              "scope"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "state",
+          "vars": [
+            "clients:Map(ClientId,{redirect_uris:Set(RedirectUri),client_secret:ClientSecret})",
+            "authorizationCodes:Map(AuthorizationCode,{client_id:ClientId,redirect_uri:RedirectUri,state:State,code_challenge:CodeChallenge,code_challenge_method:String,scope:Scope,user_id:UserId,session_id:SessionId,created_at:Nat,used:Bool})",
+            "accessTokens:Map(AccessToken,{client_id:ClientId,user_id:UserId,scope:Scope,expires_at:Nat,session_id:SessionId,refresh_token:RefreshToken})",
+            "refreshTokens:Map(RefreshToken,{client_id:ClientId,user_id:UserId,scope:Scope,access_token:AccessToken,created_at:Nat})",
+            "sessions:Map(SessionId,{user_id:UserId})",
+            "stateNonces:Map(State,{client_id:ClientId,redirect_uri:RedirectUri})",
+            "pkceChallenges:Map(CodeChallenge,{code_verifier_hash:String,method:String})",
+            "currentTime:Nat"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "NoTokenLeakage",
+          "expr": "forall token in accessTokens.keys: let t := accessTokens[token] t.client_id in clients.keys and exists s in sessions.keys: sessions[s].user_id == t.user_id forall rt in refreshTokens.keys: let r := refreshTokens[rt] r.client_id in clients.keys forall code in authorizationCodes.keys: let c := authorizationCodes[code] c.client_id in clients.keys and c.redirect_uri in clients[c.client_id].redirect_uris"
+        },
+        {
+          "type": "invariant",
+          "name": "StateCSRFProtection",
+          "expr": "forall state in stateNonces.keys: let n := stateNonces[state] n.client_id in clients.keys and n.redirect_uri in clients[n.client_id].redirect_uris forall code in authorizationCodes.keys: let c := authorizationCodes[code] c.state in stateNonces.keys"
+        },
+        {
+          "type": "invariant",
+          "name": "AuthorizationCodeSingleUse",
+          "expr": "forall code in authorizationCodes.keys: let c := authorizationCodes[code] c.used == false implies not exists action in next: action.name == \"ExchangeCode\" and action.params.code == code"
+        },
+        {
+          "type": "invariant",
+          "name": "TokenValidityBounded",
+          "expr": "forall token in accessTokens.keys: let t := accessTokens[token] t.expires_at > currentTime forall rt in refreshTokens.keys: let r := refreshTokens[rt] currentTime - r.created_at <= 7776000  // 90 days max"
+        },
+        {
+          "type": "invariant",
+          "name": "PKCECodeInterceptionPrevention",
+          "expr": "forall challenge in pkceChallenges.keys: let c := pkceChallenges[challenge] exists verifier in authorizationCodes.keys: let a := authorizationCodes[verifier] a.code_challenge == challenge and a.code_challenge_method == c.method forall code in authorizationCodes.keys: let c := authorizationCodes[code] c.used == false implies pkceChallenges[c.code_challenge].code_verifier_hash == hash(c.code_verifier, c.code_challenge_method)"
+        },
+        {
+          "type": "invariant",
+          "name": "RedirectUriConsistency",
+          "expr": "forall code in authorizationCodes.keys: let c := authorizationCodes[code] true  // This is enforced in the ExchangeCode action"
+        },
+        {
+          "type": "invariant",
+          "name": "ClientAuthenticationRequired",
+          "expr": "forall code in authorizationCodes.keys: let c := authorizationCodes[code] c.client_id in clients.keys implies exists r in refreshTokens.keys: refreshTokens[r].client_id == c.client_id"
+        },
+        {
+          "type": "action",
+          "name": "Authorize",
+          "params": [
+            "client",
+            "redirectUri",
+            "scope",
+            "userId",
+            "sessionId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ApproveAuthorization",
+          "params": [
+            "code",
+            "userId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ExchangeCode",
+          "params": [
+            "req"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "RefreshToken",
+          "params": [
+            "req"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "RevokeToken",
+          "params": [
+            "client",
+            "token",
+            "tokenType"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "VerifyPKCE",
+          "params": [
+            "code",
+            "verifier"
+          ]
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "NoTokenLeakage"
+        },
+        {
+          "type": "verify",
+          "name": "StateCSRFProtection"
+        },
+        {
+          "type": "verify",
+          "name": "AuthorizationCodeSingleUse"
+        },
+        {
+          "type": "verify",
+          "name": "TokenValidityBounded"
+        },
+        {
+          "type": "verify",
+          "name": "PKCECodeInterceptionPrevention"
+        },
+        {
+          "type": "verify",
+          "name": "RedirectUriConsistency"
+        },
+        {
+          "type": "verify",
+          "name": "ClientAuthenticationRequired"
+        }
+      ]
+    }
+  ],
+  "Paxos.speckdl": [
+    {
+      "name": "Paxos",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "ballots:Map(Ballot,Proposal)",
+            "promises:Map(AcceptorSlot,Ballot)",
+            "lastVote:Map(AcceptorSlot,Ballot)",
+            "votedValue:Map(AcceptorSlot,String)",
+            "acceptors:Set(String)",
+            "quorum:Map(String,Set(String))",
+            "chosen:Map(Ballot,String)"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "BallotUniqueness",
+          "expr": "forall b in ballots.keys: forall b2 in ballots.keys \\ {b}: b.number != b2.number"
+        },
+        {
+          "type": "invariant",
+          "name": "SingleValuePerBallot",
+          "expr": "forall b in ballots.keys: forall b2 in ballots.keys: b.number == b2.number implies ballots[b].value == ballots[b2].value"
+        },
+        {
+          "type": "invariant",
+          "name": "PaxosSafety",
+          "expr": "forall b in chosen.keys: forall b2 in ballots.keys: b2.number == b.number implies ballots[b2].value == chosen[b]"
+        },
+        {
+          "type": "action",
+          "name": "ProposerPrepare",
+          "params": [
+            "prop",
+            "bnum"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "AcceptorPromise",
+          "params": [
+            "acc",
+            "ballot"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ProposerPropose",
+          "params": [
+            "prop",
+            "ballot",
+            "value"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "AcceptorVote",
+          "params": [
+            "acc",
+            "ballot",
+            "value"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "LearnerDecide",
+          "params": [
+            "ballot",
+            "value"
+          ]
+        },
+        {
+          "type": "next"
+        }
+      ]
+    }
+  ],
+  "PodcastPublishing.speckdl": [
+    {
+      "name": "PodcastPublishing",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "stage:Nat",
+            "assetsReady:Bool",
+            "uploadsStarted:Bool",
+            "metadataDrafted:Bool",
+            "metadataLive:Bool",
+            "appliedFromApproved:Bool",
+            "fixCount:Nat"
+          ]
+        },
+        {
+          "type": "init",
+          "init": [
+            "stage",
+            "assetsReady",
+            "uploadsStarted",
+            "metadataDrafted",
+            "metadataLive",
+            "appliedFromApproved",
+            "fixCount"
+          ]
+        },
+        {
+          "type": "invariant",
+          "name": "ApplyFromApproved",
+          "expr": "stage != 5 or appliedFromApproved"
+        },
+        {
+          "type": "invariant",
+          "name": "LiveNeedsFlow",
+          "expr": "metadataLive implies (metadataDrafted and uploadsStarted)"
+        },
+        {
+          "type": "action",
+          "name": "FetchAssets",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "StartUploads",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "DraftMetadata",
+          "params": [
+            "title",
+            "description"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ApplyMetadata",
+          "params": [
+            "title",
+            "description"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "RequestFix",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "FixMetadata",
+          "params": [
+            "title",
+            "description"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ReadTranscript",
+          "params": []
+        },
+        {
+          "type": "agent",
+          "tools": [
+            "fetch_assets->FetchAssets:act",
+            "start_uploads->StartUploads:act",
+            "draft_metadata->DraftMetadata:act",
+            "apply_metadata->ApplyMetadata:act:desc",
+            "request_fix->RequestFix:act",
+            "fix_metadata->FixMetadata:act:desc",
+            "read_transcript->ReadTranscript:observe"
+          ],
+          "prompts": [
+            "draft_metadata@Uploading",
+            "read_transcript",
+            "apply_metadata#AwaitingApproval",
+            "request_fix@MetadataLive",
+            "fix_metadata#AwaitingApproval"
+          ],
+          "instructions": 1,
+          "awaits": [
+            "AwaitingApproval"
+          ]
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "ApplyFromApproved"
+        },
+        {
+          "type": "verify",
+          "name": "LiveNeedsFlow"
+        }
+      ]
+    }
+  ],
+  "PreconditionTest.speckdl": [
+    {
+      "name": "PreconditionTest",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "balance:Integer",
+            "active:Boolean"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "SetBalance",
+          "params": [
+            "newBalance"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "Deactivate",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "Raft.speckdl": [
+    {
+      "name": "Raft",
+      "members": [
+        {
+          "type": "interface",
+          "name": "LogEntry",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "term",
+              "index",
+              "command"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "ServerState",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "role",
+              "currentTerm",
+              "votedFor",
+              "log",
+              "commitIndex",
+              "lastApplied"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "AppendEntriesReq",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "term",
+              "leaderId",
+              "prevLogIndex",
+              "prevLogTerm",
+              "entries",
+              "leaderCommit"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "RequestVoteReq",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "term",
+              "candidateId",
+              "lastLogIndex",
+              "lastLogTerm"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "state",
+          "vars": [
+            "servers:Set(ServerId)",
+            "serverState:Map(ServerId,ServerState)",
+            "nextIndex:Map(Map(ServerId,ServerId),LogIndex)",
+            "matchIndex:Map(Map(ServerId,ServerId),LogIndex)",
+            "electionTimeout:Map(ServerId,Nat)"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "SingleLeaderPerTerm",
+          "expr": "forall s1 in servers: forall s2 in servers: serverState[s1].role == \"leader\" and serverState[s2].role == \"leader\" and s1 != s2 implies serverState[s1].currentTerm != serverState[s2].currentTerm"
+        },
+        {
+          "type": "invariant",
+          "name": "LeaderCompleteness",
+          "expr": "forall s in servers: serverState[s].role == \"leader\" implies forall entry in serverState[s].log: entry.index <= serverState[s].commitIndex implies entry.term <= serverState[s].currentTerm"
+        },
+        {
+          "type": "invariant",
+          "name": "LogMatching",
+          "expr": "forall s1 in servers: forall s2 in servers: forall i in [1 .. length(serverState[s1].log)]: i <= length(serverState[s2].log) and serverState[s1].log[i].term == serverState[s2].log[i].term implies serverState[s1].log[i].command == serverState[s2].log[i].command"
+        },
+        {
+          "type": "action",
+          "name": "StartElection",
+          "params": [
+            "server"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "GrantVote",
+          "params": [
+            "voter",
+            "req"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "BecomeLeader",
+          "params": [
+            "server"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "AppendEntries",
+          "params": [
+            "leader",
+            "follower",
+            "req"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "AdvanceCommit",
+          "params": [
+            "leader"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ApplyEntries",
+          "params": [
+            "server"
+          ]
+        },
+        {
+          "type": "next"
+        }
+      ]
+    }
+  ],
+  "RetryHandler.speckdl": [
+    {
+      "name": "RetryHandler",
+      "members": [
+        {
+          "type": "bom"
+        },
+        {
+          "type": "provenance"
+        },
+        {
+          "type": "derives"
+        },
+        {
+          "type": "satisfies"
+        },
+        {
+          "type": "satisfies"
+        },
+        {
+          "type": "author",
+          "name": "Scott Scoble"
+        },
+        {
+          "type": "source"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "input"
+        },
+        {
+          "type": "output"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "constraint"
+        },
+        {
+          "type": "verify",
+          "name": "unnamed"
+        },
+        {
+          "type": "verify",
+          "name": "unnamed"
+        },
+        {
+          "type": "event",
+          "name": "RetryAttempted"
+        },
+        {
+          "type": "event",
+          "name": "OperationSucceeded"
+        },
+        {
+          "type": "event",
+          "name": "OperationFailed"
+        }
+      ]
+    }
+  ],
+  "ReviewGate.speckdl": [
+    {
+      "name": "ReviewGate",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "stage:Nat",
+            "testsPassed:Bool",
+            "approved:Bool"
+          ]
+        },
+        {
+          "type": "init",
+          "init": [
+            "stage",
+            "testsPassed",
+            "approved"
+          ]
+        },
+        {
+          "type": "invariant",
+          "name": "MergeNeedsApproval",
+          "expr": "stage < 4 or (approved and testsPassed)"
+        },
+        {
+          "type": "action",
+          "name": "RunTests",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "RequestReview",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "Approve",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "Merge",
+          "params": []
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "MergeNeedsApproval"
+        }
+      ]
+    }
+  ],
+  "SQLitePager.speckdl": [
+    {
+      "name": "SQLitePager",
+      "members": [
+        {
+          "type": "author",
+          "name": "Engineering <eng@example.com>"
+        },
+        {
+          "type": "source"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "derives"
+        },
+        {
+          "type": "satisfies"
+        },
+        {
+          "type": "state",
+          "vars": [
+            "pagerState:String",
+            "pageCount:Nat",
+            "dirtyPageCount:Nat",
+            "journalMode:String",
+            "journalExists:Bool",
+            "syncNeeded:Bool",
+            "activeTransaction:Bool",
+            "transactionType:String",
+            "errorState:Bool",
+            "errCode:Nat",
+            "currentLock:String",
+            "readOnly:Bool",
+            "dirtyPages:Set(Nat)"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "CommitAtomicity",
+          "expr": "dirtyPageCount >= 0"
+        },
+        {
+          "type": "invariant",
+          "name": "RollbackSafety",
+          "expr": "dirtyPageCount == 0"
+        },
+        {
+          "type": "invariant",
+          "name": "JournalConsistency",
+          "expr": "journalExists == true -> activeTransaction == true"
+        },
+        {
+          "type": "invariant",
+          "name": "PageCacheCoherence",
+          "expr": "activeTransaction == true and dirtyPageCount > 0 -> pagerState != Idle"
+        },
+        {
+          "type": "invariant",
+          "name": "LockProgression",
+          "expr": "currentLock != \"\""
+        },
+        {
+          "type": "invariant",
+          "name": "ErrorRecovery",
+          "expr": "errorState == true -> activeTransaction == false"
+        },
+        {
+          "type": "action",
+          "name": "OpenDatabase",
+          "params": [
+            "filename"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "BeginReadTransaction",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "BeginWriteTransaction",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "WritePage",
+          "params": [
+            "pageId",
+            "data"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CommitTransaction",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "RollbackTransaction",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "Checkpoint",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "CloseDatabase",
+          "params": []
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "CommitAtomicity"
+        },
+        {
+          "type": "verify",
+          "name": "RollbackSafety"
+        },
+        {
+          "type": "verify",
+          "name": "JournalConsistency"
+        },
+        {
+          "type": "verify",
+          "name": "PageCacheCoherence"
+        },
+        {
+          "type": "verify",
+          "name": "LockProgression"
+        },
+        {
+          "type": "verify",
+          "name": "ErrorRecovery"
+        }
+      ]
+    }
+  ],
+  "SQLiteWAL.speckdl": [
+    {
+      "name": "SQLiteWAL",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "walFrames:Map(Nat,Nat)",
+            "walFrameSeq:Map(Nat,Nat)",
+            "nFrames:Nat",
+            "maxFrames:Nat",
+            "readerEndMark:Map(Nat,Nat)",
+            "nReaders:Nat",
+            "writerActive:Bool",
+            "writerFrames:Map(Nat,Nat)",
+            "writerFrameCommit:Bool",
+            "checkpointActive:Bool",
+            "checkpointSeq:Nat",
+            "checkpointAttempted:Nat",
+            "checkpointMode:Nat",
+            "walResetNeeded:Bool",
+            "dbContents:Map(Nat,Nat)",
+            "errorState:Bool",
+            "errorCode:Nat"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "action",
+          "name": "BeginRead",
+          "params": [
+            "readerId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ReadFrame",
+          "params": [
+            "readerId",
+            "frameId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "EndRead",
+          "params": [
+            "readerId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "BeginWrite",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "AppendFrame",
+          "params": [
+            "frameId",
+            "pageId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CommitWrite",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "BeginCheckpoint",
+          "params": [
+            "mode"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "MoveFrame",
+          "params": [
+            "frameId"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "FinishCheckpoint",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "ResetWAL",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "InjectError",
+          "params": [
+            "err"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "RecoverFromError",
+          "params": []
+        },
+        {
+          "type": "constraint",
+          "name": "ReadConsistency"
+        },
+        {
+          "type": "constraint",
+          "name": "WriteSerialization"
+        },
+        {
+          "type": "constraint",
+          "name": "CheckpointSafety"
+        },
+        {
+          "type": "constraint",
+          "name": "FrameOrdering"
+        },
+        {
+          "type": "constraint",
+          "name": "WalResetCondition"
+        },
+        {
+          "type": "constraint",
+          "name": "CommitIntegrity"
+        },
+        {
+          "type": "constraint",
+          "name": "LockDeadlockFree"
+        },
+        {
+          "type": "constraint",
+          "name": "CommitDurability"
+        },
+        {
+          "type": "constraint",
+          "name": "BackfillBound"
+        },
+        {
+          "type": "constraint",
+          "name": "ErrorBlocked"
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "ReadConsistency"
+        },
+        {
+          "type": "verify",
+          "name": "WriteSerialization"
+        },
+        {
+          "type": "verify",
+          "name": "CheckpointSafety"
+        },
+        {
+          "type": "verify",
+          "name": "FrameOrdering"
+        },
+        {
+          "type": "verify",
+          "name": "WalResetCondition"
+        },
+        {
+          "type": "verify",
+          "name": "CommitIntegrity"
+        },
+        {
+          "type": "verify",
+          "name": "LockDeadlockFree"
+        },
+        {
+          "type": "verify",
+          "name": "CommitDurability"
+        },
+        {
+          "type": "verify",
+          "name": "BackfillBound"
+        },
+        {
+          "type": "verify",
+          "name": "ErrorBlocked"
+        }
+      ]
+    }
+  ],
+  "TigerBeetleLedger.speckdl": [
+    {
+      "name": "TigerBeetleLedger",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "accounts:Map(Nat,Account)",
+            "transfers:Map(Nat,Transfer)",
+            "pending:Set(Nat)",
+            "replicaState:Map(Nat,Replica)",
+            "log:List(LogEntry)",
+            "commitIndex:Nat",
+            "leader:Nat"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "AccountBalanceInvariant",
+          "expr": "forall a in accounts.values: a.balance == a.credits_posted - a.debits_posted forall a in accounts.values: a.debits_pending >= 0 a.credits_pending >= 0"
+        },
+        {
+          "type": "invariant",
+          "name": "TransferStateConsistency",
+          "expr": "forall t in transfers.values: t.pending implies t.posted == false && t.voided == false forall t in transfers.values: t.posted implies t.voided == false forall t in transfers.values: t.voided implies t.posted == false"
+        },
+        {
+          "type": "invariant",
+          "name": "NoOverdraft",
+          "expr": "forall a in accounts.values: a.balance >= 0 or a.flags.allows_overdraft"
+        },
+        {
+          "type": "action",
+          "name": "CreateTransfer",
+          "params": [
+            "t"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CommitTransfer",
+          "params": [
+            "id"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "VoidTransfer",
+          "params": [
+            "id"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "PostTransfer",
+          "params": [
+            "t"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "BecomeLeader",
+          "params": [
+            "replica",
+            "term"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "AppendEntry",
+          "params": [
+            "entry",
+            "term"
+          ]
+        },
+        {
+          "type": "next"
+        },
+        {
+          "type": "verify",
+          "name": "AccountBalanceInvariant"
+        },
+        {
+          "type": "verify",
+          "name": "NoOverdraft"
+        },
+        {
+          "type": "verify",
+          "name": "TransferStateConsistency"
+        }
+      ]
+    }
+  ],
+  "ToggleSwitch.speckdl": [
+    {
+      "name": "ToggleSwitch",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "isOn:Bool"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "SwitchConsistent",
+          "expr": "isOn in {true, false}"
+        },
+        {
+          "type": "action",
+          "name": "TurnOn",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "TurnOff",
+          "params": []
+        },
+        {
+          "type": "next"
+        }
+      ]
+    }
+  ],
+  "TwoPhaseCommit.speckdl": [
+    {
+      "name": "TwoPhaseCommit",
+      "members": [
+        {
+          "type": "state",
+          "vars": [
+            "rmState:Map(String,String)",
+            "tmState:String",
+            "tmPrepared:Set(String)",
+            "msgs:Set(Message)",
+            "rms:Set(String)"
+          ]
+        },
+        {
+          "type": "init",
+          "init": []
+        },
+        {
+          "type": "invariant",
+          "name": "TPTypeOK",
+          "expr": "rmState.values subsetOf {\"working\", \"prepared\", \"committed\", \"aborted\"} tmState in {\"init\", \"committed\", \"aborted\"} tmPrepared subsetOf rms"
+        },
+        {
+          "type": "invariant",
+          "name": "TPConsistency",
+          "expr": "tmState == \"committed\" implies forall rm in rms: rmState[rm] == \"committed\" tmState == \"aborted\" implies forall rm in rms: rmState[rm] == \"aborted\" forall rm in rms: rmState[rm] == \"committed\" implies tmState != \"aborted\" forall rm in rms: rmState[rm] == \"prepared\" implies tmState in {\"init\", \"committed\"}"
+        },
+        {
+          "type": "action",
+          "name": "RMPrepare",
+          "params": [
+            "rm"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "TMRcvPrepared",
+          "params": [
+            "rm"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "TMCommit",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "TMAbort",
+          "params": []
+        },
+        {
+          "type": "action",
+          "name": "RMChooseToAbort",
+          "params": [
+            "rm"
+          ]
+        },
+        {
+          "type": "next"
+        }
+      ]
+    }
+  ],
+  "tef.speckdl": [
+    {
+      "name": "TEF",
+      "members": [
+        {
+          "type": "source"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "interface",
+          "name": "TypeMeta",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "kind",
+              "apiVersion"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "ObjectMeta",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "namespace",
+              "uid",
+              "resourceVersion",
+              "generation",
+              "creationTimestamp",
+              "labels",
+              "annotations"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "ListMeta",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "resourceVersion",
+              "continue_"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Transition",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "from",
+              "to",
+              "event",
+              "guard"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "TransitionRecord",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "from",
+              "to",
+              "event",
+              "timestamp"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Rule",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "expression"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "AcceptanceResult",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "expression",
+              "pass",
+              "error"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "BuildResult",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "expression",
+              "pass",
+              "error"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "BuildStep",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "command",
+              "env"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "EnvVar",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "value",
+              "valueFrom"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "EnvVarSource",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "secretKeyRef",
+              "configMapKeyRef"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "SecretKeySelector",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "key",
+              "optional"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "ConfigMapKeySelector",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "key",
+              "optional"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "BuildStepResult",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "exitCode",
+              "stdout",
+              "stderr",
+              "duration"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "ProductPhase",
+          "iface": {
+            "kind": "enum",
+            "fields": [],
+            "methods": [
+              "Building",
+              "Ready",
+              "Shipped",
+              "Rejected"
+            ]
+          }
+        },
+        {
+          "type": "interface",
+          "name": "BuildJobPhase",
+          "iface": {
+            "kind": "enum",
+            "fields": [],
+            "methods": [
+              "Pending",
+              "Running",
+              "Succeeded",
+              "Failed"
+            ]
+          }
+        },
+        {
+          "type": "interface",
+          "name": "EvaluatorPhase",
+          "iface": {
+            "kind": "enum",
+            "fields": [],
+            "methods": [
+              "Pending",
+              "Running",
+              "Succeeded",
+              "Failed"
+            ]
+          }
+        },
+        {
+          "type": "interface",
+          "name": "CustomerSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "displayName",
+              "owner",
+              "description",
+              "namespace"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "CustomerStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "namespaceReady",
+              "observedGeneration",
+              "message"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Customer",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "ProductSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "customerRef",
+              "specRef",
+              "flowRef",
+              "acceptanceRef",
+              "owner"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "ProductStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "phase",
+              "observedGeneration",
+              "message",
+              "acceptance",
+              "buildResults",
+              "tomlPath"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Product",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "SpecSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "customerRef",
+              "summary",
+              "requirements",
+              "acceptanceCriteria"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "SpecStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "read",
+              "observedGeneration",
+              "message"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Spec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "FlowSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "states",
+              "initialState",
+              "transitions",
+              "customerRef",
+              "productRef",
+              "specRef",
+              "acceptanceRef"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "FlowStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "currentState",
+              "history",
+              "observedGeneration",
+              "message"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Flow",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "AcceptanceContractSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "customerRef",
+              "targetKind",
+              "rules",
+              "buildSteps"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "AcceptanceContractStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "lastEvaluated",
+              "observedGeneration",
+              "message"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "AcceptanceContract",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "BuildJobSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "productRef",
+              "steps",
+              "pvc",
+              "serviceAccount",
+              "image",
+              "nodeName"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "BuildJobStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "phase",
+              "results",
+              "message",
+              "observedGeneration"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "BuildJob",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "IntegrationSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "customerRef",
+              "type_",
+              "config"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "IntegrationStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "connected",
+              "observedGeneration",
+              "message"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Integration",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "EvaluatorSpec",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "name",
+              "image",
+              "command",
+              "timeoutSeconds",
+              "customerRef"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "EvaluatorStatus",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "phase",
+              "lastRun",
+              "result"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "interface",
+          "name": "Evaluator",
+          "iface": {
+            "kind": "record",
+            "fields": [
+              "typeMeta",
+              "metadata",
+              "spec",
+              "status"
+            ],
+            "methods": []
+          }
+        },
+        {
+          "type": "state",
+          "vars": [
+            "customers:Map(String,Customer)",
+            "products:Map(String,Product)",
+            "specs:Map(String,Spec)",
+            "flows:Map(String,Flow)",
+            "acceptanceContracts:Map(String,AcceptanceContract)",
+            "buildJobs:Map(String,BuildJob)",
+            "integrations:Map(String,Integration)",
+            "evaluators:Map(String,Evaluator)"
+          ]
+        },
+        {
+          "type": "init",
+          "init": [
+            "customers",
+            "products",
+            "specs",
+            "flows",
+            "acceptanceContracts",
+            "buildJobs",
+            "integrations",
+            "evaluators"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateCustomer",
+          "params": [
+            "name",
+            "displayName",
+            "owner",
+            "description"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateProduct",
+          "params": [
+            "name",
+            "customerRef",
+            "specRef",
+            "owner",
+            "flowRef",
+            "acceptanceRef"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "TransitionProductPhase",
+          "params": [
+            "productName",
+            "newPhase",
+            "message"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "ShipProduct",
+          "params": [
+            "productName",
+            "tomlPath"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "RejectProduct",
+          "params": [
+            "productName",
+            "reason"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateBuildJob",
+          "params": [
+            "productName",
+            "steps",
+            "image",
+            "nodeName"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "AdvanceBuildJob",
+          "params": [
+            "buildJobName",
+            "newPhase"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateAcceptanceContract",
+          "params": [
+            "name",
+            "customerRef",
+            "targetKind",
+            "rules",
+            "buildSteps"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateFlow",
+          "params": [
+            "name",
+            "customerRef",
+            "states",
+            "initialState",
+            "transitions",
+            "productRef"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "FireFlowEvent",
+          "params": [
+            "flowName",
+            "event"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateIntegration",
+          "params": [
+            "name",
+            "customerRef",
+            "type_",
+            "config"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "CreateEvaluator",
+          "params": [
+            "name",
+            "customerRef",
+            "image",
+            "command",
+            "timeoutSeconds"
+          ]
+        },
+        {
+          "type": "action",
+          "name": "AdvanceEvaluator",
+          "params": [
+            "evaluatorName",
+            "newPhase",
+            "result"
+          ]
+        },
+        {
+          "type": "service",
+          "name": "TEFService"
+        },
+        {
+          "type": "lifecycle_metadata"
+        },
+        {
+          "type": "lifecycle_metadata"
+        },
+        {
+          "type": "lifecycle_metadata"
+        },
+        {
+          "type": "lifecycle_metadata"
+        },
+        {
+          "type": "constraint",
+          "name": "every product has a customer"
+        },
+        {
+          "type": "constraint",
+          "name": "every product has a spec"
+        },
+        {
+          "type": "constraint",
+          "name": "every buildjob references a product"
+        },
+        {
+          "type": "constraint",
+          "name": "every acceptance contract has a customer"
+        },
+        {
+          "type": "constraint",
+          "name": "every evaluator has a customer"
+        },
+        {
+          "type": "constraint",
+          "name": "every integration has a customer"
+        },
+        {
+          "type": "constraint",
+          "name": "flow initial state is in states list"
+        },
+        {
+          "type": "constraint",
+          "name": "shipped products have a tomlPath"
+        },
+        {
+          "type": "provenance"
+        },
+        {
+          "type": "bom"
+        }
+      ]
+    }
+  ]
+}

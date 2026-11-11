@@ -127,6 +127,17 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
     k8sVersion?: string;
   } = {};
 
+  // Actions declared anywhere in the speck decide which side of `tool`
+  // is the action, including an action that appears after the agent block.
+  const headerBrace = (byLine[start + 1] ?? []).find(t => t.kind === '{');
+  const speckClose = headerBrace ? matchingClose(tokens, headerBrace) : undefined;
+  const actionScanEnd = speckClose ? speckClose.line - 1 : lines.length;
+  const actionNames = new Set<string>();
+  for (let n = start + 1; n < actionScanEnd; n++) {
+    const m = lines[n].match(/^\s*action\s+(\w+)\b/);
+    if (m) actionNames.add(m[1]);
+  }
+
   let i = start + 1;
   let braceCount = 1;
   let speckEndLine = Math.min(lines.length, start + 1);
@@ -224,7 +235,7 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
           throw parseErrorAt(filePath, after[0].line, after[0].column, 'text after a member\'s "}"');
         }
       }
-      const member = parseMemberAt(lines, i);
+      const member = parseMemberAt(lines, i, actionNames);
       if (member && member.type === 'invariant' && open && close) {
         const expr = stripInvariantExpr(content.slice(open.end, close.start));
         if (!expr) throw parseErrorAt(filePath, open.line, open.column, 'invariant expression is empty');
@@ -315,8 +326,8 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
  * A block member. `parseMemberBlock` reads the phrase. The caller found the
  * block's end from tokens, so a later member is not part of this span.
  */
-function parseMemberAt(lines: string[], start: number): MemberNode | null {
-  return parseMemberBlock(lines, start);
+function parseMemberAt(lines: string[], start: number, actionNames: Set<string>): MemberNode | null {
+  return parseMemberBlock(lines, start, actionNames);
 }
 
 function columnOf(raw: string): number {

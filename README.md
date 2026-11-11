@@ -148,8 +148,19 @@ Formal methods specs from a toggle switch through Raft consensus:
 | ReviewGate | `next:` BMC + can()/serialize()/restore() |
 | AgentPolicy | agent { } → AGENTS.md, tools, hooks, HITL/HNTL signals |
 | DeployGate | Call-bound sign-off: `bind call on approve` covers one exact deploy, once |
+| PodcastPublishing | Host-approved metadata automation (HITL await); [README](examples/PodcastPublishing.md) |
 
 Browse all in [examples/](examples/).
+
+## Parser
+
+`compiler/src/speck-lex.ts` tokenizes a file. `compiler/src/rd-parser.ts` builds the AST from that stream. A `{` or `}` inside a `"` string, a `//` comment, or a `/* */` comment is not structure, so it does not end a speck, a member, an `if`, or a `for`. That includes braces inside an agent `instruction`, `prompt tool`, or tool `description`. `'` is post-state prime notation (`n'`), not a quote. An unclosed string or block comment is a parse error on the line where it opened.
+
+A line the parser does not recognize is an error. The message names the file, line, and column. An `import` is parsed and resolved from the importing file (see the language spec, §2.8). Nothing looks up a package registry. `x := 0` in `init` is stored. `x == 0` is accepted and is not stored. `x = 0` is an error.
+
+Two shapes in `examples/` differ from the line walker on main at `4f1e7fa`. `parser-main-corpus.test.ts` is the check. `type LogEntry = { term: Nat, value: Value }` in `examples/KafkaKRaft.speckdl` is a record `{ term, value }`. The state fields after it stay on the state. The generated LogEntry artifacts differ. Two invariants in `examples/OAuth2AuthorizationCode.speckdl` drop a trailing `//` comment from the expression text, and the Rust output for `-t all` differs. The other examples have the same member outline. A speck that puts its closing `}` on the header line does not capture members on that line, and a following `speck` is `unrecognized member`.
+
+`compiler/src/conservation.ts` makes every backend mark each AST member type `emit`, `reject`, or `n/a`. A reject throws before any file is written. `import`, `oneof`, and `transition` are rejected by every backend except Protobuf, which emits `oneof` and `transition`.
 
 ## Documentation
 
@@ -160,16 +171,16 @@ Browse all in [examples/](examples/).
 
 ## Status
 
-- About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
-- Compile tests run against every example (see [Compile tests](#compile-tests)). Camel, Rust and Kubernetes CRDs pass for all 16 examples. The other targets have known failures recorded in `examples/.speckl-compile-baseline.json`.
-- `npm run verify` compiles every example and checks it with Z3. Today: 48 of 79 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
+- The vitest suite is `npm test` in `compiler/` (run it for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
+- Compile tests run against every example (see [Compile tests](#compile-tests)). Known target failures are recorded in `examples/.speckl-compile-baseline.json`.
+- `npm run verify` compiles every example and checks it with Z3; unproven obligations are acknowledged in the baseline (see below).
 - CI (`.github/workflows/ci.yml`) runs on GitHub-hosted `ubuntu-latest` and has two jobs:
   - **build-and-test:** build, `tsc --noEmit`, `npm test`, `npm run verify` against a pinned z3 release, and coverage with the floors above.
   - **compile-targets:** installs JDK 21, Go 1.23, stable Rust, protoc and Elm 0.19.1, then runs `npm run test:compile`.
 - Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust, Camel
 - Round-trip property tested: parse → print → parse is identity for all examples
 - Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments
-- Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed. Today 3 of 34 example verify blocks are proven (AgentPolicy ×2, ReviewGate); the other 31 are listed in `examples/.speckl-unchecked.json`
+- Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed; acknowledged obligations are listed in `examples/.speckl-unchecked.json`.
 - TLA+ models: Two-Phase Commit, Paxos, and Raft are ported as `.speckdl` specs (inspired by the original TLA+ models, not TLA+ output)
 
 ## License
