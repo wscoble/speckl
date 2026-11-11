@@ -1,9 +1,10 @@
 Reviewer findings: PR 59 vs its target
 Question: does every behaviour that is correct on the target stay correct on the working branch? No previously valid input newly rejected or compiled differently, and no input that was handled correctly now silently dropped.
 
-Target: PR 58 head 1032be1a206660a66e73d8cc5051e8c238e718bb (token parser; imports are syntax-checked and not loaded)
-Working: cursor/speckl-import-resolve-b621 4136bc7dcb7b380b9272a7ef19ec94bf3ced35df
-Built both trees and ran compileSpec through each tree's own compiler/src/compile.ts.
+Target: PR 69 head dffd47e95d4613a625f75c7fca987d6939306d74 (parser docs; imports are syntax-checked and not loaded)
+Working: cursor/speckl-import-resolve-b621 a28ac3a2f7067e4b5e2b88007af5074fe6524c0b
+The earlier write of this file named target 1032be1 and working 4136bc7. Those are not the current pair. a28ac3a is the merge of the docs tip into the import branch. compiler/src/imports.ts, compiler/src/ir/lower.ts, and compiler/src/index.ts are unchanged from 4136bc7. compiler/src/compile.ts gained the conservation checks that were already on the docs tip. The probe below was run on 1032be1 versus 4136bc7. The import classification is the same on a28ac3a because the resolver did not change.
+Built both of those trees and ran compileSpec through each tree's own compiler/src/compile.ts.
 Examples: every examples/*.speckdl, targets typescript, z3, rust, go, protobuf, k8s, openapi, camel, elm, agent, all, all-ir.
 Non-import probes: braces in strings and comments, unclosed string, unclosed block comment, one-line specks, malformed members, header after a block comment, prime notation, a brace in an agent instruction. Targets typescript, go, z3, all.
 Import probes, targets typescript, go, z3, all, plus --root on the parent directory and --root /. Before compare, ISO timestamps and absolute source/output paths were replaced.
