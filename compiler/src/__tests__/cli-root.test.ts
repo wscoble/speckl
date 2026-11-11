@@ -45,8 +45,9 @@ describe('speckl --root', () => {
     const missing = write(dir, 'missing.speckdl', 'import "./no-such.speckdl" as L\n' + body);
     const missingRun = run(missing, []);
     expect(missingRun.status, missingRun.stderr).not.toBe(0);
-    expect(missingRun.stderr).toMatch(/cannot read import/);
-    expect(missingRun.stderr).toContain(`${missing}:1`);
+    expect(missingRun.stderr.split('\n')[0]).toBe(
+      `Compilation failed: Error: Parse error: cannot read import "./no-such.speckdl" (resolved ${join(dir, 'no-such.speckdl')}) at ${missing}:1`,
+    );
     const gen = join(dir, 'gen');
     const written = existsSync(gen) ? readdirSync(gen).filter(name => name.endsWith('.ts')) : [];
     expect(written).toEqual([]);
@@ -75,10 +76,14 @@ describe('speckl --root', () => {
     const fileRoot = run(linked, ['--root', linked]);
     expect(fileRoot.status, fileRoot.stderr).not.toBe(0);
     expect(fileRoot.stderr).toMatch(/outside the import root/);
-    const gone = run(linked, ['--root', join(dir, 'no-such-dir')]);
+    const goneRoot = join(dir, 'no-such-dir');
+    const gone = run(linked, ['--root', goneRoot]);
     expect(gone.status, gone.stderr).not.toBe(0);
-    expect(gone.stderr).toMatch(/cannot read import root/);
-    expect(gone.stderr).toContain(join(dir, 'no-such-dir'));
+    expect(gone.stderr.split('\n')[0]).toBe(
+      `Compilation failed: Error: Parse error: cannot read import root "${goneRoot}" (ENOENT)`,
+    );
+    const afterFail = existsSync(gen) ? readdirSync(gen).filter(name => name.endsWith('.ts')) : [];
+    expect(afterFail).toEqual([]);
     mkdirSync(join(dir, 'in'));
     const parentFile = write(join(dir, 'in'), 'up.speckdl', 'import "../lib.speckdl" as L\n' + body);
     const noValue = spawnSync(process.execPath, [viteNode, cli, parentFile, '--root'], { cwd: compilerDir, encoding: 'utf-8' });
