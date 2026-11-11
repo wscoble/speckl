@@ -46,7 +46,10 @@ alias.
   inside a finished `"` string, a `//` comment, or a `/* */` comment is not
   a token. `'` is prime notation, not a string quote. An unclosed string or
   block comment is an error on the line and column where it opened. A
-  non-ASCII identifier is `identifier must be ASCII`. `1e5`, `0x1F`,
+  non-ASCII identifier is `identifier must be ASCII`. A `\r\n` break and a
+  tab are whitespace. A `"` that reaches `\r`, `\n`, or the end of the file
+  before its closer is `unterminated string` on the line where it opened.
+  Non-ASCII text inside a string or a comment stays in that text. `1e5`, `0x1F`,
   `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
   `24h` and `500ms` stay a number plus a unit. `parseSpeck` does not call
   the lexer yet, so the line walker still parses every file.
@@ -61,8 +64,9 @@ alias.
 - **Line walker files.** The line walker lives in `compiler/src/speck-part0.ts`
   through `speck-part9.ts`. `compiler/src/parser.ts` still calls it.
   `parseSpeck` does not call the token lexer yet. Example member outlines
-  are unchanged. `compiler/src/__tests__/line-walker-move.test.ts` pins that
-  outline.
+  are unchanged. `compiler/src/__tests__/line-walker-move.test.ts` compares
+  every example's member outline to `fixtures/line-walker-outline.txt`, the
+  outline from before this move, and checks its sha256.
 - **Example output pin.** `compiler/src/__tests__/compile-pipeline.test.ts` pins
   `-t all` and `-t all-ir` for every example as one sha256 of the file
   digests. The digest snapshot file is gone. The pin matches the previous
