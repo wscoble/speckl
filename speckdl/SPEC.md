@@ -122,6 +122,13 @@ block comment is not a speck. Go still drops an `else if`, a nested `if`,
 a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
 from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` does not call that lexer yet. The line walker still parses. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `parser.ts` still calls it, and example member outlines are unchanged.
 
+### 2.2.1 Rejected structure
+
+The line walker used to accept each input below and store a program that dropped or rewrote the text. That was a bug. The input is now a parse error.
+
+- A speck that never closes. `speck A {` with no closing brace used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9).
+- An extra closing brace. `speck A {` then a line `}` then another `}` used to parse as speck A with no members, ending on line 2. The extra brace was ignored. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). A `}` inside a string is still a string.
+
 ### 2.3 Declarative Form (v0.2, still supported)
 
 ```

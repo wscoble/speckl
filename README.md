@@ -166,6 +166,13 @@ A one-line speck that packs its members on the header line can still absorb the 
 
 The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `compiler/src/parser.ts` still calls it. `parseSpeck` does not call the token lexer yet, and example member outlines are unchanged. Example `-t all` and `-t all-ir` output is pinned as one sha256 in `compiler/src/__tests__/compile-pipeline.test.ts`.
 
+## Rejected structure
+
+These inputs used to parse. Each one is now an error. The same rule is in [speckdl/SPEC.md](speckdl/SPEC.md).
+
+- `speck A {` with no closing brace is missing final "}" at column 9. It used to parse as an empty speck.
+- An extra `}` after a closed speck is extra "}" at line 3 column 1. It used to be ignored.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
