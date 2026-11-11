@@ -101,7 +101,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:1: a second speck on one line (column 13)');
   });
 
-  // NEXT
+  it('still accepts an unrecognized member line', () => {
+    const src = 'speck A {\n    garbage line here\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',

@@ -129,6 +129,7 @@ The line walker used to accept each input below and store a program that dropped
 - A speck that never closes. `speck A {` with no closing brace used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9).
 - An extra closing brace. `speck A {` then a line `}` then another `}` used to parse as speck A with no members, ending on line 2. The extra brace was ignored. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). A `}` inside a string is still a string.
 - Text after a speck's closing brace. `speck A {` then `} junk` used to parse as speck A with no members, ending on line 2. The word was ignored. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3).
+- A second speck on the same line. `speck A { } speck B { }` used to parse as only speck A, with no members. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13).
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
