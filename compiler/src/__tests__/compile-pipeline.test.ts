@@ -6,7 +6,7 @@
 // tests run the same pipeline in the test process and pin its behaviour:
 //   - the in-process pipeline and the CLI produce identical files;
 //   - every example's output for `-t all` and `-t all-ir` matches a committed
-//     digest (any change to generated output shows up as a snapshot diff);
+//     digest hash (any change to generated output changes the hash);
 //   - invalid input fails the compile and leaves no rails behind.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -71,14 +71,22 @@ describe('in-process pipeline matches the CLI', () => {
   }
 });
 
+// One hash of every example's `-t all` and `-t all-ir` digests. The previous
+// snapshot file was the full digest map (about 86k characters) and made any
+// output change pull that whole file into review.
+const OUTPUT_SHA256 = '9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1';
+
 describe('generated output is pinned for every example', () => {
-  for (const name of examples) {
-    for (const target of ['all', 'all-ir'] as const) {
-      it(`${name} -t ${target}`, () => {
-        expect(digests(run(join(examplesDir, name), target))).toMatchSnapshot();
-      }, 60_000);
+  it('pins -t all and -t all-ir for every example', () => {
+    const pinned: Record<string, Record<string, string>> = {};
+    for (const name of examples) {
+      for (const target of ['all', 'all-ir'] as const) {
+        pinned[`${name} -t ${target}`] = digests(run(join(examplesDir, name), target));
+      }
     }
-  }
+    const hash = createHash('sha256').update(JSON.stringify(pinned)).digest('hex');
+    expect(hash).toBe(OUTPUT_SHA256);
+  }, 180_000);
 });
 
 describe('target selection', () => {

@@ -1,0 +1,6 @@
+Reviewer findings: example output pin
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the line-walker move. Working: the same compilers. `compiler/src/__tests__/compile-pipeline.test.ts` now hashes the `-t all` and `-t all-ir` file digests for every example instead of calling `toMatchSnapshot`. The snapshot file is deleted.
+
+The hash is sha256 9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1 of the same digest map the snapshot stored. Compiled output is unchanged. The README and CHANGELOG describe the pin. That text does not change compiled output.

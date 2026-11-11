@@ -63,6 +63,10 @@ alias.
   `parseSpeck` does not call the token lexer yet. Example member outlines
   are unchanged. `compiler/src/__tests__/line-walker-move.test.ts` pins that
   outline.
+- **Example output pin.** `compiler/src/__tests__/compile-pipeline.test.ts` pins
+  `-t all` and `-t all-ir` for every example as one sha256 of the file
+  digests. The digest snapshot file is gone. The pin matches the previous
+  snapshot, so compiled output is unchanged.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
