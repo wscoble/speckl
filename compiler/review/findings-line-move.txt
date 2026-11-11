@@ -1,0 +1,10 @@
+Reviewer findings: line walker moved out of parser.ts
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the conservation branch. Working: the same line walker, split into compiler/src/speck-part0.ts through speck-part9.ts. compiler/src/parser.ts still calls that walker. parseSpeck does not call the token lexer.
+
+The parts call each other, so they land in one change. A smaller cut does not typecheck.
+
+Example member outlines match the unsplit walker. The pin is sha256 52680b9231245195f1320de8d2fcc0066b32ab89f7ba24228d531ecf087f9909 in compiler/src/__tests__/line-walker-move.test.ts. The README, SPEC, and CHANGELOG say the walker moved and that compiled output is unchanged. That text does not change compiled output.
+
+No previously valid example is rejected. Nothing a backend used to write is dropped.

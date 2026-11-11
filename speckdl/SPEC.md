@@ -120,7 +120,7 @@ header, that header is `header is not at the start of the line`. A header
 later on the line is outside this scan. A speck written entirely inside a
 block comment is not a speck. Go still drops an `else if`, a nested `if`,
 a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
-from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column). `parseSpeck` does not call that lexer yet. The line walker still parses. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend.
+from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column). `parseSpeck` does not call that lexer yet. The line walker still parses. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `parser.ts` still calls it, and example member outlines are unchanged.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
