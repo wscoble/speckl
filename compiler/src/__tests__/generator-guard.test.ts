@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AST, MemberNode } from '../parser.js';
 import { lower } from '../ir/lower.js';
+import { generateElm } from '../generators/elm.js';
 import { generateZ3 } from '../generators/z3.js';
 import { generateTypeScriptStateMachine } from '../generators/typescript-state-machine.js';
 import { generateRust } from '../generators/rust.js';
@@ -54,6 +55,7 @@ describe('direct generator calls', () => {
     expect(() => generateRust(irWithOneof(out), out, ast())).toThrow(reject);
     expect(() => generateTypeScriptStateMachine(ast(), out)).toThrow(reject);
     expect(() => generateZ3(ast(), out)).toThrow(reject);
+    expect(() => generateElm(ast(), out)).toThrow(reject);
     expect(() => new OpenAPITarget().generate(irWithOneof(out), { outputDir: out })).toThrow(reject);
   });
 });
