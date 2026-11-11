@@ -123,6 +123,16 @@ describe('line walker rejects malformed structure', () => {
     expect(message(bare)).toBe('Parse error at bad.speckdl:4: unrecognized member "x := x + 3" (column 5)');
   });
 
+  it('rejects an unrecognized top-level name', () => {
+    const spek = 'speck A {\n    state { x: Nat }\n}\nspek B {\n}\n';
+    expect(stored(spek)).toBe('[{"name":"A","endLine":3,"members":[{"type":"state","vars":[]}]}]');
+    expect(message(spek)).toBe('Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1)');
+
+    const star = '*/ speck A {\n}\n';
+    expect(stored(star)).toBe('[]');
+    expect(message(star)).toBe('Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
