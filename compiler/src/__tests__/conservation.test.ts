@@ -40,7 +40,7 @@ describe('backend conservation', () => {
   it('rejects an IR speck with a missing list or an unknown member type', () => {
     expect(() => guardIr('go', { specks: [{ name: 'S' }] } as IR)).toThrow(/sourceMemberTypes is missing on speck "S"/);
     expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: ['not-a-member'] }] } as IR)).toThrow(/no handler for AST node type "not-a-member"/);
-    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: [] }] } as IR)).not.toThrow();
+    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: [] }] } as unknown as IR)).not.toThrow();
     expect(() => guardIr('go', { specks: [{ sourceMemberTypes: ['oneof'] }] } as IR)).toThrow(/rejects AST node type "oneof"/);
   });
 
