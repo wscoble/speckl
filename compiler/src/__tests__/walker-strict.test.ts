@@ -173,6 +173,18 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10)');
   });
 
+  it('rejects a section sign', () => {
+    const src = 'speck A {\n §\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: unexpected character "§" (column 2)');
+  });
+
+  it('rejects an arrow character', () => {
+    const src = 'speck A {\n    x → y\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: unexpected character "→" (column 7)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
