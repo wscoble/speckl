@@ -74,4 +74,29 @@ describe('direct Z3 limits', () => {
     generateZ3(parse('speck S {\n}\n', dir), dir);
     expect(existsSync(join(dir, 'S.smt2'))).toBe(true);
   });
+
+  it('writes the requested depth, including 0 and a negative depth', () => {
+    const dir = out();
+    generateZ3(parse(machine, dir), dir, { verifyDepth: 0 });
+    expect(readFileSync(join(dir, 'S.smt2'), 'utf8')).toContain('; Bounded model checking depth: 0');
+    const neg = out();
+    generateZ3(parse(machine, neg), neg, { verifyDepth: -1 });
+    expect(readFileSync(join(neg, 'S.smt2'), 'utf8')).toContain('; Bounded model checking depth: -1');
+  });
+
+  it('names every unknown next: action and writes no SMT file', () => {
+    const dir = out();
+    const src = machine.replace('invariant Pos { n >= 0 }', 'next: Go | Missing | Also\n    invariant Pos { n >= 0 }');
+    expect(() => generateZ3(parse(src, dir), dir)).toThrow(/S: next: references unknown action\(s\): Missing, Also/);
+    expect(existsSync(join(dir, 'S.smt2'))).toBe(false);
+  });
+
+  it('renames an SMT reserved state name', () => {
+    const dir = out();
+    const src = 'speck S {\n    state { let: Nat }\n    init { let := 0 }\n}\n';
+    generateZ3(parse(src, dir), dir);
+    const smt = readFileSync(join(dir, 'S.smt2'), 'utf8');
+    expect(smt).toContain('let_v');
+    expect(smt).not.toMatch(/\(declare-const let Int\)/);
+  });
 });

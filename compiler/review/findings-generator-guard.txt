@@ -4,3 +4,5 @@ Question: does every behaviour that is correct on the target stay correct on thi
 Target: the previous slice. Working: generateZ3 calls the check and reads invariant members on a direct call. compileSpec already checked before each backend. A direct call did not.
 
 No example contains oneof, except the Protobuf case which still emits it. Example output is unchanged. The CHANGELOG names the generator in this slice. That text does not change compiled output.
+
+Limits of this direct call. `verifyDepth` is printed as given, including 0 and a negative number. It is not range-checked. `next:` that names two unknown actions throws `unknown action(s): Missing, Also` and writes no SMT file. A state field named `let` is declared as `let_v`, because `let` is reserved in SMT. An invariant with no attached list is read from the AST member.
