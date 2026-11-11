@@ -1,11 +1,9 @@
 // SpeckDL parser. `lexSpeck` produces one token stream for the file.
 //
 // Brace matching uses that stream, so a `{` or `}` inside a comment or a
-// string is not structure. A block that opens and closes on its header
-// line takes its phrase body from that brace span. A multi-line block ends
-// at the matching token brace; the phrase parser then reads the source
-// lines in between. The member phrases themselves (action statements,
-// field lists, constraints) are still parsed from that source text.
+// string is not structure. Member phrases still read the same spans the
+// line walker read, so example output matches that walker. A later change
+// can take a one-line block's body from its brace span.
 //
 // After the walk, token depth must be 0 at each speck's close and at EOF.
 // A line that starts with `/*` and still has tokens is an error: that code
@@ -130,9 +128,8 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
   const headerBrace = (byLine[start + 1] ?? []).find(t => t.kind === '{');
   const speckClose = headerBrace ? matchingClose(tokens, headerBrace) : undefined;
   // The speck's `}` is on the header line. The line walker also skipped
-  // members packed on that line (it started on the next line) and then kept
-  // going, so a following speck was parsed twice: once as this speck's
-  // members, and again as its own speck. Stop on this line.
+  // members packed on that line and then kept going, so a following speck
+  // was parsed twice. Stop on this line.
   if (speckClose && speckClose.line === start + 1) {
     return {
       type: 'speck', name, members,

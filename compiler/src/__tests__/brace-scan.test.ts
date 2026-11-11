@@ -200,8 +200,12 @@ describe('braces in comments and strings', () => {
     const goOf = (actionLines: string[]) => {
       const src = [
         'speck A {',
-        '    state { x: Nat }',
-        '    init { x := 0 }',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
         '    action Go {',
         ...actionLines,
         '    }',
