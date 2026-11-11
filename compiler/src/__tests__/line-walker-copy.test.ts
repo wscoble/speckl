@@ -82,4 +82,27 @@ describe('line walker copy', () => {
       expect(fromLive, fixture.name).toBe(fromCopy);
     }
   });
+
+  it('is imported only by tests', () => {
+    const srcRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+    const imports: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        if (name === 'line-walker') continue;
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) {
+          walk(path);
+          continue;
+        }
+        if (!name.endsWith('.ts')) continue;
+        const text = readFileSync(path, 'utf8');
+        const fromCopy = text.split('\n').some(line => /from\s+['"][^'"]*line-walker\//.test(line));
+        if (fromCopy) imports.push(path);
+      }
+    };
+    walk(srcRoot);
+    expect(imports.length).toBeGreaterThan(0);
+    const outsideTests = imports.filter(path => !path.includes('/__tests__/'));
+    expect(outsideTests).toEqual([]);
+  });
 });
