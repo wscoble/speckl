@@ -120,7 +120,7 @@ header, that header is `header is not at the start of the line`. A header
 later on the line is outside this scan. A speck written entirely inside a
 block comment is not a speck. Go still drops an `else if`, a nested `if`,
 a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
-from before this scan. There is no shared scanner module yet.
+from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column). `parseSpeck` does not call that lexer yet. The line walker still parses.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
