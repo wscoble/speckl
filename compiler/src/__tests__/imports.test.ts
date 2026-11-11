@@ -379,7 +379,8 @@ describe('import resolution', () => {
       }
       expect(message.startsWith(`Parse error: cannot read import "${spec}" (resolved `)).toBe(true);
       expect(message.includes(basename(folder))).toBe(true);
-      expect(message.endsWith(`${tail})`)).toBe(true);
+      expect(message.includes(`${tail})`)).toBe(true);
+      expect(message.endsWith(` at ${file}:1`)).toBe(true);
     };
     const https = write(folder, 'https.speckdl', 'import "https://example.invalid/lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n}\n');
     staysInFolder(https, 'https://example.invalid/lib.speckdl', 'https:/example.invalid/lib.speckdl');
@@ -496,7 +497,42 @@ describe('import resolution', () => {
     run('stat-after');
   });
 
+  it('reads a backslash path and a .. segment as the same file', () => {
+    const folder = dir();
+    mkdirSync(join(folder, 'sub'));
+    write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    write(join(folder, 'sub'), 'nested.speckdl', 'speck Nested {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const slash = write(folder, 'slash.speckdl', 'import ".\\\\sub\\\\nested.speckdl" as N\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const up = write(folder, 'up.speckdl', 'import "sub\\\\..\\\\lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    expect(expandImports(parseSpeckFile(slash), slash).specks.map(s => s.name).sort()).toEqual(['Nested', 'Root']);
+    expect(expandImports(parseSpeckFile(up), up).specks.map(s => s.name).sort()).toEqual(['Lib', 'Root']);
+    const drive = write(folder, 'drive.speckdl', 'import "C:\\\\lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    expect(() => expandImports(parseSpeckFile(drive), drive)).toThrow(`Parse error at ${drive}:1: import "C:\\\\lib.speckdl" must be a relative path`);
+  });
 
+  it('names the importing file and line when an import cannot be read', () => {
+    const folder = dir();
+    const file = write(folder, 'root.speckdl', '\nimport "./missing.speckdl" as M\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    expect(() => expandImports(parseSpeckFile(file), file)).toThrow(`Parse error: cannot read import "./missing.speckdl" (resolved ${join(folder, 'missing.speckdl')}) at ${file}:2`);
+  });
+
+  it('treats a different letter case as a different file', () => {
+    // This is the operating system's real path. On a case-sensitive
+    // filesystem Lib.speckdl does not open lib.speckdl.
+    const folder = dir();
+    write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "./Lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/cannot read import "\.\/Lib\.speckdl"/);
+  });
+
+  it('merges imported specks in source order, depth first', () => {
+    const folder = dir();
+    write(folder, 'c.speckdl', 'speck C {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    write(folder, 'a.speckdl', 'import "./c.speckdl" as C\nspeck A {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    write(folder, 'b.speckdl', 'speck B {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "./a.speckdl" as A\nimport "./b.speckdl" as B\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    expect(expandImports(parseSpeckFile(file), file).specks.map(s => s.name)).toEqual(['Root', 'A', 'C', 'B']);
+  });
 });
 
   describe('import wiring', () => {

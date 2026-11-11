@@ -424,6 +424,29 @@ export function disposition(backend: BackendId, type: string): Disposition {
  */
 export const conservationLog: string[] = [];
 
+/**
+ * Compare two copies of the same lines. A missing line, an extra copy, and
+ * a swap are different errors so a reviewer can see which one happened.
+ */
+export function checkLineSequence(expected: readonly string[], actual: readonly string[]): void {
+  const count = (lines: readonly string[]): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (const line of lines) m.set(line, (m.get(line) ?? 0) + 1);
+    return m;
+  };
+  const want = count(expected);
+  const got = count(actual);
+  for (const [line, n] of want) {
+    if ((got.get(line) ?? 0) < n) throw new Error(`dropped line "${line}"`);
+  }
+  for (const [line, n] of got) {
+    if (n > (want.get(line) ?? 0)) throw new Error(`duplicated line "${line}"`);
+  }
+  for (let i = 0; i < expected.length; i++) {
+    if (expected[i] !== actual[i]) throw new Error(`reordered line "${actual[i]}"`);
+  }
+}
+
 function note(backend: BackendId, type: string): void {
   const decision = disposition(backend, type);
   if (decision === 'reject') {
@@ -433,7 +456,9 @@ function note(backend: BackendId, type: string): void {
 }
 
 export function guardAst(backend: BackendId, ast: AST): void {
-  for (const speck of ast.specks) {
+  const expected: string[] = [];
+  const start = conservationLog.length;
+    for (const speck of ast.specks) {
     if (!speck.members) {
       throw new Error(`${backend} backend cannot check member types: members are missing on speck "${speck.name}"`);
     }
@@ -441,9 +466,11 @@ export function guardAst(backend: BackendId, ast: AST): void {
       if (!member?.type) {
         throw new Error(`${backend} backend cannot check member types: a member type is missing on speck "${speck.name}"`);
       }
+      if (disposition(backend, member.type) === 'emit') expected.push(`${backend}:emit:${member.type}`);
       note(backend, member.type);
     }
   }
+  checkLineSequence(expected, conservationLog.slice(start));
 }
 
 /**
