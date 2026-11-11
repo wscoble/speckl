@@ -3,6 +3,8 @@ Question: does every behaviour that is correct on the target stay correct on thi
 
 Target: the import-path slice. expandImports resolved a relative import, and compileSpec did not call it. Working: compileSpec calls expandImports before every backend, and lower does the same when resolveImports is set. The warning "import resolution not yet implemented in lower pass" is gone.
 
+Every resolver error fails closed. A missing file, a cycle, a duplicate alias, an absolute path, a path outside the root, and a root that cannot be read throw before a backend writes. If an import link's owner speck or its resolved speck is missing, lower throws instead of skipping the link. If resolveImports is set and the verified source is missing, lower throws instead of reading the path from disk again. A hand-built AST that was not parsed from the file does not silently compile the file's bytes.
+
 import is n/a in the conservation table because the import node is inlined before a backend writes. oneof and transition stay reject, except Protobuf which emits them.
 
 Example files have no imports, so their compiled output is unchanged. A file that imports another speck now compiles the imported speck too. A path that leaves the entry directory still fails closed. rootDir on compileSpec widens that directory. The CLI does not have --root yet.

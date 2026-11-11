@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { compileSpec } from '../compile.js';
+import { expandImports } from '../imports.js';
 import { parseSpeckFile } from '../parser.js';
 import { lower } from '../ir/lower.js';
 import { OpenAPITarget } from '../generators/openapi.js';
@@ -107,6 +108,44 @@ describe('compileSpec import wiring', () => {
     for (const name of ['Root', 'A', 'C', 'B']) {
       expect(readFileSync(join(out, `${name}.ts`), 'utf8')).toContain(name);
     }
+  });
+
+  it('fails closed when a resolved speck or its owner is missing', () => {
+    const dir = tree();
+    write(dir, 'lib.speckdl', speck('Lib'));
+    const file = write(dir, 'root.speckdl', `import "./lib.speckdl" as L\n${speck('Root')}`);
+    const expanded = expandImports(parseSpeckFile(file), file);
+    expanded.specks = expanded.specks.filter(s => s.name !== 'Lib');
+    expect(() => lower(expanded, { filePath: file, resolveImports: true }))
+      .toThrow(/import "\.\/lib\.speckdl" did not resolve speck "Lib"/);
+    const renamed = expandImports(parseSpeckFile(file), file);
+    const root = renamed.specks.find(s => s.name === 'Root');
+    if (!root) throw new Error('missing Root');
+    root.name = 'Other';
+    expect(() => lower(renamed, { filePath: file, resolveImports: true }))
+      .toThrow(/import "\.\/lib\.speckdl" has no speck "Root" to attach to/);
+  });
+
+  it('fails closed when the verified source is missing', () => {
+    const dir = tree();
+    write(dir, 'lib.speckdl', speck('Lib'));
+    const file = write(dir, 'root.speckdl', speck('Disk'));
+    const hand = {
+      specks: [{
+        type: 'speck' as const,
+        name: 'Root',
+        members: [{ type: 'import' as const, path: './lib.speckdl', alias: 'L' }],
+      }],
+    };
+    expect(() => lower(hand, { filePath: file, resolveImports: true }))
+      .toThrow(/cannot read verified source/);
+  });
+
+  it('fails closed when the import root cannot be read', () => {
+    const dir = tree();
+    write(dir, 'lib.speckdl', speck('Lib'));
+    const file = write(dir, 'root.speckdl', `import "./lib.speckdl" as L\n${speck('Root')}`);
+    expect(() => compile(file, join(dir, 'no-such-dir'))).toThrow(/cannot read import root/);
   });
 
   it('example specs contain no import, so the output pin is the no-import pin', () => {

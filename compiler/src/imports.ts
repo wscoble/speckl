@@ -96,7 +96,13 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
   const entryText = parsedSource(ast);
   const files = new Map<string, string>();
   if (entryText !== undefined) files.set(entryAbs, entryText);
-  const rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
+  let rootDir: string;
+  try {
+    rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
+  } catch (err) {
+    const code = errno(err);
+    throw new Error(`Parse error: cannot read import root "${options.rootDir ?? dirname(entryAbs)}"${code ? ` (${code})` : ''}`);
+  }
   const rootHas = (ast.imports?.length ?? 0) > 0
     || ast.specks.some(s => s.members.some(m => m.type === 'import'));
   if (!rootHas) {
