@@ -34,7 +34,7 @@ const ON: { [name: string]: boolean } = {
   comment: true,
   cr: true,
   section: true,
-  digit: false,
+  digit: true,
   ascii: false,
   numeric: false,
   unclosed: false,

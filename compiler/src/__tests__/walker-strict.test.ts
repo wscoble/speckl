@@ -185,6 +185,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:2: unexpected character "→" (column 7)');
   });
 
+  it('rejects a digit name', () => {
+    const src = 'speck 9A {\n}\n';
+    expect(stored(src)).toBe('[{"name":"9A","endLine":2,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:1: identifier must not start with a digit (column 7)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
