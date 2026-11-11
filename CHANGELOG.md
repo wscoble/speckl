@@ -406,6 +406,10 @@ alias.
   `examples/.speckl-unchecked.json`), mostly because the AST Z3 sanitizer
   drops forms it cannot translate (model incomplete).
 
+### Added
+
+- **Strict structure check, with every class off.** `parseSpeckContent` calls `assertClosedSpec` in `compiler/src/walker-strict.ts` before the line walk. Every class is off. `speck A {` with no closing brace still parses as speck A with no members, ending on line 1. `still parses a missing close`, `does not treat a brace inside a string as an extra close`, `keeps the same error when the speck name is on the next line`, and `still parses every example` are in `compiler/src/__tests__/walker-strict.test.ts`.
+
 ## [0.3.1] and earlier
 
 Unreleased development versions published only as source (#1).
