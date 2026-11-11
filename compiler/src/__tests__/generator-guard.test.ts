@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AST, MemberNode } from '../parser.js';
 import { lower } from '../ir/lower.js';
+import { generateTypeScriptStateMachine } from '../generators/typescript-state-machine.js';
 import { generateRust } from '../generators/rust.js';
 import { generateCamel } from '../generators/camel.js';
 import { generateAgent } from '../generators/agent/index.js';
@@ -50,6 +51,7 @@ describe('direct generator calls', () => {
     expect(() => generateAgent(ast(), { outputDir: out, sourcePath: join(out, 'S.speckdl') })).toThrow(reject);
     expect(() => generateCamel(irWithOneof(out), { outputDir: out })).toThrow(reject);
     expect(() => generateRust(irWithOneof(out), out, ast())).toThrow(reject);
+    expect(() => generateTypeScriptStateMachine(ast(), out)).toThrow(reject);
     expect(() => new OpenAPITarget().generate(irWithOneof(out), { outputDir: out })).toThrow(reject);
   });
 });
