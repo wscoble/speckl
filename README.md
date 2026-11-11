@@ -152,6 +152,16 @@ Formal methods specs from a toggle switch through Raft consensus:
 
 Browse all in [examples/](examples/).
 
+## Parser
+
+`compiler/src/speck-lex.ts` tokenizes a file. `compiler/src/rd-parser.ts` builds the AST from that stream. A `{` or `}` inside a `"` string, a `//` comment, or a `/* */` comment is not structure, so it does not end a speck, a member, an `if`, or a `for`. That includes braces inside an agent `instruction`, `prompt tool`, or tool `description`. `'` is post-state prime notation (`n'`), not a quote. An unclosed string or block comment is a parse error on the line where it opened.
+
+A line the parser does not recognize is an error. The message names the file, line, and column. File-level `import` is checked and not attached to a speck. Nothing looks up a package registry. `x := 0` in `init` is stored. `x == 0` is accepted and is not stored. `x = 0` is an error.
+
+Two shapes in `examples/` differ from the line walker on main at `4f1e7fa`. `parser-main-corpus.test.ts` is the check. `type LogEntry = { term: Nat, value: Value }` in `examples/KafkaKRaft.speckdl` is a record `{ term, value }`. The state fields after it stay on the state. The generated LogEntry artifacts differ. Two invariants in `examples/OAuth2AuthorizationCode.speckdl` drop a trailing `//` comment from the expression text, and the Rust output for `-t all` differs. The other examples have the same member outline. A speck that puts its closing `}` on the header line does not capture members on that line, and a following `speck` is `unrecognized member`.
+
+`compiler/src/conservation.ts` makes every backend mark each AST member type `emit`, `reject`, or `n/a`. A reject throws before any file is written. `import`, `oneof`, and `transition` are rejected by every backend except Protobuf, which emits `oneof` and `transition`.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
@@ -161,7 +171,7 @@ Browse all in [examples/](examples/).
 
 ## Status
 
-- About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
+- The vitest suite is `npm test` in `compiler/` (run it for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
 - Compile tests run against every example (see [Compile tests](#compile-tests)). Known target failures are recorded in `examples/.speckl-compile-baseline.json`.
 - `npm run verify` compiles every example and checks it with Z3; unproven obligations are acknowledged in the baseline (see below).
 - CI (`.github/workflows/ci.yml`) runs on GitHub-hosted `ubuntu-latest` and has two jobs:
