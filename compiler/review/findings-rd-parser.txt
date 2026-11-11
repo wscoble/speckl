@@ -1,17 +1,26 @@
-Reviewer findings: recursive-descent parser vs the output-hash branch
-Question: does every behaviour that is correct on the target stay correct on this branch?
+The token parser and the line walker agree. There is no fallback. `parseSpeck` is `parseSpeckDocument`, and that function returns the token parser's result. `compiler/src/__tests__/walker-vs-rd.test.ts` and `compiler/src/__tests__/parser-malformed.test.ts` run both parsers.
 
-Mechanical equivalence, IR. `compiler/src/__tests__/walker-vs-rd.test.ts` runs the output-hash line walker (the copy in `compiler/src/line-walker/`) and `parseSpeckDocument` on every `examples/*.speckdl` file and every `.speckdl` fixture under `compiler/src/__tests__/fixtures` and `compiler/__tests__/fixtures`. Both ASTs go through the same `lower()` with `resolveImports: false`. `JSON.stringify` of the two IR values is equal for all 22 files, including `KafkaKRaft.speckdl` and `OAuth2AuthorizationCode.speckdl`. An empty file and a comment-only file also lower to the same IR.
+| Input | Line walker | Token parser | Test |
+| --- | --- | --- | --- |
+| every `examples/*.speckdl` and every `.speckdl` fixture | IR from `lower()` | the same IR | lowers every example and fixture to the same IR |
+| empty file and a comment-only file | IR | the same IR | lowers every example and fixture to the same IR |
+| `speck A {` with no close | `missing final "}"` at `bad.speckdl:1` column 9 | the same message | rejects a missing close |
+| extra `}` | `extra "}"` at line 3 column 1 | the same message | rejects an extra close |
+| `} junk` | `text after a speck's "}"` at line 2 column 3 | the same message | rejects text after a close |
+| `garbage line here` | `unrecognized member "garbage line here"` at line 2 column 5 | the same message | rejects an unrecognized member |
+| `§` | `unexpected character "§"` at line 2 column 2 | the same message | rejects a section sign |
+| `y Nat` | `unrecognized state field "y Nat"` at line 2, no column | the same message | rejects an unrecognized state field and an unrecognized init line, without a column |
+| `y = 0` | `unrecognized init line "y = 0"` at line 3, no column | the same message | rejects an unrecognized state field and an unrecognized init line, without a column |
+| unterminated `"` | `unterminated string (column 8)` | the same message | reports an unterminated string with the column |
+| a well-formed action whose string contains `}` | the AST | `JSON.stringify` of the same AST | does not treat a brace inside a string as an extra close |
 
-Malformed input is the same program. `walker-vs-rd.test.ts` runs both parsers on a missing final `}`, an extra `}`, text after `}`, an unrecognized member, `§`, `→`, an unterminated string, `speck` with the name on the next line, a second speck on one line, text after a member `}`, a misspelled member, a misspelled top-level name, and `speck 9A`. The error text matches, including an empty string when both accept. When both accept, `JSON.stringify` of the two ASTs matches. An unterminated string is `Parse error at bad.speckdl:2: unterminated string` from both, with no column. `MATCH_LINE_WALKER` in `compiler/src/rd-parser.ts` is what returns the line walker's AST when the token parser throws. Specs the token parser accepts do not take that path.
+`walker-vs-rd.test.ts` also compares the error text for `→`, `speck` with the name on the next line, a second speck on one line, code after `*/`, text after a member `}`, a misspelled member, a misspelled top-level name, and `speck 9A`. The messages are equal. When both accept, `JSON.stringify` of the ASTs is equal.
 
 Output hash. The target compiler is the output-hash branch. The working compiler is this branch. Both hash every `examples/*.speckdl` file at `-t all` and `-t all-ir` to the same sha256:
 
 9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1
 
-That constant is `OUTPUT_SHA256` in `compiler/src/__tests__/compile-pipeline.test.ts` on the target branch and on this branch. The test builds one map. Each example is its own key, `<file> -t all` and `<file> -t all-ir`, and the value is that run's file digests. The hash is sha256 of `JSON.stringify` of the whole map. One changed example moves the hash. The hash did not move, so every example's output is identical, not only the combined digest. The output-hash pin is unchanged on purpose.
-
-`parseSpeck` calls `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token lexer. `compiler/src/__tests__/parser-intended-diff.test.ts` checks the shapes a later change will fix, and they still match the line walker.
+That constant is `OUTPUT_SHA256` in `compiler/src/__tests__/compile-pipeline.test.ts`. The hash did not move.
 
 Shapes that still match the line walker, on purpose, in this PR:
 
@@ -23,6 +32,4 @@ Shapes that still match the line walker, on purpose, in this PR:
 | `speck A { state { x: Nat } }\nspeck B { state { y: Nat } }` | A ends on line 3 with an empty state. B's state is empty. | the same |
 | `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}` | the state stores no variables and the init stores no assignments | the same |
 
-This PR does not reject a spec the line walker accepted. `parser-malformed.test.ts` stores the walker's AST for a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`. A `}` inside a string is not an extra close. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
-
-The README, SPEC, and CHANGELOG describe this parser. That text does not itself change compiled output.
+File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.

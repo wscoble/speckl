@@ -73,10 +73,10 @@ alias.
   `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
   lexer. A `{` or `}` in a string or a comment is not structure. The members
   it stores match the line walker, and the example output pin is unchanged.
-  A missing `}`, an extra `}`, text after `}`, an unrecognized member, and
-  `§` still parse, matching the line walker. When the token parser throws,
-  the result is that walker's AST, or the walker's error text when the walker
-  also throws. File-level `import` is syntax-checked and not attached to a speck. Go still
+  A missing `}`, an extra `}`, text after `}`, an unrecognized member, `§`,
+  an unrecognized state field, and an unrecognized init line are the same
+  error from this parser and from the line walker, including the line and
+  column. There is no second result. File-level `import` is syntax-checked and not attached to a speck. Go still
   drops an `else if`, a nested `if`, a `for` inside an `if`, and a
   `require` inside an `if`.
   `compiler/src/__tests__/parser-rd.test.ts`,
@@ -265,6 +265,8 @@ alias.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
 
 ### Changed
+
+- **Malformed spec structure is rejected.** The line walker used to accept a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`, and it folded an unrecognized state field or init line into the previous text. It now rejects those. The message names the line and column, except an unrecognized state field and an unrecognized init line, which name the line only. The examples are well-formed, so the output pin is unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
