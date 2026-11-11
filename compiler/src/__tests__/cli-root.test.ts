@@ -30,6 +30,7 @@ describe('speckl --root', () => {
     const denied = run([]);
     expect(denied.status, denied.stderr).not.toBe(0);
     expect(denied.stderr).toMatch(/outside the import root/);
+    expect(denied.stderr).toContain(`${file}:1`);
     const allowed = run(['--root', parent]);
     expect(allowed.status, allowed.stderr).toBe(0);
     expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
@@ -45,6 +46,7 @@ describe('speckl --root', () => {
     const missingRun = run(missing, []);
     expect(missingRun.status, missingRun.stderr).not.toBe(0);
     expect(missingRun.stderr).toMatch(/cannot read import/);
+    expect(missingRun.stderr).toContain(`${missing}:1`);
 
     write(dir, 'a.speckdl', 'import "./b.speckdl" as B\nspeck A {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
     const b = write(dir, 'b.speckdl', 'import "./a.speckdl" as A\nspeck B {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
@@ -63,6 +65,7 @@ describe('speckl --root', () => {
     const absRun = run(abs, ['--root', dir]);
     expect(absRun.status, absRun.stderr).not.toBe(0);
     expect(absRun.stderr).toMatch(/must be a relative path/);
+    expect(absRun.stderr).toContain(`${abs}:1`);
 
     write(dir, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
     const linked = write(dir, 'linked.speckdl', 'import "./lib.speckdl" as L\n' + body);
