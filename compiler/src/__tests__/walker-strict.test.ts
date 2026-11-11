@@ -220,6 +220,16 @@ describe('line walker rejects malformed structure', () => {
     expect(message(uncmt)).toBe('Parse error at bad.speckdl:2: unterminated block comment (column 5)');
   });
 
+  it('still parses a duration', () => {
+    const src = 'speck A {\n    state { t: 24h }\n}\n';
+    expect(message(src)).toBe('accept');
+    const parsed = parseSpeckContent(src, 'dur.speckdl');
+    expect(parsed.specks.map(s => s.name)).toEqual(['A']);
+  });
+
+
+
+
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
