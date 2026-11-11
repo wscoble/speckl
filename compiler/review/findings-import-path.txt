@@ -1,0 +1,12 @@
+Reviewer findings: import path safety
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the Go generator-guard slice. compileSpec does not resolve imports. Working: compiler/src/imports.ts resolves a relative import when a caller asks it to. compileSpec still does not call it, so example output is unchanged.
+
+A path has to be relative. After realpath, it has to stay inside the root. The default root is the entry file's directory. A hash pin is 64 hex digits, optional sha256: prefix, compared to the raw bytes. A symlink that leaves the root, an absolute path, a directory, a FIFO, a cycle, a missing file, and a file that changes while it is read fail closed. /proc/self/fd is checked when that directory exists. A missing /proc is not an error. An unexpected errno is.
+
+URL and file URL strings are not fetched. They are resolved as relative paths under the entry directory and then rejected when they leave it.
+
+Lower does not inline imports yet, and the "import resolution not yet implemented in lower pass" warning is still there. import is still reject in the conservation table. A direct generator call still runs the check from the previous slices.
+
+The README, SPEC, and CHANGELOG describe this resolver and say compileSpec does not call it yet. That text does not change compiled output.

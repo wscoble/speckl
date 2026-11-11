@@ -56,14 +56,36 @@ export function parseActionHeader(line: string): ActionNode | null {
   return { type: 'action', name, params, statements: [] };
 }
 
+function stripTrailingLineComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '/' && line[i + 1] === '/') return line.slice(0, i);
+  }
+  return line;
+}
+
 export function parseImportStatement(line: string): ImportNode {
-  const match = line.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+(\w+))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.+?)\6)?/);
+  const stripped = stripTrailingLineComment(line).trim();
+  const match = stripped.match(/^import\s+(['"])(.+?)\1(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?(?:\s+version\s+(['"])(.+?)\4)?(?:\s+hash\s+(['"])(.*)\6)?\s*$/);
   if (!match) {
     throw new Error(`Failed to parse import statement: ${line}`);
   }
-  
-  const [, , path, , alias, , version, , hash] = match;
-  
+
+  const path = match[2];
+  const alias = match[3];
+  const version = match[5];
+  const hash = match[7];
+  if (hash !== undefined && hash.replace(/^sha256:/i, '') === '') {
+    throw new Error(`Failed to parse import statement: ${line}`);
+  }
+
   return {
     type: 'import',
     path,

@@ -423,6 +423,8 @@ export interface TypeExpr {
 
 export interface AST {
   specks: SpeckNode[];
+  /** File-level imports, outside any speck. Omitted when the file has none. */
+  imports?: ImportNode[];
 }
 
 /**
