@@ -17,15 +17,6 @@ import {
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
 import { parseSpeck as walkSpeck } from './speck-part1.js';
-import { parseSpeckContent as parseLineWalker } from './line-walker/parser.js';
-
-/**
- * False: a throw from the token parser is the result, with its line and
- * column. True was the previous swap, which returned the line walker's
- * AST or the walker's error text. The walker accepted a missing `}`, an
- * extra `}`, text after `}`, an unrecognized member, and `§`.
- */
-const MATCH_LINE_WALKER = false;
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -34,14 +25,7 @@ const BLOCK_STARTERS = [
 ];
 
 export function parseSpeckDocument(content: string, filePath?: string): AST {
-  if (!MATCH_LINE_WALKER) return parseSpeckStrict(content, filePath);
-  try {
-    return parseSpeckStrict(content, filePath);
-  } catch {
-    // The walker throws its own message, with no column, or it returns
-    // the AST it stored for a spec this parser would reject.
-    return parseLineWalker(content, filePath);
-  }
+  return parseSpeckStrict(content, filePath);
 }
 
 function parseSpeckStrict(content: string, filePath?: string): AST {
