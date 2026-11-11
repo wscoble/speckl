@@ -7,6 +7,7 @@
     "KafkaKRaft": "KafkaKRaft.ts(164,11): error TS2304: Cannot find name 'TermMonotonicity'.",
     "OAuth2AuthorizationCode": "OAuth2AuthorizationCode.ts(12,15): error TS2304: Cannot find name 'TokenType'.",
     "PodcastPublishing": "PodcastPublishing.ts(177,11): error TS2304: Cannot find name 'ApplyFromApproved'.",
+    "Pundit": "Pundit.ts(209,11): error TS2304: Cannot find name 'PublishNeedsApproval'.",
     "PreconditionTest": "PreconditionTest.ts(67,10): error TS2339: Property 'this' does not exist on type 'PreconditionTestMachine'.",
     "Raft": "Raft.ts(11,9): error TS2304: Cannot find name 'Term'.",
     "RetryHandler": "RetryHandler.ts(124,12): error TS2304: Cannot find name 'maxRetries'.",
@@ -20,7 +21,8 @@
     "AgentPolicy": "agent/AgentPolicy.ts(156,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
     "ClaudeCodePolicy": "agent/ClaudeCodePolicy.ts(169,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
     "DeployGate": "agent/DeployGate.ts(156,11): error TS2304: Cannot find name 'DeployNeedsChecks'.",
-    "PodcastPublishing": "agent/PodcastPublishing.ts(189,11): error TS2304: Cannot find name 'ApplyFromApproved'."
+    "PodcastPublishing": "agent/PodcastPublishing.ts(189,11): error TS2304: Cannot find name 'ApplyFromApproved'.",
+    "Pundit": "agent/Pundit.ts(221,11): error TS2304: Cannot find name 'PublishNeedsApproval'."
   },
   "go": {
     "AccountLedger": "./account_ledger.go:36:14: syntax error: unexpected name notIn, expected )",
@@ -45,6 +47,7 @@
     "OAuth2AuthorizationCode": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "Paxos": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "PodcastPublishing": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
+    "Pundit": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "PreconditionTest": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "Raft": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "RetryHandler": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",

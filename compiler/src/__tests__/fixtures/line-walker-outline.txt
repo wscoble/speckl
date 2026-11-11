@@ -130,6 +130,36 @@ PreconditionTest.speckdl PreconditionTest
   state:
   action:SetBalance
   action:Deactivate
+Pundit.speckdl Pundit
+  state:
+  init:
+  invariant:PublishNeedsApproval
+  invariant:PublishNeedsDisclosure
+  invariant:RenderedNeedsApproval
+  invariant:ScriptNeedsCitations
+  invariant:ReviewNeedsPass
+  invariant:RetriesBounded
+  invariant:SkippedHasNoTake
+  action:IngestStory
+  action:RecordPerspective
+  action:SkipNoPerspective
+  action:DraftScript
+  action:PassClef
+  action:RetryClef
+  action:FailClef
+  action:ApplyRejection
+  action:RenderShort
+  action:AcknowledgeDisclosure
+  action:PublishShort
+  agent:
+  next:
+  verify:PublishNeedsApproval
+  verify:PublishNeedsDisclosure
+  verify:RenderedNeedsApproval
+  verify:ScriptNeedsCitations
+  verify:ReviewNeedsPass
+  verify:RetriesBounded
+  verify:SkippedHasNoTake
 Raft.speckdl Raft
   interface:LogEntry
   interface:ServerState

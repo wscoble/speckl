@@ -1,0 +1,208 @@
+speck Pundit {
+    // Pundit: Scott Scoble's news-commentary YouTube Shorts pipeline.
+    //
+    // This speck records workflow stages. It does not fetch news, read git
+    // repos, call Clef, render audio, or upload to YouTube. Those are
+    // integrator ports in examples/pundit/ports.ts. Generated Camel routes
+    // are one HTTP route per action; none of them calls those ports.
+    //
+    // stage:
+    //   0 Idle
+    //   1 Ingested
+    //   2 Scripting
+    //   3 Drafted
+    //   4 AwaitingReview
+    //   5 Approved          (only the scott_review approve signal assigns 5)
+    //   6 Rendered
+    //   7 Published
+    //   8 Skipped           (no grounded take; terminal)
+    //   9 Failed            (Clef retry budget spent; terminal)
+    //  10 Revision          (Scott rejected; notes must be applied)
+    //
+    // Clef's published noul answer is a probability in [0, 1]. The pass
+    // bar is noul >= 0.8, mapped by examples/pundit/ports.ts (scoreMilli
+    // >= 800) to the PassClef, RetryClef, or FailClef action. Action
+    // parameters are not SMT identifiers: a guard that names one is
+    // dropped and the approval proof becomes unchecked. The numeric
+    // compare therefore lives in the port, not in these guards. The
+    // generated Camel route will run PassClef whenever stage is Drafted;
+    // it does not read scoreMilli. Callers must use clefDecision.
+    //
+    // A below-threshold result may return to Scripting at most 3 times
+    // (retries goes 0 -> 1 -> 2 -> 3). The next one, when retries >= 3,
+    // is Failed. A later pass still reaches review. Scott sending the
+    // script back resets that budget. RecordPerspective is the same
+    // shape: the port decides record vs skip from citation count, and
+    // the action only stores that a cited take was accepted.
+
+    state {
+        stage: Nat
+        hasCitations: Bool
+        clefPassed: Bool
+        retries: Nat
+        renderedFromApproval: Bool
+        disclosureAcknowledged: Bool
+        publishedFromApproval: Bool
+    }
+
+    init {
+        stage := 0
+        hasCitations := false
+        clefPassed := false
+        retries := 0
+        renderedFromApproval := false
+        disclosureAcknowledged := false
+        publishedFromApproval := false
+    }
+
+    invariant PublishNeedsApproval {
+        stage != 7 or publishedFromApproval
+    }
+
+    invariant PublishNeedsDisclosure {
+        stage != 7 or disclosureAcknowledged
+    }
+
+    invariant RenderedNeedsApproval {
+        (stage != 6 and stage != 7) or renderedFromApproval
+    }
+
+    invariant ScriptNeedsCitations {
+        stage < 2 or stage == 8 or hasCitations
+    }
+
+    invariant ReviewNeedsPass {
+        stage < 4 or (stage > 7 and stage != 10) or clefPassed
+    }
+
+    invariant RetriesBounded {
+        retries <= 3
+    }
+
+    invariant SkippedHasNoTake {
+        stage != 8 or not hasCitations
+    }
+
+    action IngestStory(headline: String) {
+        require stage == 0
+        stage := 1
+    }
+
+    action RecordPerspective(citations: Nat) {
+        require stage == 1
+        hasCitations := true
+        stage := 2
+    }
+
+    action SkipNoPerspective(reason: String) {
+        require stage == 1
+        stage := 8
+    }
+
+    action DraftScript(trendSignal: String) {
+        require stage == 2
+        require hasCitations
+        clefPassed := false
+        stage := 3
+    }
+
+    action PassClef(scoreMilli: Nat) {
+        require stage == 3
+        clefPassed := true
+        stage := 4
+    }
+
+    action RetryClef(scoreMilli: Nat) {
+        require stage == 3
+        require retries < 3
+        retries := retries + 1
+        clefPassed := false
+        stage := 2
+    }
+
+    action FailClef(scoreMilli: Nat) {
+        require stage == 3
+        require retries >= 3
+        clefPassed := false
+        stage := 9
+    }
+
+    action ApplyRejection(notes: String) {
+        require stage == 10
+        clefPassed := false
+        retries := 0
+        stage := 2
+    }
+
+    action RenderShort(scriptDigest: String) {
+        require stage == 5
+        renderedFromApproval := stage == 5
+        stage := 6
+    }
+
+    action AcknowledgeDisclosure(flag: String) {
+        require stage == 6
+        require renderedFromApproval
+        disclosureAcknowledged := true
+    }
+
+    action PublishShort(videoDigest: String) {
+        require stage == 6
+        require renderedFromApproval
+        require disclosureAcknowledged
+        publishedFromApproval := renderedFromApproval
+        stage := 7
+    }
+
+    agent {
+        instruction "Do not invent a take, a quote, or a fact. Cite the recorded sources on screen. Do not attribute words to a real person. Do not defame. Notify Scott when the script is awaiting review and do not auto-send. Do not render or publish until Scott signs the exact render_short call. Render is 9:16 with captions and source credit, using the ElevenLabs voice named Scott Scoble. Before publish, set YouTube status.containsSyntheticMedia."
+        stages stage {
+            Idle = 0
+            Ingested = 1
+            Scripting = 2
+            Drafted = 3
+            AwaitingReview = 4
+            Approved = 5
+            Rendered = 6
+            Published = 7
+            Skipped = 8
+            Failed = 9
+            Revision = 10
+        }
+        tool IngestStory            effect act
+        tool RecordPerspective      effect act description "Record a grounded take. Call only when the perspective port returned at least one citation. This tool does not read git repos."
+        tool SkipNoPerspective      effect act description "Terminal skip. Use when the perspective port found no grounded take. Do not invent an opinion."
+        tool DraftScript            effect act description "Draft a 30 to 60 second Short from the recorded perspective and the caller-supplied trend signal."
+        tool PassClef               effect act description "Record a Clef pass. Call only when ports.clefDecision returns pass (noul >= 0.8). This tool does not call Clef and does not compare scoreMilli."
+        tool RetryClef              effect act description "Below-threshold Clef result. Returns to scripting when fewer than 3 retries have been used. Call only when ports.clefDecision returns retry."
+        tool FailClef               effect act description "Below-threshold Clef result after 3 retries. Terminal. Needs attention. Call only when ports.clefDecision returns fail."
+        tool ApplyRejection         effect act description "Apply Scott's rejection notes, then draft again. Does not publish."
+        tool RenderShort            effect act description "Render 9:16 with captions and on-screen source credit, using the ElevenLabs voice named Scott Scoble. Only after Scott signs this exact call."
+        tool AcknowledgeDisclosure  effect act description "Record that YouTube status.containsSyntheticMedia is set. This tool does not call YouTube."
+        tool PublishShort           effect act description "Publish only after a signed render and an acknowledged disclosure. This tool does not call YouTube."
+        prompt tool draft_script stage Scripting "Use the trend signal argument as the pluggable pattern input. Keep the short between 30 and 60 seconds. The opinion must follow the recorded perspective and cite its sources."
+        prompt tool pass_clef stage Drafted "Map the Clef noul probability with the ports.clefDecision function. Pass only when it returns pass (noul >= 0.8). Otherwise retry or fail. Do not invent the score. This action does not compare the header."
+        prompt tool render_short await AwaitingReview "Notify Scott and present the exact canonical render_short call, including scriptDigest, for him to sign. Do not render, upload, or publish until that signature arrives."
+        prompt tool publish_short stage Rendered "Publish only after acknowledge_disclosure. The integrator sets YouTube status.containsSyntheticMedia before this call."
+        await AwaitingReview {
+            signal scott_review
+            mode in
+            require outcome in { approve, reject! }
+            require claims { reviewer: String }
+            bind call on approve
+            on approve -> Approved
+            on reject  -> Revision
+            timeout 7d -> reject
+        }
+    }
+
+    next: IngestStory | RecordPerspective | SkipNoPerspective | DraftScript | PassClef | RetryClef | FailClef | ApplyRejection | RenderShort | AcknowledgeDisclosure | PublishShort
+
+    verify Always(PublishNeedsApproval) { depth 10 }
+    verify Always(PublishNeedsDisclosure) { depth 10 }
+    verify Always(RenderedNeedsApproval) { depth 10 }
+    verify Always(ScriptNeedsCitations) { depth 10 }
+    verify Always(ReviewNeedsPass) { depth 10 }
+    verify Always(RetriesBounded) { depth 10 }
+    verify Always(SkippedHasNoTake) { depth 10 }
+}

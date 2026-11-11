@@ -149,8 +149,13 @@ Formal methods specs from a toggle switch through Raft consensus:
 | AgentPolicy | agent { } → AGENTS.md, tools, hooks, HITL/HNTL signals |
 | DeployGate | Call-bound sign-off: `bind call on approve` covers one exact deploy, once |
 | PodcastPublishing | Host-approved metadata automation (HITL await); [README](examples/PodcastPublishing.md) |
+| Pundit | News-commentary YouTube Shorts pipeline with a human publish gate; [README](examples/Pundit.md) |
 
 Browse all in [examples/](examples/).
+
+### Pundit
+
+`examples/Pundit.speckdl` is the state machine for Scott Scoble's news-commentary YouTube Shorts pipeline. `speckl -t camel` emits one HTTP route per action. A story with no grounded, cited take ends in `Skipped`. Clef's pass bar is a noul score of at least 0.8, and three below-threshold results are the retry budget before `Failed`. Nothing reaches `Published` without the `scott_review` approval signal. Clef, the perspective lookup, trend signals, ElevenLabs, and YouTube are ports in [examples/pundit/ports.ts](examples/pundit/ports.ts); this repository does not call them. Details, the stage diagram, and the secrets an integrator must supply are in [examples/Pundit.md](examples/Pundit.md).
 
 ## Brace scan
 
