@@ -50,4 +50,4 @@ Probe differences:
 
 Identical probes: one-line-alone.speckdl, header-after-comment.speckdl (both reject `header is not at the start of the line`).
 
-No previously correct example output was rejected or replaced, other than the two intended example differences above. No code change was required.
+No previously correct example output was rejected or replaced, other than the two intended example differences above. No code change was required. Adding this file does not change the compiler.
