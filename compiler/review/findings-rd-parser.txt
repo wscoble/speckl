@@ -1,7 +1,11 @@
 Reviewer findings: recursive-descent parser vs the output-hash branch
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Mechanical equivalence. The target compiler is the output-hash branch. The working compiler is this branch. Both hash every `examples/*.speckdl` file at `-t all` and `-t all-ir` to the same sha256:
+Mechanical equivalence, IR. `compiler/src/__tests__/walker-vs-rd.test.ts` runs the output-hash line walker (the copy in `compiler/src/__tests__/line-walker/`) and `parseSpeckDocument` on every `examples/*.speckdl` file and every `.speckdl` fixture under `compiler/src/__tests__/fixtures` and `compiler/__tests__/fixtures`. Both ASTs go through the same `lower()` with `resolveImports: false`. `JSON.stringify` of the two IR values is equal for all 22 files, including `KafkaKRaft.speckdl` and `OAuth2AuthorizationCode.speckdl`. An empty file and a comment-only file also lower to the same IR.
+
+Malformed input is not the same program. The line walker accepts a missing final `}`, an extra `}`, text after `}`, an unrecognized member, and `§`, and returns an AST. This parser rejects those and names the line and column: missing `}` at `bad.speckdl:1` column 9, extra `}` at line 3 column 1, text after `}` at line 2 column 3, unrecognized member at line 2 column 5, `§` at line 2 column 2. An unterminated string is `Parse error at bad.speckdl:2: unterminated string` from the walker and the same text plus ` (column 8)` from this parser. `speck` with the name on the next line is `Parse error at bad.speckdl:1: speck name must be on the same line as "speck"` from both, with no column.
+
+Output hash. The target compiler is the output-hash branch. The working compiler is this branch. Both hash every `examples/*.speckdl` file at `-t all` and `-t all-ir` to the same sha256:
 
 9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1
 
