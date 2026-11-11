@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +47,9 @@ describe('speckl --root', () => {
     expect(missingRun.status, missingRun.stderr).not.toBe(0);
     expect(missingRun.stderr).toMatch(/cannot read import/);
     expect(missingRun.stderr).toContain(`${missing}:1`);
+    const gen = join(dir, 'gen');
+    const written = existsSync(gen) ? readdirSync(gen).filter(name => name.endsWith('.ts')) : [];
+    expect(written).toEqual([]);
 
     write(dir, 'a.speckdl', 'import "./b.speckdl" as B\nspeck A {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
     const b = write(dir, 'b.speckdl', 'import "./a.speckdl" as A\nspeck B {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
@@ -74,6 +77,8 @@ describe('speckl --root', () => {
     expect(fileRoot.stderr).toMatch(/outside the import root/);
     const gone = run(linked, ['--root', join(dir, 'no-such-dir')]);
     expect(gone.status, gone.stderr).not.toBe(0);
+    expect(gone.stderr).toMatch(/cannot read import root/);
+    expect(gone.stderr).toContain(join(dir, 'no-such-dir'));
     mkdirSync(join(dir, 'in'));
     const parentFile = write(join(dir, 'in'), 'up.speckdl', 'import "../lib.speckdl" as L\n' + body);
     const noValue = spawnSync(process.execPath, [viteNode, cli, parentFile, '--root'], { cwd: compilerDir, encoding: 'utf-8' });
