@@ -89,6 +89,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:3: extra "}" (column 1)');
   });
 
+  it('rejects text after a close', () => {
+    const src = 'speck A {\n} junk\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":2,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: text after a speck\'s "}" (column 3)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
