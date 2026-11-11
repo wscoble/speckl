@@ -67,6 +67,11 @@ alias.
   are unchanged. `compiler/src/__tests__/line-walker-move.test.ts` compares
   every example's member outline to `fixtures/line-walker-outline.txt`, the
   outline from before this move, and checks its sha256.
+- **Example output pin.** `compiler/src/__tests__/compile-pipeline.test.ts` pins
+  `-t all` and `-t all-ir` for every example as one sha256 of the file
+  digests. The digest snapshot file is gone. The pin matches the previous
+  snapshot, so compiled output is unchanged. Appending one byte to a
+  generated file changes that file's digest and the pin.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
