@@ -41,7 +41,19 @@ alias.
   is outside this scan. A speck written entirely inside a block comment is
   not a speck. Go still drops an `else if`, a nested `if`, a `for` inside
   an `if`, and a `require` inside an `if`. That is unchanged from before
-  this scan. There is no shared scanner module yet.
+  this scan.
+- **Token lexer.** `compiler/src/speck-lex.ts` tokenizes a file. A `{` or `}`
+  inside a finished `"` string, a `//` comment, or a `/* */` comment is not
+  a token. `'` is prime notation, not a string quote. An unclosed string or
+  block comment is an error on the line and column where it opened. A
+  non-ASCII identifier is `identifier must be ASCII`. A `\r\n` break and a
+  tab are whitespace. A `"` that reaches `\r`, `\n`, or the end of the file
+  before its closer is `unterminated string` on the line where it opened.
+  Non-ASCII text inside a string or a comment stays in that text. `1e5`, `0x1F`,
+  `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
+  `24h` and `500ms` stay a number plus a unit. `parseSpeck` does not call
+  the lexer yet, so the line walker still parses every file.
+  `compiler/src/__tests__/speck-lex.test.ts` calls the lexer directly.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

@@ -158,7 +158,9 @@ The parser counts `{` and `}` and skips a brace inside a finished `"` string, a 
 
 `'` is post-state prime notation, not a string quote. A block comment may continue onto the next line, including one that opens on a speck's closing line and closes later. A `"` string may not: an unclosed `"` is `unterminated string` on the line where it opened, at file level, after the last speck, or inside domain text. An unclosed `/*` is `unterminated block comment` on the line where it opened, in those same places. A `/*` written inside an already-open block comment is comment text, not a nested comment. When `*/` is the first text on a line and the code after it is a `speck`, `action`, `invariant`, `state`, or `init` header, that header is `header is not at the start of the line`. A header later on the line, after other text or after `/* ... */`, is outside this scan. A line that is only `speck`, with `Name {` on a later line, is `speck name must be on the same line as "speck"`. A speck written entirely inside a block comment is not a speck.
 
-A one-line speck that packs its members on the header line can still absorb the next speck. That is the same as before this scan. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. That is unchanged from before this scan. There is no shared scanner module yet.
+A one-line speck that packs its members on the header line can still absorb the next speck. That is the same as before this scan. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. That is unchanged from before this scan.
+
+`compiler/src/speck-lex.ts` tokenizes a file: a brace in a string or a comment is not a token, `'` is prime notation, and an unclosed string or block comment names the line and column where it opened. `\r\n` and a tab are whitespace. A non-ASCII identifier is an error. Non-ASCII text inside a string or a comment is kept. `parseSpeck` does not call it yet. The line walker still parses.
 
 ## Documentation
 
