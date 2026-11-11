@@ -24,7 +24,7 @@ const ON: { [name: string]: boolean } = {
   missing: true,
   extra: true,
   text: true,
-  second: false,
+  second: true,
   member: false,
   top: false,
   memberTail: false,
