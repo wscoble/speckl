@@ -406,6 +406,19 @@ alias.
   `examples/.speckl-unchecked.json`), mostly because the AST Z3 sanitizer
   drops forms it cannot translate (model incomplete).
 
+### Breaking
+
+Parse errors below are breaking changes. A file that used to compile now fails, or the diagnostic text changed.
+
+- **A speck that never closes is rejected.** `speck A {` with no closing brace used to parse as speck A with no members. The body was missing. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9). `rejects a missing close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An extra closing brace is rejected.** `speck A {` followed by `}` and another `}` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). `rejects an extra close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Text after a speck's closing brace is rejected.** `} junk` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3). `rejects text after a close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **A second speck on one line is rejected.** `speck A { } speck B { }` used to parse as only speck A. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13). `rejects a second speck on one line` in `compiler/src/__tests__/walker-strict.test.ts`. An unrecognized member line is still accepted on this branch (`still accepts an unrecognized member line`).
+- **An unrecognized member is rejected.** `garbage line here`, `actoin go {`, `enum Status { Active, Inactive }`, a description line, and a bare `x := x + 3` used to be dropped or folded into a neighbor. Each diagnostic is unrecognized member with a line and column. `rejects an unrecognized member` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Unrecognized top-level text is rejected.** `spek B {` after a closed speck used to leave only speck A. `*/ speck A {` used to leave no specks. Both diagnostics are unrecognized top-level at column 1. `rejects an unrecognized top-level name` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Text after a member's closing brace is rejected.** `invariant P { x >= 0 } junk` used to store an empty expression. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28). `rejects text after a member close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **A member `{` on the next line is rejected.** `invariant P` with `{` on the next line used to drop the invariant and keep an empty state. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5). `rejects a brace on the next line` in `compiler/src/__tests__/walker-strict.test.ts`.
+
 ## [0.3.1] and earlier
 
 Unreleased development versions published only as source (#1).

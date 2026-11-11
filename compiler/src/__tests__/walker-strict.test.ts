@@ -151,7 +151,6 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src, 'st.speckdl')).toBe('Parse error at st.speckdl:2: unrecognized state field "y Nat"');
   });
 
-  // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
