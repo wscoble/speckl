@@ -1,0 +1,4 @@
+Reviewer findings: parser unit tests vs the recursive-descent parser branch
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+This branch adds compiler/src/__tests__/parser-rd.test.ts and no compiler source. The tests call parseSpeckContent. They do not change what the compiler emits. Every example compiles the same program as on the parent branch.
