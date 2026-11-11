@@ -1,4 +1,4 @@
-// Token parser. `parseSpeckContent` in `parser.ts` returns
+// Token parser. `parseSpeckContent` in `parser.ts` calls
 // `parseSpeckDocument`. Coverage includes this file.
 //
 // SpeckDL parser. `lexSpeck` produces one token stream for the file.

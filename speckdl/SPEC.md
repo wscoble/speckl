@@ -145,7 +145,7 @@ The line walker used to accept each input below and store a program that dropped
 
 ### 2.2.2 Token parser
 
-`parseSpeckContent` returns `parseSpeckDocument` from `compiler/src/rd-parser.ts`. That function walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parser.ts` is the production file that imports `rd-parser.ts`. The line-walker copy under `compiler/src/line-walker/` is test-only. `lowers every speck in the repo to the same IR` in `compiler/src/__tests__/walker-vs-rd.test.ts` compares the two.
+`parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. That function walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parser.ts` is the production file that imports `rd-parser.ts`. The line-walker copy under `compiler/src/line-walker/` is test-only. `lowers every speck in the repo to the same IR` in `compiler/src/__tests__/walker-vs-rd.test.ts` compares the two.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
