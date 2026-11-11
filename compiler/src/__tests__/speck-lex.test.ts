@@ -120,5 +120,22 @@ describe('speck lexer', () => {
     );
     const second = lexSpeck('speck S {\r\n  n: Nat\r\n}\r\n');
     expect(second.tokens.find(t => t.text === 'n')).toMatchObject({ line: 2, column: 3 });
+    expect(() => lexSpeck('speck S {\n §\n}\n', 'mark.speckdl')).toThrow(
+      'Parse error at mark.speckdl:2: unexpected character "§" (column 2)',
+    );
+  });
+
+  it('sees a brace after an escaped quote and ignores a brace inside the string', () => {
+    const src = 's := "a\\"b}" }\n';
+    const lexed = lexSpeck(src);
+    expect(lexed.tokens.filter(t => t.kind === 'string').map(t => t.text)).toEqual(['"a\\"b}"']);
+    const braces = lexed.tokens.filter(t => t.kind === '}');
+    expect(braces).toHaveLength(1);
+    expect(braces[0].column).toBe(src.lastIndexOf('}') + 1);
+  });
+
+  it('emits no tokens for an empty file or a file that is only comments', () => {
+    expect(lexSpeck('').tokens).toEqual([]);
+    expect(lexSpeck('// only\n/* and a } */\n').tokens).toEqual([]);
   });
 });
