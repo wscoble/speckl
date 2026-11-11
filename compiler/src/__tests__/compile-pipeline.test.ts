@@ -155,6 +155,14 @@ describe('generated output is pinned for every example', () => {
     expect(pinOf({ ...corpus, 'ReviewGate.speckdl -t z3': afterSpace })).not.toBe(base);
     expect(pinOf({ ...corpus, 'ReviewGate.speckdl -t z3': afterOrder })).not.toBe(base);
     expect(base).not.toBe(OUTPUT_SHA256);
+
+    const missing = { ...corpus };
+    delete missing['Other.speckdl -t all'];
+    expect(pinOf(missing)).not.toBe(base);
+    const extra = { ...corpus, 'Extra.speckdl -t all': { 'extra.ts': 'fff' } };
+    expect(pinOf(extra)).not.toBe(base);
+    expect(pinOf(missing)).not.toBe(OUTPUT_SHA256);
+    expect(pinOf(extra)).not.toBe(OUTPUT_SHA256);
   }, 60_000);
 });
 
