@@ -418,10 +418,15 @@ describe('token parser', () => {
   it('a contradictory invariant is unsat, not an empty (and true)', () => {
     const src = [
       'speck A {',
-      '    state { x: Nat }',
-      '    init { x := 0 }',
-      '    invariant P { x >= 0',
-      '        && x < 0 }',
+      '    state {',
+      '        x: Nat',
+      '    }',
+      '    init {',
+      '        x := 0',
+      '    }',
+      '    invariant P {',
+      '        x >= 0 && x < 0',
+      '    }',
       '}',
       '',
     ].join('\n');
