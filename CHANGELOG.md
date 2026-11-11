@@ -14,6 +14,15 @@ alias.
 
 ### Added
 
+- **Fail closed on malformed spec structure.** The line walker silently
+  accepted a missing `}`, an extra `}`, text after `}`, an unrecognized
+  member, and `§`, and returned an AST. `parseSpeck` now rejects those.
+  The message names the line and, except for an unrecognized state field
+  and an unrecognized init line, the column. An unterminated string the
+  walker already rejected gains ` (column N)`. A `}` inside a string is
+  still not an extra close. Example output is unchanged.
+  `compiler/src/__tests__/parser-malformed.test.ts` records the walker's
+  result and this parser's message for each case.
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
   that brace cannot end a speck, a member, an `if`, or a `for`. The same
@@ -72,11 +81,10 @@ alias.
 - **Recursive-descent parser.** `compiler/src/parser.ts` calls
   `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
   lexer. A `{` or `}` in a string or a comment is not structure. The members
-  it stores match the line walker, and the example output pin is unchanged.
-  An opening `{` on the next line is `opening "{" must be on the same line as
-  the member header`. A non-blank line that is not a known member is
-  `unrecognized member`. `x = 0` inside `init` is `unrecognized init line`.
-  File-level `import` is syntax-checked and not attached to a speck. Go still
+  it stores match the line walker on the example specs, and the example output
+  pin is unchanged. Malformed structure is rejected; see "Fail closed on
+  malformed spec structure" above. File-level `import` is syntax-checked
+  and not attached to a speck. Go still
   drops an `else if`, a nested `if`, a `for` inside an `if`, and a
   `require` inside an `if`.
   `compiler/src/__tests__/parser-rd.test.ts`,
@@ -124,7 +132,7 @@ alias.
   and `guard-fail-closed-small.test.ts` call those generators without `compileSpec`.
 - **Direct schema check.** Provenance, Kubernetes CRDs, and Protobuf call the conservation check before they write. Protobuf emits `oneof`. The other two reject it. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-schema.test.ts` call them without `compileSpec`.
 - **Direct Z3 IR check.** `generateZ3FromIR` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-z3ir.test.ts` call it without `compileSpec`.
-- **Direct agent check.** `generateAgent` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct agent check.** `generateAgent` calls `guardAst('agent', ast)` before it emits. A missing member list throws `members are missing on speck "S"`. An unknown type throws `no handler for AST node type "not-a-member"`. A `oneof` throws `agent backend rejects AST node type "oneof"`. A speck with no `agent` block logs `skip S: no agent { } block` and does not emit that speck's agent files. `guard-fail-closed-agent.test.ts` checks the three throws. It does not check that the output directory is empty.
 - **Direct Camel check.** `generateCamel` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-camel.test.ts` call it without `compileSpec`.
 - **Direct Rust check.** `generateRust` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
