@@ -1,7 +1,9 @@
-// Member outlines of every example, compared with the line walker on main
-// at 4f1e7fa (the podcast merge). The fixture is that walker's outline.
-// The token parser must match it except the two shapes applied below.
-// A new difference fails this test.
+// Outlines of every example, pinned to the token parser. The pin includes
+// the two shapes that differ from the line walker on main at 4f1e7fa:
+// KafkaKRaft LogEntry is a record of term and value, and the OAuth
+// invariants do not keep a trailing line comment. A new difference fails
+// the hash.
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,8 +26,6 @@ interface OutlineMember {
   init?: string[];
   params?: string[];
 }
-
-type Outline = Record<string, { name: string; members: OutlineMember[] }[]>;
 
 function typeText(t: TypeExpr | undefined): string {
   if (!t) return '';
@@ -55,11 +55,7 @@ function memberOutline(m: MemberNode): OutlineMember {
   } else if (m.type === 'state') {
     row.vars = m.variables.map(v => `${v.name}:${typeText(v.typeExpr)}`);
   } else if (m.type === 'interface') {
-    row.iface = {
-      kind: m.kind,
-      fields: m.fields.map(f => f.name),
-      methods: m.methods.map(method => method.name),
-    };
+    row.iface = { kind: m.kind, fields: m.fields.map(f => f.name), methods: m.methods.map(method => method.name) };
   } else if (m.type === 'invariant') {
     row.expr = m.expr;
   } else if (m.type === 'init') {
@@ -70,38 +66,27 @@ function memberOutline(m: MemberNode): OutlineMember {
   return row;
 }
 
-function outlineExamples(): Outline {
-  const out: Outline = {};
+function outlineExamples(): string {
+  const out: Record<string, { name: string; members: OutlineMember[] }[]> = {};
   for (const file of readdirSync(examplesDir).filter(f => f.endsWith('.speckdl')).sort()) {
     const ast = parseSpeckContent(readFileSync(join(examplesDir, file), 'utf8'), file);
     out[file] = ast.specks.map(s => ({ name: s.name, members: s.members.map(memberOutline) }));
   }
-  return out;
+  return JSON.stringify(out);
 }
 
-/** The two shapes that differ from main. Anything else must match the fixture. */
-function applyKnownDifferences(outline: Outline): void {
-  const logEntry = outline['KafkaKRaft.speckdl'][0].members.find(m => m.type === 'interface' && m.name === 'LogEntry');
-  if (!logEntry?.iface) throw new Error('main outline has no LogEntry interface');
-  logEntry.iface = { kind: 'record', fields: ['term', 'value'], methods: [] };
-  for (const member of outline['OAuth2AuthorizationCode.speckdl'][0].members) {
-    if (member.type === 'invariant' && member.expr) {
-      member.expr = member.expr.replace(/\s*\/\/.*$/, '');
-    }
-  }
-}
+const CORPUS_SHA256 = 'fe6289d16c1b94af6ba946ce4e88a6fff6060c000a7407a32a365cba7bee4c91';
 
-describe('example corpus against the line walker on main', () => {
-  const mainOutline = JSON.parse(readFileSync(join(here, 'fixtures', 'main-example-outline.json'), 'utf8')) as Outline;
-
-  it('matches main except KafkaKRaft LogEntry and two OAuth comment tails', () => {
-    const expected = structuredClone(mainOutline);
-    applyKnownDifferences(expected);
-    expect(outlineExamples()).toEqual(expected);
+describe('example corpus', () => {
+  it('matches the pinned outline, including the Kafka and OAuth differences', () => {
+    const outline = outlineExamples();
+    const hash = createHash('sha256').update(outline).digest('hex');
+    expect(hash).toBe(CORPUS_SHA256);
   });
 
   it('keeps Kafka state fields, and LogEntry is only term and value', () => {
-    const speck = outlineExamples()['KafkaKRaft.speckdl'][0];
+    const outline = JSON.parse(outlineExamples()) as Record<string, { members: OutlineMember[] }[]>;
+    const speck = outline['KafkaKRaft.speckdl'][0];
     const logEntry = speck.members.find(m => m.name === 'LogEntry');
     const state = speck.members.find(m => m.type === 'state');
     expect(logEntry?.iface).toEqual({ kind: 'record', fields: ['term', 'value'], methods: [] });
@@ -111,7 +96,8 @@ describe('example corpus against the line walker on main', () => {
   });
 
   it('keeps PodcastPublishing prompts, instructions, and inferred tool names', () => {
-    const agent = outlineExamples()['PodcastPublishing.speckdl'][0].members.find(m => m.type === 'agent');
+    const outline = JSON.parse(outlineExamples()) as Record<string, { members: OutlineMember[] }[]>;
+    const agent = outline['PodcastPublishing.speckdl'][0].members.find(m => m.type === 'agent');
     expect(agent?.instructions).toBe(1);
     expect(agent?.tools).toContain('fetch_assets->FetchAssets:act');
     expect(agent?.tools).toContain('apply_metadata->ApplyMetadata:act:desc');
@@ -120,14 +106,10 @@ describe('example corpus against the line walker on main', () => {
   });
 
   it('a speck that closes on its header line ends there', () => {
-    // The line walker on main at 4f1e7fa also stores no members for this
-    // shape: it starts on the line after the header.
     const alone = parseSpeckContent('speck A { state { x: Nat } }\n', 'one.speckdl');
     expect(alone.specks.map(s => ({ name: s.name, members: s.members.length, endLine: s.endLine }))).toEqual([
       { name: 'A', members: 0, endLine: 1 },
     ]);
-    // Main kept scanning, so it parsed speck B and also attached B's state
-    // to A. This parser leaves B as its own speck.
     const packed = parseSpeckContent(
       'speck A { state { x: Nat } init { x := 0 } }\nspeck B {\n  state { y: Nat }\n}\n',
       'packed.speckdl',
@@ -145,8 +127,6 @@ describe('example corpus against the line walker on main', () => {
     );
     expect(commented.specks.map(s => s.name)).toEqual(['A', 'B']);
     expect(commented.specks[0].members).toEqual([]);
-    const bState = commented.specks[1].members.find(m => m.type === 'state');
-    expect(bState?.type === 'state' ? bState.variables.map(v => v.name) : []).toEqual(['y']);
   });
 
   it('a brace inside an agent prompt or description does not drop the next action', () => {

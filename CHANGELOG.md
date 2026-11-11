@@ -45,12 +45,13 @@ alias.
   block`. Identifiers are ASCII. Durations `24h`, `500ms`, `30s`, `3d`,
   `5m`, and `1.5h` stay durations.
   `compiler/src/conservation.ts` lists every AST member type. Each backend
-  marks each type `emit`, `reject`, or `n/a`. A reject throws before any
-  file is written. A member type that is not listed fails the conservation
-  test. `import` is `n/a` on every backend: the imported specks are what
-  gets emitted, and the import node is not written. `oneof` and
-  `transition` are rejected by every backend except Protobuf, which emits
-  them.
+  marks each type `emit`, `reject`, or `n/a`. `compileSpec` checks the
+  table immediately before it calls that backend. A reject throws, and
+  that backend does not write. A member type that is not listed fails the
+  conservation test. `import` is `n/a` on every backend: the imported
+  specks are what gets emitted, and the import node is not written.
+  `oneof` and `transition` are rejected by every backend except Protobuf,
+  which emits them.
 - **Known parse differences from the line walker on main.** Compared at
   main `4f1e7fa`, every example under `examples/` has the same member
   outline except two shapes (`parser-main-corpus.test.ts`):
@@ -74,7 +75,9 @@ alias.
   `invariant`, `state`, or `init` header, that header is `header is not at
   the start of the line`. A header later on the line, after other text or
   after `/* ... */`, is outside this check. A speck written entirely inside
-  a block comment is not a speck.
+  a block comment is not a speck. Go still drops an `else if`, a nested
+  `if`, a `for` inside an `if`, and a `require` inside an `if`. That is
+  unchanged.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

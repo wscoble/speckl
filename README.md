@@ -160,7 +160,9 @@ A line the parser does not recognize is an error. The message names the file, li
 
 Two shapes in `examples/` differ from the line walker on main at `4f1e7fa`. `parser-main-corpus.test.ts` is the check. `type LogEntry = { term: Nat, value: Value }` in `examples/KafkaKRaft.speckdl` is a record `{ term, value }`. The state fields after it stay on the state. The generated LogEntry artifacts differ. Two invariants in `examples/OAuth2AuthorizationCode.speckdl` drop a trailing `//` comment from the expression text, and the Rust output for `-t all` differs. The other examples have the same member outline. A speck that puts its closing `}` on the header line ends on that line. Members written on that line are not stored, which is the same as the line walker when the speck is alone. A following `speck` is its own speck. The line walker also parsed that following speck and attached its members to the first one.
 
-`compiler/src/conservation.ts` makes every backend mark each AST member type `emit`, `reject`, or `n/a`. A reject throws before any file is written. `import`, `oneof`, and `transition` are rejected by every backend except Protobuf, which emits `oneof` and `transition`.
+`compiler/src/conservation.ts` makes every backend mark each AST member type `emit`, `reject`, or `n/a`. `compileSpec` checks the table immediately before it calls that backend, and a reject throws. `import` is `n/a`: the imported specks are what gets emitted, and the import node is not written. `oneof` and `transition` are rejected by every backend except Protobuf, which emits them. A direct call to a generator does not run the check.
+
+Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. That is unchanged.
 
 ## Documentation
 
