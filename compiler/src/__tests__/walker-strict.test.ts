@@ -145,6 +145,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src, 'allman.speckdl')).toBe('Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5)');
   });
 
+  it('rejects an unrecognized state field', () => {
+    const src = 'speck A {\n    state {\n        x: Nat\n        y Nat\n    }\n}\n';
+    expect(stored(src, 'st.speckdl')).toBe('[{"name":"A","endLine":6,"members":[{"type":"state","vars":[["x",{"type":"ident","name":"Nat y Nat"}]]}]}]');
+    expect(message(src, 'st.speckdl')).toBe('Parse error at st.speckdl:2: unrecognized state field "y Nat"');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
