@@ -1,4 +1,4 @@
-// The line walker copied under ./line-walker is the parser from the
+// The line walker copied under ../line-walker is the parser from the
 // output-hash branch (parser.ts and speck-part0.ts through speck-part9.ts).
 // parseSpeck on this branch calls the token parser. This file lowers both
 // ASTs with the same lower() and compares the IR.
@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { lower } from '../ir/lower.js';
 import type { IR } from '../ir/types.js';
 import { parseSpeckContent as parseRd } from '../parser.js';
-import { parseSpeckContent as parseWalker } from './line-walker/parser.js';
+import { parseSpeckContent as parseWalker } from '../line-walker/parser.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const roots = [
@@ -59,48 +59,33 @@ describe('line walker and token parser', () => {
     expect(diffs).toEqual([]);
   }, 120_000);
 
-  it('compares malformed error text and position with the line walker', () => {
+  it('matches the line walker on malformed input, including the AST when both accept', () => {
     const file = 'bad.speckdl';
-    const rows: { src: string; walker: string; rd: string }[] = [
-      {
-        src: 'speck A {\n',
-        walker: '',
-        rd: 'Parse error at bad.speckdl:1: missing final "}" (column 9)',
-      },
-      {
-        src: 'speck A {\n}\n}\n',
-        walker: '',
-        rd: 'Parse error at bad.speckdl:3: extra "}" (column 1)',
-      },
-      {
-        src: 'speck A {\n} junk\n',
-        walker: '',
-        rd: 'Parse error at bad.speckdl:2: text after a speck\'s "}" (column 3)',
-      },
-      {
-        src: 'speck A {\n    garbage line here\n}\n',
-        walker: '',
-        rd: 'Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5)',
-      },
-      {
-        src: 'speck A {\n    x: "ab\n}\n',
-        walker: 'Parse error at bad.speckdl:2: unterminated string',
-        rd: 'Parse error at bad.speckdl:2: unterminated string (column 8)',
-      },
-      {
-        src: 'speck A {\n §\n}\n',
-        walker: '',
-        rd: 'Parse error at bad.speckdl:2: unexpected character "§" (column 2)',
-      },
-      {
-        src: 'speck\nName {\n}\n',
-        walker: 'Parse error at bad.speckdl:1: speck name must be on the same line as "speck"',
-        rd: 'Parse error at bad.speckdl:1: speck name must be on the same line as "speck"',
-      },
+    const sources = [
+      'speck A {\n',
+      'speck A {\n}\n}\n',
+      'speck A {\n} junk\n',
+      'speck A {\n    garbage line here\n}\n',
+      'speck A {\n    state { x: Nat }\n    garbage line here\n}\n',
+      'speck A {\n    x: "ab\n}\n',
+      'speck A {\n §\n}\n',
+      'speck A {\n    x → y\n}\n',
+      'speck\nName {\n}\n',
+      'speck A { } speck B { }\n',
+      'speck A {\n    /* c */ action go {\n        x := 1\n    }\n}\n',
+      '/* note */ speck A {\n}\n',
+      'speck A {\n    invariant P { x >= 0 } junk\n}\n',
+      'speck A {\n    actoin go {\n        x := 1\n    }\n}\n',
+      'speck A {\n    state { x: Nat }\n}\nspek B {\n}\n',
+      'speck 9A {\n}\n',
     ];
-    for (const row of rows) {
-      expect(message(parseWalker, row.src, file), row.src).toBe(row.walker);
-      expect(message(parseRd, row.src, file), row.src).toBe(row.rd);
+    for (const src of sources) {
+      const walkerMessage = message(parseWalker, src, file);
+      const rdMessage = message(parseRd, src, file);
+      expect(rdMessage, src).toBe(walkerMessage);
+      if (walkerMessage === '') {
+        expect(JSON.stringify(parseRd(src, file)), src).toBe(JSON.stringify(parseWalker(src, file)));
+      }
     }
 
     const dir = mkdtempSync(join(tmpdir(), 'speckl-walker-'));

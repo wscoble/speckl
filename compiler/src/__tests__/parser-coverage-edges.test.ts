@@ -42,7 +42,7 @@ describe('parser edges the examples do not reach', () => {
     expect(stripInvariantExpr('x  /* c */  >= 0 // t\n && s != "a  b"')).toContain('"a  b"');
   });
 
-  it('rejects a top-level line that is not a speck or an import', () => {
-    expect(() => parseSpeckContent('hello\n', 'h.speckdl')).toThrow(/unrecognized top-level/);
+  it('skips a top-level line that is not a speck or an import, as the line walker does', () => {
+    expect(parseSpeckContent('hello\n', 'h.speckdl').specks).toEqual([]);
   });
 });

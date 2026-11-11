@@ -73,10 +73,10 @@ alias.
   `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
   lexer. A `{` or `}` in a string or a comment is not structure. The members
   it stores match the line walker, and the example output pin is unchanged.
-  An opening `{` on the next line is `opening "{" must be on the same line as
-  the member header`. A non-blank line that is not a known member is
-  `unrecognized member`. `x = 0` inside `init` is `unrecognized init line`.
-  File-level `import` is syntax-checked and not attached to a speck. Go still
+  A missing `}`, an extra `}`, text after `}`, an unrecognized member, and
+  `§` still parse, matching the line walker. When the token parser throws,
+  the result is that walker's AST, or the walker's error text when the walker
+  also throws. File-level `import` is syntax-checked and not attached to a speck. Go still
   drops an `else if`, a nested `if`, a `for` inside an `if`, and a
   `require` inside an `if`.
   `compiler/src/__tests__/parser-rd.test.ts`,

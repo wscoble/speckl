@@ -17,6 +17,15 @@ import {
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
 import { parseSpeck as walkSpeck } from './speck-part1.js';
+import { parseSpeckContent as parseLineWalker } from './line-walker/parser.js';
+
+/**
+ * This swap keeps the output-hash line walker's result when the token
+ * parser throws. Specs the token parser accepts stay on that parser.
+ * A following change sets this to false and reports the token parser's
+ * line and column instead.
+ */
+const MATCH_LINE_WALKER = true;
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -25,6 +34,17 @@ const BLOCK_STARTERS = [
 ];
 
 export function parseSpeckDocument(content: string, filePath?: string): AST {
+  if (!MATCH_LINE_WALKER) return parseSpeckStrict(content, filePath);
+  try {
+    return parseSpeckStrict(content, filePath);
+  } catch {
+    // The walker throws its own message, with no column, or it returns
+    // the AST it stored for a spec this parser would reject.
+    return parseLineWalker(content, filePath);
+  }
+}
+
+function parseSpeckStrict(content: string, filePath?: string): AST {
   if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
   rejectBareCr(content, filePath);
   const lexed = lexSpeck(content, filePath);
