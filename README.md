@@ -166,6 +166,28 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 `parseSpeck` walks the token stream. A `}` on a speck's header line ends that speck, so the next speck is not absorbed. A `}` inside a string is not that close. A one-line `state { x: Nat }` stores that field. `state { }` stores no fields. A comment after the closing brace is not part of the field. A `}` inside `//` does not close the block. `x := 0` is stored. `x = 0` is `unrecognized init line`. `type LogEntry = { term: Nat, value: Value }` in KafkaKRaft is the record `{ term, value }`, and the following state fields stay on the state. Two OAuth invariants drop a trailing `//` comment. A missing `}`, an extra `}`, text after `}`, an unrecognized member, `§`, an unrecognized state field, and an unrecognized init line are the same error from this parser and from the line walker. There is no second result. An unterminated string is `unterminated string` plus ` (column N)`. File-level `import` is stored on the AST. `compiler/src/imports.ts` reads a relative path whose real location stays inside the entry directory, checks a 64-digit hash pin against the raw bytes, and rejects a symlink that leaves that directory. `compileSpec` does not call it yet. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. Example `-t all` and `-t all-ir` output is pinned as one sha256 in `compiler/src/__tests__/compile-pipeline.test.ts`.
 
+## Rejected structure
+
+These inputs used to parse. Each one is now an error. The same rule is in [speckdl/SPEC.md](speckdl/SPEC.md).
+
+- `speck A {` with no closing brace is missing final "}" at column 9. It used to parse as an empty speck.
+- An extra `}` after a closed speck is extra "}" at line 3 column 1. It used to be ignored.
+- Text after a speck's `}` (`} junk`) is text after a speck's "}" at column 3. It used to be ignored.
+- `speck A { } speck B { }` is a second speck on one line at column 13. Speck B used to be dropped.
+- A member line the parser does not recognize (`garbage line here`, `actoin go {`, `enum`, a description line, a bare `x :=`) is unrecognized member. It used to be dropped or folded into a neighbor.
+- `spek B {` and `*/ speck A {` are unrecognized top-level. The speck used to be dropped.
+- `invariant P { x >= 0 } junk` is text after a member's "}" at column 28. The predicate used to be dropped.
+- A member whose `{` is on the next line is opening "{" must be on the same line as the member header. The member used to be dropped.
+- `y Nat` inside `state` is unrecognized state field "y Nat" on the state header's line, with no column. It used to be appended to the previous type.
+- `y = 0` and `garbage line` inside `init` are unrecognized init line on the init header's line, with no column. They used to be appended to the previous expression. `x := 0` is still stored.
+- `/* c */ action go {` is code after */ on a line that starts with /* at column 13. The action used to be dropped.
+- A bare carriage return is CR-only line endings are not supported at column 10. The state used to be dropped. CRLF is still whitespace.
+- `§` is unexpected character "§" at column 2, and `→` is unexpected character "→" at column 7. The speck used to be stored with no members. Text inside a string or a comment is kept.
+- `speck 9A` is identifier must not start with a digit at column 7. It used to be stored under that name. `state { t: 24h }` still parses.
+- `naïve` is identifier must be ASCII at column 7. It used to be dropped. Non-ASCII text inside a string or a comment is kept.
+- `1h30m` is unsupported numeric literal "1h30m" at column 16. The state used to be stored with no fields.
+- An unclosed quote is unterminated string (column 8). An unclosed `/*` is unterminated block comment (column 5). The old messages named the line and not the column.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
