@@ -82,8 +82,10 @@ alias.
   `//` comment, and the Rust output for that example changes. Go still
   drops an `else if`, a nested `if`, a `for` inside an `if`, and a
   `require` inside an `if`.
-  `compiler/src/__tests__/parser-rd.test.ts` and
-  `parser-main-corpus.test.ts` cover this.
+  `compiler/src/__tests__/parser-rd.test.ts`,
+  `parser-main-corpus.test.ts`, and `parser-intended-diff.test.ts` cover
+  this. The before and after of each intended difference is in
+  `compiler/review/findings-rd-parser.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
