@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -90,6 +90,35 @@ describe('speckl --root', () => {
     expect(noValue.status, noValue.stderr).not.toBe(0);
     expect(noValue.stderr).toMatch(/outside the import root|Not enough arguments|missing required/);
   }, 120_000);
+
+  it('accepts --root relative to the working directory', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'speckl-cli-rel-'));
+    const folder = join(parent, 'in');
+    mkdirSync(folder);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(parent, 'gen');
+    const rootArg = relative(compilerDir, parent);
+    expect(rootArg.startsWith('/')).toBe(false);
+    const result = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx', '--root', rootArg], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
+  }, 60_000);
+
+  it('compiles an import through a symlink that stays inside the root', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-cli-link-'));
+    const lib = write(dir, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    symlinkSync(lib, join(dir, 'link.speckdl'));
+    const file = write(dir, 'root.speckdl', 'import "./link.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(dir, 'gen');
+    const result = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx'], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(out, 'Lib.ts'), 'utf8')).toContain('Lib');
+  }, 60_000);
 
   it('compiles a same-directory import without --root', () => {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-cli-local-'));
