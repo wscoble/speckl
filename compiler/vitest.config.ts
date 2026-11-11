@@ -14,10 +14,6 @@ export default defineConfig({
         // result when the token parser throws, not new logic. Parity is
         // measured by walker-vs-rd.test.ts.
         'src/line-walker/**',
-        // The token parser is not called until the swap. The swap PR removes
-        // these two lines, and its tests cover the files.
-        'src/rd-parser.ts',
-        'src/speck-span.ts',
       ],
       reporter: ['text-summary', 'json-summary'],
       // Floor at the level reached in fix/coverage (rounded down), so a drop
