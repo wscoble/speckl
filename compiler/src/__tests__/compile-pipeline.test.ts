@@ -156,8 +156,7 @@ describe('generated output is pinned for every example', () => {
     expect(pinOf({ ...corpus, 'ReviewGate.speckdl -t z3': afterOrder })).not.toBe(base);
     expect(base).not.toBe(OUTPUT_SHA256);
 
-    const missing = { ...corpus };
-    delete missing['Other.speckdl -t all'];
+    const missing = { 'ReviewGate.speckdl -t z3': corpus['ReviewGate.speckdl -t z3'] };
     expect(pinOf(missing)).not.toBe(base);
     const extra = { ...corpus, 'Extra.speckdl -t all': { 'extra.ts': 'fff' } };
     expect(pinOf(extra)).not.toBe(base);
