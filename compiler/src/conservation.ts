@@ -434,17 +434,28 @@ function note(backend: BackendId, type: string): void {
 
 export function guardAst(backend: BackendId, ast: AST): void {
   for (const speck of ast.specks) {
-    for (const member of speck.members) note(backend, member.type);
+    if (!speck.members) {
+      throw new Error(`${backend} backend cannot check member types: members are missing on speck "${speck.name}"`);
+    }
+    for (const member of speck.members) {
+      if (!member?.type) {
+        throw new Error(`${backend} backend cannot check member types: a member type is missing on speck "${speck.name}"`);
+      }
+      note(backend, member.type);
+    }
   }
 }
 
 /**
- * Guard an IR. A speck with no `sourceMemberTypes` is skipped: hand-built
- * IR that never recorded the AST member types cannot be checked, and that
- * is the documented gap. Lowered IR always sets the field.
+ * Guard an IR. `lower` records `sourceMemberTypes`. A speck without that
+ * list is an error: skipping it would let a direct call drop a member type
+ * the table rejects. A type the table does not name is also an error.
  */
 export function guardIr(backend: BackendId, ir: IR): void {
   for (const speck of ir.specks) {
-    for (const type of speck.sourceMemberTypes ?? []) note(backend, type);
+    if (!speck.sourceMemberTypes) {
+      throw new Error(`${backend} backend cannot check member types: sourceMemberTypes is missing on speck "${speck.name ?? ''}"`);
+    }
+    for (const type of speck.sourceMemberTypes) note(backend, type);
   }
 }

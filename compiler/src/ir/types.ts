@@ -28,8 +28,8 @@ export interface IRSpeck {
   /** Cross-spec imports resolved at lower time. Empty for self-contained specs. */
   imports: IRImport[];
   /**
-   * AST member types in source order. Absent until lowering records them.
-   * A generator skips the conservation check when the list is absent.
+   * AST member types in source order. `lower` sets this. A generator
+   * rejects the call when the list is absent.
    */
   sourceMemberTypes?: string[];
   /** The named union of facets. Every facet is populated; some may be empty. */
