@@ -112,10 +112,29 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
     k8sVersion?: string;
   } = {};
 
-  // Actions declared anywhere in the speck decide which side of `tool`
-  // is the action, including an action that appears after the agent block.
   const headerBrace = (byLine[start + 1] ?? []).find(t => t.kind === '{');
   const speckClose = headerBrace ? matchingClose(tokens, headerBrace) : undefined;
+  // The speck's `}` is on the header line. The line walker also skipped
+  // members packed on that line (it started on the next line) and then kept
+  // going, so a following speck was parsed twice: once as this speck's
+  // members, and again as its own speck. Stop on this line.
+  if (speckClose && speckClose.line === start + 1) {
+    return {
+      type: 'speck', name, members,
+      startLine: start + 1,
+      endLine: start + 1,
+      protoPackage: metadata.protoPackage,
+      goPackage: metadata.goPackage,
+      eventSuffix: metadata.eventSuffix,
+      version: metadata.version,
+      author: metadata.author,
+      license: metadata.license,
+      k8sGroup: metadata.k8sGroup,
+      k8sVersion: metadata.k8sVersion,
+    };
+  }
+  // Actions declared anywhere in the speck decide which side of `tool`
+  // is the action, including an action that appears after the agent block.
   const actionScanEnd = speckClose ? speckClose.line - 1 : lines.length;
   const actionNames = new Set<string>();
   for (let n = start + 1; n < actionScanEnd; n++) {

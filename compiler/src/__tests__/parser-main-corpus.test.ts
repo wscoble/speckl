@@ -119,13 +119,34 @@ describe('example corpus against the line walker on main', () => {
     expect(agent?.awaits).toEqual(['AwaitingApproval']);
   });
 
-  it('a speck that closes on its header line drops those members and does not take the next speck', () => {
+  it('a speck that closes on its header line ends there', () => {
+    // The line walker on main at 4f1e7fa also stores no members for this
+    // shape: it starts on the line after the header.
     const alone = parseSpeckContent('speck A { state { x: Nat } }\n', 'one.speckdl');
-    expect(alone.specks.map(s => ({ name: s.name, members: s.members.length }))).toEqual([{ name: 'A', members: 0 }]);
-    expect(() => parseSpeckContent(
+    expect(alone.specks.map(s => ({ name: s.name, members: s.members.length, endLine: s.endLine }))).toEqual([
+      { name: 'A', members: 0, endLine: 1 },
+    ]);
+    // Main kept scanning, so it parsed speck B and also attached B's state
+    // to A. This parser leaves B as its own speck.
+    const packed = parseSpeckContent(
       'speck A { state { x: Nat } init { x := 0 } }\nspeck B {\n  state { y: Nat }\n}\n',
       'packed.speckdl',
-    )).toThrow(/Parse error at packed\.speckdl:2: unrecognized member "speck B \{"/);
+    );
+    expect(packed.specks.map(s => ({
+      name: s.name,
+      fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
+    }))).toEqual([
+      { name: 'A', fields: [] },
+      { name: 'B', fields: ['y'] },
+    ]);
+    const commented = parseSpeckContent(
+      'speck A { state { s: "}" } } // }\nspeck B {\n  state { y: Nat }\n}\n',
+      'comment.speckdl',
+    );
+    expect(commented.specks.map(s => s.name)).toEqual(['A', 'B']);
+    expect(commented.specks[0].members).toEqual([]);
+    const bState = commented.specks[1].members.find(m => m.type === 'state');
+    expect(bState?.type === 'state' ? bState.variables.map(v => v.name) : []).toEqual(['y']);
   });
 
   it('a brace inside an agent prompt or description does not drop the next action', () => {

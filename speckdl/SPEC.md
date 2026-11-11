@@ -129,9 +129,9 @@ non-ASCII identifier, and a numeric literal the lexer does not accept
 File-level `import` is syntax-checked and is not attached to a speck.
 There is no package registry.
 
-A speck whose closing `}` is on the same line as `speck` does not capture
-members written on that line. A later `speck` is then `unrecognized member`.
-Put the closing `}` on its own line. `type LogEntry = { term: Nat, value: Value }`
+A speck whose closing `}` is on the same line as `speck` ends on that line.
+Members written on that line are not stored. A later `speck` is a separate
+speck. Put each member on its own line. `type LogEntry = { term: Nat, value: Value }`
 is a record of those fields. It does not take the following state fields.
 
 ### 2.3 Declarative Form (v0.2, still supported)
