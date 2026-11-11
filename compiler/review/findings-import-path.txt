@@ -1,6 +1,8 @@
 Reviewer findings: import path safety
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
+Scope: this PR is the path check and its tests. `compiler/src/imports.ts` resolves a relative import when a caller asks it to. The parser and printer lines in this PR only put a file-level `import` on the AST so that check can read it. A file with no import stores the same members as the target. `compileSpec` does not call the resolver.
+
 Target: the Go generator-guard slice. compileSpec does not resolve imports. Working: compiler/src/imports.ts resolves a relative import when a caller asks it to. compileSpec still does not call it, so example output is unchanged.
 
 A path has to be relative. After realpath, it has to stay inside the root. The default root is the entry file's directory. A hash pin is 64 hex digits, optional sha256: prefix, compared to the raw bytes. A symlink that leaves the root, an absolute path, a directory, a FIFO, a cycle, a missing file, and a file that changes while it is read fail closed. /proc/self/fd is checked when that directory exists. A missing /proc is not an error. An unexpected errno is.

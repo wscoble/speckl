@@ -92,16 +92,36 @@ alias.
   this. `compiler/review/findings-rd-parser.txt` records that the output matches.
 - **One-line record span.** A `type Name = { ... }` that closes on its header
   stores only that brace span. The line walker had kept the following state
-  fields, so KafkaKRaft `LogEntry` was not `{ term, value }`. The example
-  output pin moved for that reason. See
+  fields, so KafkaKRaft `LogEntry` was not `{ term, value }` and a probe's
+  TypeScript contained `currentTerm: = 0`. The new output is
+  `{ term, value }`. An empty record stores no fields. A comment after the
+  closing brace is not a field. The example output pin moved for that
+  reason, from `9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1`
+  to `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`. See
   `compiler/review/findings-record-span.txt`.
 - **Invariant comments.** A trailing `//` or a block comment is not part of
   an invariant expression. The line walker had kept it, so two OAuth
-  invariants carried comment text. An empty invariant is an error. The
-  example output pin moved for that reason. See
+  invariants carried comment text and a Rust doc line contained `// max`.
+  The new expression is the text before the comment. A `//` inside a string
+  stays. An empty or comment-only invariant is an error. An invariant with
+  no comment is unchanged. The example output pin moved for that reason,
+  from `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`
+  to `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
   `compiler/review/findings-invariant-comment.txt`.
+- **Header-line close.** A `}` on the speck header ends that speck. The
+  line walker stepped past it, so `speck A { state { x: Nat } }` followed
+  by `speck B` stored B's state field on A as well as on B. A now ends on
+  line 1 with no members, and B keeps its own state. A `}` inside a string
+  is not that close. Example output does not change, so the output pin stays
+  `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
+  `compiler/review/findings-header-close.txt`.
 - **One-line state.** `state { x: Nat }` and `init { x := 0 }` store the
-  field and the assignment. The line walker left both lists empty. See
+  field and the assignment. The line walker left both lists empty. An empty
+  `state { }` stores no fields. A comment after the closing brace is not
+  part of the field. A `}` inside `//` does not close the block. A comma in
+  `state { x: Nat, y: Nat }` stays in the type. Example output does not
+  change, so the output pin stays
+  `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
   `compiler/review/findings-oneline-state.txt`.
 - **Direct generator check.** `generate` for OpenAPI, CycloneDX, SPDX, and
   the TypeScript IR backend calls the conservation check before it writes.

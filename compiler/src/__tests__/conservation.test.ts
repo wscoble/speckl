@@ -47,10 +47,30 @@ describe('backend conservation', () => {
   it('names a dropped line, a duplicated line, and a reordered line', () => {
     const lines = ['typescript:emit:state', 'typescript:emit:init', 'typescript:emit:action'];
     expect(() => checkLineSequence(lines, lines.slice(0, 2))).toThrow(/dropped line "typescript:emit:action"/);
+    expect(() => checkLineSequence(lines, [])).toThrow(/dropped line "typescript:emit:state"/);
     expect(() => checkLineSequence(lines, [...lines, 'typescript:emit:action'])).toThrow(/duplicated line "typescript:emit:action"/);
+    expect(() => checkLineSequence(lines, [lines[0], 'typescript:emit:extra', lines[1], lines[2]]))
+      .toThrow(/duplicated line "typescript:emit:extra"/);
     expect(() => checkLineSequence(lines, ['typescript:emit:init', 'typescript:emit:state', 'typescript:emit:action']))
       .toThrow(/reordered line "typescript:emit:init"/);
     expect(() => checkLineSequence(lines, lines)).not.toThrow();
+  });
+
+  it('checks the lines guardAst actually logged', () => {
+    conservationLog.length = 0;
+    const speck = ast('state');
+    speck.specks[0].members.push({ type: 'init' } as MemberNode, { type: 'action' } as MemberNode);
+    guardAst('typescript', speck);
+    const logged = conservationLog.slice();
+    expect(logged).toEqual([
+      'typescript:emit:state',
+      'typescript:emit:init',
+      'typescript:emit:action',
+    ]);
+    expect(() => checkLineSequence(logged, logged.slice(0, -1))).toThrow(/dropped line "typescript:emit:action"/);
+    expect(() => checkLineSequence(logged, [...logged, logged[0]])).toThrow(/duplicated line "typescript:emit:state"/);
+    const swapped = [logged[1], logged[0], logged[2]];
+    expect(() => checkLineSequence(logged, swapped)).toThrow(/reordered line "typescript:emit:init"/);
   });
 
   it('compileSpec still emits a state machine for an ordinary speck', () => {
