@@ -92,6 +92,7 @@ alias.
 - **Direct Z3 IR check.** `generateZ3FromIR` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Direct agent check.** `generateAgent` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Direct Camel check.** `generateCamel` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct Rust check.** `generateRust` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
