@@ -48,7 +48,7 @@ describe('OpenAPI, CycloneDX, SPDX, and TypeScript IR fail closed', () => {
     expect(() => generateCycloneDX(blankMember, dir)).toThrow(/a member type is missing on speck "S"/);
     expect(() => generateSPDX(blankMember, dir)).toThrow(/a member type is missing on speck "S"/);
 
-    const odd = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'not-a-member' } as MemberNode] }] } as AST;
+    const odd = { specks: [{ type: 'speck', name: 'S', members: [{ type: 'not-a-member' } as unknown as MemberNode] }] } as unknown as AST;
     expect(() => generateCycloneDX(odd, dir)).toThrow(unknown);
     expect(() => generateSPDX(odd, dir)).toThrow(unknown);
 
