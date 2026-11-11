@@ -3,14 +3,17 @@ Question: does every behaviour that is correct on the target stay correct on thi
 
 Target: the output-hash branch. The line walker still parsed. Working: `parseSpeck` calls `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token lexer. Member phrase parsers in the speck-part files were updated so a one-line state is stored, `x := 0` is stored, and `x = 0` is an error.
 
-Examples that stay the same: every example except KafkaKRaft and the Rust output of OAuth2AuthorizationCode. PodcastPublishing is unchanged.
+Examples that stay the same: every example except KafkaKRaft and OAuth2AuthorizationCode. PodcastPublishing is unchanged. Comparing member outlines of every file in `examples/` shows only those two files differ.
 
-Intended differences, covered by `parser-main-corpus.test.ts` (sha256 fe6289d16c1b94af6ba946ce4e88a6fff6060c000a7407a32a365cba7bee4c91):
+These differences are intended. `compiler/src/__tests__/parser-intended-diff.test.ts` pins each after-value and asserts the before-value is not what this parser stores. The corpus hash is sha256 fe6289d16c1b94af6ba946ce4e88a6fff6060c000a7407a32a365cba7bee4c91.
 
-- KafkaKRaft `type LogEntry = { term: Nat, value: Value }` is the record `{ term, value }`. State fields currentTerm, state, votedFor, log, commitIndex, nextIndex, matchIndex, and votesGranted stay on the state. Every target's digest for that example changes. The line walker had stored LogEntry as a mixed interface that also listed those state fields.
-- Two OAuth2AuthorizationCode invariants drop a trailing `//` (TokenValidityBounded "90 days max", RedirectUriConsistency "enforced in the ExchangeCode action"). Rust `-t all` changes. `-t all-ir` for that example does not.
-- A speck whose closing `}` is on the header line ends there. A following speck is not absorbed. Header-line members are not stored.
-- A one-line `state { x: Nat }` stores the field. That is a parser fix. The line walker did not store it.
+| Input | Before (line walker) | After (this parser) | Reason |
+| --- | --- | --- | --- |
+| `examples/KafkaKRaft.speckdl` `type LogEntry = { term: Nat, value: Value }` | `LogEntry` is a mixed interface. Its fields are currentTerm, state, votedFor, log, commitIndex, nextIndex, matchIndex, votesGranted, votesGranted, votedFor, state, commitIndex, log, log, commitIndex. The state still lists currentTerm, state, votedFor, log, commitIndex, nextIndex, matchIndex, votesGranted. | `LogEntry` is a record whose fields are term and value. The state lists the same eight names. | The line walker kept reading the following state fields into the one-line record. Every target's digest for this example changes because the record fields changed. |
+| `examples/OAuth2AuthorizationCode.speckdl` invariant `TokenValidityBounded` | expr ends with `7776000  // 90 days max` | expr ends with `7776000` and contains no `//` | A trailing `//` is a comment, not part of the expression. Rust `-t all` for this example changes. `-t all-ir` does not. |
+| same file, invariant `RedirectUriConsistency` | expr is `forall code in authorizationCodes.keys: let c := authorizationCodes[code] true  // This is enforced in the ExchangeCode action` | expr is `forall code in authorizationCodes.keys: let c := authorizationCodes[code] true` | Same comment rule. |
+| `speck A { state { x: Nat } }\nspeck B { state { y: Nat } }` | Speck A ends on line 3 and its state has no fields. Speck B's state has no fields. The second speck is absorbed into the first. | Speck A ends on line 1 and stores no members. Speck B's state field is `y`. | A `}` on the header line closes that speck. Header-line members are not stored. The next speck is a separate speck. |
+| `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}` | the state stores no variables | the state stores `x` and the init stores `x := 0` | A one-line `state { x: Nat }` is a field declaration. The line walker left the variable list empty. |
 
 Fail closed: an unrecognized member, state field, or init line, a missing close, and an extra close are errors. `x = 0` is `unrecognized init line`. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
 
