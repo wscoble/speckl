@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AST, MemberNode } from '../parser.js';
 import { lower } from '../ir/lower.js';
+import { generateCamel } from '../generators/camel.js';
 import { generateAgent } from '../generators/agent/index.js';
 import { generateZ3FromIR } from '../generators/z3-from-ir.js';
 import { generateProtobuf } from '../generators/protobuf.js';
@@ -46,6 +47,7 @@ describe('direct generator calls', () => {
     expect(protobuf?.message ?? '').not.toMatch(reject);
     expect(() => generateZ3FromIR(irWithOneof(out), { outputDir: out })).toThrow(reject);
     expect(() => generateAgent(ast(), { outputDir: out, sourcePath: join(out, 'S.speckdl') })).toThrow(reject);
+    expect(() => generateCamel(irWithOneof(out), { outputDir: out })).toThrow(reject);
     expect(() => new OpenAPITarget().generate(irWithOneof(out), { outputDir: out })).toThrow(reject);
   });
 });
