@@ -12,21 +12,19 @@ import type { IR } from '../ir/types.js';
 import { parseSpeckContent as parseRd } from '../parser.js';
 import { parseSpeckContent as parseWalker } from '../line-walker/parser.js';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const roots = [
-  join(here, '..', '..', '..', 'examples'),
-  join(here, 'fixtures'),
-  join(here, '..', '..', '__tests__', 'fixtures'),
-];
+const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..');
 
 function speckdlFiles(): string[] {
   const out: string[] = [];
-  for (const root of roots) {
-    for (const name of readdirSync(root)) {
-      const path = join(root, name);
-      if (name.endsWith('.speckdl') && statSync(path).isFile()) out.push(path);
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      if (name === 'node_modules' || name === 'dist' || name === '.git') continue;
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else if (name.endsWith('.speckdl')) out.push(path);
     }
-  }
+  };
+  walk(repoRoot);
   return out.sort();
 }
 
@@ -44,7 +42,7 @@ function irOf(parse: (src: string, file?: string) => unknown, src: string, file:
 }
 
 describe('line walker and token parser', () => {
-  it('lowers every example and fixture to the same IR', () => {
+  it('lowers every speck in the repo to the same IR', () => {
     const files = speckdlFiles();
     expect(files.some(path => path.endsWith('KafkaKRaft.speckdl'))).toBe(true);
     expect(files.some(path => path.endsWith('OAuth2AuthorizationCode.speckdl'))).toBe(true);
