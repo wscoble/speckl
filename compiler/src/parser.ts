@@ -311,6 +311,10 @@ export interface AgentMemberNode {
   stages?: AgentStagesMap;
   tools: AgentToolBinding[];
   awaits: AgentAwaitSpec[];
+  /** Optional ordered work-brief paragraphs (advisory, not enforced). */
+  instructions?: AgentPrompt[];
+  /** Advisory prompts bound to a tool, optionally qualified by stage or await. */
+  prompts?: AgentBoundPrompt[];
   /** Optional `pending timeout <dur>`: an in-flight tool call older than this
    *  is cleared as failed (state not advanced). Runtime default: 10m. */
   pendingTimeout?: { durationMs: number; durationText: string };
@@ -351,6 +355,15 @@ export interface AgentStagesMap {
   labels: { name: string; value: number }[];
 }
 
+export type AgentPrompt = string | { file: string };
+
+export interface AgentBoundPrompt {
+  tool: string;
+  stage?: string;
+  await?: string;
+  prompt: AgentPrompt;
+}
+
 export interface AgentToolBinding {
   /** Tool name exposed to the agent runtime (e.g. run_tests). */
   name: string;
@@ -359,6 +372,8 @@ export interface AgentToolBinding {
   /** `act` = side-effecting (refused while awaiting in both modes);
    *  `observe` = read-only (allowed in `near` / HNTL while awaiting). */
   effect: 'act' | 'observe';
+  /** Optional advisory tool description. */
+  description?: AgentPrompt;
 }
 
 export interface AgentAwaitSpec {
@@ -634,6 +649,11 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     k8sVersion?: string;
   } = {};
 
+  // Resolve the orientation of tool aliases against actions in this speck,
+  // including actions declared after the agent block.
+  const speckEnd = findBlockEnd(lines, startIndex + 1, 1);
+  const actionNames = new Set(lines.slice(startIndex + 1, speckEnd)
+    .flatMap(line => { const m = line.match(/^\s*action\s+(\w+)\b/); return m ? [m[1]] : []; }));
   let i = startIndex + 1;
   let braceCount = 1;
   let speckEndLine = Math.min(lines.length, startIndex + 1);
@@ -751,7 +771,7 @@ function parseSpeck(lines: string[], startIndex: number): SpeckNode | null {
     if (isBlockStarter && openCount > 0) {
       // Multi-line block: parse it and skip to its end
       const blockStartLine = i + 1;
-      const member = parseMemberBlock(lines, i);
+      const member = parseMemberBlock(lines, i, actionNames);
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (closeCount < openCount) {
         const endIdx = findBlockEnd(lines, i + 1, braceCount + openCount, lex);
@@ -846,6 +866,9 @@ function findBlockEnd(lines: string[], startIndex: number, startBraceCount: numb
   let braceCount = startBraceCount;
   let i = startIndex;
   while (i < lines.length) {
+    // Comments and strings are not structure, on every line. That includes
+    // agent advisory strings (`instruction`, `prompt tool`, `tool …
+    // description`), whose text may contain `{` or `}`.
     const masked = maskLine(lines[i], lex, i + 1);
     lex = masked.state;
     for (const ch of masked.text) {
@@ -877,7 +900,7 @@ function isExpressionComplete(expr: string): boolean {
   return braces === 0 && parens === 0 && brackets === 0;
 }
 
-function parseMemberBlock(lines: string[], startIndex: number): MemberNode | null {
+function parseMemberBlock(lines: string[], startIndex: number, actionNames: Set<string>): MemberNode | null {
   const firstLine = lines[startIndex].trim();
   const startBraceCount = braceCounts(firstLine).open;
   
@@ -944,7 +967,7 @@ function parseMemberBlock(lines: string[], startIndex: number): MemberNode | nul
     return parseServiceBlockMultiline(lines, startIndex, startBraceCount);
   }
   if (firstLine.startsWith('agent ') || firstLine === 'agent' || firstLine.startsWith('agent {')) {
-    return parseAgentBlockMultiline(lines, startIndex, startBraceCount);
+    return parseAgentBlockMultiline(lines, startIndex, startBraceCount, actionNames);
   }
   if (firstLine.startsWith('provenance ')) {
     // Parse the provenance block body. Each clause is one of:
@@ -2882,17 +2905,26 @@ export function parseNextRelation(lines: string[], startIndex: number): { node: 
  * Parse `agent { ... }` into an AgentMemberNode.
  * Body forms:
  *   stages <var> { Name = n ... }
- *   tool <name> -> <Action> effect act|observe
+ *   tool <Action> [-> <name>] effect act|observe
+ *   tool <name> -> <Action> effect act|observe  (legacy)
  *   pending timeout <dur>
  *   await <State> { signal ...; mode near|in; require outcome in { approve, reject! };
  *                   require claims { k: T }; bind call [on outcome, ...];
  *                   on outcome -> Target; timeout <dur> -> reject }
  */
-function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): AgentMemberNode {
+/** Derive the agent-facing tool name from an action, preserving acronym boundaries. */
+export function inferAgentToolName(action: string): string {
+  return action.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number, actionNames: Set<string>): AgentMemberNode {
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const bodyLines = lines.slice(startIndex + 1, endIndex);
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
+  const instructions: AgentPrompt[] = [];
+  const prompts: AgentBoundPrompt[] = [];
   let stages: AgentStagesMap | undefined;
   let pendingTimeout: AgentMemberNode['pendingTimeout'];
   const harnesses: AgentHarnessSpec[] = [];
@@ -2937,10 +2969,36 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
       continue;
     }
 
-    // tool name -> Action effect act|observe
-    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)\s*->\s*([A-Za-z_]\w*)\s+effect\s+(act|observe)\s*$/);
+    // JSON string literals provide unambiguous escaping and printer round trips.
+    const instructionMatch = line.match(/^instruction\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*")\s*$/);
+    if (instructionMatch) {
+      instructions.push(instructionMatch[1] ? { file: JSON.parse(instructionMatch[2]) } : JSON.parse(instructionMatch[2]));
+      i++;
+      continue;
+    }
+
+    // prompt tool <name> [stage <label>] [await <state>] [file] "..."
+    const promptMatch = line.match(/^prompt\s+tool\s+([A-Za-z_][\w-]*)(?:\s+stage\s+(\w+))?(?:\s+await\s+(\w+))?\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*")\s*$/);
+    if (promptMatch) {
+      prompts.push({ tool: promptMatch[1], ...(promptMatch[2] ? { stage: promptMatch[2] } : {}),
+        ...(promptMatch[3] ? { await: promptMatch[3] } : {}),
+        prompt: promptMatch[4] ? { file: JSON.parse(promptMatch[5]) } : JSON.parse(promptMatch[5]) });
+      i++;
+      continue;
+    }
+
+    // Action-first syntax, with the historical lowercase tool -> Action form.
+    const toolMatch = line.match(/^tool\s+([A-Za-z_][\w-]*)(?:\s*->\s*([A-Za-z_][\w-]*))?\s+effect\s+(act|observe)(?:\s+description\s+(?:(file)\s+)?("(?:[^"\\]|\\.)*"))?\s*$/);
     if (toolMatch) {
-      tools.push({ name: toolMatch[1], action: toolMatch[2], effect: toolMatch[3] as 'act' | 'observe' });
+      const first = toolMatch[1], second = toolMatch[2];
+      // When only one side names a declared action its position is decisive.
+      // If both (or neither) do, preserve the historical name -> action form.
+      const legacy = second !== undefined && (!actionNames.has(first) || actionNames.has(second));
+      const action = legacy ? second : first;
+      const name = legacy ? first : (second ?? inferAgentToolName(action));
+      const tool: AgentToolBinding = { name, action, effect: toolMatch[3] as 'act' | 'observe' };
+      if (toolMatch[5] !== undefined) tool.description = toolMatch[4] ? { file: JSON.parse(toolMatch[5]) } : JSON.parse(toolMatch[5]);
+      tools.push(tool);
       i++;
       continue;
     }
@@ -3131,6 +3189,13 @@ function parseAgentBlockMultiline(lines: string[], startIndex: number, startBrac
   }
 
   const node: AgentMemberNode = { type: 'agent', stages, tools, awaits };
+  if (instructions.length) node.instructions = instructions;
+  for (const p of prompts) {
+    if (!tools.some(t => t.name === p.tool)) throw new Error(`Parse error in agent prompt: unknown tool ${p.tool}`);
+    if (p.stage && !stages?.labels.some(l => l.name === p.stage)) throw new Error(`Parse error in agent prompt: unknown stage ${p.stage}`);
+    if (p.await && !awaits.some(a => a.state === p.await)) throw new Error(`Parse error in agent prompt: unknown await ${p.await}`);
+  }
+  if (prompts.length) node.prompts = prompts;
   if (pendingTimeout) node.pendingTimeout = pendingTimeout;
   if (harnesses.length > 0) node.harnesses = harnesses;
   return node;

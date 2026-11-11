@@ -16,28 +16,57 @@ alias.
 
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
-  that brace cannot end a speck, a member, an `if`, or a `for`. A brace in
-  a comment or a string does not hide the next speck. A one-line speck that
-  packs its members on the header line can still absorb the next speck;
-  that is the same on `main` and is not this scan. A one-line action closes
-  on the structural `}` of its header line, so a trailing `// }` is not a
-  brace and does not take the next action's statements. A line that is only
-  `speck`, with `Name {` on a later line, is `speck name must be on the same
-  line as "speck"`. The same skip is used when Go emits an `if`
-  or a `for`, so a brace in a comment or a string does not drop that body.
-  `'` is post-state prime notation, not a string quote. A block comment may
-  continue onto the next line, including one that opens on a speck's closing
-  line and closes later. A `"` string may not: an unclosed `"` is
-  `unterminated string` on the line where it opened, at file level, after
-  the last speck, or inside domain text. An unclosed `/*` is
-  `unterminated block comment` on the line where it opened, in those same
-  places. A `/*` written inside an already-open block comment is comment
-  text, not a nested comment. When `*/` is the first text on a line and the
-  code after it is a `speck`, `action`, `invariant`, `state`, or `init`
-  header, that header is `header is not at the start of the line`. A header
-  later on the line, after other text or after `/* ... */`, is outside this
-  scan. A speck written entirely inside a block comment is not a speck.
-  There is no shared scanner module yet.
+  that brace cannot end a speck, a member, an `if`, or a `for`. The same
+  skip covers agent advisory strings (`instruction`, `prompt tool`, and
+  `tool … description`), so a brace inside that text does not end the agent
+  block. A brace in a comment or a string does not hide the next speck. A
+  one-line speck that packs its members on the header line can still absorb
+  the next speck; that is the same on `main` and is not this scan. A
+  one-line action closes on the structural `}` of its header line, so a
+  trailing `// }` is not a brace and does not take the next action's
+  statements. A line that is only `speck`, with `Name {` on a later line,
+  is `speck name must be on the same line as "speck"`. The same skip is
+  used when Go emits an `if` or a `for`, so a brace in a comment or a
+  string does not drop that body. `'` is post-state prime notation, not a
+  string quote. A block comment may continue onto the next line, including
+  one that opens on a speck's closing line and closes later. A `"` string
+  may not: an unclosed `"` is `unterminated string` on the line where it
+  opened, at file level, after the last speck, or inside domain text. An
+  unclosed `/*` is `unterminated block comment` on the line where it opened,
+  in those same places. A `/*` written inside an already-open block comment
+  is comment text, not a nested comment. When `*/` is the first text on a
+  line and the code after it is a `speck`, `action`, `invariant`, `state`,
+  or `init` header, that header is `header is not at the start of the
+  line`. A header later on the line, after other text or after `/* ... */`,
+  is outside this scan. A speck written entirely inside a block comment is
+  not a speck. There is no shared scanner module yet.
+- **Agent tool short form.** `tool FetchAssets effect act` infers the
+  agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
+  custom_name effect act` specifies an alias. Effects remain required and the
+  existing `tool custom_name -> FetchAssets effect act` form remains supported.
+  Prompt tool references use the agent-facing name.
+- **`prompt tool`.** `prompt tool NAME` attaches an advisory work brief to a
+  declared agent-facing tool. NAME is that tool's agent-facing name, such as
+  `draft_metadata`, not the action name. The brief may be inline text (a JSON
+  string) or a relative file, and may also name a declared stage and/or await
+  (`stage` before `await` when both are present). At compile time the text is
+  written into that tool's `tools.json` description and the matching
+  `AGENTS.md` section: the tool section, or the named await's section when an
+  await is set. Hooks and Z3 do not execute the prompt text. Stage and await
+  labels are associations on the compiled brief, not runtime filters. Unknown
+  tool, stage, or await names are rejected at parse time. A stage qualifier
+  requires a `stages` map. Prompt file paths are local and relative to the
+  spec, not the current working directory; absolute paths and URLs are
+  rejected at compile time. The spec hash fingerprints the spec text, not
+  referenced prompt files. `instruction` remains for standing agent-level
+  defaults. Existing tool `description` and `description file` remain
+  supported.
+- **`examples/PodcastPublishing.speckdl`.** A podcast metadata workflow
+  with call-bound host approval for initial updates and corrections. Two
+  model invariants are checked to depth 8, with a weakened-guard regression
+  test. The example models the workflow; platform integrations and content
+  validation remain the implementer's responsibility. See
+  `examples/PodcastPublishing.md` and `example-podcast-publishing.test.ts`.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
