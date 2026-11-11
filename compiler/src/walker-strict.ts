@@ -36,7 +36,7 @@ const ON: { [name: string]: boolean } = {
   section: true,
   digit: true,
   ascii: true,
-  numeric: false,
+  numeric: true,
   unclosed: false,
 };
 
