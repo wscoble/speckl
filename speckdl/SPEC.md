@@ -104,8 +104,7 @@ yet lowered to Z3 (see §3.5).
 inside a comment or a `"` string is not a structural brace, including when
 Go emits an `if` or a `for`, and including a trailing `// }` after a one-line
 action. That action closes on its own structural `}`. A brace in a comment
-or a string does not hide the next speck. A one-line speck that packs its
-members on the header line ends on that line's closing `}` and does not absorb the next speck. A line that is
+or a string does not hide the next speck. A line that is
 only `speck`, with `Name {` on a later line, is `speck name must be on the
 same line as "speck"`. `'` is post-state prime notation, not a string
 quote. A block comment may continue onto the next line. A `"` string may
@@ -120,7 +119,7 @@ header, that header is `header is not at the start of the line`. A header
 later on the line is outside this scan. A speck written entirely inside a
 block comment is not a speck. Go still drops an `else if`, a nested `if`,
 a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
-from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` calls that lexer through `compiler/src/rd-parser.ts`. A block that opens and closes on its header line ends there. `x := 0` is stored and `x = 0` is `unrecognized init line`. File-level `import` is syntax-checked and not resolved. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. Each generator also calls that check, so a direct call cannot drop a member type. A missing member-type list, or a type the table does not name, is an error.
+from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` calls that lexer through `compiler/src/rd-parser.ts`. A one-line record stores its brace span. A trailing `//` is not part of an invariant. A `}` on the header line ends that speck. `state { x: Nat }` stores that field. `x := 0` is stored and `x = 0` is `unrecognized init line`. File-level `import` is syntax-checked and not resolved. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. Each generator also calls that check, so a direct call cannot drop a member type. A missing member-type list, or a type the table does not name, is an error.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

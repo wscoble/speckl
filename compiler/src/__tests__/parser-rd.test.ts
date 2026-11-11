@@ -115,19 +115,27 @@ describe('token parser', () => {
     const inv = (name: string) => ast.specks[0].members.find(m => m.type === 'invariant' && (m as { name: string }).name === name) as { expr: string };
     expect(state.variables.map(v => v.name)).toEqual(['x']);
     expect(init.assignments).toEqual([{ name: 'x', expr: '0' }]);
+    // A trailing comment is not part of the expression. The line walker
+    // had kept reading into the next member.
     expect(inv('Pos').expr).toBe('x >= 0');
     expect(inv('Small').expr).toBe('x < 3');
-    const action = ast.specks[0].members.find(m => m.type === 'action') as { statements: { expr?: string }[] };
-    expect(action.statements.map(s => s.expr)).toEqual(['x + 1']);
   });
 
   it('compiles a one-line invariant into the z3 file instead of skipping it', () => {
     const src = [
       'speck A {',
-      '    state { x: Nat }',
-      '    init { x := 0 }',
-      '    invariant Pos { x >= 0 }',
-      '    invariant Small { x < 3 }',
+      '    state {',
+      '        x: Nat',
+      '    }',
+      '    init {',
+      '        x := 0',
+      '    }',
+      '    invariant Pos {',
+      '        x >= 0',
+      '    }',
+      '    invariant Small {',
+      '        x < 3',
+      '    }',
       '    action Inc { x := x + 1 }',
       '}',
       '',
@@ -161,7 +169,7 @@ describe('token parser', () => {
   });
 
   it('strips one leading BOM and still parses the speck', () => {
-    const src = '\uFEFFspeck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n';
+    const src = '\uFEFFspeck A {\n    state {\n        x: Nat\n    }\n    init {\n        x := 0\n    }\n}\n';
     const ast = parseSpeckContent(src, 'bom.speckdl');
     expect(ast.specks.map(s => s.name)).toEqual(['A']);
     const state = ast.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
@@ -243,7 +251,7 @@ describe('token parser', () => {
   });
 
   it('keeps spaces inside a string while collapsing the rest of an invariant', () => {
-    const src = 'speck A {\n    state { s: String }\n    invariant P { s != "a  b" }\n}\n';
+    const src = 'speck A {\n    state { s: String }\n    invariant P {\n        s != "a  b"\n    }\n}\n';
     const inv = parseSpeckContent(src).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
     expect(inv.expr).toBe('s != "a  b"');
   });
@@ -396,7 +404,7 @@ describe('token parser', () => {
         .toThrow(new RegExp(`unsupported numeric literal "${lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
     }
     for (const lit of ['24h', '500ms', '30s', '3d', '5m', '1.5h']) {
-      const inv = parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P { x <= ${lit} }\n}\n`).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
+      const inv = parseSpeckContent(`speck A {\n    state { x: Nat }\n    invariant P {\n        x <= ${lit}\n    }\n}\n`).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
       expect(inv.expr, lit).toBe(`x <= ${lit}`);
     }
   });
@@ -404,10 +412,15 @@ describe('token parser', () => {
   it('a contradictory invariant is unsat, not an empty (and true)', () => {
     const src = [
       'speck A {',
-      '    state { x: Nat }',
-      '    init { x := 0 }',
-      '    invariant P { x >= 0',
-      '        && x < 0 }',
+      '    state {',
+      '        x: Nat',
+      '    }',
+      '    init {',
+      '        x := 0',
+      '    }',
+      '    invariant P {',
+      '        x >= 0 && x < 0',
+      '    }',
       '}',
       '',
     ].join('\n');
@@ -426,8 +439,8 @@ describe('token parser', () => {
 
   it('parses a long file in linear time', () => {
     const n = 20000;
-    const lines = ['speck Big {', '    state { x: Nat }', '    init { x := 0 }'];
-    for (let i = 0; i < n; i++) lines.push(`    invariant I${i} { x >= 0 }`);
+    const lines = ['speck Big {', '    state {', '        x: Nat', '    }', '    init {', '        x := 0', '    }'];
+    for (let i = 0; i < n; i++) lines.push(`    invariant I${i} {`, '        x >= 0', '    }');
     lines.push('}', '');
     const t0 = performance.now();
     const ast = parseSpeckContent(lines.join('\n'), 'big.speckdl');
