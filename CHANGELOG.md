@@ -64,10 +64,12 @@ alias.
   example changed. `-t all-ir` for it did not. A one-line action closes on
   the structural `}` of its header line, so a trailing `// }` does not take
   the next action's statements. Text after a member's `}` is an error.
-  A speck whose closing `}` is on the header line still does not capture
-  members written on that line. If another `speck` follows, that line is
-  `unrecognized member`. The line walker parsed the following speck and
-  could attach its members to the first speck as well. When `*/` is the
+  A speck whose closing `}` is on the header line ends on that line.
+  Members written on that line are not stored. The line walker on main
+  does the same for a speck that is alone, because it also starts on the
+  next line. It then kept scanning, so a following speck was parsed and
+  its members were also attached to the first speck. This parser does not
+  attach them. `parser-main-corpus.test.ts` covers that case. When `*/` is the
   first text on a line and the code after it is a `speck`, `action`,
   `invariant`, `state`, or `init` header, that header is `header is not at
   the start of the line`. A header later on the line, after other text or
