@@ -10,6 +10,10 @@ export default defineConfig({
       exclude: [
         // Tests and their helpers/fixtures are not product code.
         'src/**/__tests__/**',
+        // Verbatim copy of the previous line walker. It is the compatibility
+        // result when the token parser throws, not new logic. Parity is
+        // measured by walker-vs-rd.test.ts.
+        'src/line-walker/**',
       ],
       reporter: ['text-summary', 'json-summary'],
       // Floor at the level reached in fix/coverage (rounded down), so a drop

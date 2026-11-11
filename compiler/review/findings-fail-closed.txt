@@ -1,0 +1,28 @@
+Reviewer findings: fail closed on malformed spec structure
+Question: why does this parser reject input the line walker accepted?
+
+The line walker silently accepted a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`. It returned an AST and did not say the spec was broken. A spec with those errors compiled as if the bad text were not there. This change turns that off. `MATCH_LINE_WALKER` in `compiler/src/rd-parser.ts` is false. The token parser's error is the result. Example specs still lower to the same IR. Rejecting malformed structure does not change those files' output.
+
+`compiler/src/__tests__/parser-malformed.test.ts` runs the line walker and `parseSpeck` on the same source. The walker column is the before. This parser's message is the after.
+
+| Input | Walker, before | This parser, after | Test |
+| --- | --- | --- | --- |
+| `speck A {` with no close | accepts `A`, 0 members, end line 1 | `missing final "}"` at `bad.speckdl:1` column 9 | rejects a missing close the walker stored as an empty speck |
+| `speck A {\n}\n}` | accepts `A`, 0 members, end line 2 | `extra "}"` at line 3 column 1 | rejects an extra close the walker ignored |
+| `} junk` | accepts `A`, 0 members, end line 2 | `text after a speck's "}"` at line 2 column 3 | rejects text after a close the walker ignored |
+| `garbage line here` | accepts `A`, 0 members, end line 3 | `unrecognized member "garbage line here"` at line 2 column 5 | rejects an unrecognized member the walker skipped |
+| `§` | accepts `A`, 0 members, end line 3 | `unexpected character "§"` at line 2 column 2 | rejects a section sign the walker skipped |
+| unterminated `"` | `unterminated string`, no column | the same text plus ` (column 8)` | adds the column to an unterminated string the walker already rejected |
+| `speck A { } speck B { }` | accepts `A` | `a second speck on one line` column 13 | rejects a second speck on one line |
+| code after `*/` | accepts | `code after */ on a line that starts with /*` column 13 | rejects code after */ on a line that starts with /* |
+| CR-only line endings | accepts | `CR-only line endings are not supported` column 10 | rejects a CR-only line ending |
+| text after a member `}` | accepts | `text after a member's "}"` column 28 | rejects text after a member close |
+| `actoin`, `spek B`, `speck 9A` | accepts, and `9A` is stored as the name | unrecognized member, unrecognized top-level, digit name | rejects a misspelled member, a misspelled top-level name, and a digit name |
+| `{` on the next line | accepts | `opening "{" must be on the same line as the member header` column 5 | rejects an opening brace on the next line |
+| `y Nat`, `y = 0` | accepts | `unrecognized state field "y Nat"` and `unrecognized init line "y = 0"`, line only, no column | rejects an unrecognized state field and an unrecognized init line, without a column |
+| `1e5` | accepts | `unsupported numeric literal "1e5"` column 24 | rejects an unsupported numeric literal the walker stored |
+| `speck` then `Name {` | both throw `speck name must be on the same line as "speck"`, no column | the same message | keeps the same error when the speck name is on the next line |
+
+A `}` inside a string is still a string, not an extra close. That test is `does not treat a brace inside a string as an extra close`.
+
+This does not change example output. It does not resolve `import`. It does not change what Go drops inside `if` and `for`.
