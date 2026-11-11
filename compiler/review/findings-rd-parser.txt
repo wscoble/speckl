@@ -1,20 +1,18 @@
 Reviewer findings: recursive-descent parser vs the output-hash branch
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Target: the output-hash branch. The line walker still parsed. Working: `parseSpeck` calls `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token lexer. Member phrase parsers in the speck-part files were updated so a one-line state is stored, `x := 0` is stored, and `x = 0` is an error.
+This swap is byte-identical. `parseSpeck` calls `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token lexer. The compiled output of every example is the same bytes the line walker produced. The output-hash pin is unchanged: sha256 9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1. `compiler/src/__tests__/parser-intended-diff.test.ts` checks the two example shapes and the two synthetic shapes that a later change will fix, and they still match the line walker.
 
-Examples that stay the same: every example except KafkaKRaft and OAuth2AuthorizationCode. PodcastPublishing is unchanged. Comparing member outlines of every file in `examples/` shows only those two files differ.
+Shapes that still match the line walker, on purpose, in this PR:
 
-These differences are intended. `compiler/src/__tests__/parser-intended-diff.test.ts` pins each after-value and asserts the before-value is not what this parser stores. The corpus hash is sha256 fe6289d16c1b94af6ba946ce4e88a6fff6060c000a7407a32a365cba7bee4c91.
+| Input | What this parser stores | What the line walker stored |
+| --- | --- | --- |
+| `examples/KafkaKRaft.speckdl` `type LogEntry = { term: Nat, value: Value }` | mixed interface whose fields include the following state fields | the same list |
+| OAuth invariant `TokenValidityBounded` | expr ends with `7776000  // 90 days max` | the same text |
+| OAuth invariant `RedirectUriConsistency` | expr ends with `true  // This is enforced in the ExchangeCode action` | the same text |
+| `speck A { state { x: Nat } }\nspeck B { state { y: Nat } }` | A ends on line 3 with an empty state. B's state is empty. | the same |
+| `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}` | the state stores no variables and the init stores no assignments | the same |
 
-| Input | Before (line walker) | After (this parser) | Reason |
-| --- | --- | --- | --- |
-| `examples/KafkaKRaft.speckdl` `type LogEntry = { term: Nat, value: Value }` | `LogEntry` is a mixed interface. Its fields are currentTerm, state, votedFor, log, commitIndex, nextIndex, matchIndex, votesGranted, votesGranted, votedFor, state, commitIndex, log, log, commitIndex. The state still lists currentTerm, state, votedFor, log, commitIndex, nextIndex, matchIndex, votesGranted. | `LogEntry` is a record whose fields are term and value. The state lists the same eight names. | The line walker kept reading the following state fields into the one-line record. Every target's digest for this example changes because the record fields changed. |
-| `examples/OAuth2AuthorizationCode.speckdl` invariant `TokenValidityBounded` | expr ends with `7776000  // 90 days max` | expr ends with `7776000` and contains no `//` | A trailing `//` is a comment, not part of the expression. Rust `-t all` for this example changes. `-t all-ir` does not. |
-| same file, invariant `RedirectUriConsistency` | expr is `forall code in authorizationCodes.keys: let c := authorizationCodes[code] true  // This is enforced in the ExchangeCode action` | expr is `forall code in authorizationCodes.keys: let c := authorizationCodes[code] true` | Same comment rule. |
-| `speck A { state { x: Nat } }\nspeck B { state { y: Nat } }` | Speck A ends on line 3 and its state has no fields. Speck B's state has no fields. The second speck is absorbed into the first. | Speck A ends on line 1 and stores no members. Speck B's state field is `y`. | A `}` on the header line closes that speck. Header-line members are not stored. The next speck is a separate speck. |
-| `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}` | the state stores no variables | the state stores `x` and the init stores `x := 0` | A one-line `state { x: Nat }` is a field declaration. The line walker left the variable list empty. |
+Fail closed: an unrecognized member, a missing close, and an extra close are errors. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
 
-Fail closed: an unrecognized member, state field, or init line, a missing close, and an extra close are errors. `x = 0` is `unrecognized init line`. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
-
-The example output pin moved to sha256 4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a. The README, SPEC, and CHANGELOG describe this parser. That text does not itself change compiled output.
+The README, SPEC, and CHANGELOG describe this parser. That text does not itself change compiled output.
