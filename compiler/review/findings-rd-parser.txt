@@ -1,9 +1,9 @@
 Reviewer findings: recursive-descent parser vs the output-hash branch
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Mechanical equivalence, IR. `compiler/src/__tests__/walker-vs-rd.test.ts` runs the output-hash line walker (the copy in `compiler/src/__tests__/line-walker/`) and `parseSpeckDocument` on every `examples/*.speckdl` file and every `.speckdl` fixture under `compiler/src/__tests__/fixtures` and `compiler/__tests__/fixtures`. Both ASTs go through the same `lower()` with `resolveImports: false`. `JSON.stringify` of the two IR values is equal for all 22 files, including `KafkaKRaft.speckdl` and `OAuth2AuthorizationCode.speckdl`. An empty file and a comment-only file also lower to the same IR.
+Mechanical equivalence, IR. `compiler/src/__tests__/walker-vs-rd.test.ts` runs the output-hash line walker (the copy in `compiler/src/line-walker/`) and `parseSpeckDocument` on every `examples/*.speckdl` file and every `.speckdl` fixture under `compiler/src/__tests__/fixtures` and `compiler/__tests__/fixtures`. Both ASTs go through the same `lower()` with `resolveImports: false`. `JSON.stringify` of the two IR values is equal for all 22 files, including `KafkaKRaft.speckdl` and `OAuth2AuthorizationCode.speckdl`. An empty file and a comment-only file also lower to the same IR.
 
-Malformed input is not the same program. The line walker accepts a missing final `}`, an extra `}`, text after `}`, an unrecognized member, and `§`, and returns an AST. This parser rejects those and names the line and column: missing `}` at `bad.speckdl:1` column 9, extra `}` at line 3 column 1, text after `}` at line 2 column 3, unrecognized member at line 2 column 5, `§` at line 2 column 2. An unterminated string is `Parse error at bad.speckdl:2: unterminated string` from the walker and the same text plus ` (column 8)` from this parser. `speck` with the name on the next line is `Parse error at bad.speckdl:1: speck name must be on the same line as "speck"` from both, with no column.
+Malformed input is no longer the walker's program. `MATCH_LINE_WALKER` in `compiler/src/rd-parser.ts` is false, so a throw from the token parser is the result. `compiler/review/findings-fail-closed.txt` lists each case, the walker's old result, and this parser's message. Specs the token parser accepts still lower to the same IR as the walker.
 
 Output hash. The target compiler is the output-hash branch. The working compiler is this branch. Both hash every `examples/*.speckdl` file at `-t all` and `-t all-ir` to the same sha256:
 
@@ -23,6 +23,6 @@ Shapes that still match the line walker, on purpose, in this PR:
 | `speck A { state { x: Nat } }\nspeck B { state { y: Nat } }` | A ends on line 3 with an empty state. B's state is empty. | the same |
 | `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}` | the state stores no variables and the init stores no assignments | the same |
 
-Fail closed. `compiler/src/__tests__/parser-malformed.test.ts` checks the position, not only the wording. A missing `}` is `missing final "}"` on the opening brace's line and column. An extra `}` is `extra "}"` on that brace. Text after a close is `text after a speck's "}"` at that text. An unrecognized member names the line and column. An unterminated string names the opening quote. A `}` inside a string is not an extra close. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
+Malformed structure that the line walker accepted is now rejected. `parser-malformed.test.ts` records both results. A `}` inside a string is not an extra close. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
 
 The README, SPEC, and CHANGELOG describe this parser. That text does not itself change compiled output.
