@@ -46,7 +46,10 @@ alias.
   inside a finished `"` string, a `//` comment, or a `/* */` comment is not
   a token. `'` is prime notation, not a string quote. An unclosed string or
   block comment is an error on the line and column where it opened. A
-  non-ASCII identifier is `identifier must be ASCII`. `1e5`, `0x1F`,
+  non-ASCII identifier is `identifier must be ASCII`. A `\r\n` break and a
+  tab are whitespace. A `"` that reaches `\r`, `\n`, or the end of the file
+  before its closer is `unterminated string` on the line where it opened.
+  Non-ASCII text inside a string or a comment stays in that text. `1e5`, `0x1F`,
   `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
   `24h` and `500ms` stay a number plus a unit.
   `compiler/src/__tests__/speck-lex.test.ts` calls the lexer directly.
@@ -60,11 +63,14 @@ alias.
   `compiler/src/__tests__/conservation.test.ts` checks the table.
 - **Line walker files.** Member phrase parsers live in
   `compiler/src/speck-part0.ts` through `speck-part9.ts`, plus
-  `speck-span.ts`. `compiler/src/__tests__/line-walker-move.test.ts` pins
-  the example member-name outline.
+  `speck-span.ts`. `compiler/src/__tests__/line-walker-move.test.ts` compares
+  every example's member outline to `fixtures/line-walker-outline.txt`, the
+  outline from before this move, and checks its sha256.
 - **Example output pin.** `compiler/src/__tests__/compile-pipeline.test.ts` pins
   `-t all` and `-t all-ir` for every example as one sha256 of the file
-  digests. The digest snapshot file is gone.
+  digests. The digest snapshot file is gone. The pin matches the previous
+  snapshot, so compiled output is unchanged. Appending one byte to a
+  generated file changes that file's digest and the pin.
 - **Recursive-descent parser.** `compiler/src/parser.ts` calls
   `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
   lexer. A `{` or `}` in a string or a comment is not structure. A block
@@ -82,8 +88,10 @@ alias.
   `//` comment, and the Rust output for that example changes. Go still
   drops an `else if`, a nested `if`, a `for` inside an `if`, and a
   `require` inside an `if`.
-  `compiler/src/__tests__/parser-rd.test.ts` and
-  `parser-main-corpus.test.ts` cover this.
+  `compiler/src/__tests__/parser-rd.test.ts`,
+  `parser-main-corpus.test.ts`, and `parser-intended-diff.test.ts` cover
+  this. The before and after of each intended difference is in
+  `compiler/review/findings-rd-parser.txt`.
 - **Direct generator check.** `generate` for OpenAPI, CycloneDX, SPDX, and
   the TypeScript IR backend calls the conservation check before it writes.
   A direct call cannot drop a `oneof`. A missing member list
