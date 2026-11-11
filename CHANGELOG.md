@@ -61,6 +61,12 @@ alias.
   `transition` are rejected by every backend except Protobuf, which emits
   `oneof` and `transition`. A direct call to a generator does not run the
   check. `compiler/src/__tests__/conservation.test.ts` checks the table.
+- **Line walker files.** The line walker lives in `compiler/src/speck-part0.ts`
+  through `speck-part9.ts`. `compiler/src/parser.ts` still calls it.
+  `parseSpeck` does not call the token lexer yet. Example member outlines
+  are unchanged. `compiler/src/__tests__/line-walker-move.test.ts` compares
+  every example's member outline to `fixtures/line-walker-outline.txt`, the
+  outline from before this move, and checks its sha256.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

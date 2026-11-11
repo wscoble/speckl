@@ -164,6 +164,8 @@ A one-line speck that packs its members on the header line can still absorb the 
 
 `compiler/src/conservation.ts` marks every AST member type `emit`, `reject`, or `n/a` for every backend. `compileSpec` checks the table immediately before it calls that backend, and a reject throws. `import`, `oneof`, and `transition` are rejected except by Protobuf, which emits `oneof` and `transition`. A direct call to a generator does not run the check.
 
+The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `compiler/src/parser.ts` still calls it. `parseSpeck` does not call the token lexer yet, and example member outlines are unchanged.
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
