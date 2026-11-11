@@ -162,6 +162,21 @@ describe('generated output is pinned for every example', () => {
     expect(pinOf(extra)).not.toBe(base);
     expect(pinOf(missing)).not.toBe(OUTPUT_SHA256);
     expect(pinOf(extra)).not.toBe(OUTPUT_SHA256);
+
+    // The same digest strings attached to each other's keys are a different pin.
+    const swapped = {
+      'ReviewGate.speckdl -t z3': corpus['Other.speckdl -t all'],
+      'Other.speckdl -t all': corpus['ReviewGate.speckdl -t z3'],
+    };
+    expect(pinOf(swapped)).not.toBe(base);
+    expect(pinOf(swapped)).not.toBe(OUTPUT_SHA256);
+    // JSON.stringify keeps insertion order, so the same pairs in the other order differ too.
+    const reversed = {
+      'Other.speckdl -t all': corpus['Other.speckdl -t all'],
+      'ReviewGate.speckdl -t z3': corpus['ReviewGate.speckdl -t z3'],
+    };
+    expect(pinOf(reversed)).not.toBe(base);
+    expect(pinOf(reversed)).not.toBe(pinOf(swapped));
   }, 60_000);
 });
 
