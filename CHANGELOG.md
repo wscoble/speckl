@@ -406,6 +406,12 @@ alias.
   `examples/.speckl-unchecked.json`), mostly because the AST Z3 sanitizer
   drops forms it cannot translate (model incomplete).
 
+### Breaking
+
+Parse errors below are breaking changes. A file that used to compile now fails, or the diagnostic text changed.
+
+- **A speck that never closes is rejected.** `speck A {` with no closing brace used to parse as speck A with no members. The body was missing. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9). `rejects a missing close` in `compiler/src/__tests__/walker-strict.test.ts`.
+
 ## [0.3.1] and earlier
 
 Unreleased development versions published only as source (#1).
