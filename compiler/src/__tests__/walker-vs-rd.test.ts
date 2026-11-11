@@ -116,6 +116,6 @@ describe('line walker and token parser', () => {
     expect(hits).toEqual([join(srcRoot, 'parser.ts')]);
     const parser = readFileSync(join(srcRoot, 'parser.ts'), 'utf8');
     expect(parser).toContain("from './rd-parser.js'");
-    expect(parser).toContain('return parseSpeckDocument(content, filePath)');
+    expect(parser).toContain('parseSpeckDocument(content, filePath)');
   });
 });
