@@ -133,7 +133,6 @@ describe('line walker rejects malformed structure', () => {
     expect(message(star)).toBe('Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1)');
   });
 
-  // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
