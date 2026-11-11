@@ -176,6 +176,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - `speck A { } speck B { }` is a second speck on one line at column 13. Speck B used to be dropped. An unrecognized member line is still accepted.
 - A member line the parser does not recognize (`garbage line here`, `actoin go {`, `enum`, a description line, a bare `x :=`) is unrecognized member. It used to be dropped or folded into a neighbor.
 - `spek B {` and `*/ speck A {` are unrecognized top-level. The speck used to be dropped.
+- `invariant P { x >= 0 } junk` is text after a member's "}" at column 28. The predicate used to be dropped.
 
 ## Documentation
 
