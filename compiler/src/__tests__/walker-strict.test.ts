@@ -191,6 +191,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:1: identifier must not start with a digit (column 7)');
   });
 
+  it('rejects a non-ASCII identifier', () => {
+    const src = 'speck A {\n    naïve x\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: identifier must be ASCII (column 7)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
