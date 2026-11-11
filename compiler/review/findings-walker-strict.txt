@@ -1,0 +1,13 @@
+The line walker used to return an AST for a broken speck. The bad text was not part of the program. This change rejects that input. The examples are well-formed, so the output pin stays 9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1. Each row is an assertion in compiler/src/__tests__/walker-strict.test.ts.
+
+| Input | Before | After | Test |
+| --- | --- | --- | --- |
+| `speck A {` with no close | accepted `A`, 0 members, end line 1 | `missing final "}"` at `bad.speckdl:1` column 9 | rejects a missing close |
+| extra `}` | accepted `A`, 0 members, end line 2 | `extra "}"` at line 3 column 1 | rejects an extra close |
+| `} junk` | accepted `A`, 0 members, end line 2 | `text after a speck's "}"` at line 2 column 3 | rejects text after a close |
+| `garbage line here` | accepted `A`, 0 members | `unrecognized member "garbage line here"` at line 2 column 5 | rejects an unrecognized member |
+| `§` | accepted `A`, 0 members | `unexpected character "§"` at line 2 column 2 | rejects a section sign |
+| `y Nat` inside state | folded into the previous field text | `unrecognized state field "y Nat"` at line 2, no column | rejects an unrecognized state field and an unrecognized init line, without a column |
+| `y = 0` and `garbage line` inside init | folded into the previous assignment | `unrecognized init line "y = 0"` and `unrecognized init line "garbage line"` at line 3, no column | rejects an unrecognized state field and an unrecognized init line, without a column |
+
+A `}` inside a string is still a string. `does not treat a brace inside a string as an extra close` parses that action. Every file in `examples/` still parses (`still parses every example`). The token parser swap is the next change. This file does not swap it.
