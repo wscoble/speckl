@@ -1,6 +1,6 @@
 Reviewer findings: direct generator check
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Target: the parser-swap branch. Working: OpenAPI, CycloneDX, SPDX, and the TypeScript IR backend call the conservation check before they write. compileSpec already did this. A direct call did not.
+Target: the previous slice. Working: Provenance, Kubernetes CRDs, and Protobuf call the check. Protobuf emits oneof. The other two reject it. compileSpec already checked before each backend. A direct call did not.
 
-No example contains oneof, so example output is unchanged. Protobuf is not in this slice. The CHANGELOG names these four generators. That text does not change compiled output.
+No example contains oneof, except the Protobuf case which still emits it. Example output is unchanged. The CHANGELOG names the generator in this slice. That text does not change compiled output.
