@@ -69,4 +69,35 @@ describe('speck lexer', () => {
   it('strips a leading byte-order mark before the first token', () => {
     expect(lexSpeck('\uFEFFspeck S {\n}\n').tokens[0]).toMatchObject({ kind: 'ident', text: 'speck', column: 1 });
   });
+
+  it('treats CRLF as a line break and does not let a comment swallow the next line', () => {
+    const src = 'speck S {\r\n  // brace }\r\n  state { n: Nat }\r\n}\r\n';
+    const braces = lexSpeck(src).tokens.filter(t => t.kind === '{' || t.kind === '}').map(t => `${t.kind}@${t.line}`);
+    expect(braces).toEqual(['{@1', '{@3', '}@3', '}@4']);
+    expect(lexSpeck(src).tokens.filter(t => t.kind === 'ident').map(t => t.text)).toContain('state');
+  });
+
+  it('skips a tab as whitespace and keeps a tab inside a string', () => {
+    const src = 'speck\tS\t{\n\tstate { n: Nat }\n}\n';
+    expect(lexSpeck(src).tokens.filter(t => t.kind === 'ident' || t.kind === '{' || t.kind === '}').map(t => t.text))
+      .toEqual(['speck', 'S', '{', 'state', '{', 'n', 'Nat', '}', '}']);
+    expect(lexSpeck('s := "a\tb"\n').tokens.find(t => t.kind === 'string')?.text).toBe('"a\tb"');
+  });
+
+  it('rejects an unterminated string that stops at CR, and a string that never closes', () => {
+    expect(() => lexSpeck('s := "abc\r\n', 'cr.speckdl')).toThrow(
+      /Parse error at cr\.speckdl:1: unterminated string \(column 6\)/,
+    );
+    expect(() => lexSpeck('s := "abc', 'eof.speckdl')).toThrow(
+      /Parse error at eof\.speckdl:1: unterminated string \(column 6\)/,
+    );
+  });
+
+  it('rejects a non-ASCII identifier after a tab, and keeps a non-ASCII string on a CRLF line', () => {
+    expect(() => lexSpeck('\tspeck Größe {\r\n}\r\n', 'id.speckdl')).toThrow(
+      /Parse error at id\.speckdl:1: identifier must be ASCII \(column 10\)/,
+    );
+    expect(lexSpeck('s := "Größe"\r\n').tokens.find(t => t.kind === 'string')?.text).toBe('"Größe"');
+    expect(lexSpeck('// Größe\r\nspeck S {\r\n}\r\n').tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
+  });
 });
