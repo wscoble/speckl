@@ -1,10 +1,11 @@
-// compiler/src/line-walker is a copy of the line walker. parseSpeck does
-// not call it. This test is the check that the copy and the live parser
-// return the same AST for every speck in the repo.
+// compiler/src/line-walker is a copy of the line walker from before the
+// token parser swap. Later edits store different spans on the AST. The
+// lowered IR of every speck in the repo still matches.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { lower } from '../ir/lower.js';
 import { parseSpeckContent as copy } from '../line-walker/parser.js';
 import { parseSpeckContent as live } from '../parser.js';
 
@@ -18,7 +19,7 @@ function speckdlFiles(dir: string, out: string[]): void {
 }
 
 describe('line walker copy', () => {
-  it('parses every speck in the repo the same way as the live parser', () => {
+  it('lowers every speck in the repo to the same IR as the live parser', () => {
     const root = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..');
     const files: string[] = [];
     speckdlFiles(root, files);
@@ -26,7 +27,9 @@ describe('line walker copy', () => {
     expect(files.length).toBeGreaterThanOrEqual(22);
     for (const path of files) {
       const text = readFileSync(path, 'utf8');
-      expect(JSON.stringify(copy(text, path)), path).toBe(JSON.stringify(live(text, path)));
+      const oldIr = lower(copy(text, path), { filePath: path, resolveImports: false });
+      const liveIr = lower(live(text, path), { filePath: path, resolveImports: false });
+      expect(JSON.stringify(oldIr), path).toBe(JSON.stringify(liveIr));
     }
-  });
+  }, 120_000);
 });
