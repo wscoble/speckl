@@ -134,6 +134,7 @@ The line walker used to accept each input below and store a program that dropped
 - Unrecognized top-level text. `spek B {` after a closed speck used to parse as only speck A. `*/ speck A {` used to parse as no specks. The diagnostics are: Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1), and Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1).
 - Text after a member's closing brace. `invariant P { x >= 0 } junk` used to parse as invariant P with an empty expression. The predicate was dropped. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28).
 - A member brace on the next line. `invariant P` with `{` on the following line used to parse as a speck whose only member was an empty state. The invariant was dropped. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5).
+- An unrecognized state field. Inside `state`, `y Nat` after `x: Nat` used to be stored as the type `Nat y Nat`. The diagnostic is: Parse error at st.speckdl:2: unrecognized state field "y Nat". The message names the state header's line and does not name a column.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
