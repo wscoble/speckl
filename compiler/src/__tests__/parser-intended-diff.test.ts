@@ -66,17 +66,19 @@ describe('token parser matches the line walker', () => {
       fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
     }))).toEqual([
       { name: 'A', endLine: 1, fields: [] },
-      { name: 'B', endLine: 4, fields: [] },
+      { name: 'B', endLine: 4, fields: ['y'] },
     ]);
   });
 
-  it('a one-line state stores no variables, as the line walker did', () => {
+  it('a one-line state stores its field', () => {
     const src = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n';
     const speck = parseSpeckContent(src, 'one.speckdl').specks[0];
     const state = speck.members.find(m => m.type === 'state');
     const init = speck.members.find(m => m.type === 'init');
     if (state?.type !== 'state' || init?.type !== 'init') throw new Error('missing state or init');
-    expect(state.variables.map(v => v.name)).toEqual([]);
-    expect(init.assignments).toEqual([]);
+    // The line walker stored no variables and no assignments. A one-line
+    // `state { x: Nat }` is a field declaration, and `x := 0` is an assignment.
+    expect(state.variables.map(v => v.name)).toEqual(['x']);
+    expect(init.assignments).toEqual([{ name: 'x', expr: '0' }]);
   });
 });

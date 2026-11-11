@@ -92,6 +92,9 @@ alias.
   invariants carried comment text. An empty invariant is an error. The
   example output pin moved for that reason. See
   `compiler/review/findings-invariant-comment.txt`.
+- **One-line state.** `state { x: Nat }` and `init { x := 0 }` store the
+  field and the assignment. The line walker left both lists empty. See
+  `compiler/review/findings-oneline-state.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

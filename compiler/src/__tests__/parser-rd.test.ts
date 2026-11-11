@@ -113,11 +113,8 @@ describe('token parser', () => {
     const state = ast.specks[0].members.find(m => m.type === 'state') as { variables: { name: string }[] };
     const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
     const inv = (name: string) => ast.specks[0].members.find(m => m.type === 'invariant' && (m as { name: string }).name === name) as { expr: string };
-    // The line walker left a one-line state and init empty, and a one-line
-    // invariant kept reading into the next member. A later change stores
-    // the brace span.
-    expect(state.variables.map(v => v.name)).toEqual([]);
-    expect(init.assignments).toEqual([]);
+    expect(state.variables.map(v => v.name)).toEqual(['x']);
+    expect(init.assignments).toEqual([{ name: 'x', expr: '0' }]);
     // A trailing comment is not part of the expression. The line walker
     // had kept reading into the next member.
     expect(inv('Pos').expr).toBe('x >= 0');
@@ -216,8 +213,7 @@ describe('token parser', () => {
   it('splits a one-line init on a top-level comma', () => {
     const ast = parseSpeckContent('speck A {\n    state { x: Nat }\n    init { x := 0, y := 1 }\n}\n');
     const init = ast.specks[0].members.find(m => m.type === 'init') as { assignments: { name: string; expr: string }[] };
-    // The line walker did not read an init that closes on its header.
-    expect(init.assignments).toEqual([]);
+    expect(init.assignments).toEqual([{ name: 'x', expr: '0' }, { name: 'y', expr: '1' }]);
   });
 
   it('accepts a tab after speck and rejects a name that starts with a digit', () => {
