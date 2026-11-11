@@ -133,6 +133,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(star)).toBe('Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1)');
   });
 
+  it('rejects text after a member close', () => {
+    const src = 'speck A {\n    invariant P { x >= 0 } junk\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[{"type":"invariant","name":"P","expr":""}]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: text after a member\'s "}" (column 28)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(

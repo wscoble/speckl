@@ -27,7 +27,7 @@ const ON: { [name: string]: boolean } = {
   second: true,
   member: true,
   top: true,
-  memberTail: false,
+  memberTail: true,
   braceLine: false,
   state: false,
   init: false,
