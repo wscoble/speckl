@@ -59,9 +59,8 @@ describe('line walker and token parser', () => {
     expect(diffs).toEqual([]);
   }, 120_000);
 
-  it('rejects malformed input the line walker accepted', () => {
+  it('matches the line walker on malformed input, including the AST when both accept', () => {
     const file = 'bad.speckdl';
-    const same = 'speck\nName {\n}\n';
     const sources = [
       'speck A {\n',
       'speck A {\n}\n}\n',
@@ -71,7 +70,7 @@ describe('line walker and token parser', () => {
       'speck A {\n    x: "ab\n}\n',
       'speck A {\n §\n}\n',
       'speck A {\n    x → y\n}\n',
-      same,
+      'speck\nName {\n}\n',
       'speck A { } speck B { }\n',
       'speck A {\n    /* c */ action go {\n        x := 1\n    }\n}\n',
       '/* note */ speck A {\n}\n',
@@ -83,13 +82,10 @@ describe('line walker and token parser', () => {
     for (const src of sources) {
       const walkerMessage = message(parseWalker, src, file);
       const rdMessage = message(parseRd, src, file);
-      if (src === same) {
-        expect(rdMessage, src).toBe(walkerMessage);
-        expect(rdMessage).toContain('speck name must be on the same line');
-        continue;
+      expect(rdMessage, src).toBe(walkerMessage);
+      if (walkerMessage === '') {
+        expect(JSON.stringify(parseRd(src, file)), src).toBe(JSON.stringify(parseWalker(src, file)));
       }
-      expect(rdMessage, src).not.toBe(walkerMessage);
-      expect(rdMessage, src).toMatch(/^Parse error at bad\.speckdl:\d+: /);
     }
 
     const dir = mkdtempSync(join(tmpdir(), 'speckl-walker-'));
