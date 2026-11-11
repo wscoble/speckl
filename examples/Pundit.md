@@ -68,9 +68,9 @@ accepted; `perspectiveDecision` is what checks that the take has citations.
 |---|---|---|
 | `PerspectiveSource` | Scott's GitHub repos, Forgejo repos, and Obsidian vault git repo | Interface only. No clone, no fetch. Null means skip |
 | `TrendSignals` | Whatever is performing well on YouTube Shorts (patterns, hooks, length, topics) | Interface only. `DraftScript` receives one string |
-| `ClefEvaluator` | Cloudflare Workers AI Clef, `POST .../ai/run/@cf/cloudflare/clef`, a noul question. Pass iff `noul >= 0.8` (`scoreMilli >= 800`). See [the Clef API guide](https://clefdecide.com/clef-api) | `clefDecision` maps a score to `pass`, `retry`, or `fail`. No HTTP client |
-| `ShortRenderRequest` | ElevenLabs voice named `Scott Scoble`, 9:16, captions, on-screen source credit | The voice id is not in this repo. No TTS client |
-| YouTube | Data API `videos.insert` / `videos.update`, `status.containsSyntheticMedia: true` | Constant name only. No upload client |
+| `ClefEvaluator` | Ollama Cloud System One, `POST https://ollama.com/v1/systemone`, model `clef`, `Authorization: Bearer $OLLAMA_API_KEY`. A noul question. Pass iff `noul >= 0.8` (`scoreMilli >= 800`). See [Ollama's decision docs](https://docs.ollama.com/capabilities/decision) | `clefSystemOneRequest` builds that POST. `noulFromSystemOne` reads `answers.passes.noul`. `clefDecision` maps the score to `pass`, `retry`, or `fail`. This file does not send the request |
+| `ShortRenderRequest` | ElevenLabs voice named `Scott Scoble`, 9:16, captions, on-screen source credit. No on-screen AI-voiced label | The voice id is not in this repo. No TTS client |
+| YouTube | Data API `videos.insert` / `videos.update`, `status.containsSyntheticMedia: true`. That upload setting is the only synthetic-media disclosure | Constant name only. No upload client |
 
 Notification is the await prompt: tell Scott a script is waiting. No mail
 or chat client is generated, and nothing is sent automatically.
@@ -78,7 +78,9 @@ or chat client is generated, and nothing is sent automatically.
 The script itself must be clearly an opinion, cite the recorded sources on
 screen, not attribute words to a real person, and not defame. Those rules
 are instructions on the generated agent rails. The speck does not judge
-prose.
+prose. The picture carries source credit. It does not carry an on-screen
+AI-voiced label. Synthetic-media disclosure is the YouTube upload field
+`status.containsSyntheticMedia`.
 
 ## What Z3 checks
 
@@ -96,9 +98,9 @@ the generated route:
 
 | Secret or config | Used for |
 |---|---|
-| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` (Workers AI) | Clef `POST /accounts/{account_id}/ai/run/@cf/cloudflare/clef` |
+| `OLLAMA_API_KEY` | Clef `POST https://ollama.com/v1/systemone` with model `clef` and `Authorization: Bearer` |
 | `ELEVENLABS_API_KEY`, and the voice id for the voice named `Scott Scoble` | Render. The id is resolved by the integrator |
-| YouTube OAuth client (Data API) | Upload, with `status.containsSyntheticMedia` set true |
+| YouTube OAuth client (Data API) | Upload, with `status.containsSyntheticMedia` set true. That field is the synthetic-media disclosure |
 | Git remotes and credentials for Scott's GitHub, Forgejo, and Obsidian vault repositories | Perspective lookup. Paths are not pinned here |
 | Trend-signal provider credentials, if that plug-in has any | `TrendSignals.current()` |
 | Ed25519 key pinned at `signal.mjs init --signer` | Scott's `scott_review` file-drop. Do not use the dev CLI verifier |

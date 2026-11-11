@@ -155,7 +155,7 @@ Browse all in [examples/](examples/).
 
 ### Pundit
 
-`examples/Pundit.speckdl` is the state machine for Scott Scoble's news-commentary YouTube Shorts pipeline. `speckl -t camel` emits one HTTP route per action. A story with no grounded, cited take ends in `Skipped`. Clef's pass bar is a noul score of at least 0.8, and three below-threshold results are the retry budget before `Failed`. Nothing reaches `Published` without the `scott_review` approval signal. Clef, the perspective lookup, trend signals, ElevenLabs, and YouTube are ports in [examples/pundit/ports.ts](examples/pundit/ports.ts); this repository does not call them. Details, the stage diagram, and the secrets an integrator must supply are in [examples/Pundit.md](examples/Pundit.md).
+`examples/Pundit.speckdl` is the state machine for Scott Scoble's news-commentary YouTube Shorts pipeline. `speckl -t camel` emits one HTTP route per action. A story with no grounded, cited take ends in `Skipped`. Clef runs on Ollama Cloud (`POST https://ollama.com/v1/systemone`, model `clef`, `OLLAMA_API_KEY`). The pass bar is a noul score of at least 0.8, and three below-threshold results are the retry budget before `Failed`. Nothing reaches `Published` without the `scott_review` approval signal. Synthetic-media disclosure is the YouTube upload setting `status.containsSyntheticMedia`; the Short does not carry an on-screen AI-voiced label. Clef, the perspective lookup, trend signals, ElevenLabs, and YouTube are ports in [examples/pundit/ports.ts](examples/pundit/ports.ts). The Clef port builds the System One request and does not send it. Details, the stage diagram, and the secrets an integrator must supply are in [examples/Pundit.md](examples/Pundit.md).
 
 ## Brace scan
 

@@ -79,7 +79,7 @@ describe('in-process pipeline matches the CLI', () => {
 // output. Run this test, replace the constant with the hash it prints, and
 // say in that PR why the old bytes were wrong. A whitespace-only edit and a
 // reordered file move the hash and are not a reason to update it.
-const OUTPUT_SHA256 = '0008accf39fcbbaa0cf3c56cd434cb99495b025cf948bbb2dc6fa0040421b185';
+const OUTPUT_SHA256 = 'a06ada58d2b3368f40959b57e74b2e17a63f4934224e17d633d8b9403384832f';
 
 describe('generated output is pinned for every example', () => {
   it('pins -t all and -t all-ir for every example', () => {

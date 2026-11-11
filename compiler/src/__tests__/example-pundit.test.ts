@@ -13,9 +13,20 @@ import { canonical, useStateKey } from './helpers/agent-state.js';
 // Loaded at runtime. A static import would pull examples/pundit/ports.ts
 // into the compiler tsconfig, which only allows files under compiler/src.
 type Ports = {
+  CLEF_URL: string;
+  CLEF_MODEL: string;
+  CLEF_API_KEY_ENV: string;
+  CLEF_QUESTION: string;
   CLEF_PASS_MILLI: number;
+  YOUTUBE_CONTAINS_SYNTHETIC_MEDIA: string;
   scoreMilli(score: { noul: number }): number;
   clefDecision(score: { noul: number }, retries: number): 'pass' | 'retry' | 'fail';
+  clefSystemOneRequest(apiKey: string, script: string, take: { text: string; citations: { locator: string }[] }): {
+    url: string;
+    headers: { Authorization: string };
+    body: { model: string; questions: { passes: { type: string } } };
+  };
+  noulFromSystemOne(payload: unknown): { noul: number };
   perspectiveDecision(take: { text: string; citations: { locator: string }[] } | null): 'record' | 'skip';
 };
 let ports: Ports;
@@ -167,6 +178,21 @@ beforeAll(async () => {
 
 describe('examples/Pundit.speckdl', () => {
   it('maps a Clef noul score at the 0.8 bar and refuses an uncited take', () => {
+    expect(ports.CLEF_URL).toBe('https://ollama.com/v1/systemone');
+    expect(ports.CLEF_MODEL).toBe('clef');
+    expect(ports.CLEF_API_KEY_ENV).toBe('OLLAMA_API_KEY');
+    const req = ports.clefSystemOneRequest('test-key', 'A short script.', take);
+    expect(req.url).toBe(ports.CLEF_URL);
+    expect(req.headers.Authorization).toBe('Bearer test-key');
+    expect(req.body.model).toBe('clef');
+    expect(req.body.questions.passes.type).toBe('noul');
+    expect(ports.noulFromSystemOne({
+      model: 'clef',
+      answers: { passes: { type: 'noul', noul: 0.8 } },
+    })).toEqual({ noul: 0.8 });
+    expect(() => ports.clefSystemOneRequest('  ', 'A short script.', take)).toThrow(/OLLAMA_API_KEY/);
+    expect(() => ports.noulFromSystemOne({ answers: {} })).toThrow(/answers\.passes\.noul/);
+    expect(ports.YOUTUBE_CONTAINS_SYNTHETIC_MEDIA).toBe('status.containsSyntheticMedia');
     expect(ports.CLEF_PASS_MILLI).toBe(800);
     expect(ports.scoreMilli({ noul: 0.8 })).toBe(800);
     expect(ports.scoreMilli({ noul: 0.799 })).toBe(799);

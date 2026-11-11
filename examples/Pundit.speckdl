@@ -19,10 +19,12 @@ speck Pundit {
     //   9 Failed            (Clef retry budget spent; terminal)
     //  10 Revision          (Scott rejected; notes must be applied)
     //
-    // Clef's published noul answer is a probability in [0, 1]. The pass
-    // bar is noul >= 0.8, mapped by examples/pundit/ports.ts (scoreMilli
-    // >= 800) to the PassClef, RetryClef, or FailClef action. Action
-    // parameters are not SMT identifiers: a guard that names one is
+    // Clef runs on Ollama Cloud: POST https://ollama.com/v1/systemone,
+    // model clef, Authorization Bearer from OLLAMA_API_KEY. The noul
+    // answer is a probability in [0, 1]. The pass bar is noul >= 0.8,
+    // mapped by examples/pundit/ports.ts (scoreMilli >= 800) to
+    // PassClef, RetryClef, or FailClef. Action parameters are not
+    // SMT identifiers: a guard that names one is
     // dropped and the approval proof becomes unchecked. The numeric
     // compare therefore lives in the port, not in these guards. The
     // generated Camel route will run PassClef whenever stage is Drafted;
@@ -155,7 +157,7 @@ speck Pundit {
     }
 
     agent {
-        instruction "Do not invent a take, a quote, or a fact. Cite the recorded sources on screen. Do not attribute words to a real person. Do not defame. Notify Scott when the script is awaiting review and do not auto-send. Do not render or publish until Scott signs the exact render_short call. Render is 9:16 with captions and source credit, using the ElevenLabs voice named Scott Scoble. Before publish, set YouTube status.containsSyntheticMedia."
+        instruction "Do not invent a take, a quote, or a fact. Cite the recorded sources on screen. Do not put an AI-voiced label on screen. Do not attribute words to a real person. Do not defame. Notify Scott when the script is awaiting review and do not auto-send. Do not render or publish until Scott signs the exact render_short call. Render is 9:16 with captions and source credit, using the ElevenLabs voice named Scott Scoble. Synthetic-media disclosure is only the YouTube upload setting status.containsSyntheticMedia."
         stages stage {
             Idle = 0
             Ingested = 1
@@ -173,17 +175,17 @@ speck Pundit {
         tool RecordPerspective      effect act description "Record a grounded take. Call only when the perspective port returned at least one citation. This tool does not read git repos."
         tool SkipNoPerspective      effect act description "Terminal skip. Use when the perspective port found no grounded take. Do not invent an opinion."
         tool DraftScript            effect act description "Draft a 30 to 60 second Short from the recorded perspective and the caller-supplied trend signal."
-        tool PassClef               effect act description "Record a Clef pass. Call only when ports.clefDecision returns pass (noul >= 0.8). This tool does not call Clef and does not compare scoreMilli."
+        tool PassClef               effect act description "Record a Clef pass. Call only when ports.clefDecision returns pass (noul >= 0.8). Clef is the Ollama Cloud systemone call in ports.ts. This tool does not send that request and does not compare scoreMilli."
         tool RetryClef              effect act description "Below-threshold Clef result. Returns to scripting when fewer than 3 retries have been used. Call only when ports.clefDecision returns retry."
         tool FailClef               effect act description "Below-threshold Clef result after 3 retries. Terminal. Needs attention. Call only when ports.clefDecision returns fail."
         tool ApplyRejection         effect act description "Apply Scott's rejection notes, then draft again. Does not publish."
-        tool RenderShort            effect act description "Render 9:16 with captions and on-screen source credit, using the ElevenLabs voice named Scott Scoble. Only after Scott signs this exact call."
-        tool AcknowledgeDisclosure  effect act description "Record that YouTube status.containsSyntheticMedia is set. This tool does not call YouTube."
+        tool RenderShort            effect act description "Render 9:16 with captions and on-screen source credit, using the ElevenLabs voice named Scott Scoble. Do not add an on-screen AI-voiced label. Only after Scott signs this exact call."
+        tool AcknowledgeDisclosure  effect act description "Record that YouTube status.containsSyntheticMedia is set. That upload setting is the only synthetic-media disclosure. This tool does not call YouTube."
         tool PublishShort           effect act description "Publish only after a signed render and an acknowledged disclosure. This tool does not call YouTube."
         prompt tool draft_script stage Scripting "Use the trend signal argument as the pluggable pattern input. Keep the short between 30 and 60 seconds. The opinion must follow the recorded perspective and cite its sources."
-        prompt tool pass_clef stage Drafted "Map the Clef noul probability with the ports.clefDecision function. Pass only when it returns pass (noul >= 0.8). Otherwise retry or fail. Do not invent the score. This action does not compare the header."
+        prompt tool pass_clef stage Drafted "Map the Ollama Cloud Clef noul probability with the ports.clefDecision function. Pass only when it returns pass (noul >= 0.8). Otherwise retry or fail. Do not invent the score. This action does not compare the header."
         prompt tool render_short await AwaitingReview "Notify Scott and present the exact canonical render_short call, including scriptDigest, for him to sign. Do not render, upload, or publish until that signature arrives."
-        prompt tool publish_short stage Rendered "Publish only after acknowledge_disclosure. The integrator sets YouTube status.containsSyntheticMedia before this call."
+        prompt tool publish_short stage Rendered "Publish only after acknowledge_disclosure. The integrator sets YouTube status.containsSyntheticMedia before this call. That upload setting is the synthetic-media disclosure. Do not add an on-screen AI-voiced label."
         await AwaitingReview {
             signal scott_review
             mode in

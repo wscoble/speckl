@@ -4,8 +4,10 @@
  * The SpeckDL machine and the Camel routes compiled from it do not call
  * these. Each Camel action is an HTTP route that accepts a result the
  * integrator already computed (a citation count, a trend-signal string, a
- * Clef score in milli-units). No implementation in this repo performs I/O,
- * and none of these types is a client for Clef, git, ElevenLabs, or YouTube.
+ * Clef score in milli-units). No implementation in this repo performs I/O.
+ * Clef's request is the Ollama Cloud System One POST in this file
+ * (CLEF_URL, model CLEF_MODEL, Bearer OLLAMA_API_KEY). This file builds
+ * that request and reads answers.passes.noul. It does not send it.
  */
 
 export interface Story {
@@ -54,23 +56,105 @@ export interface TrendSignals {
 }
 
 /**
- * Quality score from Cloudflare Workers AI Clef.
- *
- * The published binding (not invoked by this repo) is
- * POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/cloudflare/clef
- * with a Workers AI API token. Documented at https://clefdecide.com/clef-api
- *
- * Use a noul question. `noul` is the probability of yes, from 0 to 1.
+ * Ollama Cloud System One. Direct call, model `clef`.
+ * https://docs.ollama.com/capabilities/decision
+ */
+export const CLEF_URL = 'https://ollama.com/v1/systemone';
+
+/** Model name when calling ollama.com directly. `clef:cloud` is the local-server alias. */
+export const CLEF_MODEL = 'clef';
+
+/** Bearer token for CLEF_URL. This module does not read the environment. */
+export const CLEF_API_KEY_ENV = 'OLLAMA_API_KEY';
+
+/** Named noul question. The answer is `answers.passes.noul`. */
+export const CLEF_QUESTION = 'passes';
+
+/**
+ * Quality score from a Clef noul answer.
+ * `noul` is the probability of yes, from 0 to 1.
  * The pipeline passes iff that probability is >= 0.8.
  */
 export interface ClefQualityScore {
   noul: number;
 }
 
+export interface ClefSystemOneRequest {
+  url: typeof CLEF_URL;
+  method: 'POST';
+  headers: {
+    Authorization: string;
+    'Content-Type': 'application/json';
+  };
+  body: {
+    model: typeof CLEF_MODEL;
+    state: { script: string; take: GroundedTake };
+    questions: {
+      passes: {
+        type: 'noul';
+        instructions: string;
+        criteria: { true: string; false: string };
+      };
+    };
+  };
+}
+
+/**
+ * POST body for Ollama Cloud. `apiKey` is the OLLAMA_API_KEY value.
+ * The caller sends the request. This function does not.
+ *
+ * Documented response shape: `answers.passes.noul` is the probability
+ * of the true criterion, from 0 to 1. Read it with noulFromSystemOne.
+ */
+export function clefSystemOneRequest(apiKey: string, script: string, take: GroundedTake): ClefSystemOneRequest {
+  if (apiKey.trim() === '') {
+    throw new Error('OLLAMA_API_KEY is required');
+  }
+  return {
+    url: CLEF_URL,
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: {
+      model: CLEF_MODEL,
+      state: { script, take },
+      questions: {
+        passes: {
+          type: 'noul',
+          instructions: 'Is this Short clearly an opinion, with its sources cited, with no words attributed to a real person, and with no defamation?',
+          criteria: {
+            true: 'The script is clearly an opinion, cites its sources, does not attribute words to a real person, and does not defame.',
+            false: 'The script is missing one of those properties.',
+          },
+        },
+      },
+    },
+  };
+}
+
+/** Read `answers.passes.noul` from a System One response. */
+export function noulFromSystemOne(payload: unknown): ClefQualityScore {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Clef response is missing answers.passes.noul');
+  }
+  const answers = (payload as { answers?: unknown }).answers;
+  const answer = answers && typeof answers === 'object'
+    ? (answers as Record<string, { noul?: unknown }>)[CLEF_QUESTION]
+    : undefined;
+  const noul = answer?.noul;
+  if (typeof noul !== 'number') {
+    throw new Error('Clef response is missing answers.passes.noul');
+  }
+  return { noul };
+}
+
 export interface ClefEvaluator {
   /**
-   * Judge the script against the recorded take: clearly an opinion, sources
-   * cited, no fabricated quotes, no defamation. Map the result with scoreMilli.
+   * POST clefSystemOneRequest to CLEF_URL with OLLAMA_API_KEY, then
+   * noulFromSystemOne. Map that score with clefDecision. This interface
+   * does not perform the POST.
    */
   scoreScript(script: string, take: GroundedTake): Promise<ClefQualityScore>;
 }
@@ -134,13 +218,14 @@ export interface ShortRenderRequest {
   voiceName: typeof SCOTT_VOICE_NAME;
   aspect: '9:16';
   captions: true;
-  /** Locators from the grounded take, shown on screen. */
+  /** Locators from the grounded take, shown on screen. Not an AI-voiced label. */
   sourceCredit: string[];
 }
 
 /**
  * YouTube Data API field the integrator sets true on videos.insert or
- * videos.update. This repo does not call YouTube.
+ * videos.update. This is the only synthetic-media disclosure. The Short
+ * does not carry an on-screen AI-voiced label. This repo does not call YouTube.
  * https://developers.google.com/youtube/v3/docs/videos#status.containsSyntheticMedia
  */
 export const YOUTUBE_CONTAINS_SYNTHETIC_MEDIA = 'status.containsSyntheticMedia';

@@ -14,7 +14,7 @@ alias.
 
 ### Added
 
-- **Pundit example.** `examples/Pundit.speckdl` specifies the news-commentary YouTube Shorts pipeline (grounded take or skip, Clef retry budget, human approval before publish). Camel routes are the generated target. Clef and the other external systems are ports in `examples/pundit/ports.ts`, not clients.
+- **Pundit example.** `examples/Pundit.speckdl` specifies the news-commentary YouTube Shorts pipeline (grounded take or skip, Clef retry budget, human approval before publish). Camel routes are the generated target. Clef is an Ollama Cloud System One request (`https://ollama.com/v1/systemone`, model `clef`, `OLLAMA_API_KEY`) built in `examples/pundit/ports.ts`; that file does not send it. Synthetic-media disclosure is YouTube `status.containsSyntheticMedia` only.
 
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
