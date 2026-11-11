@@ -27,6 +27,11 @@ export interface IRSpeck {
   sourcePath: string;
   /** Cross-spec imports resolved at lower time. Empty for self-contained specs. */
   imports: IRImport[];
+  /**
+   * AST member types in source order. Absent until lowering records them.
+   * A generator skips the conservation check when the list is absent.
+   */
+  sourceMemberTypes?: string[];
   /** The named union of facets. Every facet is populated; some may be empty. */
   facets: IRFacets;
   /**
