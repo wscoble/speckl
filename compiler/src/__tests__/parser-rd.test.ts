@@ -118,7 +118,10 @@ describe('token parser', () => {
     // the brace span.
     expect(state.variables.map(v => v.name)).toEqual([]);
     expect(init.assignments).toEqual([]);
-    expect(inv('Pos').expr).toContain('invariant Small');
+    // A trailing comment is not part of the expression. The line walker
+    // had kept reading into the next member.
+    expect(inv('Pos').expr).toBe('x >= 0');
+    expect(inv('Small').expr).toBe('x < 3');
   });
 
   it('compiles a one-line invariant into the z3 file instead of skipping it', () => {
@@ -190,15 +193,11 @@ describe('token parser', () => {
       '',
     ].join('\n');
     const inv = parseSpeckContent(cont).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
-    // The line walker did not keep text that shares a line with `{` or `}`.
-    expect(inv.expr).toBe('');
+    expect(inv.expr).toBe('x >= 0 && x < 0');
     const closed = 'speck A {\n    state { x: Nat }\n    invariant P { x >= 0\n    }\n}\n';
     const again = parseSpeckContent(closed).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
-    expect(again.expr).toBe('');
-    const empty = parseSpeckContent('speck A {\n    invariant P {}\n}\n', 'empty.speckdl');
-    const blank = empty.specks[0].members.find(m => m.type === 'invariant') as { expr: string };
-    // The line walker stored an empty expression. A later change rejects it.
-    expect(blank.expr).toBe('');
+    expect(again.expr).toBe('x >= 0');
+    expect(() => parseSpeckContent('speck A {\n    invariant P {}\n}\n', 'empty.speckdl')).toThrow(/invariant expression is empty/);
   });
 
   it('rejects a second block or other text after a member close', () => {
@@ -211,8 +210,7 @@ describe('token parser', () => {
   it('strips a block comment out of a one-line invariant', () => {
     const ast = parseSpeckContent('speck A {\n    invariant P { x >= 0 /* } */ }\n}\n');
     const inv = ast.specks[0].members.find(m => m.type === 'invariant') as { expr: string };
-    // The line walker stored no expression for this one-line invariant.
-    expect(inv.expr).toBe('');
+    expect(inv.expr).toBe('x >= 0');
   });
 
   it('splits a one-line init on a top-level comma', () => {
@@ -253,7 +251,7 @@ describe('token parser', () => {
   it('does not treat a brace inside a block comment as the end of an invariant', () => {
     const src = 'speck A {\n    state { x: Nat }\n    invariant P { /* c\n        } */ x >= 0\n    }\n}\n';
     const inv = parseSpeckContent(src).specks[0].members.find(m => m.type === 'invariant') as { expr: string };
-    expect(inv.expr).toBe('');
+    expect(inv.expr).toBe('x >= 0');
   });
 
   it('keeps spaces inside a string while collapsing the rest of an invariant', () => {
@@ -418,10 +416,15 @@ describe('token parser', () => {
   it('a contradictory invariant is unsat, not an empty (and true)', () => {
     const src = [
       'speck A {',
-      '    state { x: Nat }',
-      '    init { x := 0 }',
-      '    invariant P { x >= 0',
-      '        && x < 0 }',
+      '    state {',
+      '        x: Nat',
+      '    }',
+      '    init {',
+      '        x := 0',
+      '    }',
+      '    invariant P {',
+      '        x >= 0 && x < 0',
+      '    }',
       '}',
       '',
     ].join('\n');

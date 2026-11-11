@@ -87,6 +87,11 @@ alias.
   fields, so KafkaKRaft `LogEntry` was not `{ term, value }`. The example
   output pin moved for that reason. See
   `compiler/review/findings-record-span.txt`.
+- **Invariant comments.** A trailing `//` or a block comment is not part of
+  an invariant expression. The line walker had kept it, so two OAuth
+  invariants carried comment text. An empty invariant is an error. The
+  example output pin moved for that reason. See
+  `compiler/review/findings-invariant-comment.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
