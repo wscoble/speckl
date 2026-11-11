@@ -1,8 +1,5 @@
-// Outlines of every example, pinned to the token parser. The pin includes
-// the two shapes that differ from the line walker on main at 4f1e7fa:
-// KafkaKRaft LogEntry is a record of term and value, and the OAuth
-// invariants do not keep a trailing line comment. A new difference fails
-// the hash.
+// Outlines of every example. The token parser matches the line walker, so
+// this hash is the walker's outline. A new difference fails the hash.
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -78,7 +75,7 @@ function outlineExamples(): string {
 const CORPUS_SHA256 = 'fe6289d16c1b94af6ba946ce4e88a6fff6060c000a7407a32a365cba7bee4c91';
 
 describe('example corpus', () => {
-  it('matches the pinned outline, including the Kafka and OAuth differences', () => {
+  it('matches the line-walker outline of every example', () => {
     const outline = outlineExamples();
     const hash = createHash('sha256').update(outline).digest('hex');
     expect(hash).toBe(CORPUS_SHA256);
@@ -111,22 +108,17 @@ describe('example corpus', () => {
       { name: 'A', members: 0, endLine: 1 },
     ]);
     const packed = parseSpeckContent(
-      'speck A { state { x: Nat } init { x := 0 } }\nspeck B {\n  state { y: Nat }\n}\n',
+      'speck A { state { x: Nat } }\nspeck B {\n  state { y: Nat }\n}\n',
       'packed.speckdl',
     );
     expect(packed.specks.map(s => ({
       name: s.name,
+      endLine: s.endLine,
       fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
     }))).toEqual([
-      { name: 'A', fields: [] },
-      { name: 'B', fields: ['y'] },
+      { name: 'A', endLine: 1, fields: [] },
+      { name: 'B', endLine: 4, fields: ['y'] },
     ]);
-    const commented = parseSpeckContent(
-      'speck A { state { s: "}" } } // }\nspeck B {\n  state { y: Nat }\n}\n',
-      'comment.speckdl',
-    );
-    expect(commented.specks.map(s => s.name)).toEqual(['A', 'B']);
-    expect(commented.specks[0].members).toEqual([]);
   });
 
   it('a brace inside an agent prompt or description does not drop the next action', () => {

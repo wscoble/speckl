@@ -1,0 +1,10 @@
+Reviewer findings: trailing comments in invariants
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the one-line record span. Working: an invariant expression does not keep a trailing `//` or a block comment.
+
+The line walker stored those comments in the expression. In `examples/OAuth2AuthorizationCode.speckdl`, `TokenValidityBounded` ended with `7776000  // 90 days max` and `RedirectUriConsistency` ended with `true  // This is enforced in the ExchangeCode action`. A `//` tail is a comment, not part of the expression. The before-value is what the walker stored. `compiler/src/__tests__/parser-intended-diff.test.ts` pins the after-value and asserts the comment is gone.
+
+The example output pin moved because the Rust output for that example changes. The new pin is sha256 4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a. It was updated on purpose. An empty invariant is now an error.
+
+A header-line `}` and a one-line state still match the line walker.

@@ -1,10 +1,12 @@
 Reviewer findings: line walker moved out of parser.ts
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Target: the conservation branch. Working: the same line walker, split into compiler/src/speck-part0.ts through speck-part9.ts. compiler/src/parser.ts still calls that walker. parseSpeck does not call the token lexer.
+This is a move. Every moved line is byte-identical to the conservation branch. A reviewer harness can confirm that mechanically: strip blank lines, comments, and `import` lines from `compiler/src/parser.ts` on the conservation branch and from `compiler/src/speck-part0.ts` through `speck-part9.ts` plus the remaining `parser.ts` on this branch, then drop a leading `export `. The only lines that remain on one side are the two writes `parseFile = filePath ?? ''` and `parseFile = ''`. On this branch those writes are `setParseFile(filePath ?? '')` and `setParseFile('')`, plus the one-line definition `function setParseFile(name: string): void { parseFile = name; }`. `parseFile` lives in `speck-part0.ts`, so `parser.ts` cannot assign it. The value written is the same.
 
-The parts call each other, so they land in one change. A smaller cut does not typecheck.
+No other non-move line changes behaviour. The new files are the golden outline, its test, this report, and the sentences in the README, SPEC, and CHANGELOG that say the walker moved. Those sentences do not change compiled output.
 
-Example member outlines match the unsplit walker. The pin is sha256 52680b9231245195f1320de8d2fcc0066b32ab89f7ba24228d531ecf087f9909 in compiler/src/__tests__/line-walker-move.test.ts. The README, SPEC, and CHANGELOG say the walker moved and that compiled output is unchanged. That text does not change compiled output.
+The golden outline and its hash pass on this branch. They also pass on the conservation branch if the same outline is hashed there: the member outline of every file in `examples/` is unchanged, so the hash is the same before and after the move. The pin is sha256 52680b9231245195f1320de8d2fcc0066b32ab89f7ba24228d531ecf087f9909 in `compiler/src/__tests__/line-walker-move.test.ts`. A one-character change to the outline does not keep that hash.
+
+The parts call each other, so they land in one change. A smaller cut does not typecheck. `parseSpeck` does not call the token lexer.
 
 No previously valid example is rejected. Nothing a backend used to write is dropped.
