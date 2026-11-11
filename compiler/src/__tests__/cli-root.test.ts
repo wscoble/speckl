@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -119,6 +119,118 @@ describe('speckl --root', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(join(out, 'Lib.ts'), 'utf8')).toContain('Lib');
   }, 60_000);
+
+  it('rejects a --root directory that does not exist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-cli-gone-'));
+    const body = 'speck S {\n    state { n: Nat }\n    init { n := 0 }\n}\n';
+    write(dir, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(dir, 'root.speckdl', 'import "./lib.speckdl" as L\n' + body);
+    const gone = join(dir, 'no-such-dir');
+    const out = join(dir, 'gen');
+    const result = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx', '--root', gone], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stderr.split('\n')[0]).toBe(
+      `Compilation failed: Error: Parse error: cannot read import root "${gone}" (ENOENT)`,
+    );
+    const written = existsSync(out) ? readdirSync(out).filter(name => name.endsWith('.ts')) : [];
+    expect(written).toEqual([]);
+  }, 60_000);
+
+  it('rejects --root when the path is a file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-cli-file-root-'));
+    const body = 'speck S {\n    state { n: Nat }\n    init { n := 0 }\n}\n';
+    write(dir, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(dir, 'root.speckdl', 'import "./lib.speckdl" as L\n' + body);
+    const out = join(dir, 'gen');
+    const result = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx', '--root', file], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    const rootReal = realpathSync(file);
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stderr.split('\n')[0]).toBe(
+      `Compilation failed: Error: Parse error: import "./lib.speckdl" resolves outside the import root ${rootReal} at ${file}:1`,
+    );
+    const written = existsSync(out) ? readdirSync(out).filter(name => name.endsWith('.ts')) : [];
+    expect(written).toEqual([]);
+  }, 60_000);
+
+  it('resolves a relative --root from the working directory', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'speckl-cli-rel2-'));
+    const folder = join(parent, 'in');
+    mkdirSync(folder);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(parent, 'gen');
+    const rootArg = relative(compilerDir, parent);
+    expect(rootArg.startsWith('/')).toBe(false);
+    const ok = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx', '--root', `${rootArg}/in/..`], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
+    const missing = 'no-such-relative-root';
+    const gone = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx', '--root', missing], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(gone.status, gone.stderr).not.toBe(0);
+    expect(gone.stderr.split('\n')[0]).toBe(
+      `Compilation failed: Error: Parse error: cannot read import root "${missing}" (ENOENT)`,
+    );
+  }, 60_000);
+
+  it('follows a symlink passed as --root', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'speckl-cli-root-link-'));
+    const real = join(parent, 'real');
+    mkdirSync(join(real, 'in'), { recursive: true });
+    write(real, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(join(real, 'in'), 'root.speckdl', 'import "../lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const link = join(parent, 'link-root');
+    symlinkSync(real, link);
+    const out = join(parent, 'gen');
+    const allowed = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx', '--root', link], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(readFileSync(join(out, 'Lib.ts'), 'utf8')).toContain('Lib');
+    const fileLink = join(parent, 'file-link');
+    symlinkSync(file, fileLink);
+    const denied = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', join(parent, 'gen2'), '-b', 'cdx', '--root', fileLink], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(denied.status, denied.stderr).not.toBe(0);
+    expect(denied.stderr.split('\n')[0]).toBe(
+      `Compilation failed: Error: Parse error: import "../lib.speckdl" resolves outside the import root ${realpathSync(file)} at ${file}:1`,
+    );
+  }, 60_000);
+
+  it('allows a --root outside the entry directory only for imports inside that root', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'speckl-cli-outside-'));
+    const entryDir = join(parent, 'in');
+    const elsewhere = join(parent, 'elsewhere');
+    mkdirSync(entryDir);
+    mkdirSync(elsewhere);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    write(elsewhere, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const widened = write(entryDir, 'wide.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const sibling = write(entryDir, 'sib.speckdl', 'import "./wide.speckdl" as W\nspeck Sib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const intoElsewhere = write(entryDir, 'away.speckdl', 'import "../elsewhere/lib.speckdl" as L\nspeck Away {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const run = (file: string, root: string, outName: string) => spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', join(parent, outName), '-b', 'cdx', '--root', root], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    const ancestor = run(widened, parent, 'gen-ancestor');
+    expect(ancestor.status, ancestor.stderr).toBe(0);
+    expect(readFileSync(join(parent, 'gen-ancestor', 'Out.ts'), 'utf8')).toContain('Out');
+    const missed = run(sibling, elsewhere, 'gen-miss');
+    expect(missed.status, missed.stderr).not.toBe(0);
+    expect(missed.stderr.split('\n')[0]).toBe(
+      `Compilation failed: Error: Parse error: import "./wide.speckdl" resolves outside the import root ${realpathSync(elsewhere)} at ${sibling}:1`,
+    );
+    const reached = run(intoElsewhere, elsewhere, 'gen-away');
+    expect(reached.status, reached.stderr).toBe(0);
+    expect(readFileSync(join(parent, 'gen-away', 'Lib.ts'), 'utf8')).toContain('Lib');
+  }, 90_000);
 
   it('compiles a same-directory import without --root', () => {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-cli-local-'));
