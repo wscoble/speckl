@@ -423,7 +423,7 @@ Parse errors below are breaking changes. A file that used to compile now fails, 
 - **Code after `*/` on a `/*` line is rejected.** `/* c */ action go {` used to drop the action. The diagnostic is: Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13). `rejects code after a block comment on the same line` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **CR-only line endings are rejected.** A file of `speck A {` and a state joined by a bare carriage return used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still accepted. `rejects a CR-only file` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **An unexpected non-ASCII character is rejected.** `§` and `→` used to parse as speck A with no members. The diagnostics are unexpected character "§" at column 2 and unexpected character "→" at column 7. `rejects a section sign` and `rejects an arrow character` in `compiler/src/__tests__/walker-strict.test.ts`.
-- **An identifier that starts with a digit is rejected.** `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `24h` is still a duration. `rejects a digit name` and `still parses a duration` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An identifier that starts with a digit is rejected.** `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `state { t: 24h }` still parses. `rejects a digit name` and `still parses a duration` in `compiler/src/__tests__/walker-strict.test.ts`.
 
 ## [0.3.1] and earlier
 

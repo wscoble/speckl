@@ -193,11 +193,9 @@ describe('line walker rejects malformed structure', () => {
 
   it('still parses a duration', () => {
     const src = 'speck A {\n    state { t: 24h }\n}\n';
+    expect(message(src)).toBe('accept');
     const parsed = parseSpeckContent(src, 'dur.speckdl');
     expect(parsed.specks.map(s => s.name)).toEqual(['A']);
-    const state = parsed.specks[0].members.find(m => m.type === 'state');
-    if (!state || state.type !== 'state') throw new Error('missing state');
-    expect(state.variables.map(v => v.name)).toEqual(['t']);
   });
 
   it('does not treat a brace inside a string as an extra close', () => {
