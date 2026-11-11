@@ -46,7 +46,10 @@ alias.
   inside a finished `"` string, a `//` comment, or a `/* */` comment is not
   a token. `'` is prime notation, not a string quote. An unclosed string or
   block comment is an error on the line and column where it opened. A
-  non-ASCII identifier is `identifier must be ASCII`. `1e5`, `0x1F`,
+  non-ASCII identifier is `identifier must be ASCII`. A `\r\n` break and a
+  tab are whitespace. A `"` that reaches `\r`, `\n`, or the end of the file
+  before its closer is `unterminated string` on the line where it opened.
+  Non-ASCII text inside a string or a comment stays in that text. `1e5`, `0x1F`,
   `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
   `24h` and `500ms` stay a number plus a unit. `parseSpeck` does not call
   the lexer yet, so the line walker still parses every file.
