@@ -139,6 +139,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:2: text after a member\'s "}" (column 28)');
   });
 
+  it('rejects a brace on the next line', () => {
+    const src = 'speck A {\n    state { x: Nat }\n    invariant P\n    {\n        x >= 0\n    }\n}\n';
+    expect(stored(src, 'allman.speckdl')).toBe('[{"name":"A","endLine":7,"members":[{"type":"state","vars":[]}]}]');
+    expect(message(src, 'allman.speckdl')).toBe('Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
