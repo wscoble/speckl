@@ -153,4 +153,15 @@ describe('speck lexer', () => {
     expect(lexSpeck('').tokens).toEqual([]);
     expect(lexSpeck('// only\n/* and a } */\n').tokens).toEqual([]);
   });
+
+  it('splits a second dot off a decimal, skips an ideographic space, and does not close a comment on slash-star-slash', () => {
+    expect(lexSpeck('1.5.2').tokens.map(t => `${t.kind}:${t.text}@${t.column}`)).toEqual([
+      'number:1.5@1', 'punct:.@4', 'number:2@5',
+    ]);
+    expect(lexSpeck('speck\u3000S {\n}\n').tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
+    expect(lexSpeck('/*/ still */ speck S {\n}\n').tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
+    expect(() => lexSpeck('x /*/\n', 'c.speckdl')).toThrow(
+      'Parse error at c.speckdl:1: unterminated block comment (column 3)',
+    );
+  });
 });
