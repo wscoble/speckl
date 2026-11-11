@@ -296,7 +296,7 @@ alias.
   measured, not from missing tests. Generated example output is pinned by a
   digest snapshot.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
-- **Token parser is called by `parseSpeckContent`.** `compiler/src/parser.ts` returns `parseSpeckDocument` from `compiler/src/rd-parser.ts`. Coverage includes `rd-parser.ts` and `speck-span.ts`. `parseSpeckContent calls the token parser` and `lowers every speck in the repo to the same IR` are in `compiler/src/__tests__/walker-vs-rd.test.ts`.
+- **Token parser is called by `parseSpeckContent`.** `compiler/src/parser.ts` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. Coverage includes `rd-parser.ts` and `speck-span.ts`. `parseSpeckContent calls the token parser` and `lowers every speck in the repo to the same IR` are in `compiler/src/__tests__/walker-vs-rd.test.ts`.
 
 ### Changed
 
