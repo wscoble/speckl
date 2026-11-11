@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { AST, SpeckNode, lexProblem, setParseFile, lexStart } from './speck-part0.js';
+import { setParseFile as setLiveParseFile } from '../speck-part0.js';
 import { maskLine, nextCodeIsNamedBlock, parseSpeck } from './speck-part1.js';
 import { parseImportStatement } from './speck-part3.js';
 import { assertClosedSpec } from '../walker-strict.js';
@@ -26,6 +27,9 @@ export function parseSpeckFile(filePath: string): AST {
 
 export function parseSpeckContent(content: string, filePath?: string): AST {
   setParseFile(filePath ?? '');
+  // walker-strict throws through the live lexProblem, which reads the live
+  // file slot. Set that slot too so the copy's diagnostics name the file.
+  setLiveParseFile(filePath ?? '');
   try {
   assertClosedSpec(content, filePath);
   const specks: SpeckNode[] = [];
@@ -93,6 +97,7 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   return { specks };
   } finally {
     setParseFile('');
+    setLiveParseFile('');
   }
 }
 
