@@ -14,6 +14,34 @@ alias.
 
 ### Added
 
+- **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
+  inside a finished `"` string, a `//` comment, or a `/* */` comment, so
+  that brace cannot end a speck, a member, an `if`, or a `for`. The same
+  skip covers agent advisory strings (`instruction`, `prompt tool`, and
+  `tool … description`), so a brace inside that text does not end the agent
+  block. A brace in a comment or a string does not hide the next speck. A
+  one-line speck that packs its members on the header line can still absorb
+  the next speck; that is the same on `main` and is not this scan. A
+  one-line action closes on the structural `}` of its header line, so a
+  trailing `// }` is not a brace and does not take the next action's
+  statements. A line that is only `speck`, with `Name {` on a later line,
+  is `speck name must be on the same line as "speck"`. The same skip is
+  used when Go emits an `if` or a `for`, so a brace in a comment or a
+  string does not drop that body. `'` is post-state prime notation, not a
+  string quote. A block comment may continue onto the next line, including
+  one that opens on a speck's closing line and closes later. A `"` string
+  may not: an unclosed `"` is `unterminated string` on the line where it
+  opened, at file level, after the last speck, or inside domain text. An
+  unclosed `/*` is `unterminated block comment` on the line where it opened,
+  in those same places. A `/*` written inside an already-open block comment
+  is comment text, not a nested comment. When `*/` is the first text on a
+  line and the code after it is a `speck`, `action`, `invariant`, `state`,
+  or `init` header, that header is `header is not at the start of the
+  line`. A header later on the line, after other text or after `/* ... */`,
+  is outside this scan. A speck written entirely inside a block comment is
+  not a speck. Go still drops an `else if`, a nested `if`, a `for` inside
+  an `if`, and a `require` inside an `if`. That is unchanged from before
+  this scan. There is no shared scanner module yet.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
