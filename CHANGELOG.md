@@ -86,17 +86,20 @@ alias.
   `parser-main-corpus.test.ts` cover this.
 - **Direct generator check.** `generate` for OpenAPI, CycloneDX, SPDX, and
   the TypeScript IR backend calls the conservation check before it writes.
-  A direct call cannot drop a `oneof`. `compiler/src/__tests__/generator-guard.test.ts`
-  calls those generators without `compileSpec`.
-- **Direct schema check.** Provenance, Kubernetes CRDs, and Protobuf call the conservation check before they write. Protobuf emits `oneof`. The other two reject it. `generator-guard.test.ts` calls them without `compileSpec`.
-- **Direct Z3 IR check.** `generateZ3FromIR` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
-- **Direct agent check.** `generateAgent` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
-- **Direct Camel check.** `generateCamel` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
-- **Direct Rust check.** `generateRust` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
-- **Direct TypeScript state-machine check.** `generateTypeScriptStateMachine` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
-- **Direct Z3 check.** `generateZ3` calls the conservation check before it writes, and a direct call reads invariant members from the AST. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
-- **Direct Elm check.** `generateElm` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
-- **Direct Go check.** `generateGo` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
+  A direct call cannot drop a `oneof`. A missing member list
+  (`sourceMemberTypes` on IR, `members` on an AST) is an error, and so is a
+  type the table does not name. An empty list is a speck with no members.
+  `lower` records `sourceMemberTypes`. `compiler/src/__tests__/generator-guard.test.ts`
+  and `guard-fail-closed-small.test.ts` call those generators without `compileSpec`.
+- **Direct schema check.** Provenance, Kubernetes CRDs, and Protobuf call the conservation check before they write. Protobuf emits `oneof`. The other two reject it. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-schema.test.ts` call them without `compileSpec`.
+- **Direct Z3 IR check.** `generateZ3FromIR` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-z3ir.test.ts` call it without `compileSpec`.
+- **Direct agent check.** `generateAgent` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct Camel check.** `generateCamel` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-camel.test.ts` call it without `compileSpec`.
+- **Direct Rust check.** `generateRust` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct TypeScript state-machine check.** `generateTypeScriptStateMachine` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct Z3 check.** `generateZ3` calls the conservation check before it writes, and a direct call reads invariant members from the AST unless an `_invariants` list is attached. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `next:` naming an unknown action is an error and writes no SMT file. `generator-guard.test.ts` and `guard-z3-limits.test.ts` call it without `compileSpec`.
+- **Direct Elm check.** `generateElm` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct Go check.** `generateGo` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Import paths.** `compiler/src/imports.ts` reads a relative import. The real
   path has to stay inside the root (the entry file's directory, unless a
   caller passes `rootDir`). The hash pin is the raw bytes, 64 hex digits,
@@ -108,9 +111,13 @@ alias.
 - **Import wiring.** `compileSpec` expands imports before it calls a backend.
   `lower` does the same when `resolveImports` is set, and it no longer warns
   that import resolution is not implemented. `import` is `n/a` in the
-  conservation table. `speckl --root` sets that directory. `--root /` widens
-  it to the whole filesystem. `compiler/src/__tests__/cli-root.test.ts`
-  runs the CLI.
+  conservation table. A missing file, a cycle, a duplicate alias, an absolute
+  path, and a root that does not contain the import are errors. A missing
+  member-type list after lowering is an error.
+  `compiler/src/__tests__/import-wire-edges.test.ts` covers those cases.
+- **Import CLI.** `speckl --root` sets the directory `compileSpec` already
+  accepted. `--root /` widens it to the whole filesystem. An absolute import
+  path is still an error. `compiler/src/__tests__/cli-root.test.ts` runs the CLI.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
