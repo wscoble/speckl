@@ -181,6 +181,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - `y Nat` inside `state` is unrecognized state field "y Nat" on the state header's line, with no column. It used to be appended to the previous type.
 - `y = 0` and `garbage line` inside `init` are unrecognized init line on the init header's line, with no column. They used to be appended to the previous expression. `x := 0` is still stored.
 - `/* c */ action go {` is code after */ on a line that starts with /* at column 13. The action used to be dropped.
+- A bare carriage return is CR-only line endings are not supported at column 10. The state used to be dropped. CRLF is still whitespace.
 
 ## Documentation
 
