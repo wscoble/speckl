@@ -117,7 +117,11 @@ alias.
   `compiler/src/__tests__/import-wire-edges.test.ts` covers those cases.
 - **Import CLI.** `speckl --root` sets the directory `compileSpec` already
   accepted. `--root /` widens it to the whole filesystem. An absolute import
-  path is still an error. `compiler/src/__tests__/cli-root.test.ts` runs the CLI.
+  path, a missing file, a cycle, and a duplicate alias are errors.
+  `--root` with no directory does not widen the root, so `import "../x"`
+  still fails. `--root` set to the entry file itself does not contain an
+  import. A same-directory import does not need the flag.
+  `compiler/src/__tests__/cli-root.test.ts` runs the CLI.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

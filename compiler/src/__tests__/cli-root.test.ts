@@ -34,4 +34,59 @@ describe('speckl --root', () => {
     expect(allowed.status, allowed.stderr).toBe(0);
     expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
   }, 60_000);
+
+  it('rejects a missing file, a cycle, a duplicate alias, an absolute path, and a bad --root', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-cli-neg-'));
+    const body = 'speck S {\n    state { n: Nat }\n    init { n := 0 }\n}\n';
+    const run = (file: string, args: string[]) => spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', join(dir, 'gen'), '-b', 'cdx', ...args], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    const missing = write(dir, 'missing.speckdl', 'import "./no-such.speckdl" as L\n' + body);
+    const missingRun = run(missing, []);
+    expect(missingRun.status, missingRun.stderr).not.toBe(0);
+    expect(missingRun.stderr).toMatch(/cannot read import/);
+
+    write(dir, 'a.speckdl', 'import "./b.speckdl" as B\nspeck A {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const b = write(dir, 'b.speckdl', 'import "./a.speckdl" as A\nspeck B {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const cycle = run(b, ['--root', dir]);
+    expect(cycle.status, cycle.stderr).not.toBe(0);
+    expect(cycle.stderr).toMatch(/import cycle/);
+
+    write(dir, 'one.speckdl', 'speck One {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    write(dir, 'two.speckdl', 'speck Two {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const dup = write(dir, 'dup.speckdl', 'import "./one.speckdl" as L\nimport "./two.speckdl" as L\n' + body);
+    const dupRun = run(dup, []);
+    expect(dupRun.status, dupRun.stderr).not.toBe(0);
+    expect(dupRun.stderr).toMatch(/import alias L is used twice/);
+
+    const abs = write(dir, 'abs.speckdl', 'import "/tmp/outside.speckdl" as L\n' + body);
+    const absRun = run(abs, ['--root', dir]);
+    expect(absRun.status, absRun.stderr).not.toBe(0);
+    expect(absRun.stderr).toMatch(/must be a relative path/);
+
+    write(dir, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const linked = write(dir, 'linked.speckdl', 'import "./lib.speckdl" as L\n' + body);
+    const fileRoot = run(linked, ['--root', linked]);
+    expect(fileRoot.status, fileRoot.stderr).not.toBe(0);
+    expect(fileRoot.stderr).toMatch(/outside the import root/);
+    const gone = run(linked, ['--root', join(dir, 'no-such-dir')]);
+    expect(gone.status, gone.stderr).not.toBe(0);
+    mkdirSync(join(dir, 'in'));
+    const parentFile = write(join(dir, 'in'), 'up.speckdl', 'import "../lib.speckdl" as L\n' + body);
+    const noValue = spawnSync(process.execPath, [viteNode, cli, parentFile, '--root'], { cwd: compilerDir, encoding: 'utf-8' });
+    expect(noValue.status, noValue.stderr).not.toBe(0);
+    expect(noValue.stderr).toMatch(/outside the import root|Not enough arguments|missing required/);
+  }, 120_000);
+
+  it('compiles a same-directory import without --root', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-cli-local-'));
+    write(dir, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(dir, 'root.speckdl', 'import "./lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(dir, 'gen');
+    const result = spawnSync(process.execPath, [viteNode, cli, file, '-t', 'typescript', '-o', out, '-b', 'cdx'], {
+      cwd: compilerDir, encoding: 'utf-8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(out, 'Lib.ts'), 'utf8')).toContain('Lib');
+  }, 60_000);
 });
