@@ -123,7 +123,6 @@ describe('line walker rejects malformed structure', () => {
     expect(message(bare)).toBe('Parse error at bad.speckdl:4: unrecognized member "x := x + 3" (column 5)');
   });
 
-  // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
