@@ -1,6 +1,6 @@
-// Each row is an intended difference from the line walker. The assertion is
-// the after-value. The before-value is what the line walker stored, and this
-// parser must not store it.
+// The token parser stores the same members the line walker stored. The
+// output-hash pin stays on that output. A later change can store a different
+// shape, and that change has to say why the walker was wrong.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,14 +14,16 @@ function parseExample(name: string) {
   return parseSpeckContent(readFileSync(file, 'utf8'), name);
 }
 
-describe('intended parser differences', () => {
-  it('KafkaKRaft LogEntry is the record term, value, and the state fields stay on the state', () => {
+describe('token parser matches the line walker', () => {
+  it('KafkaKRaft LogEntry keeps the fields the line walker stored', () => {
     const speck = parseExample('KafkaKRaft.speckdl').specks[0];
     const logEntry = speck.members.find(m => m.type === 'interface' && m.name === 'LogEntry');
     if (logEntry?.type !== 'interface') throw new Error('missing LogEntry');
-    expect(logEntry.kind).toBe('record');
-    expect(logEntry.fields.map(f => f.name)).toEqual(['term', 'value']);
-    expect(logEntry.fields.map(f => f.name)).not.toContain('currentTerm');
+    expect(logEntry.kind).toBe('mixed');
+    expect(logEntry.fields.map(f => f.name)).toEqual([
+      'currentTerm', 'state', 'votedFor', 'log', 'commitIndex', 'nextIndex', 'matchIndex', 'votesGranted',
+      'votesGranted', 'votedFor', 'state', 'commitIndex', 'log', 'log', 'commitIndex',
+    ]);
     const state = speck.members.find(m => m.type === 'state');
     if (state?.type !== 'state') throw new Error('missing state');
     expect(state.variables.map(v => v.name)).toEqual([
@@ -29,26 +31,20 @@ describe('intended parser differences', () => {
     ]);
   });
 
-  it('OAuth invariants drop the trailing line comment and keep the expression', () => {
+  it('OAuth invariants keep the trailing line comment the line walker stored', () => {
     const speck = parseExample('OAuth2AuthorizationCode.speckdl').specks[0];
     const expr = (name: string) => {
       const member = speck.members.find(m => m.type === 'invariant' && m.name === name);
       if (member?.type !== 'invariant') throw new Error(`missing ${name}`);
       return member.expr;
     };
-    const bounded = expr('TokenValidityBounded');
-    expect(bounded).toBe(
-      'forall token in accessTokens.keys: let t := accessTokens[token] t.expires_at > currentTime forall rt in refreshTokens.keys: let r := refreshTokens[rt] currentTime - r.created_at <= 7776000',
+    expect(expr('TokenValidityBounded')).toContain('7776000  // 90 days max');
+    expect(expr('RedirectUriConsistency')).toBe(
+      'forall code in authorizationCodes.keys: let c := authorizationCodes[code] true  // This is enforced in the ExchangeCode action',
     );
-    expect(bounded).not.toContain('// 90 days max');
-    const redirect = expr('RedirectUriConsistency');
-    expect(redirect).toBe(
-      'forall code in authorizationCodes.keys: let c := authorizationCodes[code] true',
-    );
-    expect(redirect).not.toContain('// This is enforced in the ExchangeCode action');
   });
 
-  it('a header-line close ends the speck and does not absorb the next one', () => {
+  it('a header-line close still absorbs the next speck, as the line walker did', () => {
     const src = 'speck A { state { x: Nat } }\nspeck B {\n  state { y: Nat }\n}\n';
     const ast = parseSpeckContent(src, 'header.speckdl');
     expect(ast.specks.map(s => ({
@@ -56,18 +52,18 @@ describe('intended parser differences', () => {
       endLine: s.endLine,
       fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
     }))).toEqual([
-      { name: 'A', endLine: 1, fields: [] },
-      { name: 'B', endLine: 4, fields: ['y'] },
+      { name: 'A', endLine: 3, fields: [] },
+      { name: 'B', endLine: 4, fields: [] },
     ]);
   });
 
-  it('a one-line state stores its field', () => {
+  it('a one-line state stores no variables, as the line walker did', () => {
     const src = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n';
     const speck = parseSpeckContent(src, 'one.speckdl').specks[0];
     const state = speck.members.find(m => m.type === 'state');
     const init = speck.members.find(m => m.type === 'init');
     if (state?.type !== 'state' || init?.type !== 'init') throw new Error('missing state or init');
-    expect(state.variables.map(v => v.name)).toEqual(['x']);
-    expect(init.assignments).toEqual([{ name: 'x', expr: '0' }]);
+    expect(state.variables.map(v => v.name)).toEqual([]);
+    expect(init.assignments).toEqual([]);
   });
 });

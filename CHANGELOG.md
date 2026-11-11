@@ -20,8 +20,6 @@ alias.
   skip covers agent advisory strings (`instruction`, `prompt tool`, and
   `tool … description`), so a brace inside that text does not end the agent
   block. A brace in a comment or a string does not hide the next speck. A
-  one-line speck ends on the header line's closing `}`. It does not absorb
-  the next speck. A
   one-line action closes on the structural `}` of its header line, so a
   trailing `// }` is not a brace and does not take the next action's
   statements. A line that is only `speck`, with `Name {` on a later line,
@@ -73,25 +71,17 @@ alias.
   generated file changes that file's digest and the pin.
 - **Recursive-descent parser.** `compiler/src/parser.ts` calls
   `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
-  lexer. A `{` or `}` in a string or a comment is not structure. A block
-  that opens and closes on its header line ends there, so a following speck
-  is not absorbed. Members written on that header line are not stored. An
-  opening `{` on the next line is `opening "{" must be on the same line as
+  lexer. A `{` or `}` in a string or a comment is not structure. The members
+  it stores match the line walker, and the example output pin is unchanged.
+  An opening `{` on the next line is `opening "{" must be on the same line as
   the member header`. A non-blank line that is not a known member is
-  `unrecognized member`. A state field that is not `name: type` is
-  `unrecognized state field`. `x = 0` inside `init` is
-  `unrecognized init line`. `x := 0` is stored. File-level `import` is
-  syntax-checked and not attached to a speck. `type LogEntry = { term: Nat,
-  value: Value }` in `examples/KafkaKRaft.speckdl` is the record
-  `{ term, value }`. The state fields that follow stay on the state. Two
-  invariants in `examples/OAuth2AuthorizationCode.speckdl` drop a trailing
-  `//` comment, and the Rust output for that example changes. Go still
+  `unrecognized member`. `x = 0` inside `init` is `unrecognized init line`.
+  File-level `import` is syntax-checked and not attached to a speck. Go still
   drops an `else if`, a nested `if`, a `for` inside an `if`, and a
   `require` inside an `if`.
   `compiler/src/__tests__/parser-rd.test.ts`,
   `parser-main-corpus.test.ts`, and `parser-intended-diff.test.ts` cover
-  this. The before and after of each intended difference is in
-  `compiler/review/findings-rd-parser.txt`.
+  this. `compiler/review/findings-rd-parser.txt` records that the output matches.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

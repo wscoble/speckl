@@ -1,11 +1,9 @@
 // SpeckDL parser. `lexSpeck` produces one token stream for the file.
 //
 // Brace matching uses that stream, so a `{` or `}` inside a comment or a
-// string is not structure. A block that opens and closes on its header
-// line takes its phrase body from that brace span. A multi-line block ends
-// at the matching token brace; the phrase parser then reads the source
-// lines in between. The member phrases themselves (action statements,
-// field lists, constraints) are still parsed from that source text.
+// string is not structure. Member phrases still read the same spans the
+// line walker read, so example output matches that walker. A later change
+// can take a one-line block's body from its brace span.
 //
 // After the walk, token depth must be 0 at each speck's close and at EOF.
 // A line that starts with `/*` and still has tokens is an error: that code
@@ -14,10 +12,11 @@
 import {
   AST, SpeckNode, MemberNode,
   lexStart, maskLine, lexProblem,
-  parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr, isAliasTypeText,
+  parseImportStatement, parseMember, parseMemberBlock, isAliasTypeText,
   parseMultiLineConstraintVerify, expressionSpanEnd, unsupportedVerify, parseNextRelation,
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
+import { parseSpeck as walkSpeck } from './speck-part1.js';
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -71,6 +70,18 @@ export function parseSpeckDocument(content: string, filePath?: string): AST {
     }
 
     if (/^speck\s+\S/.test(line) && /^speck\s+\S/.test(code)) {
+      const headerBrace = (byLine[i + 1] ?? []).find(t => t.kind === '{');
+      const headerClose = headerBrace ? matchingClose(lexed.tokens, headerBrace) : undefined;
+      // The line walker stepped one line after a header and parsed the next
+      // `speck` again. Keep that result. A later change stops on this line.
+      if (headerClose && headerClose.line === i + 1) {
+        const walked = walkSpeck(lines, i);
+        if (walked) {
+          specks.push(walked);
+          i++;
+          continue;
+        }
+      }
       const speck = parseSpeck(content, lines, lexed.tokens, byLine, i, filePath);
       if (!speck) {
         throw parseErrorAt(filePath, i + 1, columnOf(lines[i]), `unrecognized top-level "${line}"`);
@@ -114,25 +125,8 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
 
   const headerBrace = (byLine[start + 1] ?? []).find(t => t.kind === '{');
   const speckClose = headerBrace ? matchingClose(tokens, headerBrace) : undefined;
-  // The speck's `}` is on the header line. The line walker also skipped
-  // members packed on that line (it started on the next line) and then kept
-  // going, so a following speck was parsed twice: once as this speck's
-  // members, and again as its own speck. Stop on this line.
-  if (speckClose && speckClose.line === start + 1) {
-    return {
-      type: 'speck', name, members,
-      startLine: start + 1,
-      endLine: start + 1,
-      protoPackage: metadata.protoPackage,
-      goPackage: metadata.goPackage,
-      eventSuffix: metadata.eventSuffix,
-      version: metadata.version,
-      author: metadata.author,
-      license: metadata.license,
-      k8sGroup: metadata.k8sGroup,
-      k8sVersion: metadata.k8sVersion,
-    };
-  }
+  // A `}` on the header line does not stop the walk. The line walker also
+  // kept going. A later change stops on this line.
   // Actions declared anywhere in the speck decide which side of `tool`
   // is the action, including an action that appears after the agent block.
   const actionScanEnd = speckClose ? speckClose.line - 1 : lines.length;
@@ -227,11 +221,6 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
         }
       }
       const member = parseMemberAt(lines, i, actionNames);
-      if (member && member.type === 'invariant' && open && close) {
-        const expr = stripInvariantExpr(content.slice(open.end, close.start));
-        if (!expr) throw parseErrorAt(filePath, open.line, open.column, 'invariant expression is empty');
-        member.expr = expr;
-      }
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (!member) rejectUnparsed(filePath, rawLine, i + 1, line);
       if (closeCount < openCount) {

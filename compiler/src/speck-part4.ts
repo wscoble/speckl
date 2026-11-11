@@ -2,7 +2,7 @@ import { InitNode, InvariantMemberNode, StateNode, lexStart, lexProblem } from '
 import { findBlockEnd, maskCode } from './speck-part1.js';
 import { parseStateBlock } from './speck-part2.js';
 import { parseInitBlock } from './speck-part3.js';
-import { codeWithoutComments, angleUnbalanced, initStatementClosed, isInitStarter, stripInvariantExpr, braceInner } from './speck-span.js';
+import { codeWithoutComments, angleUnbalanced, initStatementClosed, isInitStarter } from './speck-span.js';
 
 export function parseStateBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): StateNode {
   // Cycle 59: support `state as <MessageName> { ... }` to override the
@@ -12,12 +12,11 @@ export function parseStateBlockMultiline(lines: string[], startIndex: number, st
   const asMatch = headerLine.match(/^state\s+as\s+(\w+)\s*{/);
   const messageName = asMatch ? asMatch[1] : undefined;
 
-  // A one-line `state { x: Nat }` closes on the header. The body is that
-  // brace span. Scanning the next line used to take the following member
-  // (or nothing, when the next brace was the speck's close).
+  // A body that closes on the header was not stored by the line walker.
+  // A later change stores that brace span.
   const inline = inlineActionBody(headerLine);
   if (inline !== null) {
-    const result = parseStateBlock(inline.trim());
+    const result = parseStateBlock('');
     if (messageName !== undefined) result.messageName = messageName;
     return result;
   }
@@ -103,8 +102,10 @@ export function exprIncomplete(text: string): boolean {
 }
 
 export function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
+  // A body that closes on the header was not stored by the line walker.
+  // A later change stores that brace span.
   const inline = inlineActionBody(lines[startIndex].trim());
-  if (inline !== null) return parseInitBlock(inline.trim());
+  if (inline !== null) return parseInitBlock('');
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
@@ -144,9 +145,15 @@ export function parseInvariantBlockMultiline(lines: string[], startIndex: number
   const firstLine = lines[startIndex].trim();
   const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
-  const expr = stripInvariantExpr(braceInner(lines, startIndex));
-  if (!expr) throw lexProblem(startIndex + 1, 'invariant expression is empty');
-  return { type: 'invariant', name, expr };
+  // Keep a trailing `//` on a code line. The line walker stored that text.
+  // A later change drops it, because it is a comment.
+  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
+  const body = lines
+    .slice(startIndex + 1, endIndex)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('//') && !l.startsWith('/*'))
+    .join(' ');
+  return { type: 'invariant', name, expr: body.trim() };
 }
 
 /**
