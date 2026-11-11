@@ -20,12 +20,12 @@ import { parseSpeck as walkSpeck } from './speck-part1.js';
 import { parseSpeckContent as parseLineWalker } from './line-walker/parser.js';
 
 /**
- * This swap keeps the output-hash line walker's result when the token
- * parser throws. Specs the token parser accepts stay on that parser.
- * A following change sets this to false and reports the token parser's
- * line and column instead.
+ * False: a throw from the token parser is the result, with its line and
+ * column. True was the previous swap, which returned the line walker's
+ * AST or the walker's error text. The walker accepted a missing `}`, an
+ * extra `}`, text after `}`, an unrecognized member, and `§`.
  */
-const MATCH_LINE_WALKER = true;
+const MATCH_LINE_WALKER = false;
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
