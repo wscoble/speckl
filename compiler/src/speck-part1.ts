@@ -3,21 +3,24 @@ import { parseMemberBlock, parseMember } from './speck-part2.js';
 import { parseMultiLineConstraintVerify } from './speck-part6.js';
 import { parseNextRelation } from './speck-part8.js';
 
-export function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { text: string; state: LexState } {
+export function maskCode(input: string, state: LexState = lexStart(), lineNo = 1): { text: string; kept: string; state: LexState } {
   let block = state.block;
   let quote = state.quote;
   let openLine = state.openLine;
   let text = '';
+  let kept = '';
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
     const next = input[i + 1];
     if (quote) {
       if (ch === '\\' && next !== undefined) {
         text += '  ';
+        kept += ch + next;
         i++;
         continue;
       }
       text += ch === quote ? ch : ' ';
+      kept += ch;
       if (ch === quote) { quote = null; openLine = 0; }
       continue;
     }
@@ -44,13 +47,15 @@ export function maskCode(input: string, state: LexState = lexStart(), lineNo = 1
     }
     if (ch === '"') {
       text += ch;
-      quote = ch;
+      kept += ch;
+      quote = '"';
       openLine = lineNo;
       continue;
     }
     text += ch;
+    kept += ch;
   }
-  return { text, state: { block, quote, openLine } };
+  return { text, kept, state: { block, quote, openLine } };
 }
 
 /** A `"` that is still open at the end of the line is an error on that line. */
@@ -71,7 +76,6 @@ export function braceCounts(text: string, state?: LexState): { open: number; clo
   return { open, close, state: masked.state };
 }
 
-/** Lex state after consuming lines[from..endInclusive]. */
 export function lexAfter(lines: string[], endInclusive: number, from = 0): LexState {
   let lex = lexStart();
   for (let k = from; k <= endInclusive && k < lines.length; k++) lex = maskLine(lines[k], lex, k + 1).state;
@@ -367,3 +371,8 @@ export function isExpressionComplete(expr: string): boolean {
   return braces === 0 && parens === 0 && brackets === 0;
 }
 
+/**
+ * A constraint or verify expression that should not take another line.
+ * Empty text, a trailing `:`, an unbalanced bracket, or a dangling operator
+ * still continues. A finished `x >= 0` does not.
+ */

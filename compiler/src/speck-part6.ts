@@ -1,13 +1,17 @@
 import { InterfaceField, InterfaceNode, MemberNode, MethodSignature, OneofNode, OneofVariant, ServiceNode, TransitionField, TransitionNode, TypeExpr, VerifyNode, RpcMethod } from './speck-part0.js';
 import { findBlockEnd, isExpressionComplete, maskCode } from './speck-part1.js';
 import { parseInterface, parseOneof, parseTransition, parseTypeExpr, splitOnTopLevelCommas } from './speck-part3.js';
+import { inlineActionBody } from './speck-part4.js';
 import { parseConstraintAnyForm, parseConstraintColonBlock, parseVerifyAnyForm } from './speck-part7.js';
+import { takeExpressionLines } from './speck-span.js';
 
 export function parseInterfaceBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InterfaceNode {
   const firstLine = lines[startIndex].trim();
   const header = parseInterface(firstLine);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const methods: MethodSignature[] = [];
   const fields: InterfaceField[] = [];
@@ -82,8 +86,10 @@ export function parseInterfaceBlockMultiline(lines: string[], startIndex: number
 export function parseOneofBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): OneofNode {
   const firstLine = lines[startIndex].trim();
   const header = parseOneof(firstLine);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const variants: OneofVariant[] = [];
   for (const line of innerLines) {
@@ -109,8 +115,10 @@ export function parseOneofBlockMultiline(lines: string[], startIndex: number, st
 export function parseTransitionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): TransitionNode {
   const firstLine = lines[startIndex].trim();
   const header = parseTransition(firstLine);
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const fields: TransitionField[] = [];
   let payloadOneof: string | undefined;
@@ -150,8 +158,10 @@ export function parseServiceBlockMultiline(lines: string[], startIndex: number, 
   const match = firstLine.match(/^service\s+(\w+)\s*{?/);
   const name = match ? match[1] : 'UnnamedService';
 
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const rpcs: RpcMethod[] = [];
   for (const line of innerLines) {
@@ -257,81 +267,12 @@ export function parseVerifyColonBlock(lines: string[], startIndex: number): Veri
   const head = firstLine.substring(firstLine.indexOf(':') + 1).trim();
   if (!head) return null;
 
-  // If the head is already balanced on its own (single-line verify: expr),
-  // just return it directly — no continuation needed.
-  if (isExpressionComplete(head)) {
-    const nameMatch = head.match(/^(?:always|Always|eventually|Eventually)\s*\(\s*(\w+)\s*\)$/);
-    return {
-      type: 'verify',
-      name: nameMatch ? nameMatch[1] : 'unnamed',
-      temporalExpr: head,
-    };
-  }
-
-  // Multi-line: collect continuation lines until parens balance. The same
-  // break-condition list used in the parseSpeck skip-loop applies (don't
-  // swallow the next member's keyword). We additionally stop at any
-  // standalone `}` so a verify inside a brace-block still terminates.
-  const parts: string[] = [head];
-  let parens = 0, brackets = 0, braces = 0;
-  for (const ch of maskCode(head).text) {
-    if (ch === '(') parens++;
-    else if (ch === ')') parens--;
-    else if (ch === '[') brackets++;
-    else if (ch === ']') brackets--;
-    else if (ch === '{') braces++;
-    else if (ch === '}') braces--;
-  }
-
-  let lastConsumed = startIndex;
-  for (let j = startIndex + 1; j < lines.length; j++) {
-    const raw = lines[j];
-    const nl = raw.trim();
-    if (!nl) {
-      // Empty line still updates counters (none) and advances lastConsumed
-      lastConsumed = j;
-      continue;
-    }
-    if (nl.startsWith('//') || nl.startsWith('/*')) {
-      // Skip standalone comments but treat them as part of the block
-      // (the LTL translator doesn't care about comments in temporalExpr).
-      lastConsumed = j;
-      continue;
-    }
-    // Stop at a new top-level member keyword — that's the next member.
-    if (
-      nl.startsWith('constraint ') || nl.startsWith('verify ') ||
-      nl.startsWith('constraint:') || nl.startsWith('verify:') ||
-      nl.startsWith('state') || nl.startsWith('init') ||
-      nl.startsWith('action ') || nl.startsWith('event ') ||
-      nl.startsWith('interface ') || nl.startsWith('provenance ') ||
-      nl.startsWith('bom ') || nl === '}' ||
-      nl.startsWith('next:') || nl.startsWith('invariant ')
-    ) {
-      break;
-    }
-    // Update depth counters.
-    for (const ch of maskCode(raw).text) {
-      if (ch === '(') parens++;
-      else if (ch === ')') parens--;
-      else if (ch === '[') brackets++;
-      else if (ch === ']') brackets--;
-      else if (ch === '{') braces++;
-      else if (ch === '}') braces--;
-    }
-    parts.push(nl);
-    lastConsumed = j;
-    if (parens === 0 && brackets === 0 && braces === 0) {
-      break;
-    }
-  }
-
-  const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
-  const nameMatch = joined.match(/^(?:always|Always|eventually|Eventually)\s*\(\s*(\w+)\s*\)$/);
+  const taken = takeExpressionLines(lines, startIndex, head, 'space');
+  const nameMatch = taken.text.match(/^(?:always|Always|eventually|Eventually)\s*\(\s*(\w+)\s*\)$/);
   return {
     type: 'verify',
     name: nameMatch ? nameMatch[1] : 'unnamed',
-    temporalExpr: joined,
+    temporalExpr: taken.text,
   };
 }
 

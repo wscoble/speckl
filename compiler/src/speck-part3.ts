@@ -1,11 +1,14 @@
 import { ActionNode, AuthorNode, DerivesNode, EventNode, ImportNode, InitNode, InterfaceNode, OneofNode, ProvenanceNode, SatisfiesNode, SourceNode, TransitionNode, TypeExpr } from './speck-part0.js';
 import { isExpressionComplete, maskCode } from './speck-part1.js';
+import { splitTopLevel } from './speck-span.js';
 
 export function parseInitBlock(inner: string): InitNode {
   const assignments: { name: string; expr: string }[] = [];
   if (!inner.trim()) return { type: 'init', assignments };
 
-  const assignStrs = inner.split(/;|\n/).map(s => s.trim()).filter(Boolean);
+  // A comma at bracket depth 0 separates assignments (`x := 0, y := 1`).
+  // A comma inside `()`, `[]`, or `{}` is part of the value.
+  const assignStrs = splitTopLevel(inner);
 
   for (let idx = 0; idx < assignStrs.length; idx++) {
     const match = assignStrs[idx].match(/^(\w+)\s*:=\s*(.+)$/);
@@ -93,6 +96,11 @@ export function splitOnTopLevelCommas(s: string): string[] {
   return tokens.filter(Boolean);
 }
 
+/**
+ * True when `src` is a type expression: the same shapes a field type accepts,
+ * including nested generics, `"a" | "b"`, `0..10`, `Nat[]`, and `(Nat, Nat)`.
+ * A comment tail is ignored. Words with no operator between them are not a type.
+ */
 export function parseTypeExpr(expr: string): TypeExpr {
   expr = expr.trim();
 

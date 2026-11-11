@@ -74,7 +74,7 @@ describe('in-process pipeline matches the CLI', () => {
 // One hash of every example's `-t all` and `-t all-ir` digests. The previous
 // snapshot file was the full digest map (about 86k characters) and made any
 // output change pull that whole file into review.
-const OUTPUT_SHA256 = '9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1';
+const OUTPUT_SHA256 = '4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a';
 
 describe('generated output is pinned for every example', () => {
   it('pins -t all and -t all-ir for every example', () => {

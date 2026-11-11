@@ -20,8 +20,8 @@ alias.
   skip covers agent advisory strings (`instruction`, `prompt tool`, and
   `tool … description`), so a brace inside that text does not end the agent
   block. A brace in a comment or a string does not hide the next speck. A
-  one-line speck that packs its members on the header line can still absorb
-  the next speck; that is the same on `main` and is not this scan. A
+  one-line speck ends on the header line's closing `}`. It does not absorb
+  the next speck. A
   one-line action closes on the structural `}` of its header line, so a
   trailing `// }` is not a brace and does not take the next action's
   statements. A line that is only `speck`, with `Name {` on a later line,
@@ -48,9 +48,9 @@ alias.
   block comment is an error on the line and column where it opened. A
   non-ASCII identifier is `identifier must be ASCII`. `1e5`, `0x1F`,
   `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
-  `24h` and `500ms` stay a number plus a unit. `parseSpeck` does not call
-  the lexer yet, so the line walker still parses every file.
+  `24h` and `500ms` stay a number plus a unit.
   `compiler/src/__tests__/speck-lex.test.ts` calls the lexer directly.
+  `parseSpeck` calls this lexer.
 - **Backend conservation.** `compiler/src/conservation.ts` lists every AST
   member type. Each backend marks each type `emit`, `reject`, or `n/a`.
   `compileSpec` checks that table immediately before it calls the backend.
@@ -58,15 +58,32 @@ alias.
   `transition` are rejected by every backend except Protobuf, which emits
   `oneof` and `transition`. A direct call to a generator does not run the
   check. `compiler/src/__tests__/conservation.test.ts` checks the table.
-- **Line walker files.** The line walker lives in `compiler/src/speck-part0.ts`
-  through `speck-part9.ts`. `compiler/src/parser.ts` still calls it.
-  `parseSpeck` does not call the token lexer yet. Example member outlines
-  are unchanged. `compiler/src/__tests__/line-walker-move.test.ts` pins that
-  outline.
+- **Line walker files.** Member phrase parsers live in
+  `compiler/src/speck-part0.ts` through `speck-part9.ts`, plus
+  `speck-span.ts`. `compiler/src/__tests__/line-walker-move.test.ts` pins
+  the example member-name outline.
 - **Example output pin.** `compiler/src/__tests__/compile-pipeline.test.ts` pins
   `-t all` and `-t all-ir` for every example as one sha256 of the file
-  digests. The digest snapshot file is gone. The pin matches the previous
-  snapshot, so compiled output is unchanged.
+  digests. The digest snapshot file is gone.
+- **Recursive-descent parser.** `compiler/src/parser.ts` calls
+  `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
+  lexer. A `{` or `}` in a string or a comment is not structure. A block
+  that opens and closes on its header line ends there, so a following speck
+  is not absorbed. Members written on that header line are not stored. An
+  opening `{` on the next line is `opening "{" must be on the same line as
+  the member header`. A non-blank line that is not a known member is
+  `unrecognized member`. A state field that is not `name: type` is
+  `unrecognized state field`. `x = 0` inside `init` is
+  `unrecognized init line`. `x := 0` is stored. File-level `import` is
+  syntax-checked and not attached to a speck. `type LogEntry = { term: Nat,
+  value: Value }` in `examples/KafkaKRaft.speckdl` is the record
+  `{ term, value }`. The state fields that follow stay on the state. Two
+  invariants in `examples/OAuth2AuthorizationCode.speckdl` drop a trailing
+  `//` comment, and the Rust output for that example changes. Go still
+  drops an `else if`, a nested `if`, a `for` inside an `if`, and a
+  `require` inside an `if`.
+  `compiler/src/__tests__/parser-rd.test.ts` and
+  `parser-main-corpus.test.ts` cover this.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

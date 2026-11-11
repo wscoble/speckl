@@ -1,5 +1,6 @@
 import { AgentAwaitSpec, AgentBoundPrompt, AgentHarnessRule, AgentHarnessSpec, AgentMemberNode, AgentPrompt, AgentStagesMap, AgentToolBinding, NextMemberNode } from './speck-part0.js';
 import { braceCounts, findBlockEnd } from './speck-part1.js';
+import { inlineActionBody } from './speck-part4.js';
 import { parseDurationToMs, parseHarnessMapLine } from './speck-part9.js';
 
 export function stripLineComment(l: string): string {
@@ -65,8 +66,13 @@ export function inferAgentToolName(action: string): string {
 }
 
 export function parseAgentBlockMultiline(lines: string[], startIndex: number, startBraceCount: number, actionNames: Set<string>): AgentMemberNode {
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const bodyLines = lines.slice(startIndex + 1, endIndex);
+  // A one-line agent closes on its own braces. The body is that span, so a
+  // later member is not read as part of the block. A `{` or `}` inside an
+  // instruction, prompt, or description string is not that brace.
+  const inline = inlineActionBody(lines[startIndex].trim());
+  const bodyLines = inline !== null
+    ? (inline.trim() ? [inline] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount));
   const tools: AgentToolBinding[] = [];
   const awaits: AgentAwaitSpec[] = [];
   const instructions: AgentPrompt[] = [];
