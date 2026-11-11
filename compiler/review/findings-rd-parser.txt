@@ -2,8 +2,8 @@ The token parser and the line walker agree. There is no fallback. `parseSpeck` i
 
 | Input | Line walker | Token parser | Test |
 | --- | --- | --- | --- |
-| every `examples/*.speckdl` and every `.speckdl` fixture | IR from `lower()` | the same IR | lowers every example and fixture to the same IR |
-| empty file and a comment-only file | IR | the same IR | lowers every example and fixture to the same IR |
+| every `.speckdl` file in the repo | IR from `lower()` | the same IR | lowers every speck in the repo to the same IR |
+| empty file and a comment-only file | IR | the same IR | matches the line walker on malformed input, including the AST when both accept |
 | `speck A {` with no close | `missing final "}"` at `bad.speckdl:1` column 9 | the same message | rejects a missing close |
 | extra `}` | `extra "}"` at line 3 column 1 | the same message | rejects an extra close |
 | `} junk` | `text after a speck's "}"` at line 2 column 3 | the same message | rejects text after a close |
