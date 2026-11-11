@@ -96,6 +96,7 @@ alias.
 - **Direct TypeScript state-machine check.** `generateTypeScriptStateMachine` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Direct Z3 check.** `generateZ3` calls the conservation check before it writes, and a direct call reads invariant members from the AST. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Direct Elm check.** `generateElm` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct Go check.** `generateGo` calls the conservation check before it writes. A direct call cannot drop a `oneof`. `generator-guard.test.ts` calls it without `compileSpec`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

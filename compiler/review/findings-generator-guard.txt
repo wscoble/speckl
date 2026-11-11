@@ -1,6 +1,6 @@
 Reviewer findings: direct generator check
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Target: the previous slice. Working: generateElm calls the check. compileSpec already checked before each backend. A direct call did not.
+Target: the previous slice. Working: generateGo calls the check. compileSpec already checked before each backend. A direct call did not.
 
 No example contains oneof, except the Protobuf case which still emits it. Example output is unchanged. The CHANGELOG names the generator in this slice. That text does not change compiled output.
