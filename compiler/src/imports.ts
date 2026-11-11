@@ -4,6 +4,12 @@
 // The default root is the entry file's directory. An import must be a relative
 // path, and its real path (after symlinks) must stay inside the root. Pass
 // `rootDir` — the CLI's `--root` — to widen that directory.
+//
+// `\` is a separator and is read as `/` before the path is resolved, so a
+// Windows path and a `sub\..\lib.speckdl` path name the same file as their
+// `/` form. Letter case is the real path of this operating system: on a
+// case-sensitive filesystem `Lib.speckdl` and `lib.speckdl` are different
+// files. A failure names the importing file and the line of the import.
 
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -139,14 +145,27 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
     return out;
   }
 
-  function fetchChild(fromAbs: string, node: ImportNode): string {
-    if (isAbsolute(node.path)) {
-      throw new Error(`Parse error: import "${node.path}" must be a relative path`);
+  function importAt(fromAbs: string, node: ImportNode): string {
+    const text = cache.get(fromAbs)?.text ?? '';
+    const want = node.path.replace(/\\/g, '/');
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].replace(/\\/g, '/');
+      if (/^\s*import\b/.test(line) && line.includes(`"${want}"`)) return `${fromAbs}:${i + 1}`;
     }
-    const target = resolve(dirname(fromAbs), node.path);
-    const child = readViaFd(target, rootDir, node.path);
+    return fromAbs;
+  }
+
+  function fetchChild(fromAbs: string, node: ImportNode): string {
+    const at = importAt(fromAbs, node);
+    const specPath = node.path.replace(/\\/g, '/');
+    if (isAbsolute(specPath) || /^[A-Za-z]:\//.test(specPath)) {
+      throw new Error(`Parse error at ${at}: import "${node.path}" must be a relative path`);
+    }
+    const target = resolve(dirname(fromAbs), specPath);
+    const child = readViaFd(target, rootDir, specPath, false, at);
     if (!cache.has(child.real)) remember(child.real, child.buf);
-    if (node.hash) verifyHash(cache.get(child.real)!.buf, node.hash, node.path);
+    if (node.hash) verifyHash(cache.get(child.real)!.buf, node.hash, specPath, at);
     return child.real;
   }
 
@@ -239,16 +258,20 @@ function errno(err: unknown): string | undefined {
   return err !== null && typeof err === 'object' && 'code' in err ? String((err as { code?: unknown }).code) : undefined;
 }
 
-function cannotRead(specPath: string, candidate: string): Error {
-  return new Error(`Parse error: cannot read import "${specPath}" (resolved ${candidate})`);
+function atSuffix(at?: string): string {
+  return at ? ` at ${at}` : '';
 }
 
-function outsideError(specPath: string, rootReal: string): Error {
-  return new Error(`Parse error: import "${specPath}" resolves outside the import root ${rootReal}`);
+function cannotRead(specPath: string, candidate: string, at?: string): Error {
+  return new Error(`Parse error: cannot read import "${specPath}" (resolved ${candidate})${atSuffix(at)}`);
 }
 
-function changedError(specPath: string): Error {
-  return new Error(`Parse error: import "${specPath}" changed while reading`);
+function outsideError(specPath: string, rootReal: string, at?: string): Error {
+  return new Error(`Parse error: import "${specPath}" resolves outside the import root ${rootReal}${atSuffix(at)}`);
+}
+
+function changedError(specPath: string, at?: string): Error {
+  return new Error(`Parse error: import "${specPath}" changed while reading${atSuffix(at)}`);
 }
 
 /**
@@ -286,66 +309,66 @@ function sameInode(a: { dev: number; ino: number }, b: { dev: number; ino: numbe
  * On Linux, `/proc/self/fd` is an extra check. A missing `/proc` (macOS,
  * Windows, or a stub that throws `ENOENT`) is not an error.
  */
-function readViaFd(candidate: string, rootReal: string | null, specPath: string, followed = false): { real: string; buf: Buffer } {
+function readViaFd(candidate: string, rootReal: string | null, specPath: string, followed = false, at?: string): { real: string; buf: Buffer } {
   let fd: number;
   try {
     fd = openRead(candidate);
   } catch (err) {
-    if (errno(err) === 'ELOOP' && !followed) return readSymlink(candidate, rootReal, specPath);
-    throw cannotRead(specPath, candidate);
+    if (errno(err) === 'ELOOP' && !followed) return readSymlink(candidate, rootReal, specPath, at);
+    throw cannotRead(specPath, candidate, at);
   }
   try {
-    return readOpened(fd, candidate, rootReal, specPath);
+    return readOpened(fd, candidate, rootReal, specPath, at);
   } finally {
     closeSync(fd);
   }
 }
 
 /** `O_NOFOLLOW` refused a symlink. Follow it only when the target stays inside the root. */
-function readSymlink(candidate: string, rootReal: string | null, specPath: string): { real: string; buf: Buffer } {
+function readSymlink(candidate: string, rootReal: string | null, specPath: string, at?: string): { real: string; buf: Buffer } {
   let real: string;
   try {
     real = realpathSync(candidate);
   } catch {
-    throw cannotRead(specPath, candidate);
+    throw cannotRead(specPath, candidate, at);
   }
-  if (rootReal && outsideRoot(rootReal, real)) throw outsideError(specPath, rootReal);
-  return readViaFd(real, rootReal, specPath, true);
+  if (rootReal && outsideRoot(rootReal, real)) throw outsideError(specPath, rootReal, at);
+  return readViaFd(real, rootReal, specPath, true, at);
 }
 
-function readOpened(fd: number, candidate: string, rootReal: string | null, specPath: string): { real: string; buf: Buffer } {
+function readOpened(fd: number, candidate: string, rootReal: string | null, specPath: string, at?: string): { real: string; buf: Buffer } {
   const st = fstatSync(fd);
-  if (!st.isFile()) throw cannotRead(specPath, candidate);
+  if (!st.isFile()) throw cannotRead(specPath, candidate, at);
   let real: string;
   try {
     real = realpathSync(candidate);
   } catch {
-    throw changedError(specPath);
+    throw changedError(specPath, at);
   }
-  if (rootReal && outsideRoot(rootReal, real)) throw outsideError(specPath, rootReal);
+  if (rootReal && outsideRoot(rootReal, real)) throw outsideError(specPath, rootReal, at);
   let stReal: { dev: number; ino: number };
   try {
     stReal = statSync(real);
   } catch {
-    throw changedError(specPath);
+    throw changedError(specPath, at);
   }
-  if (!sameInode(st, stReal)) throw changedError(specPath);
+  if (!sameInode(st, stReal)) throw changedError(specPath, at);
   const buf = readFileSync(fd);
   let stAfter: { dev: number; ino: number };
   try {
     stAfter = statSync(real);
   } catch {
-    throw changedError(specPath);
+    throw changedError(specPath, at);
   }
-  if (!sameInode(st, stAfter)) throw changedError(specPath);
-  assertProcAgrees(fd, real, specPath);
+  if (!sameInode(st, stAfter)) throw changedError(specPath, at);
+  assertProcAgrees(fd, real, specPath, at);
   return { real, buf };
 }
 
-function assertProcAgrees(fd: number, real: string, specPath: string): void {
+function assertProcAgrees(fd: number, real: string, specPath: string, at?: string): void {
   try {
     const via = realpathSync(`/proc/self/fd/${fd}`);
-    if (via !== real) throw changedError(specPath);
+    if (via !== real) throw changedError(specPath, at);
   } catch (err) {
     if (errno(err) === 'ENOENT' || errno(err) === 'ENOTDIR' || errno(err) === 'EINVAL'
       || errno(err) === 'EACCES' || errno(err) === 'EPERM' || errno(err) === 'ENOSYS') return;
@@ -354,16 +377,17 @@ function assertProcAgrees(fd: number, real: string, specPath: string): void {
 }
 
 /** Hash the raw file bytes. A pin must be 64 hex digits. */
-export function verifyHash(buf: Buffer, pin: string, specPath: string): void {
+export function verifyHash(buf: Buffer, pin: string, specPath: string, at?: string): void {
   const hex = pin.replace(/^sha256:/i, '').trim();
+  const where = atSuffix(at);
   if (hex === '') {
-    throw new Error(`Parse error: empty hash on import "${specPath}"`);
+    throw new Error(`Parse error: empty hash on import "${specPath}"${where}`);
   }
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-    throw new Error(`Parse error: hash on import "${specPath}" must be 64 hex characters`);
+    throw new Error(`Parse error: hash on import "${specPath}" must be 64 hex characters${where}`);
   }
   const got = createHash('sha256').update(buf).digest('hex');
   if (got.toLowerCase() !== hex.toLowerCase()) {
-    throw new Error(`Parse error: hash mismatch for import "${specPath}"`);
+    throw new Error(`Parse error: hash mismatch for import "${specPath}"${where}`);
   }
 }
