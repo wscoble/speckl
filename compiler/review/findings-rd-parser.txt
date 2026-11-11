@@ -1,7 +1,13 @@
 Reviewer findings: recursive-descent parser vs the output-hash branch
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-This swap is byte-identical. `parseSpeck` calls `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token lexer. The compiled output of every example is the same bytes the line walker produced. The output-hash pin is unchanged: sha256 9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1. `compiler/src/__tests__/parser-intended-diff.test.ts` checks the two example shapes and the two synthetic shapes that a later change will fix, and they still match the line walker.
+Mechanical equivalence. The target compiler is the output-hash branch. The working compiler is this branch. Both hash every `examples/*.speckdl` file at `-t all` and `-t all-ir` to the same sha256:
+
+9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1
+
+That constant is `OUTPUT_SHA256` in `compiler/src/__tests__/compile-pipeline.test.ts` on the target branch and on this branch. The test builds one map. Each example is its own key, `<file> -t all` and `<file> -t all-ir`, and the value is that run's file digests. The hash is sha256 of `JSON.stringify` of the whole map. One changed example moves the hash. The hash did not move, so every example's output is identical, not only the combined digest. The output-hash pin is unchanged on purpose.
+
+`parseSpeck` calls `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token lexer. `compiler/src/__tests__/parser-intended-diff.test.ts` checks the shapes a later change will fix, and they still match the line walker.
 
 Shapes that still match the line walker, on purpose, in this PR:
 
@@ -13,6 +19,6 @@ Shapes that still match the line walker, on purpose, in this PR:
 | `speck A { state { x: Nat } }\nspeck B { state { y: Nat } }` | A ends on line 3 with an empty state. B's state is empty. | the same |
 | `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}` | the state stores no variables and the init stores no assignments | the same |
 
-Fail closed: an unrecognized member, a missing close, and an extra close are errors. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
+Fail closed. `compiler/src/__tests__/parser-malformed.test.ts` checks the position, not only the wording. A missing `}` is `missing final "}"` on the opening brace's line and column. An extra `}` is `extra "}"` on that brace. Text after a close is `text after a speck's "}"` at that text. An unrecognized member names the line and column. An unterminated string names the opening quote. A `}` inside a string is not an extra close. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
 
 The README, SPEC, and CHANGELOG describe this parser. That text does not itself change compiled output.
