@@ -41,4 +41,21 @@ describe('line walker move', () => {
     const changed = `${text}\n  state:extra`;
     expect(createHash('sha256').update(changed).digest('hex')).not.toBe(OUTLINE_SHA256);
   });
+
+  it('names every example file in the golden outline', () => {
+    const files = readdirSync(examplesDir).filter(f => f.endsWith('.speckdl')).sort();
+    const golden = readFileSync(goldenPath, 'utf8');
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      expect(golden, file).toContain(`${file} `);
+      expect(outline(), file).toContain(`${file} `);
+    }
+  });
+
+  it('throws on a bad string, a bad comment, a bad next, and a bad import', () => {
+    expect(() => parseSpeckContent('speck A {\n    s := "hi\n}\n', 'bad.speckdl')).toThrow(/unterminated string/);
+    expect(() => parseSpeckContent('speck A {\n    /* never\n}\n', 'bad.speckdl')).toThrow(/unterminated block comment/);
+    expect(() => parseSpeckContent('speck A {\n    next: 1 +\n}\n', 'bad.speckdl')).toThrow(/not an action name/);
+    expect(() => parseSpeckContent('import not-a-path\nspeck A {\n}\n', 'bad.speckdl')).toThrow(/Failed to parse import/);
+  });
 });
