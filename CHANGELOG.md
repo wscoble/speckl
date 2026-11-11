@@ -111,8 +111,11 @@ alias.
 - **Import wiring.** `compileSpec` expands imports before it calls a backend.
   `lower` does the same when `resolveImports` is set, and it no longer warns
   that import resolution is not implemented. `import` is `n/a` in the
-  conservation table. `--root` is a `compileSpec` option in this change.
-  The CLI flag is separate.
+  conservation table. A missing file, a cycle, a duplicate alias, an absolute
+  path, and a root that does not contain the import are errors. A missing
+  member-type list after lowering is an error. `--root` is a `compileSpec`
+  option in this change. The CLI flag is separate.
+  `compiler/src/__tests__/import-wire-edges.test.ts` covers those cases.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
