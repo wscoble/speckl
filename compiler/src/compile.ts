@@ -1,6 +1,7 @@
 // The compile pipeline behind `speckl <file> -t <target>`. Kept apart from
 // the CLI entry (index.ts) so tests can run it in-process.
 import { parseSpeckFile, type AST } from './parser.js';
+import { expandImports } from './imports.js';
 import { conservationLog, guardAst, type BackendId } from './conservation.js';
 import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
@@ -27,6 +28,8 @@ export interface CompileOptions {
   bomFormat: 'cdx' | 'spdx' | 'both';
   target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'agent' | 'all' | 'all-ir';
   verifyDepth: number;
+  /** Directory imports may resolve inside. Default: the entry file's directory. */
+  rootDir?: string;
 }
 
 /** Reject a member this backend does not handle, before that backend writes. */
@@ -39,7 +42,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   conservationLog.length = 0;
   console.log(`Compiling ${file}...`);
   
-  const ast = parseSpeckFile(file);
+  const ast = expandImports(parseSpeckFile(file), file, { rootDir: options.rootDir });
   // Synthetic __signal_* actions are injected only for Z3 BMC (and again
   // inside the agent target). Other backends keep the source AST clean.
   const astForProof = injectSignalActions(ast);
@@ -52,7 +55,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
     fs.mkdirSync(options.outputDir, { recursive: true });
   }
   
-  const irAst = lower(ast, { filePath: file, resolveImports: false });
+  const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: options.rootDir });
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
 

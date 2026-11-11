@@ -54,10 +54,10 @@ alias.
 - **Backend conservation.** `compiler/src/conservation.ts` lists every AST
   member type. Each backend marks each type `emit`, `reject`, or `n/a`.
   `compileSpec` checks that table immediately before it calls the backend.
-  A reject throws, and that backend does not write. `import`, `oneof`, and
-  `transition` are rejected by every backend except Protobuf, which emits
-  `oneof` and `transition`. A direct call to a generator does not run the
-  check. `compiler/src/__tests__/conservation.test.ts` checks the table.
+  A reject throws, and that backend does not write. `oneof` and `transition` are rejected by every backend except Protobuf,
+  which emits them. `import` is `n/a`: `compileSpec` inlines it before
+  generation. A direct call to a generator runs the same check.
+  `compiler/src/__tests__/conservation.test.ts` checks the table.
 - **Line walker files.** Member phrase parsers live in
   `compiler/src/speck-part0.ts` through `speck-part9.ts`, plus
   `speck-span.ts`. `compiler/src/__tests__/line-walker-move.test.ts` pins
@@ -75,7 +75,7 @@ alias.
   `unrecognized member`. A state field that is not `name: type` is
   `unrecognized state field`. `x = 0` inside `init` is
   `unrecognized init line`. `x := 0` is stored. File-level `import` is
-  syntax-checked and not attached to a speck. `type LogEntry = { term: Nat,
+  stored on the AST and inlined by `compileSpec` before generation. `type LogEntry = { term: Nat,
   value: Value }` in `examples/KafkaKRaft.speckdl` is the record
   `{ term, value }`. The state fields that follow stay on the state. Two
   invariants in `examples/OAuth2AuthorizationCode.speckdl` drop a trailing
@@ -103,9 +103,13 @@ alias.
   with an optional `sha256:` prefix. A symlink that leaves the root, a
   directory, a FIFO, a cycle, and a file that changes while it is read are
   errors. `/proc/self/fd` is an extra check when that path exists. There is
-  no package registry. `compileSpec` does not call this yet.
-  `compiler/src/__tests__/imports.test.ts` covers it. File-level `import`
-  is stored on the AST.
+  no package registry. File-level `import` is stored on the AST.
+  `compiler/src/__tests__/imports.test.ts` covers the resolver.
+- **Import wiring.** `compileSpec` expands imports before it calls a backend.
+  `lower` does the same when `resolveImports` is set, and it no longer warns
+  that import resolution is not implemented. `import` is `n/a` in the
+  conservation table. `--root` is a `compileSpec` option in this change.
+  The CLI flag is separate.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

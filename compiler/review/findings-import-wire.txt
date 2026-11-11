@@ -1,0 +1,10 @@
+Reviewer findings: import wiring
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the import-path slice. expandImports resolved a relative import, and compileSpec did not call it. Working: compileSpec calls expandImports before every backend, and lower does the same when resolveImports is set. The warning "import resolution not yet implemented in lower pass" is gone.
+
+import is n/a in the conservation table because the import node is inlined before a backend writes. oneof and transition stay reject, except Protobuf which emits them.
+
+Example files have no imports, so their compiled output is unchanged. A file that imports another speck now compiles the imported speck too. A path that leaves the entry directory still fails closed. rootDir on compileSpec widens that directory. The CLI does not have --root yet.
+
+The README, SPEC, and CHANGELOG say compileSpec resolves imports. That text does not by itself change compiled output.

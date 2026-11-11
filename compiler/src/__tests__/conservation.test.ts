@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AST, MemberNode } from '../parser.js';
+import type { IR } from '../ir/types.js';
 import {
   BACKENDS, COVERAGE, MEMBER_NODE_TYPES, conservationLog, guardAst, guardIr, memberNodeTypesMatchUnion,
 } from '../conservation.js';
@@ -37,8 +38,8 @@ describe('backend conservation', () => {
   });
 
   it('skips an IR speck that did not record its member types', () => {
-    expect(() => guardIr('go', { specks: [{}] })).not.toThrow();
-    expect(() => guardIr('go', { specks: [{ sourceMemberTypes: ['oneof'] }] })).toThrow(/rejects AST node type "oneof"/);
+    expect(() => guardIr('go', { specks: [{}] } as IR)).not.toThrow();
+    expect(() => guardIr('go', { specks: [{ sourceMemberTypes: ['oneof'] }] } as IR)).toThrow(/rejects AST node type "oneof"/);
   });
 
   it('compileSpec still emits a state machine for an ordinary speck', () => {
