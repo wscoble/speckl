@@ -1,10 +1,25 @@
 Reviewer findings: trailing comments in invariants
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Target: the one-line record span. Working: an invariant expression does not keep a trailing `//` or a block comment.
+Why. The old output was wrong. A `//` tail and a block comment were stored in the invariant expression. A comment is not an expression. In Rust the old expression was printed into a doc comment, so the comment marker became part of the generated text.
 
-The line walker stored those comments in the expression. In `examples/OAuth2AuthorizationCode.speckdl`, `TokenValidityBounded` ended with `7776000  // 90 days max` and `RedirectUriConsistency` ended with `true  // This is enforced in the ExchangeCode action`. A `//` tail is a comment, not part of the expression. The before-value is what the walker stored. `compiler/src/__tests__/parser-intended-diff.test.ts` pins the after-value and asserts the comment is gone.
+Probe:
 
-The example output pin moved because the Rust output for that example changes. The new pin is sha256 4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a. It was updated on purpose. An empty invariant is now an error.
+```
+invariant Bound {
+    n <= 1  // max
+}
+invariant Plain {
+    n >= 0
+}
+```
 
-A header-line `}` and a one-line state still match the line walker.
+Target compiler (the one-line record span) stored Bound as `n <= 1  // max`. Its Rust doc line was `/// Invariant Bound: n <= 1 // max`. Working compiler stores `n <= 1`. Its Rust doc line is `/// Invariant Bound: n <= 1`. The checked comparison stays `(self.n <= 1u64)` on both. Plain stays `n >= 0` on both, so an invariant with no comment is unchanged.
+
+In `examples/OAuth2AuthorizationCode.speckdl` the old `TokenValidityBounded` ended with `7776000  // 90 days max` and `RedirectUriConsistency` ended with `true  // This is enforced in the ExchangeCode action`. Both tails are gone. The expressions remain.
+
+The example output pin moved because the Rust output for that example changes. The new pin is sha256 4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a. It was updated on purpose. The previous pin `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73` hashed the comment text. Other examples are unchanged.
+
+Limits. A `//` inside a string stays. A block comment is removed. An empty invariant and a comment-only invariant are `invariant expression is empty`. A header-line `}` and a one-line state still match the line walker.
+
+`compiler/src/__tests__/invariant-comment-edges.test.ts` pins the before and after expressions.
