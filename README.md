@@ -166,6 +166,10 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 `parseSpeck` walks the token stream. A `}` on a speck's header line ends that speck, so the next speck is not absorbed. A `}` inside a string is not that close. A one-line record stores its brace span. `type LogEntry = { term: Nat, value: Value }` is `{ term, value }`, not the following state fields. A trailing `//` or block comment is not part of an invariant expression. A missing `}`, an extra `}`, text after `}`, an unrecognized member, `§`, an unrecognized state field, and an unrecognized init line are the same error from this parser and from the line walker. There is no second result. Example `-t all` and `-t all-ir` output keeps the sha256 pin in `compiler/src/__tests__/compile-pipeline.test.ts`. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
 
+## Token parser
+
+`parseSpeckContent` returns `parseSpeckDocument` from `compiler/src/rd-parser.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parseSpeckContent calls the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts that `parser.ts` is the production file that imports `rd-parser.ts` and that it returns `parseSpeckDocument`. `lowers every speck in the repo to the same IR` in that file compares the live parser with the line-walker copy. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
+
 ## Rejected structure
 
 These inputs used to parse. Each one is now an error. The same rule is in [speckdl/SPEC.md](speckdl/SPEC.md).

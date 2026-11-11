@@ -1,3 +1,6 @@
+// Token parser. `parseSpeckContent` in `parser.ts` returns
+// `parseSpeckDocument`. Coverage includes this file.
+//
 // SpeckDL parser. `lexSpeck` produces one token stream for the file.
 //
 // Brace matching uses that stream, so a `{` or `}` inside a comment or a
