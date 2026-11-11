@@ -75,10 +75,14 @@ export function lower(ast: AST, options: LowerOptions): IR {
     const byName = new Map(specks.map(s => [s.name, s]));
     for (const link of importLinks(unit)) {
       const owner = specks.find(s => s.name === link.owner);
-      if (!owner) continue;
+      if (!owner) {
+        throw new Error(`Parse error: import "${link.node.path}" has no speck "${link.owner}" to attach to`);
+      }
       for (const name of link.speckNames) {
         const resolved = byName.get(name);
-        if (!resolved) continue;
+        if (!resolved) {
+          throw new Error(`Parse error: import "${link.node.path}" did not resolve speck "${name}"`);
+        }
         const alias = link.speckNames.length === 1
           ? (link.node.alias ?? name)
           : `${link.node.alias ?? 'import'}.${name}`;
@@ -113,7 +117,11 @@ function lowerSpeck(
 ): IRSpeck {
   // Read the raw source for expression re-parsing.
   // The main AST has string expressions; the IR needs typed trees.
-  const rawSource = verifiedSource(ast, sourcePath) ?? readFileSync(sourcePath, 'utf-8');
+  const verified = verifiedSource(ast, sourcePath);
+  if (options.resolveImports && verified === undefined) {
+    throw new Error(`Parse error: cannot read verified source for "${sourcePath}"`);
+  }
+  const rawSource = verified ?? readFileSync(sourcePath, 'utf-8');
   const rawStatementsByAction = extractActionStatements(rawSource, speck);
 
   const imports: IRImport[] = [];
