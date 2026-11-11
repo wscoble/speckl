@@ -164,7 +164,7 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 `compiler/src/conservation.ts` marks every AST member type `emit`, `reject`, or `n/a` for every backend. `compileSpec` checks the table immediately before it calls that backend, and a reject throws. `import`, `oneof`, and `transition` are rejected except by Protobuf, which emits `oneof` and `transition`. A direct call to a generator does not run the check.
 
-`parseSpeck` walks the token stream and stores the same members the line walker stored. Example `-t all` and `-t all-ir` output keeps the sha256 pin in `compiler/src/__tests__/compile-pipeline.test.ts`. `x = 0` is `unrecognized init line`. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
+`parseSpeck` walks the token stream. A one-line record stores its brace span. A trailing `//` or block comment is not part of an invariant expression. The other members match the line walker. Example `-t all` and `-t all-ir` output keeps the sha256 pin in `compiler/src/__tests__/compile-pipeline.test.ts`. `x = 0` is `unrecognized init line`. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
 
 ## Documentation
 
