@@ -1,0 +1,8 @@
+Reviewer findings: a one-line state and init
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the header-line close. Working: `state { x: Nat }` and `init { x := 0 }` store the field and the assignment when the brace closes on the header line.
+
+The line walker started on the next line, so both lists were empty. That was wrong. A one-line `state { x: Nat }` is a field declaration, and `x := 0` is an assignment.
+
+`compiler/src/__tests__/parser-intended-diff.test.ts` pins the after-value. The before-value is the empty lists. Example output does not change, so the output pin stays sha256 4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a.

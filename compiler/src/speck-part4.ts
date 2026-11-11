@@ -12,9 +12,8 @@ export function parseStateBlockMultiline(lines: string[], startIndex: number, st
   const asMatch = headerLine.match(/^state\s+as\s+(\w+)\s*{/);
   const messageName = asMatch ? asMatch[1] : undefined;
 
-  // A one-line `state { x: Nat }` closes on the header. The body is that
-  // brace span. Scanning the next line used to take the following member
-  // (or nothing, when the next brace was the speck's close).
+  // A one-line `state { x: Nat }` closes on the header. The line walker
+  // started on the next line and stored no variables.
   const inline = inlineActionBody(headerLine);
   if (inline !== null) {
     const result = parseStateBlock(inline.trim());
@@ -103,6 +102,8 @@ export function exprIncomplete(text: string): boolean {
 }
 
 export function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
+  // A one-line `init { x := 0 }` closes on the header. The line walker
+  // started on the next line and stored no assignments.
   const inline = inlineActionBody(lines[startIndex].trim());
   if (inline !== null) return parseInitBlock(inline.trim());
 
@@ -144,6 +145,7 @@ export function parseInvariantBlockMultiline(lines: string[], startIndex: number
   const firstLine = lines[startIndex].trim();
   const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
+  // A trailing `//` is a comment. The line walker left it in the expression.
   const expr = stripInvariantExpr(braceInner(lines, startIndex));
   if (!expr) throw lexProblem(startIndex + 1, 'invariant expression is empty');
   return { type: 'invariant', name, expr };
