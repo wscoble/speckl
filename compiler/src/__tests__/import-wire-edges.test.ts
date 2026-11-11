@@ -1,9 +1,9 @@
 // compileSpec and lower run the import resolver. A bad path, a cycle, a
 // duplicate, or a root that does not contain the file is an error. A missing
 // member-type list is an error after lowering.
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { compileSpec } from '../compile.js';
@@ -155,6 +155,28 @@ describe('compileSpec import wiring', () => {
     const out = file + '-out';
     expect(() => compile(file, root)).toThrow(`Parse error: cannot read import root "${root}" (ENOENT)`);
     expect(existsSync(out)).toBe(false);
+  });
+
+  it('accepts a root given as a path relative to the current directory', () => {
+    const parent = tree();
+    const inside = join(parent, 'in');
+    mkdirSync(inside);
+    write(parent, 'out.speckdl', speck('Out'));
+    const file = write(inside, 'root.speckdl', `import "../out.speckdl" as O\n${speck('Root')}`);
+    const rootDir = relative(process.cwd(), parent);
+    expect(rootDir.startsWith('/')).toBe(false);
+    const out = compile(file, rootDir);
+    expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
+  });
+
+  it('compiles an import through a symlink that stays inside the root', () => {
+    const dir = tree();
+    const lib = write(dir, 'lib.speckdl', speck('Lib'));
+    symlinkSync(lib, join(dir, 'link.speckdl'));
+    const file = write(dir, 'root.speckdl', `import "./link.speckdl" as L\n${speck('Root')}`);
+    const out = compile(file);
+    expect(readFileSync(join(out, 'Lib.ts'), 'utf8')).toContain('Lib');
+    expect(readFileSync(join(out, 'Root.ts'), 'utf8')).toContain('Root');
   });
 
   it('example specs contain no import, so the output pin is the no-import pin', () => {
