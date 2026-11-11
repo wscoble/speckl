@@ -1,0 +1,17 @@
+Reviewer findings: a speck that closes on its header line
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the invariant-comment change. Working: a `}` on the speck header ends that speck.
+
+The line walker stepped one line and parsed the next `speck` again. For
+
+```
+speck A { state { x: Nat } }
+speck B {
+  state { y: Nat }
+}
+```
+
+A ended on line 3 and B's state was empty. That was wrong. A ends on line 1 and stores no members. B is a separate speck.
+
+`compiler/src/__tests__/parser-intended-diff.test.ts` pins the after-value. Example output does not change, so the output pin stays sha256 4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a. A one-line state still stores no variables.
