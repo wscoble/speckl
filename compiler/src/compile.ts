@@ -1,6 +1,7 @@
 // The compile pipeline behind `speckl <file> -t <target>`. Kept apart from
 // the CLI entry (index.ts) so tests can run it in-process.
-import { parseSpeckFile } from './parser.js';
+import { parseSpeckFile, type AST } from './parser.js';
+import { conservationLog, guardAst, type BackendId } from './conservation.js';
 import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
 import { generateTypeScriptStateMachine } from './generators/typescript-state-machine.js';
@@ -28,8 +29,14 @@ export interface CompileOptions {
   verifyDepth: number;
 }
 
+/** Reject a member this backend does not handle, before that backend writes. */
+function checked(backend: BackendId, ast: AST): void {
+  guardAst(backend, ast);
+}
+
 /** Compile one SpeckDL file to the requested target(s). Throws on invalid input. */
 export function compileSpec(file: string, options: CompileOptions): void {
+  conservationLog.length = 0;
   console.log(`Compiling ${file}...`);
   
   const ast = parseSpeckFile(file);
@@ -52,51 +59,60 @@ export function compileSpec(file: string, options: CompileOptions): void {
   // K8s CRDs
   if (options.target === 'k8s' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating Kubernetes CustomResourceDefinitions...');
+    checked('k8s', ast);
     generateK8sCRD(irAst, { outputDir: options.outputDir });
   }
 
   // OpenAPI 3.1
   if (options.target === 'openapi' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating OpenAPI 3.1 specification...');
+    checked('openapi', ast);
     new OpenAPITarget().generate(irAst, { outputDir: options.outputDir });
   }
 
   // Camel (camel-quarkus Java routes + processors)
   if (options.target === 'camel' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating Apache Camel (camel-quarkus) routes...');
+    checked('camel', ast);
     generateCamel(irAst, { outputDir: options.outputDir });
   }
 
   // Rust
   if (options.target === 'go' || options.target === 'all') {
     // go backend
+    checked('go', ast);
     generateGo(ast, options.outputDir);
   }
   if (options.target === 'rust' || options.target === 'all') {
     console.log('\nGenerating Rust state machine...');
+    checked('rust', ast);
     generateRust(irAst, options.outputDir, ast);
   }
 
   // Elm
   if (options.target === 'elm' || options.target === 'all') {
+    checked('elm', ast);
     generateElm(ast, options.outputDir);
   }
 
   // Protobuf
   if (options.target === 'protobuf' || options.target === 'all') {
     console.log('\nGenerating protobuf schema (.proto)...');
+    checked('protobuf', ast);
     generateProtobuf(ast, options.outputDir);
   }
 
   // Provenance (core output)
   if (options.target !== 'z3' && options.target !== 'rust') {
     console.log('\nGenerating provenance graph (PROV-O JSON-LD) from IR...');
+    checked('provenance', ast);
     generateProvenanceFromIR(irAst, options.outputDir);
   }
 
   // Z3 SMT-LIB2
   if (options.target === 'z3' || options.target === 'all') {
     console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
+    checked('z3-ir', ast);
     generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
     console.log('\nGenerating Z3 SMT-LIB2 (AST-driven, state machine + transitions)...');
     for (const speck of astForProof.specks) {
@@ -113,27 +129,32 @@ export function compileSpec(file: string, options: CompileOptions): void {
       (speck as any)._invariants = invariants;
     }
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
+    checked('z3', astForProof);
     generateZ3(astForProof, options.outputDir, z3Options);
   }
 
   // IR-driven Z3 for the all-ir target (formal_spec facet only)
   if (options.target === 'all-ir') {
     console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
+    checked('z3-ir', ast);
     generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
   }
 
   // TypeScript state machine + BOMs
   if (options.target !== 'z3' && options.target !== 'rust') {
     console.log('\nGenerating TypeScript state machine...');
+    checked('typescript', ast);
     generateTypeScriptStateMachine(ast, options.outputDir);
 
     if (options.bomFormat === 'cdx' || options.bomFormat === 'both') {
       console.log('\nGenerating CycloneDX BOM...');
+      checked('cyclonedx', ast);
       generateCycloneDX(ast, options.outputDir);
     }
 
     if (options.bomFormat === 'spdx' || options.bomFormat === 'both') {
       console.log('\nGenerating SPDX BOM...');
+      checked('spdx', ast);
       generateSPDX(ast, options.outputDir);
     }
   }
@@ -147,6 +168,8 @@ export function compileSpec(file: string, options: CompileOptions): void {
     if (agentErrors.length > 0) {
       throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
     }
+    checked('typescript', ast);
+    checked('agent', ast);
     generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
   }
 
