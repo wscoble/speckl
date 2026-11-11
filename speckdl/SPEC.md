@@ -127,6 +127,7 @@ from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way
 The line walker used to accept each input below and store a program that dropped or rewrote the text. That was a bug. The input is now a parse error.
 
 - A speck that never closes. `speck A {` with no closing brace used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9).
+- An extra closing brace. `speck A {` then a line `}` then another `}` used to parse as speck A with no members, ending on line 2. The extra brace was ignored. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). A `}` inside a string is still a string.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
