@@ -31,7 +31,7 @@ const ON: { [name: string]: boolean } = {
   braceLine: true,
   state: true,
   init: true,
-  comment: false,
+  comment: true,
   cr: false,
   section: false,
   digit: false,

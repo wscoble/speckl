@@ -161,6 +161,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(garbage, 'in.speckdl')).toBe('Parse error at in.speckdl:3: unrecognized init line "garbage line"');
   });
 
+  it('rejects code after a block comment on the same line', () => {
+    const src = 'speck A {\n    /* c */ action go {\n        x := 1\n    }\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":4,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13)');
+  });
+
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
