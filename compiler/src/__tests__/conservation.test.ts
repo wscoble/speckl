@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AST, MemberNode } from '../parser.js';
 import {
-  BACKENDS, COVERAGE, MEMBER_NODE_TYPES, conservationLog, guardAst, guardIr, memberNodeTypesMatchUnion,
+  BACKENDS, COVERAGE, MEMBER_NODE_TYPES, checkLineSequence, conservationLog, guardAst, guardIr, memberNodeTypesMatchUnion,
 } from '../conservation.js';
 import { compileSpec } from '../compile.js';
 
@@ -39,6 +39,15 @@ describe('backend conservation', () => {
   it('skips an IR speck that did not record its member types', () => {
     expect(() => guardIr('go', { specks: [{}] })).not.toThrow();
     expect(() => guardIr('go', { specks: [{ sourceMemberTypes: ['oneof'] }] })).toThrow(/rejects AST node type "oneof"/);
+  });
+
+  it('names a dropped line, a duplicated line, and a reordered line', () => {
+    const lines = ['typescript:emit:state', 'typescript:emit:init', 'typescript:emit:action'];
+    expect(() => checkLineSequence(lines, lines.slice(0, 2))).toThrow(/dropped line "typescript:emit:action"/);
+    expect(() => checkLineSequence(lines, [...lines, 'typescript:emit:action'])).toThrow(/duplicated line "typescript:emit:action"/);
+    expect(() => checkLineSequence(lines, ['typescript:emit:init', 'typescript:emit:state', 'typescript:emit:action']))
+      .toThrow(/reordered line "typescript:emit:init"/);
+    expect(() => checkLineSequence(lines, lines)).not.toThrow();
   });
 
   it('compileSpec still emits a state machine for an ordinary speck', () => {
