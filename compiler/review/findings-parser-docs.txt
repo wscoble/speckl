@@ -1,0 +1,4 @@
+Reviewer findings: parser documentation vs the parser-test branch
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+This branch edits README.md, speckdl/SPEC.md, and CHANGELOG.md. It does not edit the compiler. The text describes the token lexer, the recursive-descent parser, the two example differences (KafkaKRaft LogEntry and the OAuth comment tails), and the conservation check in compileSpec. Compiled output is unchanged.

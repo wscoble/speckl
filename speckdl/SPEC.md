@@ -100,27 +100,41 @@ speck ToggleSwitch {
 `var.values`, or a range. This sugar is recognized by the language but not
 yet lowered to Z3 (see §3.5).
 
-**Comments** — `//` line comments and `/* ... */` block comments. A `{` or `}`
-inside a comment or a `"` string is not a structural brace, including when
-Go emits an `if` or a `for`, and including a trailing `// }` after a one-line
-action. That action closes on its own structural `}`. A brace in a comment
-or a string does not hide the next speck. A one-line speck that packs its
-members on the header line can still absorb the next speck. A line that is
-only `speck`, with `Name {` on a later line, is `speck name must be on the
-same line as "speck"`. `'` is post-state prime notation, not a string
-quote. A block comment may continue onto the next line. A `"` string may
-not: an unclosed `"` is `unterminated string` on the line where it opened,
-including at file level, after the last speck, and inside domain text. An
-unclosed `/*` is `unterminated block comment` on the line where it opened,
-in those same places. A comment that opens on a speck's closing line and
-closes on a later line is closed. A `/*` written inside an already-open
-block comment is comment text, not a nested comment. When `*/` is the first text on a line and
-the code after it is a `speck`, `action`, `invariant`, `state`, or `init`
-header, that header is `header is not at the start of the line`. A header
-later on the line is outside this scan. A speck written entirely inside a
-block comment is not a speck. Go still drops an `else if`, a nested `if`,
-a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
-from before this scan. There is no shared scanner module yet.
+**Comments** — `//` line comments and `/* ... */` block comments. The compiler
+tokenizes the file and then walks it (`compiler/src/speck-lex.ts`,
+`compiler/src/rd-parser.ts`). A `{` or `}` inside a comment or a `"` string
+is not a structural brace, including when Go emits an `if` or a `for`,
+including a trailing `// }` after a one-line action, and including a brace
+inside an agent `instruction`, `prompt tool`, or tool `description` string.
+That one-line action closes on its own structural `}`. A brace in a comment
+or a string does not hide the next speck. `'` is post-state prime notation,
+not a string quote. A block comment may continue onto the next line. A `"`
+string may not: an unclosed `"` is `unterminated string` on the line where
+it opened, including at file level, after the last speck, and inside domain
+text. An unclosed `/*` is `unterminated block comment` on the line where it
+opened, in those same places. A comment that opens on a speck's closing
+line and closes on a later line is closed. A `/*` inside an already-open
+block comment is comment text, not a nested comment. When `*/` is the first text on a line
+and the code after it is a `speck`, `action`, `invariant`, `state`, or
+`init` header, that header is `header is not at the start of the line`. A
+header later on the line is outside this check. A speck written entirely
+inside a block comment is not a speck.
+
+A line the parser does not recognize is an error, not a skipped line. That
+includes an unrecognized member, a state field that is not `name: type`,
+`x = 0` in a multi-line `init` (`x := 0` is stored; `x == 0` is accepted
+and is not stored), text after a member's `}`, an empty invariant, a
+non-ASCII identifier, and a numeric literal the lexer does not accept
+(`1e5`, `0x1F`, `1_000`, `5min`, and the other forms in the changelog).
+File-level `import` is syntax-checked and is not attached to a speck.
+There is no package registry.
+
+A speck whose closing `}` is on the same line as `speck` ends on that line.
+Members written on that line are not stored. A later `speck` is a separate
+speck. Put each member on its own line. `type LogEntry = { term: Nat, value: Value }`
+is a record of those fields. It does not take the following state fields.
+Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a
+`require` inside an `if`. That is unchanged.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

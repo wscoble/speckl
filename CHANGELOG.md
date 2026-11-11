@@ -14,34 +14,64 @@ alias.
 
 ### Added
 
-- **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
-  inside a finished `"` string, a `//` comment, or a `/* */` comment, so
-  that brace cannot end a speck, a member, an `if`, or a `for`. The same
-  skip covers agent advisory strings (`instruction`, `prompt tool`, and
-  `tool … description`), so a brace inside that text does not end the agent
-  block. A brace in a comment or a string does not hide the next speck. A
-  one-line speck that packs its members on the header line can still absorb
-  the next speck; that is the same on `main` and is not this scan. A
-  one-line action closes on the structural `}` of its header line, so a
-  trailing `// }` is not a brace and does not take the next action's
-  statements. A line that is only `speck`, with `Name {` on a later line,
-  is `speck name must be on the same line as "speck"`. The same skip is
-  used when Go emits an `if` or a `for`, so a brace in a comment or a
-  string does not drop that body. `'` is post-state prime notation, not a
-  string quote. A block comment may continue onto the next line, including
-  one that opens on a speck's closing line and closes later. A `"` string
-  may not: an unclosed `"` is `unterminated string` on the line where it
-  opened, at file level, after the last speck, or inside domain text. An
-  unclosed `/*` is `unterminated block comment` on the line where it opened,
-  in those same places. A `/*` written inside an already-open block comment
-  is comment text, not a nested comment. When `*/` is the first text on a
-  line and the code after it is a `speck`, `action`, `invariant`, `state`,
-  or `init` header, that header is `header is not at the start of the
-  line`. A header later on the line, after other text or after `/* ... */`,
-  is outside this scan. A speck written entirely inside a block comment is
-  not a speck. Go still drops an `else if`, a nested `if`, a `for` inside
-  an `if`, and a `require` inside an `if`. That is unchanged from before
-  this scan. There is no shared scanner module yet.
+- **Token lexer and recursive-descent parser.** `compiler/src/speck-lex.ts`
+  tokenizes a file once. `compiler/src/rd-parser.ts` builds the AST from
+  that stream. A `{` or `}` inside a finished `"` string, a `//` comment,
+  or a `/* */` comment is not a token, so it cannot end a speck, a member,
+  an `if`, or a `for`. The same skip covers agent advisory strings
+  (`instruction`, `prompt tool`, and `tool … description`). `'` is
+  post-state prime notation, not a string quote. A block comment may
+  continue onto the next line. A `"` string may not: an unclosed `"` is
+  `unterminated string` on the line and column where it opened. An unclosed
+  `/*` is `unterminated block comment` the same way. A missing final `}`,
+  an extra `}`, text after a member's `}`, a second block on the same
+  line, an empty invariant expression, a non-ASCII identifier
+  (`identifier must be ASCII`), an identifier that starts with a digit, and
+  a numeric form the lexer does not accept (`unsupported numeric literal`,
+  including `1e5`, `0x1F`, `1_000`, `5min`) are parse errors with line and
+  column. A non-blank line at speck depth that is not a known member is
+  `unrecognized member`. An opening `{` on the line after the header is
+  `opening "{" must be on the same line as the member header`. A state
+  field that is not `name: type` is `unrecognized state field`. A line
+  inside a multi-line `init` that is not an assignment or a continuation is
+  `unrecognized init line`. `x = 0` is that error. `x := 0` is stored.
+  `x == 0` is accepted and is not stored as an assignment, the same as the
+  line walker. A top-level line that is not `speck`, `import`, or a comment
+  is `unrecognized top-level`. File-level `import` lines are syntax-checked
+  and not attached to a speck. Identifiers are ASCII. Durations `24h`,
+  `500ms`, `30s`, `3d`, `5m`, and `1.5h` stay durations.
+  `compiler/src/conservation.ts` lists every AST member type. Each backend
+  marks each type `emit`, `reject`, or `n/a`. `compileSpec` checks the
+  table immediately before it calls that backend. A reject throws, and
+  that backend does not write. A member type that is not listed fails the
+  conservation test. `import`, `oneof`, and `transition` are rejected by
+  every backend except Protobuf, which emits `oneof` and `transition`.
+- **Known parse differences from the line walker on main.** Compared at
+  main `4f1e7fa`, every example under `examples/` has the same member
+  outline except two shapes (`parser-main-corpus.test.ts`):
+  `type LogEntry = { term: Nat, value: Value }` in
+  `examples/KafkaKRaft.speckdl` is the record `{ term, value }`. The state
+  fields that follow stay on the state. The line walker stored LogEntry as
+  a mixed interface that also listed those state fields, so the pinned
+  digests for that example changed. Two invariants in
+  `examples/OAuth2AuthorizationCode.speckdl` no longer keep a trailing
+  `//` comment in the expression, and the Rust `-t all` output for that
+  example changed. `-t all-ir` for it did not. A one-line action closes on
+  the structural `}` of its header line, so a trailing `// }` does not take
+  the next action's statements. Text after a member's `}` is an error.
+  A speck whose closing `}` is on the header line ends on that line.
+  Members written on that line are not stored. The line walker on main
+  does the same for a speck that is alone, because it also starts on the
+  next line. It then kept scanning, so a following speck was parsed and
+  its members were also attached to the first speck. This parser does not
+  attach them. `parser-main-corpus.test.ts` covers that case. When `*/` is the
+  first text on a line and the code after it is a `speck`, `action`,
+  `invariant`, `state`, or `init` header, that header is `header is not at
+  the start of the line`. A header later on the line, after other text or
+  after `/* ... */`, is outside this check. A speck written entirely inside
+  a block comment is not a speck. Go still drops an `else if`, a nested
+  `if`, a `for` inside an `if`, and a `require` inside an `if`. That is
+  unchanged.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
