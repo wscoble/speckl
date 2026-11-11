@@ -1,7 +1,7 @@
 // compileSpec and lower run the import resolver. A bad path, a cycle, a
 // duplicate, or a root that does not contain the file is an error. A missing
 // member-type list is an error after lowering.
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,7 +45,9 @@ describe('compileSpec import wiring', () => {
   it('rejects a missing file, a cycle, a duplicate alias, and an absolute path', () => {
     const dir = tree();
     const missing = write(dir, 'missing.speckdl', `import "./no-such.speckdl" as L\n${speck('Root')}`);
+    const missingOut = missing + '-out';
     expect(() => compile(missing)).toThrow(`Parse error: cannot read import "./no-such.speckdl" (resolved ${join(dir, 'no-such.speckdl')}) at ${missing}:1`);
+    expect(existsSync(missingOut)).toBe(false);
 
     write(dir, 'a.speckdl', `import "./b.speckdl" as B\n${speck('A')}`);
     const b = write(dir, 'b.speckdl', `import "./a.speckdl" as A\n${speck('B')}`);
@@ -114,16 +116,18 @@ describe('compileSpec import wiring', () => {
     const dir = tree();
     write(dir, 'lib.speckdl', speck('Lib'));
     const file = write(dir, 'root.speckdl', `import "./lib.speckdl" as L\n${speck('Root')}`);
+    const before = readdirSync(dir).sort();
     const expanded = expandImports(parseSpeckFile(file), file);
     expanded.specks = expanded.specks.filter(s => s.name !== 'Lib');
     expect(() => lower(expanded, { filePath: file, resolveImports: true }))
-      .toThrow(/import "\.\/lib\.speckdl" did not resolve speck "Lib"/);
+      .toThrow('Parse error: import "./lib.speckdl" did not resolve speck "Lib"');
     const renamed = expandImports(parseSpeckFile(file), file);
     const root = renamed.specks.find(s => s.name === 'Root');
     if (!root) throw new Error('missing Root');
     root.name = 'Other';
     expect(() => lower(renamed, { filePath: file, resolveImports: true }))
-      .toThrow(/import "\.\/lib\.speckdl" has no speck "Root" to attach to/);
+      .toThrow('Parse error: import "./lib.speckdl" has no speck "Root" to attach to');
+    expect(readdirSync(dir).sort()).toEqual(before);
   });
 
   it('fails closed when the verified source is missing', () => {
@@ -137,15 +141,20 @@ describe('compileSpec import wiring', () => {
         members: [{ type: 'import' as const, path: './lib.speckdl', alias: 'L' }],
       }],
     };
+    const before = readdirSync(dir).sort();
     expect(() => lower(hand, { filePath: file, resolveImports: true }))
-      .toThrow(/cannot read verified source/);
+      .toThrow(`Parse error: cannot read verified source for "${realpathSync(file)}"`);
+    expect(readdirSync(dir).sort()).toEqual(before);
   });
 
   it('fails closed when the import root cannot be read', () => {
     const dir = tree();
     write(dir, 'lib.speckdl', speck('Lib'));
     const file = write(dir, 'root.speckdl', `import "./lib.speckdl" as L\n${speck('Root')}`);
-    expect(() => compile(file, join(dir, 'no-such-dir'))).toThrow(/cannot read import root/);
+    const root = join(dir, 'no-such-dir');
+    const out = file + '-out';
+    expect(() => compile(file, root)).toThrow(`Parse error: cannot read import root "${root}" (ENOENT)`);
+    expect(existsSync(out)).toBe(false);
   });
 
   it('example specs contain no import, so the output pin is the no-import pin', () => {
