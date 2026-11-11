@@ -1,0 +1,36 @@
+Reviewer findings: PR 59 vs its target
+Question: does every behaviour that is correct on the target stay correct on the working branch? No previously valid input newly rejected or compiled differently, and no input that was handled correctly now silently dropped.
+
+Target: PR 58 head 1032be1a206660a66e73d8cc5051e8c238e718bb (token parser; imports are syntax-checked and not loaded)
+Working: cursor/speckl-import-resolve-b621 4136bc7dcb7b380b9272a7ef19ec94bf3ced35df
+Built both trees and ran compileSpec through each tree's own compiler/src/compile.ts.
+Examples: every examples/*.speckdl, targets typescript, z3, rust, go, protobuf, k8s, openapi, camel, elm, agent, all, all-ir.
+Non-import probes: braces in strings and comments, unclosed string, unclosed block comment, one-line specks, malformed members, header after a block comment, prime notation, a brace in an agent instruction. Targets typescript, go, z3, all.
+Import probes, targets typescript, go, z3, all, plus --root on the parent directory and --root /. Before compare, ISO timestamps and absolute source/output paths were replaced.
+
+Examples and non-import probes: 272 identical, 0 differ. The header-line close, KafkaKRaft LogEntry, and the OAuth comment tails are already on the target, so they do not show up as a difference here. No example regression.
+
+Import probes. On the target, an import line is accepted and not loaded, --root is ignored, and the output is only the entry speck. On the working branch the import is resolved. Where both succeed, the entry speck's TypeScript (Root.ts) is byte-identical after normalization. The imported speck is added; it is not a rewrite of the entry.
+
+Intended resolution (both compile; working also emits the imported speck):
+- import-relative.speckdl `import "./lib.speckdl"`. Working emits Lib and Root. Root.ts matches the target.
+- import-hash-ok.speckdl, pin sha256 of the raw file bytes. Same Lib output as the relative import.
+- import-hash-upper.speckdl, pin `SHA256:` plus the same digest in uppercase. Same Lib output. The prefix match is case-insensitive.
+- import-symlink-inside.speckdl, stay.speckdl -> lib.speckdl inside the entry directory. Same Lib output. A symlink whose real path stays inside the root is followed.
+- import-root-widen.speckdl `import "../out.speckdl"` with --root set to the parent of the entry directory. Working emits Out and Root.
+- import-root-widen.speckdl and import-dotdot.speckdl with --root /. Working emits Out and Root. `--root /` is the documented hatch: the import root is the whole filesystem, so `../` is inside that root. The file read is the fixture, not an unexpected path.
+
+Fail-closed (target compiles only the entry speck; working rejects). The target did not resolve the import, so its success is not a correct load of the other file:
+- import-dotdot.speckdl with the default root: `import "../out.speckdl" resolves outside the import root <entry dir>`
+- import-symlink-escape.speckdl, link.speckdl -> a file outside the entry directory: `resolves outside the import root`
+- import-absolute.speckdl, an absolute path of a real speck: `must be a relative path`
+- import-hash-mismatch.speckdl: `hash mismatch for import "./lib.speckdl"`
+- import-cycle-a.speckdl and import-cycle-b.speckdl: `import cycle:` naming both files. Same rejection on every target.
+- import-missing.speckdl: `cannot read import "./no-such.speckdl"`
+- import-directory.speckdl `import "."`: `cannot read import "."` (resolved to the entry directory, which is not a file)
+- import-url.speckdl `import "https://example.invalid/lib.speckdl"`: `cannot read import`, resolved under the entry directory as `<entry>/https:/example.invalid/lib.speckdl`. The compiler does not fetch the URL.
+- import-file-url.speckdl `import "file:///etc/hostname"`: `cannot read import`, resolved as `<entry>/file:/etc/hostname`. /etc/hostname is not opened.
+
+No import that the target handled correctly was dropped. No escape (absolute path, `..` against the default root, symlink out of the root, URL, file URL) was accepted. No code change was required.
+
+Tests added after this run, in compiler/src/__tests__/imports.test.ts, cover the edges the probes showed were untested: a symlink that stays inside the root, a dangling symlink, a URL and a file URL (the resolved path stays under the entry directory), a directory import, an uppercase SHA256 pin, an empty hash pin, `--root /`, a missing /proc/self/fd while an import is read, a /proc path that does not match the file, an unexpected /proc error, an open the OS rejects and then retries, and an import that declares no specks. Those tests do not change imports.ts.

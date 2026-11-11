@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
 import { lower } from '../ir/lower.js';
-import { expandImports } from '../imports.js';
+import { expandImports, verifyHash } from '../imports.js';
 import { compileSpec } from '../compile.js';
 
 function dir(): string {
@@ -380,6 +380,178 @@ describe('import resolution', () => {
       fs.readFileSync = orig;
       syncBuiltinESMExports();
     }
+  });
+
+  it('rejects an import that declares no specks', () => {
+    const folder = dir();
+    write(folder, 'empty.speckdl', '// nothing here\n');
+    const file = write(folder, 'root.speckdl', 'import "empty.speckdl" as E\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/declares no specks/);
+  });
+
+  it('rejects a dangling symlink', () => {
+    const folder = dir();
+    symlinkSync(join(folder, 'missing.speckdl'), join(folder, 'dang.speckdl'));
+    const file = write(folder, 'root.speckdl', 'import "dang.speckdl" as D\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/cannot read import "dang\.speckdl"/);
+  });
+
+  it('retries an open the OS rejects, and still fails closed when every open fails', () => {
+    const folder = dir();
+    write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "./lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const fs = createRequire(import.meta.url)('node:fs');
+    const orig = fs.openSync;
+    const reject = (code: string) => {
+      const e = new Error(code) as NodeJS.ErrnoException;
+      e.code = code;
+      throw e;
+    };
+    try {
+      let calls = 0;
+      fs.openSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+        calls += 1;
+        if (calls < 3) reject('EINVAL');
+        return orig.call(this, p, ...rest);
+      };
+      syncBuiltinESMExports();
+      expect(expandImports(parseSpeckFile(file), file).specks.map(s => s.name).sort()).toEqual(['Lib', 'Root']);
+      fs.openSync = function () { reject('ENOTSUP'); };
+      syncBuiltinESMExports();
+      expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/cannot read import "\.\/lib\.speckdl"/);
+    } finally {
+      fs.openSync = orig;
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('loads a relative import through a symlink that stays inside the root', () => {
+    const folder = dir();
+    write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    symlinkSync(join(folder, 'lib.speckdl'), join(folder, 'stay.speckdl'));
+    const file = write(folder, 'root.speckdl', 'import "stay.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    expect(expandImports(parseSpeckFile(file), file).specks.map(s => s.name).sort()).toEqual(['Lib', 'Root']);
+  });
+
+  it('rejects a URL and a file URL without leaving the entry directory', () => {
+    const folder = dir();
+    const https = write(folder, 'https.speckdl', 'import "https://example.invalid/lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(https), https)).toThrow(
+      `Parse error: cannot read import "https://example.invalid/lib.speckdl" (resolved ${join(folder, 'https:/example.invalid/lib.speckdl')})`,
+    );
+    const fileUrl = write(folder, 'fileurl.speckdl', 'import "file:///etc/hostname" as L\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(fileUrl), fileUrl)).toThrow(
+      `Parse error: cannot read import "file:///etc/hostname" (resolved ${join(folder, 'file:/etc/hostname')})`,
+    );
+  });
+
+  it('rejects a directory import', () => {
+    const folder = dir();
+    mkdirSync(join(folder, 'sub'));
+    const file = write(folder, 'root.speckdl', 'import "./sub" as D\nspeck Root {\n    state { n: Nat }\n}\n');
+    expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/cannot read import "\.\/sub"/);
+  });
+
+  it('accepts a SHA256 pin written in uppercase', () => {
+    const folder = dir();
+    const lib = write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const pin = createHash('sha256').update(readFileSync(lib)).digest('hex').toUpperCase();
+    const file = write(folder, 'root.speckdl', `import "./lib.speckdl" hash "SHA256:${pin}"\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n`);
+    expect(expandImports(parseSpeckFile(file), file).specks.map(s => s.name).sort()).toEqual(['Lib', 'Root']);
+  });
+
+  it('verifyHash rejects an empty pin and a bare sha256 prefix', () => {
+    const buf = Buffer.from('speck S {\n}\n');
+    expect(() => verifyHash(buf, '', 'lib.speckdl')).toThrow(/empty hash on import "lib\.speckdl"/);
+    expect(() => verifyHash(buf, 'sha256:', 'lib.speckdl')).toThrow(/empty hash on import "lib\.speckdl"/);
+    expect(() => verifyHash(buf, 'SHA256:', 'lib.speckdl')).toThrow(/empty hash on import "lib\.speckdl"/);
+  });
+
+  it('--root / reads a file outside the entry directory', () => {
+    const parent = dir();
+    const folder = join(parent, 'in');
+    mkdirSync(folder);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(parent, 'gen');
+    compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'cdx', verifyDepth: 2, rootDir: '/' });
+    expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
+  });
+
+  it('ignores a missing /proc/self/fd while an import is read, and fails closed otherwise', () => {
+    const folder = dir();
+    write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "./lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const fs = createRequire(import.meta.url)('node:fs');
+    const orig = fs.realpathSync;
+    const withProc = (impl: (p: unknown, rest: unknown[]) => unknown) => {
+      fs.realpathSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+        if (String(p).startsWith('/proc/self/fd/')) return impl(p, rest);
+        return orig.call(this, p, ...rest);
+      };
+      syncBuiltinESMExports();
+    };
+    try {
+      for (const code of ['ENOENT', 'ENOTDIR', 'EINVAL', 'EACCES', 'EPERM', 'ENOSYS']) {
+        withProc(() => {
+          const e = new Error(code) as NodeJS.ErrnoException;
+          e.code = code;
+          throw e;
+        });
+        expect(expandImports(parseSpeckFile(file), file).specks.map(s => s.name).sort()).toEqual(['Lib', 'Root']);
+      }
+      withProc(() => '/tmp/speckl-not-the-import');
+      expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/changed while reading/);
+      withProc(() => {
+        const e = new Error('EIO') as NodeJS.ErrnoException;
+        e.code = 'EIO';
+        throw e;
+      });
+      expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/EIO/);
+    } finally {
+      fs.realpathSync = orig;
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('reports changed while reading when the path disappears after open', () => {
+    const folder = dir();
+    const lib = write(folder, 'lib.speckdl', 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "./lib.speckdl" as L\nspeck Root {\n    state { n: Nat }\n}\n');
+    const fs = createRequire(import.meta.url)('node:fs');
+    const origReal = fs.realpathSync;
+    const origStat = fs.statSync;
+    const gone = () => {
+      const e = new Error('ENOENT') as NodeJS.ErrnoException;
+      e.code = 'ENOENT';
+      throw e;
+    };
+    const run = (mode: 'realpath' | 'stat-before' | 'stat-after') => {
+      let stats = 0;
+      fs.realpathSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+        if (mode === 'realpath' && String(p) === lib) gone();
+        return origReal.call(this, p, ...rest);
+      };
+      fs.statSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+        if (String(p) === lib && mode.startsWith('stat')) {
+          stats += 1;
+          if (mode === 'stat-before' && stats === 1) gone();
+          if (mode === 'stat-after' && stats === 2) gone();
+        }
+        return origStat.call(this, p, ...rest);
+      };
+      syncBuiltinESMExports();
+      try {
+        expect(() => expandImports(parseSpeckFile(file), file)).toThrow(/changed while reading/);
+      } finally {
+        fs.realpathSync = origReal;
+        fs.statSync = origStat;
+        syncBuiltinESMExports();
+      }
+    };
+    run('realpath');
+    run('stat-before');
+    run('stat-after');
   });
 
   it('lower with resolveImports compiles the AST it was given, not the file on disk', () => {
