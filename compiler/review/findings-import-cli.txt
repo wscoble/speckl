@@ -1,0 +1,8 @@
+Reviewer findings: speckl --root
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the import-wiring slice. compileSpec already took rootDir. The CLI did not pass it. Working: speckl --root sets that option.
+
+Without --root, an import whose real path leaves the entry file's directory fails closed. --root widens the directory. --root / widens it to the whole filesystem. Absolute import paths stay rejected.
+
+Example files have no imports, so their compiled output is unchanged. The README, SPEC, and CHANGELOG name the flag. That text does not by itself change compiled output.
