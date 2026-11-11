@@ -122,6 +122,23 @@ block comment is not a speck. Go still drops an `else if`, a nested `if`,
 a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
 from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` does not call that lexer yet. The line walker still parses. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `parser.ts` still calls it, and example member outlines are unchanged.
 
+### 2.2.1 Rejected structure
+
+The line walker used to accept each input below and store a program that dropped or rewrote the text. That was a bug. The input is now a parse error.
+
+- A speck that never closes. `speck A {` with no closing brace used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9).
+- An extra closing brace. `speck A {` then a line `}` then another `}` used to parse as speck A with no members, ending on line 2. The extra brace was ignored. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). A `}` inside a string is still a string.
+- Text after a speck's closing brace. `speck A {` then `} junk` used to parse as speck A with no members, ending on line 2. The word was ignored. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3).
+- A second speck on the same line. `speck A { } speck B { }` used to parse as only speck A, with no members. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13).
+- An unrecognized member. `garbage line here` used to parse as speck A with no members. `actoin go {` dropped the action. `enum Status { Active, Inactive }` kept only interface Foo. A description line dropped the description. `x := x + 3` after init stored the state type as `= x + 3` and the init expression as `x + 3`. Each diagnostic is unrecognized member with the line and column. One of them is: Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5).
+- Unrecognized top-level text. `spek B {` after a closed speck used to parse as only speck A. `*/ speck A {` used to parse as no specks. The diagnostics are: Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1), and Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1).
+- Text after a member's closing brace. `invariant P { x >= 0 } junk` used to parse as invariant P with an empty expression. The predicate was dropped. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28).
+- A member brace on the next line. `invariant P` with `{` on the following line used to parse as a speck whose only member was an empty state. The invariant was dropped. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5).
+- An unrecognized state field. Inside `state`, `y Nat` after `x: Nat` used to be stored as the type `Nat y Nat`. The diagnostic is: Parse error at st.speckdl:2: unrecognized state field "y Nat". The message names the state header's line and does not name a column.
+- An unrecognized init line. `y = 0` after `x := 0` used to be stored as the expression `0 y = 0`. `garbage line` used to be stored as `0 garbage line`. The diagnostics are: Parse error at in.speckdl:3: unrecognized init line "y = 0", and unrecognized init line "garbage line". The message names the init header's line and does not name a column. `x := 0` is still an assignment.
+- Code after a block comment on the same line. `/* c */ action go {` used to parse as speck A with no members. The action was dropped. The diagnostic is: Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13).
+- A CR that is not part of CRLF. `speck A {` then a state, with a bare carriage return and no line feed, used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still whitespace.
+
 ### 2.3 Declarative Form (v0.2, still supported)
 
 ```
