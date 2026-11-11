@@ -1,7 +1,5 @@
-// Token parser. Not called on this branch. `parseSpeckContent` in `parser.ts`
-// still calls the line walker, and nothing imports this file. The swap
-// changes `parseSpeckContent` to return `parseSpeckDocument`. Coverage
-// excludes this file until that call (`compiler/vitest.config.ts`).
+// Token parser. `parseSpeckContent` in `parser.ts` returns
+// `parseSpeckDocument`. Coverage includes this file.
 //
 // SpeckDL parser. `lexSpeck` produces one token stream for the file.
 //

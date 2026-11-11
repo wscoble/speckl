@@ -1,8 +1,6 @@
-// Span helpers for `rd-parser.ts`. `parseSpeckContent` does not call them.
-// `parser.ts` re-exports this module. `parser-coverage-edges.test.ts` calls
-// `isAliasTypeText` and `stripInvariantExpr` directly. The other exports wait
-// until `parseSpeckContent` calls the token parser. Coverage excludes this
-// file until then (`compiler/vitest.config.ts`).
+// Span helpers for `rd-parser.ts`. `parseSpeckContent` calls that parser,
+// which calls these helpers. `parser.ts` re-exports this module. Coverage
+// includes this file.
 
 import { LexState, lexStart } from './speck-part0.js';
 import { maskCode, isExpressionComplete } from './speck-part1.js';

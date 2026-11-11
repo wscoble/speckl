@@ -166,9 +166,9 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 `parseSpeck` walks the token stream. It stores the same members the line walker stored, and it reports the same error, line, and column the line walker reports. That includes a missing `}`, an extra `}`, text after `}`, an unrecognized member, `§`, an unrecognized state field, and an unrecognized init line. There is no second result when the token parser and the line walker disagree. Example `-t all` and `-t all-ir` output keeps the sha256 pin in `compiler/src/__tests__/compile-pipeline.test.ts`. File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
 
-## Token parser, not wired
+## Token parser
 
-`compiler/src/rd-parser.ts` exports `parseSpeckDocument`. It walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers (`expressionClosed`, `takeExpressionLines`, `expressionSpanEnd`, `isAliasTypeText`, `stripInvariantExpr`, and the brace-span readers). `compiler/src/parser.ts` re-exports `speck-span` and does not call `parseSpeckDocument`. `parseSpeckContent` still calls the line walker after `assertClosedSpec`. Nothing outside `rd-parser.ts` imports that file. `compiler/vitest.config.ts` excludes `src/rd-parser.ts` and `src/speck-span.ts` from coverage until the call switches. `parseSpeckContent does not call the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts the missing import. `parser-coverage-edges.test.ts` calls `isAliasTypeText` and `stripInvariantExpr` directly. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
+`parseSpeckContent` returns `parseSpeckDocument` from `compiler/src/rd-parser.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parseSpeckContent calls the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts that `parser.ts` is the production file that imports `rd-parser.ts` and that it returns `parseSpeckDocument`. `lowers every speck in the repo to the same IR` in that file compares the live parser with the line-walker copy. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
 
 ## Rejected structure
 
