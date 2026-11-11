@@ -6,3 +6,5 @@ Target: cursor/speckl-token-lexer-6764. The parser is still the line walker. Thi
 The guard reads member types the parser already produced. For the members in examples/*.speckdl the table says emit or n/a, so the guard does not throw and does not change what a backend writes. oneof, transition, and import are reject for the backends that do not emit them. No example contains those members, so no example compile changes. A direct call to a generator function does not run the guard. compileSpec does, and that is the path the CLI uses.
 
 No previously valid example is rejected. Nothing a backend used to write is dropped.
+
+The README, SPEC, and CHANGELOG describe the table and the `compileSpec` check. That text does not change compiled output.

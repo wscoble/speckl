@@ -51,6 +51,13 @@ alias.
   `24h` and `500ms` stay a number plus a unit. `parseSpeck` does not call
   the lexer yet, so the line walker still parses every file.
   `compiler/src/__tests__/speck-lex.test.ts` calls the lexer directly.
+- **Backend conservation.** `compiler/src/conservation.ts` lists every AST
+  member type. Each backend marks each type `emit`, `reject`, or `n/a`.
+  `compileSpec` checks that table immediately before it calls the backend.
+  A reject throws, and that backend does not write. `import`, `oneof`, and
+  `transition` are rejected by every backend except Protobuf, which emits
+  `oneof` and `transition`. A direct call to a generator does not run the
+  check. `compiler/src/__tests__/conservation.test.ts` checks the table.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
