@@ -126,7 +126,6 @@ describe('generated output is pinned for every example', () => {
     const afterSpace = digests(out);
     expect(afterSpace[rel]).not.toBe(before[rel]);
     expect(pin(afterSpace)).not.toBe(beforePin);
-    expect(pin(afterSpace)).not.toBe(OUTPUT_SHA256);
 
     let i = 0;
     let j = 1;
@@ -140,7 +139,22 @@ describe('generated output is pinned for every example', () => {
     const afterOrder = digests(out);
     expect(afterOrder[rel]).not.toBe(before[rel]);
     expect(pin(afterOrder)).not.toBe(beforePin);
-    expect(pin(afterOrder)).not.toBe(OUTPUT_SHA256);
+
+    // OUTPUT_SHA256 is this same hash over every example. A one-file map is a
+    // different JSON value, so comparing it to OUTPUT_SHA256 does not show
+    // that the corpus pin moved. Replace one digest inside a corpus-shaped
+    // map instead. That is the update the pin sees.
+    const corpus = {
+      'ReviewGate.speckdl -t z3': before,
+      'Other.speckdl -t all': { 'kept.ts': 'abc' },
+    };
+    const pinOf = (map: Record<string, Record<string, string>>) => createHash('sha256')
+      .update(JSON.stringify(map))
+      .digest('hex');
+    const base = pinOf(corpus);
+    expect(pinOf({ ...corpus, 'ReviewGate.speckdl -t z3': afterSpace })).not.toBe(base);
+    expect(pinOf({ ...corpus, 'ReviewGate.speckdl -t z3': afterOrder })).not.toBe(base);
+    expect(base).not.toBe(OUTPUT_SHA256);
   }, 60_000);
 });
 
