@@ -1,7 +1,8 @@
-// The line walker copied under ../line-walker is the parser from the
-// output-hash branch (parser.ts and speck-part0.ts through speck-part9.ts).
-// parseSpeck on this branch calls the token parser. This file lowers both
-// ASTs with the same lower() and compares the IR.
+// The line walker copied under ../line-walker is the parser from before the
+// token-parser swap. parseSpeckContent on this branch still calls the line
+// walker, so both sides of this comparison are that walker. The swap makes
+// the live side parseSpeckDocument. This file lowers both ASTs with the
+// same lower() and compares the IR.
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -95,5 +96,28 @@ describe('line walker and token parser', () => {
       const text = readFileSync(path, 'utf8');
       expect(JSON.stringify(irOf(parseWalker, text, path))).toBe(JSON.stringify(irOf(parseRd, text, path)));
     }
+  });
+
+  it('parseSpeckContent does not call the token parser', () => {
+    const srcRoot = join(repoRoot, 'compiler', 'src');
+    const hits: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        if (name === 'rd-parser.ts' || name === '__tests__') continue;
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) {
+          walk(path);
+          continue;
+        }
+        if (!name.endsWith('.ts')) continue;
+        const text = readFileSync(path, 'utf8');
+        if (text.split('\n').some(line => /from\s+['"][^'"]*rd-parser/.test(line))) hits.push(path);
+      }
+    };
+    walk(srcRoot);
+    expect(hits).toEqual([]);
+    const parser = readFileSync(join(srcRoot, 'parser.ts'), 'utf8');
+    expect(parser).not.toContain('parseSpeckDocument');
+    expect(parser).toContain('assertClosedSpec');
   });
 });

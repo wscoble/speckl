@@ -1,6 +1,6 @@
-// The line walker and the token parser report the same error. The previous
-// change made the walker reject these shapes. This swap does not add a
-// second result.
+// Both calls are the line walker on this branch. parseSpeckContent has not
+// switched to the token parser. The copy and the live parser must report
+// the same error. The swap does not add a second result.
 import { describe, expect, it } from 'vitest';
 import { parseSpeckContent } from '../parser.js';
 import { parseSpeckContent as parseWalker } from '../line-walker/parser.js';

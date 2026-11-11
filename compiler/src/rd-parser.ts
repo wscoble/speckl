@@ -1,3 +1,8 @@
+// Token parser. Not called on this branch. `parseSpeckContent` in `parser.ts`
+// still calls the line walker, and nothing imports this file. The swap
+// changes `parseSpeckContent` to return `parseSpeckDocument`. Coverage
+// excludes this file until that call (`compiler/vitest.config.ts`).
+//
 // SpeckDL parser. `lexSpeck` produces one token stream for the file.
 //
 // Brace matching uses that stream, so a `{` or `}` inside a comment or a
