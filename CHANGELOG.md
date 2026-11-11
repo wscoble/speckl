@@ -84,8 +84,12 @@ alias.
   this. `compiler/review/findings-rd-parser.txt` records that the output matches.
 - **One-line record span.** A `type Name = { ... }` that closes on its header
   stores only that brace span. The line walker had kept the following state
-  fields, so KafkaKRaft `LogEntry` was not `{ term, value }`. The example
-  output pin moved for that reason. See
+  fields, so KafkaKRaft `LogEntry` was not `{ term, value }` and a probe's
+  TypeScript contained `currentTerm: = 0`. The new output is
+  `{ term, value }`. An empty record stores no fields. A comment after the
+  closing brace is not a field. The example output pin moved for that
+  reason, from `9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1`
+  to `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`. See
   `compiler/review/findings-record-span.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
