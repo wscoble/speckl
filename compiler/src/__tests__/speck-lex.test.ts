@@ -100,4 +100,25 @@ describe('speck lexer', () => {
     expect(lexSpeck('s := "Größe"\r\n').tokens.find(t => t.kind === 'string')?.text).toBe('"Größe"');
     expect(lexSpeck('// Größe\r\nspeck S {\r\n}\r\n').tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
   });
+
+  it('keeps an escaped quote and a comment marker inside a string', () => {
+    const escaped = lexSpeck('s := "a\\"b"\n');
+    expect(escaped.tokens.find(t => t.kind === 'string')).toMatchObject({ text: '"a\\"b"', column: 6 });
+    const marked = lexSpeck('s := "a//b" // }\n');
+    expect(marked.tokens.filter(t => t.kind === '{' || t.kind === '}').length).toBe(0);
+    expect(marked.tokens.find(t => t.kind === 'string')?.text).toBe('"a//b"');
+  });
+
+  it('keeps a hyphenated name as one identifier and a spaced hyphen as minus', () => {
+    expect(kinds('my-speck')).toEqual(['ident:my-speck']);
+    expect(kinds('n - 1')).toEqual(['ident:n', '-', 'number:1']);
+  });
+
+  it('rejects an unexpected character and counts columns after CRLF', () => {
+    expect(() => lexSpeck('speck S { § }\n', 'mark.speckdl')).toThrow(
+      /Parse error at mark\.speckdl:1: unexpected character "§" \(column 11\)/,
+    );
+    const second = lexSpeck('speck S {\r\n  n: Nat\r\n}\r\n');
+    expect(second.tokens.find(t => t.text === 'n')).toMatchObject({ line: 2, column: 3 });
+  });
 });

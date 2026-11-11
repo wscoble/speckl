@@ -74,7 +74,12 @@ describe('in-process pipeline matches the CLI', () => {
 // One hash of every example's `-t all` and `-t all-ir` digests. The previous
 // snapshot file was the full digest map (about 86k characters) and made any
 // output change pull that whole file into review.
-const OUTPUT_SHA256 = '4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a';
+//
+// Update this constant only in the PR that intentionally changes generated
+// output. Run this test, replace the constant with the hash it prints, and
+// say in that PR why the old bytes were wrong. A whitespace-only edit and a
+// reordered file move the hash and are not a reason to update it.
+const OUTPUT_SHA256 = '9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1';
 
 describe('generated output is pinned for every example', () => {
   it('pins -t all and -t all-ir for every example', () => {
@@ -101,6 +106,41 @@ describe('generated output is pinned for every example', () => {
     const afterHash = createHash('sha256').update(JSON.stringify({ 'ReviewGate.speckdl -t z3': after })).digest('hex');
     expect(afterHash).not.toBe(beforeHash);
     expect(afterHash).not.toBe(OUTPUT_SHA256);
+  }, 60_000);
+
+  it('whitespace-only output and reordered output each move the pin', () => {
+    const spec = join(examplesDir, 'ReviewGate.speckdl');
+    const out = run(spec, 'z3');
+    const before = digests(out);
+    const file = walk(out)[0];
+    const rel = relative(out, file);
+    const text = readFileSync(file, 'utf8');
+    const pin = (map: Record<string, string>) => createHash('sha256')
+      .update(JSON.stringify({ 'ReviewGate.speckdl -t z3': map }))
+      .digest('hex');
+    const beforePin = pin(before);
+
+    const lines = text.split('\n');
+    const spaced = lines[0] + ' ' + (lines.length > 1 ? '\n' + lines.slice(1).join('\n') : '');
+    writeFileSync(file, spaced);
+    const afterSpace = digests(out);
+    expect(afterSpace[rel]).not.toBe(before[rel]);
+    expect(pin(afterSpace)).not.toBe(beforePin);
+    expect(pin(afterSpace)).not.toBe(OUTPUT_SHA256);
+
+    let i = 0;
+    let j = 1;
+    while (j < lines.length && lines[i] === lines[j]) j++;
+    expect(j).toBeLessThan(lines.length);
+    const reordered = lines.slice();
+    const hold = reordered[i];
+    reordered[i] = reordered[j];
+    reordered[j] = hold;
+    writeFileSync(file, reordered.join('\n'));
+    const afterOrder = digests(out);
+    expect(afterOrder[rel]).not.toBe(before[rel]);
+    expect(pin(afterOrder)).not.toBe(beforePin);
+    expect(pin(afterOrder)).not.toBe(OUTPUT_SHA256);
   }, 60_000);
 });
 
