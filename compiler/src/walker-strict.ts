@@ -16,6 +16,46 @@ import { exprIncomplete } from './speck-part4.js';
 import { parseNextRelation } from './speck-part8.js';
 import { lexSpeck, parseErrorAt, type SpeckToken } from './speck-lex.js';
 
+
+// Each name is one rejection class. A later change turns one name on.
+// The messages and positions are the ones below; a class that is off
+// leaves that input to the line walker.
+const ON: { [name: string]: boolean } = {
+  missing: true,
+  extra: true,
+  text: true,
+  second: true,
+  member: true,
+  top: true,
+  memberTail: true,
+  braceLine: true,
+  state: true,
+  init: true,
+  comment: true,
+  cr: true,
+  section: true,
+  digit: true,
+  ascii: true,
+  numeric: true,
+  unclosed: true,
+};
+
+function on(name: string): boolean {
+  return ON[name] === true;
+}
+
+function rethrowLexer(err: unknown): boolean {
+  const msg = (err as Error).message;
+  const kind = msg.includes('unexpected character') ? 'section'
+    : msg.includes('identifier must not start with a digit') ? 'digit'
+    : msg.includes('identifier must be ASCII') ? 'ascii'
+    : msg.includes('unsupported numeric literal') ? 'numeric'
+    : msg.includes('unterminated string') || msg.includes('unterminated block comment') ? 'unclosed'
+    : undefined;
+  if (kind === undefined || on(kind)) throw err;
+  return false;
+}
+
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
   'state {', 'init {', 'verify ', 'constraint ', 'input:', 'output:', 'service ', 'oneof ', 'transition ',
@@ -23,11 +63,17 @@ const BLOCK_STARTERS = [
 ];
 
 export function assertClosedSpec(content: string, file?: string): void {
-  rejectBareCr(content, file);
-  const lexed = lexSpeck(content, file);
+  if (on('cr')) rejectBareCr(content, file);
+  let lexed;
+  try {
+    lexed = lexSpeck(content, file);
+  } catch (err) {
+    rethrowLexer(err);
+    return;
+  }
   const lines = content.split('\n');
   const byLine = bucketByLine(lexed.tokens);
-  assertNoCodeAfterBlockComment(lines, byLine, file);
+  if (on('comment')) assertNoCodeAfterBlockComment(lines, byLine, file);
   if (lexed.headerAfterComment.length > 0) {
     throw lexProblem(lexed.headerAfterComment[0], 'header is not at the start of the line');
   }
@@ -63,7 +109,9 @@ function scanFile(lines: string[], byLine: SpeckToken[][], tokens: SpeckToken[],
       lex = stepped.lex;
       continue;
     }
-    throw parseErrorAt(file, i + 1, columnOf(lines[i]), `unrecognized top-level "${line}"`);
+    if (on('top')) throw parseErrorAt(file, i + 1, columnOf(lines[i]), `unrecognized top-level "${line}"`);
+    i++;
+    continue;
   }
 }
 
@@ -112,7 +160,7 @@ function scanSpeck(
       const close = open ? matchingClose(tokens, open) : undefined;
       if (close) {
         const after = (byLine[close.line] ?? []).filter(t => t.start >= close.end);
-        if (after.length > 0) {
+        if (after.length > 0 && on('memberTail')) {
           throw parseErrorAt(file, after[0].line, after[0].column, 'text after a member\'s "}"');
         }
       }
@@ -190,7 +238,10 @@ function assertStateFields(lines: string[], startIndex: number, endIndex: number
     if (!bracketsUnbalanced(acc)) {
       if (continues) acc = acc + ' ' + line;
       else if (isNewVar && !prevIsContinuation) acc = acc + '; ' + line;
-      else if (!prevIsContinuation) throw lexProblem(startIndex + 1, `unrecognized state field "${line}"`);
+      else if (!prevIsContinuation) {
+        if (on('state')) throw lexProblem(startIndex + 1, `unrecognized state field "${line}"`);
+        acc = acc + ' ' + line;
+      }
       else acc = acc + ' ' + line;
     } else {
       acc = acc.endsWith('{') ? acc + ' ' + line : acc + ', ' + line;
@@ -209,12 +260,15 @@ function assertInitLines(lines: string[], startIndex: number, endIndex: number):
     }
     if (isInitStarter(raw) || cur === null) {
       if (cur === null && !isInitStarter(raw)) {
-        throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+        if (on('init')) throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+        cur = raw;
+        continue;
       }
       cur = raw;
       continue;
     }
-    throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+    if (on('init')) throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+    cur = raw;
   }
 }
 
@@ -253,12 +307,12 @@ function columnOf(raw: string): number {
   return (lead ? lead[0].length : 0) + 1;
 }
 
-function rejectUnparsed(file: string | undefined, raw: string, lineNo: number, trimmed: string): never {
-  throw parseErrorAt(file, lineNo, columnOf(raw), `unrecognized member "${trimmed}"`);
+function rejectUnparsed(file: string | undefined, raw: string, lineNo: number, trimmed: string): void {
+  if (on('member')) throw parseErrorAt(file, lineNo, columnOf(raw), `unrecognized member "${trimmed}"`);
 }
 
-function rejectBraceOnNextLine(file: string | undefined, raw: string, lineNo: number): never {
-  throw parseErrorAt(file, lineNo, columnOf(raw), 'opening "{" must be on the same line as the member header');
+function rejectBraceOnNextLine(file: string | undefined, raw: string, lineNo: number): void {
+  if (on('braceLine')) throw parseErrorAt(file, lineNo, columnOf(raw), 'opening "{" must be on the same line as the member header');
 }
 
 function openingBraceOnNextLine(lines: string[], index: number): boolean {
@@ -339,7 +393,10 @@ function assertBraceStructure(tokens: SpeckToken[], file?: string): void {
       continue;
     }
     if (t.kind !== '}') continue;
-    if (depth === 0) throw parseErrorAt(file, t.line, t.column, 'extra "}"');
+    if (depth === 0) {
+      if (on('extra')) throw parseErrorAt(file, t.line, t.column, 'extra "}"');
+      continue;
+    }
     depth--;
     open.pop();
     if (depth !== 0) continue;
@@ -348,12 +405,16 @@ function assertBraceStructure(tokens: SpeckToken[], file?: string): void {
     if (rest.length === 0) continue;
     const next = rest[0];
     if (next.kind === 'ident' && next.text === 'speck') {
-      throw parseErrorAt(file, next.line, next.column, 'a second speck on one line');
+      if (on('second')) throw parseErrorAt(file, next.line, next.column, 'a second speck on one line');
+      continue;
     }
-    if (next.kind === '}') throw parseErrorAt(file, next.line, next.column, 'extra "}"');
-    throw parseErrorAt(file, next.line, next.column, 'text after a speck\'s "}"');
+    if (next.kind === '}') {
+      if (on('extra')) throw parseErrorAt(file, next.line, next.column, 'extra "}"');
+      continue;
+    }
+    if (on('text')) throw parseErrorAt(file, next.line, next.column, 'text after a speck\'s "}"');
   }
-  if (depth > 0) {
+  if (depth > 0 && on('missing')) {
     const unclosed = open[open.length - 1];
     throw parseErrorAt(file, unclosed.line, unclosed.column, 'missing final "}"');
   }
