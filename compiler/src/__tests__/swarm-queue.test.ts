@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { comparePriority, orderByPriority } from '../ir/swarm-queue.js';
 
@@ -38,5 +39,32 @@ describe('swarm priority queue', () => {
       { id: 'b0', priority: 'B0' },
     ]);
     expect(ordered.map(item => item.id)).toEqual(['b0', 'a1']);
+  });
+
+  it('does not mutate the input array', () => {
+    const input = [{ id: 'b', priority: 'P1' }, { id: 'a', priority: 'P0' }];
+    const before = input.map(item => item.id);
+    orderByPriority(input);
+    expect(input.map(item => item.id)).toEqual(before);
+  });
+
+  it('does not sort a numbered label as text', () => {
+    expect(comparePriority('P2', 'P10')).toBeLessThan(0);
+    expect('P10'.localeCompare('P2')).toBeLessThan(0);
+  });
+
+  it('orders the same number by prefix and keeps arrival order for one label', () => {
+    const ordered = orderByPriority([
+      { id: 'b-first', priority: 'B0' },
+      { id: 'a-later', priority: 'A0' },
+      { id: 'b-second', priority: 'B0' },
+    ]);
+    expect(ordered.map(item => item.id)).toEqual(['a-later', 'b-first', 'b-second']);
+  });
+
+  it('compileSpec does not call the priority order', () => {
+    const src = readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
+    expect(src.includes('orderByPriority')).toBe(false);
+    expect(src.includes('swarm-queue')).toBe(false);
   });
 });
