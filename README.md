@@ -37,7 +37,6 @@ Run it from `compiler/`:
 node dist/index.js --help
 node dist/index.js ../examples/ToggleSwitch.speckdl -t all -o out
 node dist/index.js verify ../examples/ToggleSwitch.speckdl   # Z3 check of every verify block (needs the z3 binary)
-node dist/index.js doctor ../examples/ToggleSwitch.speckdl   # imports, domains, act-tool harness maps
 ```
 
 `speckl` and `speckl-compile` are that same program (`speckl-compile` is the older name). To put both on your `PATH`, pack the checkout and install the tarball into a user prefix. The tarball stays on your machine:
@@ -149,63 +148,69 @@ Formal methods specs from a toggle switch through Raft consensus:
 | ReviewGate | `next:` BMC + can()/serialize()/restore() |
 | AgentPolicy | agent { } → AGENTS.md, tools, hooks, HITL/HNTL signals |
 | DeployGate | Call-bound sign-off: `bind call on approve` covers one exact deploy, once |
+| PodcastPublishing | Host-approved metadata automation (HITL await); [README](examples/PodcastPublishing.md) |
 
 Browse all in [examples/](examples/).
 
-## Imports and domains
+## Brace scan
 
-A file can `import` another SpeckDL file. The path is resolved from the
-directory of the file that writes the import, including imports inside a
-file that was itself imported. The compiler reads it, lowers it, and merges
-its specks into the compilation. A missing file, an import cycle, a hash
-mismatch, an empty hash, a file that declares no specks and no domains, or
-the same speck name in two files is a compile error, and the message names
-the file. `hash "SHA256:..."` and `hash "sha256:..."` are the same check.
+The parser counts `{` and `}` and skips a brace inside a finished `"` string, a `//` comment, or a `/* */` comment. That brace cannot end a speck, a member, an `if`, or a `for`. The same skip covers agent advisory strings (`instruction`, `prompt tool`, and `tool … description`), so a brace in that text does not end the agent block. A brace in a comment or a string does not hide the next speck. A one-line action closes on the structural `}` of its header line, so a trailing `// }` is not a brace and does not take the next action's statements. The same skip is used when Go emits an `if` or a `for`.
 
-```
-import "ledger.speckdl" as ledger version "1.2.0" hash "sha256:..."
+`'` is post-state prime notation, not a string quote. A block comment may continue onto the next line, including one that opens on a speck's closing line and closes later. A `"` string may not: an unclosed `"` is `unterminated string` on the line where it opened, at file level, after the last speck, or inside domain text. An unclosed `/*` is `unterminated block comment` on the line where it opened, in those same places. A `/*` written inside an already-open block comment is comment text, not a nested comment. When `*/` is the first text on a line and the code after it is a `speck`, `action`, `invariant`, `state`, or `init` header, that header is `header is not at the start of the line`. A header later on the line, after other text or after `/* ... */`, is outside this scan. A line that is only `speck`, with `Name {` on a later line, is `speck name must be on the same line as "speck"`. A speck written entirely inside a block comment is not a speck.
 
-domain Billing {
-    members: Invoice, Ledger;
-    language: "An invoice is issued before a ledger posts it";
-}
-```
+Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. That is unchanged from before this scan.
 
-A `domain` groups specks into a bounded context. Each member is still one
-speck (and at most one agent). The IR records an `IRDomain`. Provenance
-adds a `prov:Collection` whose `prov:hadMember` links those specks. A
-duplicate member, or a speck in two domains, is a compile error. A domain
-declared in an imported file comes in with that file, and its members
-cannot be claimed again by a domain in the importer.
+`compiler/src/speck-lex.ts` tokenizes a file: a brace in a string or a comment is not a token, `'` is prime notation, and an unclosed string or block comment names the line and column where it opened. `\r\n` and a tab are whitespace. A non-ASCII identifier is an error. Non-ASCII text inside a string or a comment is kept. `parseSpeck` calls that lexer through `compiler/src/rd-parser.ts`.
 
-`speckl doctor <file>` fails when a domain member declares an `act` tool
-that its harness blocks do not map. That is separate from the adapter
-`doctor` probe, which runs an installed hook.
+`compiler/src/conservation.ts` marks every AST member type `emit`, `reject`, or `n/a` for every backend. `compileSpec` checks the table immediately before it calls that backend, and a reject throws. `oneof` and `transition` are rejected except by Protobuf, which emits them. `import` is `n/a` because `compileSpec` inlines it before generation. A direct call to a generator runs that same check before it writes. Protobuf emits `oneof` and `transition`. The other backends reject them. A missing member-type list, or a type the table does not name, is an error.
 
-**Not yet implemented:** a package registry for `version` pins (the pin is
-stored, and `hash` is checked); rewriting expressions that name an imported
-speck; `consumes` / `produces` contracts, per-action cost, and a domain
-budget; runtime routing between domains.
+`parseSpeck` walks the token stream. A `}` on a speck's header line ends that speck, so the next speck is not absorbed. A `}` inside a string is not that close. A one-line `state { x: Nat }` stores that field. `state { }` stores no fields. A comment after the closing brace is not part of the field. A `}` inside `//` does not close the block. `x := 0` is stored. `x = 0` is `unrecognized init line`. `type LogEntry = { term: Nat, value: Value }` in KafkaKRaft is the record `{ term, value }`, and the following state fields stay on the state. Two OAuth invariants drop a trailing `//` comment. A missing `}`, an extra `}`, text after `}`, an unrecognized member, `§`, an unrecognized state field, and an unrecognized init line are the same error from this parser and from the line walker. There is no second result. An unterminated string is `unterminated string` plus ` (column N)`. File-level `import` is stored on the AST. `compiler/src/imports.ts` reads a relative path (`\` is `/`) whose real location stays inside the entry directory, checks a 64-digit hash pin against the raw bytes, rejects a symlink that leaves that directory, and names the importing file and line on failure. `compileSpec` calls that resolver before it generates. `speckl --root` widens the directory, and `speckl --root /` widens it to the whole filesystem. An absolute import path is still an error, and so is a root that does not contain the imported file. A spec with no import keeps the example output pin. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. Example `-t all` and `-t all-ir` output is pinned as one sha256 in `compiler/src/__tests__/compile-pipeline.test.ts`. `generateAgent` calls `guardAst('agent', ast)` before it emits. A missing member list throws `members are missing on speck "S"`. An unknown type throws `no handler for AST node type "not-a-member"`. A `oneof` throws `agent backend rejects AST node type "oneof"`. A speck with no `agent` block logs `skip S: no agent { } block` and does not emit that speck's agent files. `compiler/src/__tests__/guard-fail-closed-agent.test.ts` checks those three throws. It does not check that the output directory is empty.
+
+## Token parser
+
+`parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parseSpeckContent calls the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts that `parser.ts` is the production file that imports `rd-parser.ts` and that the call passes the source and the file path. `lowers every speck in the repo to the same IR` in that file compares the live parser with the line-walker copy. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
+
+## Rejected structure
+
+These inputs used to parse. Each one is now an error. The same rule is in [speckdl/SPEC.md](speckdl/SPEC.md).
+
+- `speck A {` with no closing brace is missing final "}" at column 9. It used to parse as an empty speck.
+- An extra `}` after a closed speck is extra "}" at line 3 column 1. It used to be ignored.
+- Text after a speck's `}` (`} junk`) is text after a speck's "}" at column 3. It used to be ignored.
+- `speck A { } speck B { }` is a second speck on one line at column 13. Speck B used to be dropped.
+- A member line the parser does not recognize (`garbage line here`, `actoin go {`, `enum`, a description line, a bare `x :=`) is unrecognized member. It used to be dropped or folded into a neighbor.
+- `spek B {` and `*/ speck A {` are unrecognized top-level. The speck used to be dropped.
+- `invariant P { x >= 0 } junk` is text after a member's "}" at column 28. The predicate used to be dropped.
+- A member whose `{` is on the next line is opening "{" must be on the same line as the member header. The member used to be dropped.
+- `y Nat` inside `state` is unrecognized state field "y Nat" on the state header's line, with no column. It used to be appended to the previous type.
+- `y = 0` and `garbage line` inside `init` are unrecognized init line on the init header's line, with no column. They used to be appended to the previous expression. `x := 0` is still stored.
+- `/* c */ action go {` is code after */ on a line that starts with /* at column 13. The action used to be dropped.
+- A bare carriage return is CR-only line endings are not supported at column 10. The state used to be dropped. CRLF is still whitespace.
+- `§` is unexpected character "§" at column 2, and `→` is unexpected character "→" at column 7. The speck used to be stored with no members. Text inside a string or a comment is kept.
+- `speck 9A` is identifier must not start with a digit at column 7. It used to be stored under that name. `state { t: 24h }` still parses.
+- `naïve` is identifier must be ASCII at column 7. It used to be dropped. Non-ASCII text inside a string or a comment is kept.
+- `1h30m` is unsupported numeric literal "1h30m" at column 16. The state used to be stored with no fields.
+- An unclosed quote is unterminated string (column 8). An unclosed `/*` is unterminated block comment (column 5). The old messages named the line and not the column.
 
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
-- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics, including `import` and `domain`
+- [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
 
 ## Status
 
 - About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
-- Compile tests run against every example (see [Compile tests](#compile-tests)). Camel, Rust and Kubernetes CRDs pass for all 16 examples. The other targets have known failures recorded in `examples/.speckl-compile-baseline.json`.
-- `npm run verify` compiles every example and checks it with Z3. Today: 48 of 79 checks pass, 0 fail, and 31 unproven obligations are acknowledged in the baseline (see below).
+- Compile tests run against every example (see [Compile tests](#compile-tests)). Known target failures are recorded in `examples/.speckl-compile-baseline.json`.
+- `npm run verify` compiles every example and checks it with Z3; unproven obligations are acknowledged in the baseline (see below).
 - CI (`.github/workflows/ci.yml`) runs on GitHub-hosted `ubuntu-latest` and has two jobs:
   - **build-and-test:** build, `tsc --noEmit`, `npm test`, `npm run verify` against a pinned z3 release, and coverage with the floors above.
   - **compile-targets:** installs JDK 21, Go 1.23, stable Rust, protoc and Elm 0.19.1, then runs `npm run test:compile`.
 - Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust, Camel
 - Round-trip property tested: parse → print → parse is identity for all examples
 - Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments
-- Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed. Today 3 of 34 example verify blocks are proven (AgentPolicy ×2, ReviewGate); the other 31 are listed in `examples/.speckl-unchecked.json`
+- Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed; acknowledged obligations are listed in `examples/.speckl-unchecked.json`.
 - TLA+ models: Two-Phase Commit, Paxos, and Raft are ported as `.speckdl` specs (inspired by the original TLA+ models, not TLA+ output)
 
 ## License
