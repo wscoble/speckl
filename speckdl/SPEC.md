@@ -238,6 +238,31 @@ import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 Version pinning is optional for local development and required for Specks
 with `review: manual` or `review: hybrid`.
 
+### 2.8.1 Domain blocks
+
+A domain names specks that belong to one bounded context. It is file-level.
+It is not a speck, and it is not a member inside a speck.
+
+```
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+```
+
+`members` is required and lists speck names. `language` is optional. A `}`
+inside a `"` string does not end the block. A domain that never closes is
+`missing final "}"`. A member listed twice, a speck listed by two domains,
+a name that is not a speck, and the same domain name twice are compile
+errors. An imported file's domains are part of the same check. `speckl
+doctor` fails when a member's `effect act` tool is not a `map` target in
+every harness block on that speck. An observe tool is not checked.
+`compileSpec` creates the output directory before it reports a domain
+error, and it does not write the generated file. A domain block does not
+route events, queue work, or schedule a tick.
+`compiler/src/__tests__/domain.test.ts` and
+`compiler/src/__tests__/domain-check-each.test.ts` check these cases.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:

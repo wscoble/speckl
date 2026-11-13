@@ -13,12 +13,13 @@
 // would otherwise be skipped with every later member.
 
 import {
-  AST, SpeckNode, MemberNode, ImportNode,
+  AST, SpeckNode, MemberNode, ImportNode, DomainNode,
   lexStart, maskLine, lexProblem,
   parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr, isAliasTypeText,
   parseMultiLineConstraintVerify, expressionSpanEnd, unsupportedVerify, parseNextRelation,
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
+import { parseDomain } from './domain-parse.js';
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -46,6 +47,7 @@ function parseSpeckStrict(content: string, filePath?: string): AST {
   assertImportNotInBlock(lexed.tokens, filePath);
   const specks: SpeckNode[] = [];
   const fileImports: ImportNode[] = [];
+  const domains: DomainNode[] = [];
   const headerLines = new Set(lexed.headerAfterComment);
   let coveredUntil = 0;
   let i = 0;
@@ -83,6 +85,19 @@ function parseSpeckStrict(content: string, filePath?: string): AST {
       continue;
     }
 
+    if (firstTokenIs(byLine, i + 1, 'domain') || /^domain\b/.test(code)) {
+      if (i < coveredUntil) {
+        i++;
+        continue;
+      }
+      const domain = parseDomain(lines, i);
+      domains.push(domain);
+      const endIdx = domain.endLine! - 1;
+      lex = lexThrough(lines, i + 1, endIdx, lex);
+      i = endIdx + 1;
+      continue;
+    }
+
     if (code === 'speck' && nextCodeIsNamedBlock(lines, i + 1, lex)) {
       throw lexProblem(i + 1, 'speck name must be on the same line as "speck"');
     }
@@ -108,6 +123,7 @@ function parseSpeckStrict(content: string, filePath?: string): AST {
   assertParsedSpeckHeaders(lexed.tokens, specks, filePath);
   const ast: AST = { specks };
   if (fileImports.length > 0) ast.imports = fileImports;
+  if (domains.length > 0) ast.domains = domains;
   return ast;
 }
 
@@ -191,6 +207,10 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
       members.push(Object.assign(node, { startLine: i + 1, endLine: i + 1 }));
       i++;
       continue;
+    }
+
+    if (firstTokenIs(byLine, i + 1, 'domain') || /^domain\b/.test(line)) {
+      throw lexProblem(i + 1, `domain blocks are file-level, not members of speck ${name}`);
     }
 
     if (line.startsWith('next:')) {

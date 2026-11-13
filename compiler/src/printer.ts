@@ -37,7 +37,14 @@ function breakCommentBeforeBrace(raw: string): string {
 export function printAST(ast: AST): string {
   const body = ast.specks.map(printSpeck).join('\n') + '\n';
   const head = (ast.imports ?? []).map(imp => printMember(imp, new Set())[0]);
-  return head.length > 0 ? head.join('\n') + '\n' + body : body;
+  const domains = (ast.domains ?? []).map(printDomain);
+  const parts = [...head, ...domains];
+  return parts.length > 0 ? parts.join('\n') + '\n' + body : body;
+}
+
+function printDomain(domain: { name: string; members: string[]; language?: string }): string {
+  const language = domain.language !== undefined ? ` language: ${JSON.stringify(domain.language)};` : '';
+  return `domain ${domain.name} { members: ${domain.members.join(', ')};${language} }`;
 }
 
 function printSpeck(speck: SpeckNode): string {

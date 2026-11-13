@@ -15,6 +15,7 @@ import { parseMember } from './speck-part2.js';
 import { exprIncomplete } from './speck-part4.js';
 import { parseNextRelation } from './speck-part8.js';
 import { lexSpeck, parseErrorAt, type SpeckToken } from './speck-lex.js';
+import { parseDomain } from './domain-parse.js';
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -52,6 +53,15 @@ function scanFile(lines: string[], byLine: SpeckToken[][], tokens: SpeckToken[],
     }
     if (line.startsWith('import ')) {
       i++;
+      continue;
+    }
+    if (/^domain\b/.test(code)) {
+      const domain = parseDomain(lines, i);
+      const endIdx = (domain.endLine ?? i + 1) - 1;
+      for (let k = i + 1; k <= endIdx && k < lines.length; k++) {
+        lex = maskLine(lines[k], lex, k + 1).state;
+      }
+      i = endIdx + 1;
       continue;
     }
     if (code === 'speck' && nextCodeIsNamedBlock(lines, i + 1, lex)) {
