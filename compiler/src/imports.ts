@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { AST, DomainNode, ImportNode, parseSpeckContent, parsedSource, SpeckNode } from './parser.js';
+import { AST, ImportNode, parseSpeckContent, parsedSource, SpeckNode } from './parser.js';
 
 export interface ImportLink {
   /** Speck that declared the import, or `*` for a file-level import on the root. */
@@ -115,7 +115,6 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
 
   const origin = new Map<string, string>();
   const specks: SpeckNode[] = [];
-  const domains: DomainNode[] = [];
   const links: ImportLink[] = [];
   const stack: string[] = [];
   const stackSet = new Set<string>();
@@ -196,9 +195,6 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
     stackSet.add(abs);
     stack.push(abs);
     const parsed = cache.get(abs)!.ast;
-    for (const domain of parsed.domains ?? []) {
-      domains.push({ ...domain, sourceFile: abs });
-    }
     if (abs !== entryAbs && parsed.specks.length === 0) {
       throw new Error(`Parse error: import "${abs}" declares no specks`);
     }
@@ -248,7 +244,6 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
 
   const out: AST = { specks };
   if (ast.imports?.length) out.imports = ast.imports;
-  if (domains.length) out.domains = domains;
   sourceOf.set(out, files);
   linksOf.set(out, lifted);
   originOf.set(out, origin);

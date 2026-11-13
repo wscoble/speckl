@@ -56,10 +56,6 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
   
   const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: options.rootDir });
-  const domainErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('domain:'));
-  if (domainErrors.length > 0) {
-    throw new Error(domainErrors.map(d => d.message).join('\n'));
-  }
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
 

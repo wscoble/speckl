@@ -46,7 +46,6 @@ import {
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
 import { expandImports, importLinks, importsExpanded, speckSourceFile } from '../imports.js';
-import { localDomains } from './domains.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -98,11 +97,8 @@ export function lower(ast: AST, options: LowerOptions): IR {
     }
   }
 
-  const domains = localDomains(unit.domains, specks.map(s => s.name), options.filePath, diagnostics);
-
   return {
     specks,
-    domains,
     fileMetadata,
     diagnostics,
   };
