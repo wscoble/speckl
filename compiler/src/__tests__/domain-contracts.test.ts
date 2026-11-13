@@ -1052,6 +1052,36 @@ describe('Camel contract output', () => {
     expect(prov).toContain('MarketTick');
     expect(prov).toContain('"speckl:budgetPerTick": 5');
   });
+
+  it('does not emit a contract class when the speck has no domain', () => {
+    const root = dir();
+    const file = write(root, 'plain.speckdl', machine('Plain', 'n := n + 1'));
+    const out = compile(file, 'camel');
+    const javaRoot = join(out, 'camel');
+    const files = readdirSync(javaRoot, { recursive: true }).map(String);
+    expect(files.some(f => f.endsWith('Contract.java'))).toBe(false);
+    const routes = readFileSync(join(javaRoot, files.find(f => f.endsWith('Routes.java'))!), 'utf8');
+    expect(routes).not.toMatch(/throttle|circuitBreaker|CircuitBreaker/);
+  });
+
+  it('emits an empty contract class and does not add a runtime method', () => {
+    const root = dir();
+    const file = write(root, 'book.speckdl', `${machine('Book', 'cost 2\n        n := n + 1', 'event Filled { qty: Nat }')}
+domain Trading { members: Book; produces Filled; budget 5 per tick; }
+`);
+    const out = compile(file, 'camel');
+    const javaRoot = join(out, 'camel');
+    const files = readdirSync(javaRoot, { recursive: true }).map(String);
+    const contract = files.find(f => f.endsWith('TradingContract.java'));
+    expect(contract).toBeTruthy();
+    const src = readFileSync(join(javaRoot, contract!), 'utf8');
+    expect(src).toContain('does not');
+    expect(src).toContain('throttle');
+    const body = src.slice(src.indexOf('public final class'));
+    expect(body).toBe('public final class TradingContract {\n    private TradingContract() {}\n}\n');
+    const routes = readFileSync(join(javaRoot, files.find(f => f.endsWith('Routes.java'))!), 'utf8');
+    expect(routes).not.toMatch(/throttle|circuitBreaker|CircuitBreaker|TradingContract/);
+  });
 });
 
 describe('verifier counterexample trace', () => {
