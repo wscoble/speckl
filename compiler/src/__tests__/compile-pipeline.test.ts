@@ -79,7 +79,9 @@ describe('in-process pipeline matches the CLI', () => {
 // output. Run this test, replace the constant with the hash it prints, and
 // say in that PR why the old bytes were wrong. A whitespace-only edit and a
 // reordered file move the hash and are not a reason to update it.
-const OUTPUT_SHA256 = '4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a';
+// Moved when the generated hook started writing completion-signal fields.
+// hook.mjs, state-integrity.mjs, and AGENTS.md changed. Other artifacts did not.
+const OUTPUT_SHA256 = '121fcc203428a31351aec56b0d2195cff4b9e74844a9c3c061697ea30028f37a';
 
 describe('generated output is pinned for every example', () => {
   it('pins -t all and -t all-ir for every example', () => {
