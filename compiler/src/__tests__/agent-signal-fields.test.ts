@@ -101,4 +101,50 @@ describe('agent completion-signal fields', () => {
     expect(tools.tools[0]['x-speckl'].priority).toBeUndefined();
     expect(tools.tools[0]['x-speckl'].kpis).toBeUndefined();
   });
+
+  it('does not use a domain priority when the speck is not a member', () => {
+    const source = `speck Idle {
+    state { stage: Nat }
+    init { stage := 0 }
+    action Go { stage := 1 }
+    agent { tool go -> Go effect act }
+}
+speck Worker {
+    state { stage: Nat }
+    init { stage := 0 }
+    action Go { stage := 1 }
+    agent { tool go -> Go effect act }
+}
+domain Ops { members: Idle; priority P9; }
+`;
+    const { config } = compile(source);
+    expect(config.tools[0].priority).toBeUndefined();
+  });
+
+  it('does not tag an emit after return', () => {
+    const source = base.replace(
+      '        emit Noted { }',
+      '        return stage\n        emit Noted { }',
+    );
+    const { config } = compile(source);
+    expect(config.tools.find(t => t.name === 'go')?.kpis).toBeUndefined();
+    expect(config.tools.find(t => t.name === 'go')?.priority).toBe('P0');
+  });
+
+  it('tags a repeated kpi once', () => {
+    const source = base
+      .replace('event Hidden kpi "hidden"', 'event Hidden kpi "notes"')
+      .replace('emit Noted { }', 'emit Noted { }\n        emit Hidden { }');
+    const { config } = compile(source);
+    expect(config.tools.find(t => t.name === 'go')?.kpis).toEqual(['notes']);
+  });
+
+  it('copies an action priority onto an observe tool', () => {
+    const source = base.replace(
+      '    action Commented {\n        stage := stage\n    }',
+      '    action Commented {\n        priority P3\n        stage := stage\n    }',
+    );
+    const { config } = compile(source);
+    expect(config.tools.find(t => t.name === 'commented')?.priority).toBe('P3');
+  });
 });
