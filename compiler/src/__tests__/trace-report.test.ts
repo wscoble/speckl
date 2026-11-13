@@ -97,6 +97,12 @@ describe('trace report', () => {
     expect(text).toContain('trace t unparsed');
   });
 
+  it('refuses a torn file, a blank line, and a non-JSON line before the hash check', () => {
+    expect(readDecisionLog('{"a":1}')).toMatchObject({ ok: false, reason: 'decision record is torn' });
+    expect(readDecisionLog('\n')).toMatchObject({ ok: false, reason: 'blank line in decision record' });
+    expect(readDecisionLog('not json\n')).toMatchObject({ ok: false, reason: 'decision record line is not JSON' });
+  });
+
   it('checks the hash chain and leaves the HMAC for a key', () => {
     expect(readDecisionLog('')).toEqual({ ok: true, lines: [] });
     expect(readDecisionLog('{"a":1}')).toMatchObject({ ok: false, reason: 'decision record is torn' });
