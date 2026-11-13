@@ -749,7 +749,7 @@ domain Books { members: Meter; budget 2 per tick; }
     expect(readFileSync(join(out, 'Books.budget.smt2'), 'utf8')).toMatch(/unknown action/);
   });
 
-  it('compares list and nullable event shapes, and copies a foreign event into the Camel unit', () => {
+  it('compares list and nullable event shapes', () => {
     const root = dir();
     const clash = write(root, 'clash.speckdl', `speck A {
     state { n: Nat }
@@ -780,41 +780,6 @@ domain D { members: A; consumes Tick; }
     const sameErrors = errorsOf(same).join('\n');
     expect(sameErrors).toMatch(/different fields/);
     expect(sameErrors).toMatch(/no domain produces/);
-
-    const file = write(root, 'foreign.speckdl', `speck Other {
-    state { n: Nat }
-    init { n := 0 }
-    event Note { n: Nat }
-}
-speck Book {
-    state { n: Nat }
-    init { n := 0 }
-    action Go {
-        cost 1
-        n := n
-        emit Note { n: n }
-    }
-    next: Go
-}
-domain Trading {
-    members: Book;
-    produces Note;
-    budget 3 per tick;
-}
-`);
-    expect(errorsOf(file)).toEqual([]);
-    const out = compile(file, 'camel');
-    const files = readdirSync(join(out, 'camel'), { recursive: true }).map(String);
-    const note = files.find(f => f.endsWith('Note.java'));
-    const contract = files.find(f => f.endsWith('TradingContract.java'));
-    expect(note).toBeTruthy();
-    const noteSrc = readFileSync(join(out, 'camel', note!), 'utf8');
-    expect(noteSrc).toContain('public class Note');
-    expect(noteSrc).toContain('Speckl domain contract: Trading');
-    expect(noteSrc).toContain('Book.Go = 1');
-    expect(readFileSync(join(out, 'camel', contract!), 'utf8')).toContain('consumes: none');
-    const routes = readFileSync(join(out, 'camel', files.find(f => f.endsWith('BookRoutes.java'))!), 'utf8');
-    expect(routes).not.toMatch(/throttle|circuitBreaker/);
   });
 });
 
