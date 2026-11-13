@@ -1,6 +1,6 @@
 # Trace report
 
-`speckl trace report` reads a decision log offline. When the log parses, it checks the hash chain of those lines. A torn file, a blank line, or a line that is not JSON is refused before that check. The HMAC is checked only when a key is passed and the log has a line. A key that is not 64 hex characters is refused. With `--state`, `head.json` is required when `<state>.decisions/` exists. A shortened or deleted log fails when that head is still there. `--log` does not know the head. An empty log prints `macs not checked`. That HMAC is a shared-key seal. It proves nothing to an outside auditor.
+`speckl trace report` reads a decision log offline. When the log parses, it checks the hash chain of those lines. A torn file, a blank line, or a line that is not JSON is refused before that check. A key that is not 64 hex characters is refused. With `--state`, `head.json` is required when `<state>.decisions/` exists. `--log` does not know the head. An empty log prints `macs not checked`.
 
 The report does not run the hook and it does not enforce a queue. Display order is not a queue rank.
 
