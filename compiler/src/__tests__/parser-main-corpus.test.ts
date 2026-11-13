@@ -117,7 +117,7 @@ describe('example corpus', () => {
       fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
     }))).toEqual([
       { name: 'A', endLine: 1, fields: [] },
-      { name: 'B', endLine: 4, fields: [] },
+      { name: 'B', endLine: 4, fields: ['y'] },
     ]);
   });
 

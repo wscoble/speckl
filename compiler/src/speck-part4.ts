@@ -12,11 +12,11 @@ export function parseStateBlockMultiline(lines: string[], startIndex: number, st
   const asMatch = headerLine.match(/^state\s+as\s+(\w+)\s*{/);
   const messageName = asMatch ? asMatch[1] : undefined;
 
-  // A body that closes on the header was not stored by the line walker.
-  // A later change stores that brace span.
+  // A one-line `state { x: Nat }` closes on the header. The line walker
+  // started on the next line and stored no variables.
   const inline = inlineActionBody(headerLine);
   if (inline !== null) {
-    const result = parseStateBlock('');
+    const result = parseStateBlock(inline.trim());
     if (messageName !== undefined) result.messageName = messageName;
     return result;
   }
@@ -102,10 +102,10 @@ export function exprIncomplete(text: string): boolean {
 }
 
 export function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
-  // A body that closes on the header was not stored by the line walker.
-  // A later change stores that brace span.
+  // A one-line `init { x := 0 }` closes on the header. The line walker
+  // started on the next line and stored no assignments.
   const inline = inlineActionBody(lines[startIndex].trim());
-  if (inline !== null) return parseInitBlock('');
+  if (inline !== null) return parseInitBlock(inline.trim());
 
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
