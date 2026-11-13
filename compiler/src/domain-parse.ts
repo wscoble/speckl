@@ -21,6 +21,7 @@ export function parseDomain(lines: string[], startIndex: number): DomainNode {
   const consumes: string[] = [];
   const produces: string[] = [];
   let budgetPerTick: number | undefined;
+  let priority: string | undefined;
   const seenConsumes = new Set<string>();
   const seenProduces = new Set<string>();
   for (const raw of stmts) {
@@ -84,6 +85,17 @@ export function parseDomain(lines: string[], startIndex: number): DomainNode {
       budgetPerTick = n;
       continue;
     }
+    if (stmt.startsWith('priority')) {
+      const pri = stmt.match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw lexProblem(startIndex + 1, `domain ${name} priority must be an identifier`);
+      }
+      if (priority !== undefined) {
+        throw lexProblem(startIndex + 1, `domain ${name} declares priority twice`);
+      }
+      priority = pri[1];
+      continue;
+    }
     throw lexProblem(startIndex + 1, `domain ${name} has unexpected clause ${JSON.stringify(stmt)}`);
   }
   if (!members) {
@@ -97,6 +109,7 @@ export function parseDomain(lines: string[], startIndex: number): DomainNode {
     ...(consumes.length > 0 ? { consumes } : {}),
     ...(produces.length > 0 ? { produces } : {}),
     ...(budgetPerTick !== undefined ? { budgetPerTick } : {}),
+    ...(priority !== undefined ? { priority } : {}),
     startLine: startIndex + 1,
     endLine: extracted.endLine,
   };

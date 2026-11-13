@@ -304,20 +304,37 @@ export function parseInterface(line: string): InterfaceNode {
 }
 
 export function parseEvent(line: string): EventNode {
-  // event Name {   or   event Name external {
-  const match = line.match(/^event\s+(\w+)(?:\s+external)?\s*\{/);
+  // event Name {
+  // event Name external {
+  // event Name kpi "<name>" {
+  // event Name external kpi "<name>" {
+  const match = line.match(/^event\s+(\w+)(?:\s+external)?(?:\s+kpi\s+("(?:\\.|[^"\\])*"))?\s*\{/);
   if (!match) {
     throw new Error(`Failed to parse event: ${line}`);
   }
 
   const name = match[1];
   const external = /^event\s+\w+\s+external\b/.test(line.trim());
+  let kpi: string | undefined;
+  if (match[2] !== undefined) {
+    let value = '';
+    try {
+      value = JSON.parse(match[2]) as string;
+    } catch {
+      throw new Error(`Failed to parse event: ${line}`);
+    }
+    if (value === '') {
+      throw new Error(`Failed to parse event: ${line}`);
+    }
+    kpi = value;
+  }
 
   return {
     type: 'event',
     name,
     fields: [],
     ...(external ? { external: true } : {}),
+    ...(kpi !== undefined ? { kpi } : {}),
   };
 }
 

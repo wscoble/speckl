@@ -19,6 +19,28 @@ function isCostLine(stmt: string): boolean {
   return /^cost\s+\S/.test(text) && !/^cost\s*:=/.test(text);
 }
 
+/** A `priority <Name>` statement, not an assignment `priority := ...`. */
+function isPriorityLine(stmt: string): boolean {
+  const cut = stmt.indexOf('//');
+  const text = (cut >= 0 ? stmt.slice(0, cut) : stmt).trim();
+  return /^priority\b/.test(text) && !/^priority\s*:=/.test(text);
+}
+
+/**
+ * A one-line event. A `}` inside a `"` string or a `//` comment is not the
+ * closer, so `event E kpi "a}b" { }` and `event E kpi "x" { } // {` stay
+ * on this line.
+ */
+function inlineEvent(firstLine: string): { fields: string } | null {
+  const masked = maskCode(firstLine).text;
+  const open = masked.indexOf('{');
+  if (open < 0) return null;
+  const close = masked.indexOf('}', open + 1);
+  if (close < 0) return null;
+  if (masked.slice(close + 1).trim() !== '') return null;
+  return { fields: firstLine.slice(open + 1, close) };
+}
+
 export function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
@@ -152,7 +174,7 @@ export function parseActionBlockMultiline(lines: string[], startIndex: number, s
         if (nextLine.startsWith('precondition:') || nextLine.startsWith('postcondition:') ||
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
-            nextLine.startsWith('if ') || isCostLine(nextLine) ||
+            nextLine.startsWith('if ') || isCostLine(nextLine) || isPriorityLine(nextLine) ||
             nextLine.includes(':=')) {
           break;
         }
@@ -199,6 +221,18 @@ export function parseActionBlockMultiline(lines: string[], startIndex: number, s
         throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} declares cost more than once`);
       }
       statements.push({ type: 'cost', amount });
+      continue;
+    }
+    if (isPriorityLine(stmt)) {
+      const text = stmt.slice(0, stmt.includes('//') ? stmt.indexOf('//') : stmt.length).trim();
+      const pri = text.match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} priority must be an identifier`);
+      }
+      if (statements.some(s => s.type === 'priority')) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} declares priority more than once`);
+      }
+      statements.push({ type: 'priority', name: pri[1] });
       continue;
     }
     // for v in coll { ... } - range loop captured as a forblock statement
@@ -291,10 +325,10 @@ export function parseEventBlockMultiline(lines: string[], startIndex: number, st
 
   // Handle single-line events: event Foo { a: Type, b: Type }
   // extract fields from the first line itself
-  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?\s*\{(.*)\}\s*$/);
+  const inlineMatch = inlineEvent(firstLine);
   const inlineFields: { name: string; type: TypeExpr }[] = [];
-  if (inlineMatch && inlineMatch[2].trim()) {
-    const fieldStr = inlineMatch[2].trim();
+  if (inlineMatch && inlineMatch.fields.trim()) {
+    const fieldStr = inlineMatch.fields.trim();
     for (const f of fieldStr.split(',')) {
       const fm = f.trim().match(/^(\w+)\s*:\s*(.+)$/);
       if (fm) {
@@ -306,7 +340,7 @@ export function parseEventBlockMultiline(lines: string[], startIndex: number, st
   // Single-line form: the braces balance on the header line itself, so the
   // block walk below must not run - it would overrun into later members
   // (their `state:` / `actions:` lines would leak in as event fields).
-  if (inlineMatch && firstLine.endsWith('}')) {
+  if (inlineMatch) {
     return { ...header, fields: inlineFields };
   }
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);

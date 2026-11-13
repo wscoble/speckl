@@ -342,9 +342,14 @@ function lowerBehavior(
       // `cost` is action metadata, not a transition statement.
       const stmts: IRStmt[] = [];
       let cost: number | undefined;
+      let priority: string | undefined;
       for (const s of rawStmts) {
         if (s.type === 'cost') {
           cost = s.amount;
+          continue;
+        }
+        if (s.type === 'priority') {
+          priority = s.name;
           continue;
         }
         stmts.push(lowerStatement(s, diagnostics, speck.name));
@@ -354,6 +359,7 @@ function lowerBehavior(
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
         statements: stmts,
         ...(cost !== undefined ? { cost } : {}),
+        ...(priority !== undefined ? { priority } : {}),
       });
     } else if (m.type === 'event') {
       const e = m as EventNode;
@@ -365,6 +371,7 @@ function lowerBehavior(
           optional: false,
         })),
         ...(e.external ? { external: true } : {}),
+        ...(e.kpi !== undefined ? { kpi: e.kpi } : {}),
       });
     }
   }
@@ -966,6 +973,8 @@ function lowerStatement(
       };
     case 'cost':
       throw new Error('cost is action metadata and is not a transition statement');
+    case 'priority':
+      throw new Error('priority is action metadata and is not a transition statement');
     case 'ifblock':
       // Future: lower the ifblock properly. For now, keep as a synthetic
       // statement that the generators can choose to ignore.

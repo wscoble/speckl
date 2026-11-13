@@ -54,6 +54,11 @@ export interface DomainNode {
   produces?: string[];
   /** `budget <n> per tick`. Absent when the clause is omitted. Zero is a real budget. */
   budgetPerTick?: number;
+  /**
+   * `priority <Name>`. A label for completion signals. Absent when the
+   * domain declares none. Not a runtime queue.
+   */
+  priority?: string;
   startLine?: number;
   endLine?: number;
   /** Absolute path of the file that declared the domain, after import merge. */
@@ -132,6 +137,8 @@ export interface EventNode {
    * the event is internal.
    */
   external?: boolean;
+  /** `kpi "<name>"`. Absent when the event is not tagged. */
+  kpi?: string;
 }
 
 // oneof: discriminated-union variant for proto wire-format compatibility.
@@ -262,7 +269,8 @@ export type ActionStatement =
   | { type: 'emit'; event: string; fields: { name: string; value: string }[] }
   | { type: 'return'; expr: string }
   | { type: 'ifblock'; raw: string }
-  | { type: 'cost'; amount: number };
+  | { type: 'cost'; amount: number }
+  | { type: 'priority'; name: string };
 
 /** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
 export interface LineSpan {

@@ -304,7 +304,7 @@ function planMember(speck: SpeckNode, depth: number): { ok: true; member: Member
     const assigns: { target: string; expr: string }[] = [];
     const writes = new Set<string>();
     for (const s of action.statements) {
-      if (s.type === 'cost' || s.type === 'emit' || s.type === 'return' || s.type === 'postcondition') continue;
+      if (s.type === 'cost' || s.type === 'priority' || s.type === 'emit' || s.type === 'return' || s.type === 'postcondition') continue;
       if (s.type === 'require' || s.type === 'precondition') {
         guardsSrc.push(s.expr);
         continue;
