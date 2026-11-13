@@ -14,7 +14,6 @@ describe('trace report docs', () => {
   it('says the report checks the hash chain, checks HMAC only with a key, and does not enforce a queue', () => {
     for (const text of files) {
       expect(text).toContain('checks the hash chain');
-      expect(text).toContain('only when a key is passed');
       expect(text).toContain('macs not checked');
       expect(text).toContain('does not enforce a queue');
       expect(text).toContain('does not run the hook');

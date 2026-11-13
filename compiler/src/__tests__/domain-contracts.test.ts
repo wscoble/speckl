@@ -1111,6 +1111,32 @@ domain Trading { members: Book; produces Filled; budget 5 per tick; }
     const routes = readFileSync(join(javaRoot, files.find(f => f.endsWith('Routes.java'))!), 'utf8');
     expect(routes).not.toMatch(/throttle|circuitBreaker|CircuitBreaker|TradingContract/);
   });
+
+  it('emits one route per action', () => {
+    const root = dir();
+    const file = write(root, 'two.speckdl', `speck Book {
+    state { n: Nat }
+    init { n := 0 }
+    action Go { n := n + 1 }
+    action Stay { n := n }
+    next: Go | Stay
+}
+domain Trading { members: Book; budget 5 per tick; }
+`);
+    const out = compile(file, 'camel');
+    const javaRoot = join(out, 'camel');
+    const files = readdirSync(javaRoot, { recursive: true }).map(String);
+    const routes = readFileSync(join(javaRoot, files.find(f => f.endsWith('Routes.java'))!), 'utf8');
+    expect(routes).toContain('.routeId("Go")');
+    expect(routes).toContain('.routeId("Stay")');
+    expect(routes.match(/\.routeId\(/g)).toHaveLength(2);
+  });
+
+  it('does not run Z3 while generating Camel', () => {
+    const src = readFileSync(new URL('../generators/camel.ts', import.meta.url), 'utf8');
+    expect(src.includes('runZ3')).toBe(false);
+    expect(src.includes("spawnSync('z3'")).toBe(false);
+  });
 });
 
 describe('verifier counterexample trace', () => {
