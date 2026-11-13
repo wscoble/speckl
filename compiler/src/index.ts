@@ -4,17 +4,21 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { compileSpec, type CompileOptions } from './compile.js';
 import { runVerify, packageVersion } from './cli-support.js';
+import { runDoctor } from './doctor.js';
 
-export { runVerify };
+export { runVerify, runDoctor };
 
 async function main() {
   if (process.argv[2] === 'verify') {
     process.exit(runVerify(process.argv.slice(3)));
   }
+  if (process.argv[2] === 'doctor') {
+    process.exit(runDoctor(process.argv.slice(3)));
+  }
   const argv = await yargs(hideBin(process.argv))
     .scriptName('speckl')
     .version(packageVersion())
-    .usage('Usage:\n  $0 <file> [options]\n  $0 verify [paths..] [--depth <n>]')
+    .usage('Usage:\n  $0 <file> [options]\n  $0 verify [paths..] [--depth <n>]\n  $0 doctor [files..]')
     .command('$0 <file>', 'Compile a SpeckDL specification', (yargsCmd) => {
       return yargsCmd
         .positional('file', {

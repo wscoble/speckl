@@ -4,6 +4,8 @@ import { setParseFile as setLiveParseFile } from '../speck-part0.js';
 import { maskLine, nextCodeIsNamedBlock, parseSpeck } from './speck-part1.js';
 import { parseImportStatement } from './speck-part3.js';
 import { assertClosedSpec } from '../walker-strict.js';
+import { parseDomain } from '../domain-parse.js';
+import type { DomainNode } from '../speck-part0.js';
 
 export * from './speck-part0.js';
 export * from './speck-part1.js';
@@ -33,6 +35,7 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
   try {
   assertClosedSpec(content, filePath);
   const specks: SpeckNode[] = [];
+  const domains: DomainNode[] = [];
   const lines = content.split('\n');
   // A `"` must close on its line, and a `/*` must close before the file ends,
   // including at file level, after the last speck, and inside domain text.
@@ -70,6 +73,13 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
       i++;
       continue;
     }
+
+    if (/^domain\b/.test(code)) {
+      const domain = parseDomain(lines, i);
+      domains.push(domain);
+      i = domain.endLine ?? (i + 1);
+      continue;
+    }
     
     // `speck` on its own line, with `Name {` later, used to be skipped.
     // The name belongs on the `speck` line.
@@ -94,7 +104,9 @@ export function parseSpeckContent(content: string, filePath?: string): AST {
     i++;
   }
   
-  return { specks };
+  const ast: AST = { specks };
+  if (domains.length > 0) (ast as AST & { domains: DomainNode[] }).domains = domains;
+  return ast;
   } finally {
     setParseFile('');
     setLiveParseFile('');
