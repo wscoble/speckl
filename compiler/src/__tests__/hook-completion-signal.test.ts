@@ -90,4 +90,114 @@ describe('generated hook completion signals', () => {
     expect(denied.trace_id).not.toBe('caller');
     expect(denied.trace_flagged).toBe(true);
   });
+
+  it('replaces an empty trace id and still allows the call', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: 'empty', trace_id: '' });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.trace_id).not.toBe('');
+    expect(opened.trace_flagged).toBe(true);
+    expect(opened.parent_branch_id).toBeNull();
+  });
+
+  it('replaces a trace id longer than 200 characters', () => {
+    const state = freshState(agentDir);
+    const long = 'a'.repeat(201);
+    const pre = hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: 'long', trace_id: long });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.trace_id).not.toBe(long);
+    expect(String(opened.trace_id).length).toBeLessThanOrEqual(200);
+    expect(opened.trace_flagged).toBe(true);
+  });
+
+  it('replaces a trace id that contains a disallowed character', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: 'hash', trace_id: 'bad#id' });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.trace_id).not.toBe('bad#id');
+    expect(opened.trace_flagged).toBe(true);
+  });
+
+  it('replaces a missing trace id and still allows the call', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: 'none' });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(typeof opened.trace_id).toBe('string');
+    expect(opened.trace_flagged).toBe(true);
+    expect(opened.parent_branch_id).toBeNull();
+  });
+
+  it('flags a parent branch id that is not an id and clears it', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, {
+      tool: 'run_tests', input: {}, call_id: 'badp', trace_id: 'root-bp', parent_branch_id: 'has space',
+    });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.trace_id).toBe('root-bp');
+    expect(opened.parent_branch_id).toBeNull();
+    expect(opened.trace_flagged).toBe(true);
+  });
+
+  it('an absent parent is a root and is not flagged', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: 'root', trace_id: 'root-plain' });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.trace_id).toBe('root-plain');
+    expect(opened.parent_branch_id).toBeNull();
+    expect(opened.trace_flagged).toBe(false);
+  });
+
+  it('an empty parent is a root and is not flagged', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, {
+      tool: 'run_tests', input: {}, call_id: 'empty-parent', trace_id: 'root-ep', parent_branch_id: '',
+    });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.parent_branch_id).toBeNull();
+    expect(opened.trace_flagged).toBe(false);
+  });
+
+  it('does not keep a branch id equal to its parent', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, {
+      tool: 'run_tests', input: {}, call_id: 'eq', trace_id: 'root-eq',
+      parent_branch_id: 'parent-1', branch_id: 'parent-1',
+    });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.parent_branch_id).toBe('parent-1');
+    expect(opened.branch_id).not.toBe('parent-1');
+    expect(opened.trace_flagged).toBe(false);
+  });
+
+  it('an observe tool does not get the signal fields', () => {
+    const state = freshState(agentDir);
+    hook(agentDir, 'pre', state, { tool: 'read_file', input: {}, call_id: 'obs', trace_id: 'root-obs' });
+    const opened = lines(state).at(-1)!;
+    expect(opened.tool).toBe('read_file');
+    expect(opened.trace_id).toBeUndefined();
+    expect(opened.signal).toBeUndefined();
+    expect(opened.kpis).toBeUndefined();
+  });
+
+  it('a matching post does not keep the caller kpis', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: 'kpi', trace_id: 'root-kpi' });
+    expect(pre.status, pre.stderr).toBe(0);
+    const post = hook(agentDir, 'post', state, {
+      tool: 'run_tests', call_id: 'kpi', ok: true, kpis: ['forged'], trace_id: 'forged',
+    });
+    expect(post.status, post.stderr).toBe(0);
+    const closed = lines(state).at(-1)!;
+    expect(closed.trace_id).toBe('root-kpi');
+    expect(closed.kpis).toEqual([]);
+    expect(closed.ok).toBe(true);
+  });
 });

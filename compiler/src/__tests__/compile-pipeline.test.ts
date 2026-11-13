@@ -113,6 +113,27 @@ describe('example output baseline', () => {
     expect(() => assertExampleOutput('A.speckdl', 'all', { 'agent/hook.mjs': 'new', 'A.ts': 'pin' }, baseline)).not.toThrow();
     expect(() => assertExampleOutput('A.speckdl', 'all', { 'agent/hook.mjs': 'old', 'A.ts': 'other' }, baseline)).toThrow(/A\.ts/);
   });
+
+  it('does not fail when an allow-listed file is missing from the fresh compile', () => {
+    const baseline = {
+      allow: ['agent/hook.mjs'],
+      digests: { 'A.speckdl -t all': { 'agent/hook.mjs': 'old', 'A.ts': 'pin' } },
+    };
+    expect(() => assertExampleOutput('A.speckdl', 'all', { 'A.ts': 'pin' }, baseline)).not.toThrow();
+  });
+
+  it('rejects a file the baseline does not list', () => {
+    const baseline = {
+      allow: ['agent/hook.mjs'],
+      digests: { 'A.speckdl -t all': { 'A.ts': 'pin' } },
+    };
+    expect(() => assertExampleOutput('A.speckdl', 'all', { 'A.ts': 'pin', 'extra.ts': 'x' }, baseline)).toThrow(/unexpected file extra\.ts/);
+  });
+
+  it('rejects a target the baseline does not list', () => {
+    const baseline = { allow: [], digests: {} as Record<string, Record<string, string>> };
+    expect(() => assertExampleOutput('A.speckdl', 'all', {}, baseline)).toThrow(/A\.speckdl -t all/);
+  });
 });
 
 describe('generated output is pinned for every example', () => {
