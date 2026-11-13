@@ -79,7 +79,12 @@ describe('in-process pipeline matches the CLI', () => {
 // output. Run this test, replace the constant with the hash it prints, and
 // say in that PR why the old bytes were wrong. A whitespace-only edit and a
 // reordered file move the hash and are not a reason to update it.
-const OUTPUT_SHA256 = '4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a';
+// Moved when the generated hook started writing completion-signal fields.
+// hook.mjs, state-integrity.mjs, and AGENTS.md changed. Other artifacts did not.
+// The AGENTS.md sentence now says the hook copies priority and kpis from the
+// tool and does not scan the action body. The previous sentence said the hook
+// reads them from the action or the domain.
+const OUTPUT_SHA256 = 'b2a6e3d2418cdd327687fd98c43aff54279f90a6092495101146d21af7ec112b';
 
 describe('generated output is pinned for every example', () => {
   it('pins -t all and -t all-ir for every example', () => {
