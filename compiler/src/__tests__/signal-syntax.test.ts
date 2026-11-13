@@ -172,4 +172,9 @@ domain Books { members: Meter; budget 5 per tick; }
     expect(smt).not.toMatch(/cannot be lowered/);
     expect(smt).toContain('speckl-expect: unsat');
   });
+
+  it('does not copy labels onto tools or enforce a queue', () => {
+    const src = readFileSync(new URL('../ir/lower.ts', import.meta.url), 'utf8') + readFileSync(new URL('../printer.ts', import.meta.url), 'utf8');
+    expect(/orderByPriority|planRoutes|runTick/.test(src)).toBe(false);
+  });
 });
