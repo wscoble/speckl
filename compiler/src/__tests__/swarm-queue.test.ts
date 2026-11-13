@@ -53,6 +53,15 @@ describe('swarm priority queue', () => {
     expect('P10'.localeCompare('P2')).toBeLessThan(0);
   });
 
+  it('keeps arrival order when P0 and P00 are the same number', () => {
+    expect(comparePriority('P0', 'P00')).toBe(0);
+    const ordered = orderByPriority([
+      { id: 'first', priority: 'P00' },
+      { id: 'second', priority: 'P0' },
+    ]);
+    expect(ordered.map(item => item.id)).toEqual(['first', 'second']);
+  });
+
   it('orders the same number by prefix and keeps arrival order for one label', () => {
     const ordered = orderByPriority([
       { id: 'b-first', priority: 'B0' },

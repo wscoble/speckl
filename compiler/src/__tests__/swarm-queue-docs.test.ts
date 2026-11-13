@@ -24,6 +24,7 @@ describe('swarm queue docs', () => {
     expect(tests).toContain('does not mutate the input array');
     expect(tests).toContain('does not sort a numbered label as text');
     expect(tests).toContain('orders the same number by prefix and keeps arrival order for one label');
+    expect(tests).toContain('keeps arrival order when P0 and P00 are the same number');
     expect(tests).toContain('compileSpec does not call the priority order');
   });
 });
