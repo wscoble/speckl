@@ -20,20 +20,20 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { IR, IRDomain, IRSpeck, ProvenanceClause, Author, Source, SourceKind } from '../ir/types.js';
+import { IR, IRSpeck, ProvenanceClause, Author, Source, SourceKind } from '../ir/types.js';
 import { guardIr } from '../conservation.js';
 
 export function generateProvenanceFromIR(ir: IR, outputDir: string): void {
   guardIr('provenance', ir);
   for (const speck of ir.specks) {
-    const graph = renderProvGraph(speck, ir.domains ?? []);
+    const graph = renderProvGraph(speck);
     const filename = path.join(outputDir, `${speck.name}.prov.jsonld`);
     fs.writeFileSync(filename, JSON.stringify(graph, null, 2));
     console.log(`Generated provenance: ${filename}`);
   }
 }
 
-function renderProvGraph(speck: IRSpeck, domains: IRDomain[]): any {
+function renderProvGraph(speck: IRSpeck): any {
   const prov = speck.facets.provenance;
   const graph: any[] = [];
 
@@ -269,20 +269,6 @@ function renderProvGraph(speck: IRSpeck, domains: IRDomain[]): any {
       '@type': 'prov:wasDerivedFrom',
       'prov:generatedEntity': entityId,
       'prov:usedEntity': parentId,
-    });
-  }
-
-  const seen = new Set<string>();
-  for (const domain of domains) {
-    if (!domain.members.includes(speck.name) || seen.has(domain.name)) continue;
-    seen.add(domain.name);
-    graph.push({
-      '@type': ['prov:Entity', 'prov:Collection'],
-      '@id': `domain:${domain.name}`,
-      'rdfs:label': domain.name,
-      'speckl:kind': 'domain',
-      ...(domain.language !== undefined ? { 'speckl:language': domain.language } : {}),
-      'prov:hadMember': domain.members.map(member => `speck:${member}`),
     });
   }
 
