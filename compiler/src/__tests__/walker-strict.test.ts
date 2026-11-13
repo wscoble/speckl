@@ -84,6 +84,43 @@ describe('strict structure check', () => {
     expect(message(src)).toBe('accept');
   });
 
+  it('still accepts an extra close', () => {
+    const src = 'speck A {\n}\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":2,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
+  it('still accepts text after a close', () => {
+    const src = 'speck A {\n} junk\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":2,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
+  it('still accepts an unrecognized member', () => {
+    const src = 'speck A {\n    garbage line here\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
+  it('still accepts a section sign', () => {
+    const src = 'speck A {\n §\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
+  it('keeps every rejection class off', () => {
+    const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
+    const start = text.indexOf('const ON');
+    const block = text.slice(start, text.indexOf('};', start) + 2);
+    const flags = [...block.matchAll(/(\w+):\s*(true|false)/g)].map(m => [m[1], m[2]] as const);
+    expect(flags.map(([name]) => name)).toEqual([
+      'missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail',
+      'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
+      'ascii', 'numeric', 'unclosed',
+    ]);
+    expect(flags.every(([, value]) => value === 'false')).toBe(true);
+  });
+
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
