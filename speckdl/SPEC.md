@@ -259,6 +259,10 @@ After the block parses, `lower` checks it. A member that is not a speck in the f
 
 A domain may add `consumes PaymentReceived;`, `produces InvoiceIssued;`, and `budget 0 per tick;`. `consumes` and `produces` name events. An empty list is `has no event`. A name that is not an identifier is `not an event name`. The same name twice on one clause is `more than once`. `budget` must be a non-negative integer followed by `per tick`. Zero is a real budget. An action may declare `cost 0`. Zero is a real cost. A negative cost, a cost that is not an integer, and a second `cost` are errors. `cost := 1` stays an assignment. This check copies `cost` onto the action. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. Storing `cost` does not drop the action's other statements. This check rejects a consumed event that nobody produces and that is not external, a produce of something that is not an event, and an emit the domain does not produce. It does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers the syntax cases and the two non-regression cases. `compiler/src/__tests__/domain-contracts.test.ts` covers the wiring rejections. `docs/domain-contract-syntax.md` says the same thing.
 
+### 2.8.4 Domain budget
+
+`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
