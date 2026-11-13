@@ -94,11 +94,19 @@ describe('line walker rejects malformed structure', () => {
     expect(stored(src)).toBe('[{"name":"A","endLine":2,"members":[]}]');
     expect(message(src)).toBe('Parse error at bad.speckdl:2: text after a speck\'s "}" (column 3)');
   });
-  it('still accepts an unrecognized member', () => {
+
+  it('rejects a second speck on one line', () => {
+    const src = 'speck A { } speck B { }\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":1,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:1: a second speck on one line (column 13)');
+  });
+
+  it('still accepts an unrecognized member line', () => {
     const src = 'speck A {\n    garbage line here\n}\n';
     expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
     expect(message(src)).toBe('accept');
   });
+
   it('still accepts a section sign', () => {
     const src = 'speck A {\n §\n}\n';
     expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
@@ -110,13 +118,13 @@ describe('line walker rejects malformed structure', () => {
     const block = text.slice(start, text.indexOf('};', start) + 2);
     const flags = [...block.matchAll(/(\w+):\s*(true|false)/g)].map(m => [m[1], m[2]] as const);
     expect(flags.map(([name]) => name)).toEqual([
+
       'missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail',
       'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
       'ascii', 'numeric', 'unclosed',
     ]);
-    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text']);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second']);
   });
-  // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
