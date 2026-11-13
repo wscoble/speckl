@@ -4,7 +4,8 @@
 // a queue until something dequeues it. A trailing integer is the rank, so
 // P0 comes before P1 and P2 comes before P10. A label with no trailing
 // integer comes after every numbered label, in locale order. A missing
-// priority comes last. Equal ranks keep arrival order.
+// priority comes last. The same label keeps arrival order. The same
+// number with two prefixes is ordered by the prefix.
 
 export interface QueueItem {
   priority?: string;

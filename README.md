@@ -168,7 +168,7 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 ## Domain blocks
 
-A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a string does not end the block. An unclosed block is `missing final "}"`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of the parser change.
+A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed string does not end the block. An unclosed block whose source has no `}` is `missing final "}"`. A `}` after an unclosed quote is counted by the brace check, and the domain scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of the parser change.
 
 ## Domain checks
 
@@ -180,11 +180,11 @@ Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cos
 
 ## Domain budget
 
-`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
+`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. A domain that declares no budget writes no budget file. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
 
 ## Camel contract class
 
-A domain becomes a comment and an empty `NameContract` class with a private constructor. The class has no runtime method. A speck with no domain emits no contract class. Camel does not throttle, queue, or route, and it does not run a tick. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, and the speck with no domain. `docs/domain-contract-camel.md` says the same thing.
+A domain becomes a comment and an empty `NameContract` class with a private constructor. The class has no runtime method. A speck with no domain emits no contract class. A domain with no contract clauses emits no contract class. The contract class does not throttle, queue, or route messages. The Camel target still emits a RouteBuilder for the speck's actions. This class does not run a tick and does not call Z3. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, and the speck with no domain. `docs/domain-contract-camel.md` says the same thing.
 
 ## Trace report
 
@@ -208,11 +208,11 @@ The trailing integer is the rank. P0 comes before P1, and P2 comes before P10. A
 
 ## Swarm tick
 
-The per-domain `budgetPerTick` is the tick. A missing budget is no cap. Zero is a real budget, and cost 0 still fits. An item whose cost is greater than the budget does not run. The tick does not skip a head that does not fit in order to run a cheaper item behind it. A negative cost, or a cost that is not a number, waits and blocks the rest of that domain. It does not increase the remaining budget. An item after the one that fills the budget waits. Work for a domain the tick does not name waits. The caller's work list is not mutated. `compileSpec` does not call `runTick`. This module does not route events and it does not apply backpressure. `docs/swarm-tick.md` says the same thing. `compiler/src/__tests__/swarm-tick.test.ts` covers each case.
+The per-domain `budgetPerTick` is the tick. A missing budget is no cap. Zero is a real budget, and cost 0 still fits. An item whose cost is greater than the budget does not run. The tick does not skip a head that does not fit in order to run a cheaper item behind it. A negative cost, or a cost that is not a number, waits and blocks the rest of that domain. An infinite cost is not negative. It does not fit a finite budget, so it waits and blocks the rest of that domain. It does not increase the remaining budget. An item after the one that fills the budget waits. Work for a domain the tick does not name waits. The caller's work list is not mutated. `compileSpec` does not call `runTick`. This module does not route events and it does not apply backpressure. `docs/swarm-tick.md` says the same thing. `compiler/src/__tests__/swarm-tick.test.ts` covers each case.
 
 ## Swarm backpressure
 
-One route hop becomes a delivery at the consumer. Backpressure is the budget stop. The delivery stays in `waiting` and is not dropped. A domain with no budget does not report backpressure. An arrival with no matching route creates no delivery. A delivery that fits is not named. A delivery whose cost is greater than the budget stays named on a later tick. `compileSpec` does not call `deliver`. Camel does not throttle. `docs/swarm-backpressure.md` says the same thing. `compiler/src/__tests__/swarm-backpressure.test.ts` covers each case.
+One route hop becomes a delivery at the consumer. Backpressure is the budget stop. The delivery stays in `waiting` and is not dropped. A domain with no budget does not report backpressure. An arrival with no matching route creates no delivery. A delivery that fits is not named. A delivery whose cost is greater than the budget stays named on a later tick. `compileSpec` does not call `deliver`. `deliver` does not throttle. The Camel target still emits a RouteBuilder for the speck's actions. A negative cost waits and is named. `docs/swarm-backpressure.md` says the same thing. `compiler/src/__tests__/swarm-backpressure.test.ts` covers each case.
 
 ## Token parser
 

@@ -16,12 +16,15 @@ describe('swarm backpressure docs', () => {
       expect(text).toContain('budget stop');
       expect(text).toContain('is not named');
       expect(text).toContain('does not call `deliver`');
-      expect(text).toContain('Camel does not throttle');
+      expect(text).toContain('`deliver` does not throttle');
+      expect(text).toContain('RouteBuilder');
+      expect(text).toContain('A negative cost waits and is named');
     }
   });
 
   it('names the negative tests', () => {
     expect(tests).toContain('does not name backpressure for a delivery that fits');
+    expect(tests).toContain('names a negative-cost delivery and does not run it');
     expect(tests).toContain('does not report backpressure for a domain that declares no budget');
     expect(tests).toContain('keeps a delivery that can never fit, and does not invent a route');
     expect(tests).toContain('compileSpec does not call deliver');

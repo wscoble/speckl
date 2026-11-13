@@ -14,6 +14,7 @@ describe('swarm tick docs', () => {
   it('names every fail-closed path', () => {
     for (const text of files) {
       expect(text).toContain('negative cost');
+      expect(text).toContain('infinite cost is not negative');
       expect(text).toContain('does not increase the remaining budget');
       expect(text).toContain('does not skip a head');
       expect(text).toContain('does not apply backpressure');
@@ -24,6 +25,7 @@ describe('swarm tick docs', () => {
     for (const name of [
       'a negative cost waits and blocks the cheaper item behind it',
       'a cost that is not a number waits',
+      'an infinite cost waits and blocks the item behind it',
       'waits every item when the tick names no domain',
       'does not run the item after the one that fills the budget',
       'does not mutate the caller work list',
