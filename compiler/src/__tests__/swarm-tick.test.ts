@@ -106,6 +106,18 @@ describe('swarm tick', () => {
     expect(tick.waiting.map(item => item.id)).toEqual(['bad', 'cheap']);
   });
 
+  it('an infinite cost waits and blocks the item behind it', () => {
+    const tick = runTick(
+      [{ name: 'Left', budgetPerTick: 5 }],
+      [
+        { domain: 'Left', id: 'inf', cost: Number.POSITIVE_INFINITY, priority: 'P0' },
+        { domain: 'Left', id: 'behind', cost: 1, priority: 'P1' },
+      ],
+    );
+    expect(tick.ran).toEqual([]);
+    expect(tick.waiting.map(item => item.id)).toEqual(['inf', 'behind']);
+  });
+
   it('a cost that is not a number waits', () => {
     const tick = runTick(
       [{ name: 'Left', budgetPerTick: 5 }],

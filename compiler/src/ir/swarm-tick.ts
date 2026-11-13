@@ -6,6 +6,8 @@
 // Zero is a real budget. Cost 0 is a real cost and still fits in a zero
 // budget. A negative cost, or a cost that is not a number, waits and
 // blocks the rest of that domain. It does not increase the remaining budget.
+// An infinite cost is not negative. It does not fit a finite budget, so it
+// waits and blocks the rest of that domain.
 // The tick does not skip a head that does not fit in order to run
 // a cheaper item behind it. Work left waiting is not dropped. A later tick
 // starts each budget again from zero. Work for a domain that is not in the
