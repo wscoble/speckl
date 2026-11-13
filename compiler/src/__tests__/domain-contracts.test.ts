@@ -781,6 +781,44 @@ domain D { members: A; consumes Tick; }
     expect(sameErrors).toMatch(/different fields/);
     expect(sameErrors).toMatch(/no domain produces/);
   });
+
+  it('copies a foreign event into the Camel unit', () => {
+    const root = dir();
+    const file = write(root, 'foreign.speckdl', `speck Other {
+    state { n: Nat }
+    init { n := 0 }
+    event Note { n: Nat }
+}
+speck Book {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+        cost 1
+        n := n
+        emit Note { n: n }
+    }
+    next: Go
+}
+domain Trading {
+    members: Book;
+    produces Note;
+    budget 3 per tick;
+}
+`);
+    expect(errorsOf(file)).toEqual([]);
+    const out = compile(file, 'camel');
+    const files = readdirSync(join(out, 'camel'), { recursive: true }).map(String);
+    const note = files.find(f => f.endsWith('Note.java'));
+    const contract = files.find(f => f.endsWith('TradingContract.java'));
+    expect(note).toBeTruthy();
+    const noteSrc = readFileSync(join(out, 'camel', note!), 'utf8');
+    expect(noteSrc).toContain('public class Note');
+    expect(noteSrc).toContain('Speckl domain contract: Trading');
+    expect(noteSrc).toContain('Book.Go = 1');
+    expect(readFileSync(join(out, 'camel', contract!), 'utf8')).toContain('consumes: none');
+    const routes = readFileSync(join(out, 'camel', files.find(f => f.endsWith('BookRoutes.java'))!), 'utf8');
+    expect(routes).not.toMatch(/throttle|circuitBreaker/);
+  });
 });
 
 describe('parameterised budget soundness', () => {
@@ -971,6 +1009,45 @@ domain Billing { members: A, A; }
 domain Billing { members: A; produces Note; }
 `);
     expect(errorsOf(file)).toEqual([]);
+  });
+});
+
+describe('Camel contract output', () => {
+  it('emits a comment block and a typed event class, and does not throttle', () => {
+    const root = dir();
+    const file = write(root, 'book.speckdl', readFileSync(join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'DomainContract.speckdl'), 'utf8'));
+    const out = compile(file, 'camel');
+    const javaRoot = join(out, 'camel');
+    const files = readdirSync(javaRoot, { recursive: true }).map(String);
+    const event = files.find(f => f.endsWith('Filled.java'));
+    const external = files.find(f => f.endsWith('MarketTick.java'));
+    const contract = files.find(f => f.endsWith('TradingContract.java'));
+    expect(event).toBeTruthy();
+    expect(external).toBeTruthy();
+    expect(contract).toBeTruthy();
+    const eventSrc = readFileSync(join(javaRoot, event!), 'utf8');
+    const tickSrc = readFileSync(join(javaRoot, external!), 'utf8');
+    const contractSrc = readFileSync(join(javaRoot, contract!), 'utf8');
+    for (const src of [eventSrc, tickSrc, contractSrc]) {
+      expect(src).toContain('Speckl domain contract: Trading');
+      expect(src).toContain('does not');
+      expect(src).toContain('not affiliated with the Apache Software Foundation');
+      expect(src).toContain('consumes: MarketTick (external)');
+      expect(src).toContain('produces: Filled');
+      expect(src).toContain('budget: 5 per tick');
+    }
+    expect(eventSrc).toContain('public class Filled');
+    expect(eventSrc).toContain('getQty');
+    expect(tickSrc).toContain('public class MarketTick');
+    expect(tickSrc).toContain('getPrice');
+    const routes = readFileSync(join(javaRoot, files.find(f => f.endsWith('Routes.java'))!), 'utf8');
+    expect(routes).not.toMatch(/throttle|circuitBreaker|CircuitBreaker/);
+    expect(routes).not.toContain('budget');
+    const provDir = out;
+    const prov = readFileSync(join(provDir, 'Book.prov.jsonld'), 'utf8');
+    expect(prov).toContain('"speckl:consumes"');
+    expect(prov).toContain('MarketTick');
+    expect(prov).toContain('"speckl:budgetPerTick": 5');
   });
 });
 
