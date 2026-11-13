@@ -116,17 +116,17 @@ describe('line walker rejects malformed structure', () => {
     expect(message(enumerated)).toBe('Parse error at bad.speckdl:2: unrecognized member "enum Status { Active, Inactive }" (column 3)');
 
     const described = 'speck A {\n    description: "} speck B {"\n    state { x: Nat }\n    init { x := 0 }\n}\n';
-    expect(stored(described)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[]},{"type":"init","asg":[]}]}]');
+    expect(stored(described)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[["x",{"type":"primitive","name":"Nat"}]]},{"type":"init","asg":[{"name":"x","expr":"0"}]}]}]');
     expect(message(described)).toBe('Parse error at bad.speckdl:2: unrecognized member "description: "} speck B {"" (column 5)');
 
     const bare = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n    x := x + 3\n}\n';
-    expect(stored(bare)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[]},{"type":"init","asg":[]}]}]');
+    expect(stored(bare)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[["x",{"type":"primitive","name":"Nat"}]]},{"type":"init","asg":[{"name":"x","expr":"0"}]}]}]');
     expect(message(bare)).toBe('Parse error at bad.speckdl:4: unrecognized member "x := x + 3" (column 5)');
   });
 
   it('rejects an unrecognized top-level name', () => {
     const spek = 'speck A {\n    state { x: Nat }\n}\nspek B {\n}\n';
-    expect(stored(spek)).toBe('[{"name":"A","endLine":3,"members":[{"type":"state","vars":[]}]}]');
+    expect(stored(spek)).toBe('[{"name":"A","endLine":3,"members":[{"type":"state","vars":[["x",{"type":"primitive","name":"Nat"}]]}]}]');
     expect(message(spek)).toBe('Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1)');
 
     const star = '*/ speck A {\n}\n';
@@ -142,7 +142,7 @@ describe('line walker rejects malformed structure', () => {
 
   it('rejects a brace on the next line', () => {
     const src = 'speck A {\n    state { x: Nat }\n    invariant P\n    {\n        x >= 0\n    }\n}\n';
-    expect(stored(src, 'allman.speckdl')).toBe('[{"name":"A","endLine":7,"members":[{"type":"state","vars":[]}]}]');
+    expect(stored(src, 'allman.speckdl')).toBe('[{"name":"A","endLine":7,"members":[{"type":"state","vars":[["x",{"type":"primitive","name":"Nat"}]]}]}]');
     expect(message(src, 'allman.speckdl')).toBe('Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5)');
   });
 
@@ -200,7 +200,7 @@ describe('line walker rejects malformed structure', () => {
 
   it('rejects an unsupported numeric literal', () => {
     const src = 'speck A {\n    state { t: 1h30m }\n}\n';
-    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[{"type":"state","vars":[]}]}]');
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[{"type":"state","vars":[["t",{"type":"ident","name":"1h30m"}]]}]}]');
     expect(message(src)).toBe('Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16)');
   });
 
