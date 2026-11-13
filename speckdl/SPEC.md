@@ -130,6 +130,7 @@ The line walker used to accept each input below and store a program that dropped
 - An extra closing brace. `speck A {` then a line `}` then another `}` used to parse as speck A with no members, ending on line 2. The extra brace was ignored. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). A `}` inside a string is still a string.
 - Text after a speck's closing brace. `speck A {` then `} junk` used to parse as speck A with no members, ending on line 2. The word was ignored. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3).
 - A second speck on the same line. `speck A { } speck B { }` used to parse as only speck A, with no members. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13).
+- An unrecognized member. `garbage line here` used to parse as speck A with no members. `actoin go {` dropped the action. `enum Status { Active, Inactive }` kept only interface Foo. A description line dropped the description. `x := x + 3` after init stored the state type as `= x + 3` and the init expression as `x + 3`. Each diagnostic is unrecognized member with the line and column. One of them is: Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5).
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
