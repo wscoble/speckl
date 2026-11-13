@@ -168,7 +168,7 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 ## Domain blocks
 
-A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a string does not end the block. An unclosed block is `missing final "}"`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of the parser change.
+A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed string does not end the block. An unclosed block whose source has no `}` is `missing final "}"`. A `}` after an unclosed quote is counted by the brace check, and the domain scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of the parser change.
 
 ## Domain checks
 
@@ -180,11 +180,11 @@ Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cos
 
 ## Domain budget
 
-`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
+`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. A domain that declares no budget writes no budget file. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
 
 ## Camel contract class
 
-A domain becomes a comment and an empty `NameContract` class with a private constructor. The class has no runtime method. A speck with no domain emits no contract class. Camel does not throttle, queue, or route, and it does not run a tick. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, and the speck with no domain. `docs/domain-contract-camel.md` says the same thing.
+A domain becomes a comment and an empty `NameContract` class with a private constructor. The class has no runtime method. A speck with no domain emits no contract class. A domain with no contract clauses emits no contract class. The contract class does not throttle, queue, or route messages. The Camel target still emits a RouteBuilder for the speck's actions. This class does not run a tick and does not call Z3. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, and the speck with no domain. `docs/domain-contract-camel.md` says the same thing.
 
 ## Token parser
 
