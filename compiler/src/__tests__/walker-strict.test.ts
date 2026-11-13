@@ -120,7 +120,7 @@ describe('line walker rejects malformed structure', () => {
     expect(message(described)).toBe('Parse error at bad.speckdl:2: unrecognized member "description: "} speck B {"" (column 5)');
 
     const bare = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n    x := x + 3\n}\n';
-    expect(stored(bare)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[["x",{"type":"ident","name":"= x + 3"}]]},{"type":"init","asg":[{"name":"x","expr":"x + 3"}]}]}]');
+    expect(stored(bare)).toBe('[{"name":"A","endLine":5,"members":[{"type":"state","vars":[]},{"type":"init","asg":[]}]}]');
     expect(message(bare)).toBe('Parse error at bad.speckdl:4: unrecognized member "x := x + 3" (column 5)');
   });
 
@@ -148,17 +148,17 @@ describe('line walker rejects malformed structure', () => {
 
   it('rejects an unrecognized state field', () => {
     const src = 'speck A {\n    state {\n        x: Nat\n        y Nat\n    }\n}\n';
-    expect(stored(src, 'st.speckdl')).toBe('[{"name":"A","endLine":6,"members":[{"type":"state","vars":[["x",{"type":"ident","name":"Nat y Nat"}]]}]}]');
+    expect(() => stored(src, 'st.speckdl')).toThrow('Parse error at st.speckdl:2: unrecognized state field "y Nat"');
     expect(message(src, 'st.speckdl')).toBe('Parse error at st.speckdl:2: unrecognized state field "y Nat"');
   });
 
   it('rejects an unrecognized init line, without a column', () => {
     const eq = 'speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        y = 0\n    }\n}\n';
-    expect(stored(eq, 'in.speckdl')).toBe('[{"name":"A","endLine":7,"members":[{"type":"state","vars":[]},{"type":"init","asg":[{"name":"x","expr":"0 y = 0"}]}]}]');
+    expect(() => stored(eq, 'in.speckdl')).toThrow('Parse error at in.speckdl:3: unrecognized init line "y = 0"');
     expect(message(eq, 'in.speckdl')).toBe('Parse error at in.speckdl:3: unrecognized init line "y = 0"');
 
     const garbage = 'speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        garbage line\n    }\n}\n';
-    expect(stored(garbage, 'in.speckdl')).toBe('[{"name":"A","endLine":7,"members":[{"type":"state","vars":[]},{"type":"init","asg":[{"name":"x","expr":"0 garbage line"}]}]}]');
+    expect(() => stored(garbage, 'in.speckdl')).toThrow('Parse error at in.speckdl:3: unrecognized init line "garbage line"');
     expect(message(garbage, 'in.speckdl')).toBe('Parse error at in.speckdl:3: unrecognized init line "garbage line"');
   });
 

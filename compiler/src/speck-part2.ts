@@ -1,11 +1,12 @@
 import { BOMNode, MemberNode, ProvenanceClause, StateNode, StateVar } from './speck-part0.js';
 import { braceCounts, findBlockEnd, maskCode } from './speck-part1.js';
-import { componentRemoved, parseConstraintBlockMultiline, parseVerifyBlockMultiline } from './speck-part7.js';
-import { parseActionBlockMultiline, parseEventBlockMultiline } from './speck-part5.js';
 import { parseActionHeader, parseAuthor, parseDerives, parseEvent, parseInitBlock, parseInterface, parseOneof, parseSatisfies, parseSource, parseTransition, parseTypeExpr } from './speck-part3.js';
-import { parseAgentBlockMultiline } from './speck-part8.js';
-import { parseInitBlockMultiline, parseInvariantBlockMultiline, parseStateBlockMultiline } from './speck-part4.js';
+import { parseInitBlockMultiline, parseInvariantBlockMultiline, parseStateBlockMultiline, inlineActionBody } from './speck-part4.js';
+import { parseActionBlockMultiline, parseEventBlockMultiline } from './speck-part5.js';
 import { parseInterfaceBlockMultiline, parseOneofBlockMultiline, parseServiceBlockMultiline, parseTransitionBlockMultiline } from './speck-part6.js';
+import { componentRemoved, parseConstraintBlockMultiline, parseVerifyBlockMultiline } from './speck-part7.js';
+import { parseAgentBlockMultiline } from './speck-part8.js';
+import { stripTypeComment } from './speck-span.js';
 
 export function parseMemberBlock(lines: string[], startIndex: number, actionNames: Set<string>): MemberNode | null {
   const firstLine = lines[startIndex].trim();
@@ -83,8 +84,10 @@ export function parseMemberBlock(lines: string[], startIndex: number, actionName
     //   `parent_spec "name"`
     //   `external_doc "name" :: "url"`
     // The block may also be empty (clauses: []).
-    const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-    const innerLines = lines.slice(startIndex + 1, endIdx)
+    const inline = inlineActionBody(firstLine);
+    const innerLines = (inline !== null
+      ? (inline.trim() ? [inline.trim()] : [])
+      : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)))
       .map((l: string) => l.trim())
       .filter((l: string) => l && !l.startsWith('//') && l !== '}');
     const clauses: ProvenanceClause[] = [];
@@ -108,8 +111,10 @@ export function parseMemberBlock(lines: string[], startIndex: number, actionName
     //   `solver { name: "x", version: "y" }`
     //   `runtime { name: "x", version: "y" }`
     //   `license: "MIT"`
-    const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-    const innerText = lines.slice(startIndex + 1, endIdx)
+    const inline = inlineActionBody(firstLine);
+    const innerText = (inline !== null
+      ? (inline.trim() ? [inline.trim()] : [])
+      : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)))
       .map((l: string) => l.trim())
       .filter((l: string) => l && !l.startsWith('//') && l !== '}')
       .join(' ');
@@ -174,6 +179,12 @@ export function parseInputOutputBlock(
   const header = lines[startIndex].trim();
   const isInput = header.startsWith('input:');
   const kind: 'input' | 'output' = isInput ? 'input' : 'output';
+
+  const inline = inlineActionBody(header);
+  if (inline !== null) {
+    const typeExpr = parseTypeExpr('{ ' + inline.trim() + ' }');
+    return { type: kind, typeExpr };
+  }
 
   // Collect inner content lines, brace-counting across the block.
   // startBraceCount is the brace count on the header line (1 for `input: {`).
@@ -353,13 +364,7 @@ export function parseStateBlock(inner: string): StateNode {
     const withDefault = vStr.match(/^(\w+)\s*:\s*(.+?)\s*:=\s*(.+)$/);
     if (withDefault) {
       // Strip trailing comments from type expression
-      let typeStr = withDefault[2].trim();
-      const commentIdx = typeStr.indexOf('//');
-      if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
-      // A declaration comma can survive comment stripping when a comment
-      // followed it (`signals: List<Foo>, // note`); strip it so the type
-      // parses as a generic, not an ident.
-      typeStr = typeStr.replace(/,\s*$/, '').trim();
+      let typeStr = stripTypeComment(withDefault[2]);
       variables.push({
         name: withDefault[1],
         typeExpr: parseTypeExpr(typeStr),
@@ -370,17 +375,17 @@ export function parseStateBlock(inner: string): StateNode {
     const withoutDefault = vStr.match(/^(\w+)\s*:\s*(.+)$/);
     if (withoutDefault) {
       // Strip trailing comments from type expression
-      let typeStr = withoutDefault[2].trim();
-      const commentIdx = typeStr.indexOf('//');
-      if (commentIdx >= 0) typeStr = typeStr.substring(0, commentIdx).trim();
-      typeStr = typeStr.replace(/,\s*$/, '').trim();
+      let typeStr = stripTypeComment(withoutDefault[2]);
       variables.push({
         name: withoutDefault[1],
         typeExpr: parseTypeExpr(typeStr),
       });
+      continue;
     }
+    throw new Error(`Parse error: unrecognized state field "${vStr}"`);
   }
 
   return { type: 'state', variables };
 }
 
+/** Split on `,` `;` and newlines that are not inside `()` `[]` or `{}`. */

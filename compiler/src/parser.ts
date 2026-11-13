@@ -14,6 +14,7 @@ export * from './speck-part6.js';
 export * from './speck-part7.js';
 export * from './speck-part8.js';
 export * from './speck-part9.js';
+export * from './speck-span.js';
 
 export function parseSpeckFile(filePath: string): AST {
   const content = fs.readFileSync(filePath, 'utf-8');

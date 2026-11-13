@@ -7,7 +7,7 @@
 // unrecognized state field and an unrecognized init line, which name the
 // line only.
 
-import { lexProblem, lexStart, type LexState } from './speck-part0.js';
+import { lexStart, type LexState } from './speck-part0.js';
 import {
   findBlockEnd, isExpressionComplete, maskCode, maskLine, nextCodeIsNamedBlock,
 } from './speck-part1.js';
@@ -29,7 +29,7 @@ export function assertClosedSpec(content: string, file?: string): void {
   const byLine = bucketByLine(lexed.tokens);
   assertNoCodeAfterBlockComment(lines, byLine, file);
   if (lexed.headerAfterComment.length > 0) {
-    throw lexProblem(lexed.headerAfterComment[0], 'header is not at the start of the line');
+    throw parseErrorAt(file, lexed.headerAfterComment[0], undefined, 'header is not at the start of the line');
   }
   assertBraceStructure(lexed.tokens, file);
   scanFile(lines, byLine, lexed.tokens, file);
@@ -44,7 +44,7 @@ function scanFile(lines: string[], byLine: SpeckToken[][], tokens: SpeckToken[],
     const line = lines[i].trim();
     const code = masked.text.trim();
     if (line.startsWith('*/') && /^(speck|action|invariant|state|init)\b/.test(code)) {
-      throw lexProblem(i + 1, 'header is not at the start of the line');
+      throw parseErrorAt(file, i + 1, undefined, 'header is not at the start of the line');
     }
     if (!line || !code || line.startsWith('//') || line.startsWith('/*')) {
       i++;
@@ -55,7 +55,7 @@ function scanFile(lines: string[], byLine: SpeckToken[][], tokens: SpeckToken[],
       continue;
     }
     if (code === 'speck' && nextCodeIsNamedBlock(lines, i + 1, lex)) {
-      throw lexProblem(i + 1, 'speck name must be on the same line as "speck"');
+      throw parseErrorAt(file, i + 1, undefined, 'speck name must be on the same line as "speck"');
     }
     if (line.startsWith('speck ') && code.startsWith('speck ')) {
       const stepped = scanSpeck(lines, byLine, tokens, i, lex, file);
@@ -117,8 +117,8 @@ function scanSpeck(
         }
       }
       if (closeCount < openCount) {
-        if (line.startsWith('state')) assertStateFields(lines, i, findBlockEnd(lines, i + 1, braceCount + openCount, lex));
-        if (line.startsWith('init')) assertInitLines(lines, i, findBlockEnd(lines, i + 1, braceCount + openCount, lex));
+        if (line.startsWith('state')) assertStateFields(lines, i, findBlockEnd(lines, i + 1, braceCount + openCount, lex), file);
+        if (line.startsWith('init')) assertInitLines(lines, i, findBlockEnd(lines, i + 1, braceCount + openCount, lex), file);
         const endIdx = findBlockEnd(lines, i + 1, braceCount + openCount, lex);
         lex = lexAfterLines(lines, endIdx, start);
         i = endIdx + 1;
@@ -176,7 +176,7 @@ function skipClosedConstraint(lines: string[], index: number): number {
   return i + 1;
 }
 
-function assertStateFields(lines: string[], startIndex: number, endIndex: number): void {
+function assertStateFields(lines: string[], startIndex: number, endIndex: number, file?: string): void {
   const inner = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
   const cleaned = inner.map(l => l.replace(/,+\s*$/, ''));
   let acc = '';
@@ -190,7 +190,7 @@ function assertStateFields(lines: string[], startIndex: number, endIndex: number
     if (!bracketsUnbalanced(acc)) {
       if (continues) acc = acc + ' ' + line;
       else if (isNewVar && !prevIsContinuation) acc = acc + '; ' + line;
-      else if (!prevIsContinuation) throw lexProblem(startIndex + 1, `unrecognized state field "${line}"`);
+      else if (!prevIsContinuation) throw parseErrorAt(file, startIndex + 1, undefined, `unrecognized state field "${line}"`);
       else acc = acc + ' ' + line;
     } else {
       acc = acc.endsWith('{') ? acc + ' ' + line : acc + ', ' + line;
@@ -198,7 +198,7 @@ function assertStateFields(lines: string[], startIndex: number, endIndex: number
   }
 }
 
-function assertInitLines(lines: string[], startIndex: number, endIndex: number): void {
+function assertInitLines(lines: string[], startIndex: number, endIndex: number, file?: string): void {
   const inner = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
   let cur: string | null = null;
   for (const raw of inner) {
@@ -209,12 +209,12 @@ function assertInitLines(lines: string[], startIndex: number, endIndex: number):
     }
     if (isInitStarter(raw) || cur === null) {
       if (cur === null && !isInitStarter(raw)) {
-        throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+        throw parseErrorAt(file, startIndex + 1, undefined, `unrecognized init line "${raw}"`);
       }
       cur = raw;
       continue;
     }
-    throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+    throw parseErrorAt(file, startIndex + 1, undefined, `unrecognized init line "${raw}"`);
   }
 }
 

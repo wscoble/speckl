@@ -192,7 +192,7 @@ export interface BOMNode {
   hash?: string;
 }
 
-// State machine extension (v0.3)
+/** K8s resource-lifecycle directives (`conditions:`, `finalizers:`, `ownerReferences:`, `status:`). */
 export interface StateNode {
   type: 'state';
   variables: StateVar[];
@@ -241,6 +241,12 @@ export interface LineSpan {
   endLine?: number;
 }
 
+export interface LifecycleMetadataNode {
+  type: 'lifecycle_metadata';
+  key: string;
+  value: string | boolean | string[];
+}
+
 export type MemberNode = (
   | ImportNode
   | InputNode
@@ -262,6 +268,7 @@ export type MemberNode = (
   | InitNode
   | ActionNode
   | ServiceNode
+  | LifecycleMetadataNode
   | InvariantMemberNode
   | NextMemberNode
   | AgentMemberNode
@@ -441,7 +448,11 @@ export function lexProblem(line: number, detail: string): Error {
 }
 
 /**
- * Same length as `input`. Comments and the insides of strings are spaces,
- * so `{` `}` `(` `)` `[` `]` in the result are structural. Quote marks
- * themselves are kept. Backslash escapes a quote inside a string.
+ * One scan for structure and for source-with-comments-removed.
+ * `text` is the same length as `input`: comments and the insides of `"`
+ * strings are spaces, so `{` `}` `(` `)` `[` `]` `<` `>` `|` in it are
+ * structural. Quote marks themselves are kept. A backslash escapes the
+ * next character inside a string, so `"/*"` and `"a//b"` are strings.
+ * `kept` is `input` with those comments deleted and the strings left intact.
+ * `'` is not a string quote.
  */

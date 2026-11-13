@@ -200,8 +200,12 @@ describe('braces in comments and strings', () => {
     const goOf = (actionLines: string[]) => {
       const src = [
         'speck A {',
-        '    state { x: Nat }',
-        '    init { x := 0 }',
+        '    state {',
+        '        x: Nat',
+        '    }',
+        '    init {',
+        '        x := 0',
+        '    }',
         '    action Go {',
         ...actionLines,
         '    }',
@@ -221,8 +225,8 @@ describe('braces in comments and strings', () => {
       ['        for i in xs { // }', '            x := 1', '        }'],
     ]) {
       const go = goOf(body);
-      expect(go, body[0]).toContain('m.x = 1');
-      if (body.some(l => l.includes('else'))) expect(go).toContain('m.x = 2');
+      expect(go, body[0]).toContain('m.X = 1');
+      if (body.some(l => l.includes('else'))) expect(go).toContain('m.X = 2');
     }
   });
 
@@ -232,7 +236,7 @@ describe('braces in comments and strings', () => {
       '    state { x: Nat }',
       '    init { x := 0 }',
       '    invariant Mono { /* a',
-      '        b */ }',
+      '        b */ true }',
       '}',
       '',
     ].join('\n');

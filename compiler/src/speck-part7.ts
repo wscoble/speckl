@@ -1,72 +1,15 @@
 import { ConstraintNode, VerifyNode } from './speck-part0.js';
 import { braceCounts, findBlockEnd, isExpressionComplete, maskCode } from './speck-part1.js';
+import { inlineActionBody } from './speck-part4.js';
+import { takeExpressionLines, stripInvariantExpr, braceInner } from './speck-span.js';
 
 export function parseConstraintColonBlock(lines: string[], startIndex: number): ConstraintNode | null {
   const firstLine = lines[startIndex].trim();
   // Strip the `constraint:` prefix.
   const head = firstLine.substring(firstLine.indexOf(':') + 1).trim();
   if (!head) return null;
-
-  // If the head is already balanced on its own (single-line constraint: expr),
-  // just return it directly — no continuation needed.
-  if (isExpressionComplete(head)) {
-    return { type: 'constraint', expr: head };
-  }
-
-  // Multi-line: collect continuation lines until parens balance.
-  const parts: string[] = [head];
-  let parens = 0, brackets = 0, braces = 0;
-  for (const ch of maskCode(head).text) {
-    if (ch === '(') parens++;
-    else if (ch === ')') parens--;
-    else if (ch === '[') brackets++;
-    else if (ch === ']') brackets--;
-    else if (ch === '{') braces++;
-    else if (ch === '}') braces--;
-  }
-
-  let lastConsumed = startIndex;
-  for (let j = startIndex + 1; j < lines.length; j++) {
-    const raw = lines[j];
-    const nl = raw.trim();
-    if (!nl) {
-      lastConsumed = j;
-      continue;
-    }
-    if (nl.startsWith('//') || nl.startsWith('/*')) {
-      lastConsumed = j;
-      continue;
-    }
-    // Stop at a new top-level member keyword.
-    if (
-      nl.startsWith('constraint ') || nl.startsWith('verify ') ||
-      nl.startsWith('constraint:') || nl.startsWith('verify:') ||
-      nl.startsWith('state') || nl.startsWith('init') ||
-      nl.startsWith('action ') || nl.startsWith('event ') ||
-      nl.startsWith('interface ') || nl.startsWith('provenance ') ||
-      nl.startsWith('bom ') || nl === '}' ||
-      nl.startsWith('next:') || nl.startsWith('invariant ')
-    ) {
-      break;
-    }
-    // Update depth counters.
-    for (const ch of maskCode(raw).text) {
-      if (ch === '(') parens++;
-      else if (ch === ')') parens--;
-      else if (ch === '[') brackets++;
-      else if (ch === ']') brackets--;
-      else if (ch === '{') braces++;
-      else if (ch === '}') braces--;
-    }
-    parts.push(nl);
-    lastConsumed = j;
-    if (parens === 0 && brackets === 0 && braces === 0) {
-      break;
-    }
-  }
-
-  const joined = parts.join('\n').replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim();
-  return { type: 'constraint', expr: joined };
+  const taken = takeExpressionLines(lines, startIndex, head, 'newline');
+  return { type: 'constraint', expr: taken.text };
 }
 
 export function parseConstraintAnyForm(lines: string[], startIndex: number): ConstraintNode | null {
@@ -96,33 +39,23 @@ export function parseConstraintAnyForm(lines: string[], startIndex: number): Con
   
   // If opens a brace, treat as block
   if (exprFollows === 'brace' || expr.startsWith('{')) {
-    // Strip the leading '{' from expr if it was passed in via the colon form
-    if (expr.startsWith('{')) expr = expr.substring(1).trim();
-    const openCount = braceCounts(line).open;
-    const endIdx = findBlockEnd(lines, startIndex + 1, openCount);
-    const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
-    const inner = innerLines.join(' ');
-    expr = (expr + ' ' + inner).trim();
+    const inline = inlineActionBody(line);
+    if (inline !== null) {
+      expr = inline.trim();
+    } else {
+      // Strip the leading '{' from expr if it was passed in via the colon form
+      if (expr.startsWith('{')) expr = expr.substring(1).trim();
+      const openCount = braceCounts(line).open;
+      const endIdx = findBlockEnd(lines, startIndex + 1, openCount);
+      const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && l !== '}');
+      const inner = innerLines.join(' ');
+      expr = (expr + ' ' + inner).trim();
+    }
   } else {
-    // No braces — but might span multiple lines (forall continuation)
-    const continuationLines: string[] = [];
-    for (let j = startIndex + 1; j < lines.length; j++) {
-      const nl = lines[j].trim();
-      if (!nl || nl.startsWith('//') || nl.startsWith('/*') ||
-          nl.startsWith('constraint ') || nl.startsWith('verify ') ||
-          nl.startsWith('constraint:') || nl.startsWith('verify:') ||
-          nl.startsWith('state') || nl.startsWith('init') ||
-          nl.startsWith('action ') || nl.startsWith('event ') ||
-          nl.startsWith('interface ') || nl.startsWith('provenance ') ||
-          nl.startsWith('bom ') || nl.startsWith('}') ||
-          nl.startsWith('next:') || nl.startsWith('invariant ')) {
-        break;
-      }
-      continuationLines.push(nl);
-    }
-    if (continuationLines.length > 0) {
-      expr = expr + ' ' + continuationLines.join(' ');
-    }
+    // No braces. A finished expression stays on this line. An unfinished
+    // one (empty, trailing `:`, open bracket, dangling operator) takes
+    // the following lines and then stops.
+    expr = takeExpressionLines(lines, startIndex, expr, 'space').text;
   }
   
   return { type: 'constraint', name, expr: expr.trim() };
@@ -286,14 +219,10 @@ export function parseConstraintBlockMultiline(lines: string[], startIndex: numbe
     const name = namedMatch[1];
     let expr = namedMatch[2].trim();
     
-    // If the expression opens a brace, collect the block
+    // If the expression opens a brace, the body is the whole {…} span,
+    // including text on the line that closes it.
     if (expr.startsWith('{')) {
-      const endIdx = findBlockEnd(lines, startIndex + 1, startBraceCount);
-      const innerLines = lines.slice(startIndex + 1, endIdx).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-      const inner = innerLines.join(' ');
-      // Combine: content after { on first line + content from inner lines
-      const afterBrace = expr.substring(1).trim();
-      expr = (afterBrace + ' ' + inner).trim();
+      expr = stripInvariantExpr(braceInner(lines, startIndex));
     } else {
       // No braces, but might still be multiline (forall spanning multiple lines)
       // Check if next line(s) continue the expression
@@ -326,6 +255,12 @@ export function parseConstraintBlockMultiline(lines: string[], startIndex: numbe
       expr = (expr + ' ' + inner).trim();
     }
     return { type: 'constraint', name, expr: expr.trim() };
+  }
+
+  // `constraint Name { expr }` — same brace span as a named invariant.
+  const bareBrace = firstLine.match(/^constraint\s+(\w+)\s*\{/);
+  if (bareBrace) {
+    return { type: 'constraint', name: bareBrace[1], expr: stripInvariantExpr(braceInner(lines, startIndex)) };
   }
 
   return null;

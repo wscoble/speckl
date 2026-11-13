@@ -166,6 +166,10 @@ A one-line speck that packs its members on the header line can still absorb the 
 
 The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `compiler/src/parser.ts` still calls it after the malformed-structure check. Example member outlines are unchanged. Example `-t all` and `-t all-ir` output is pinned as one sha256 in `compiler/src/__tests__/compile-pipeline.test.ts`.
 
+## Token parser, not wired
+
+`compiler/src/rd-parser.ts` exports `parseSpeckDocument`. It walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers (`expressionClosed`, `takeExpressionLines`, `expressionSpanEnd`, `isAliasTypeText`, `stripInvariantExpr`, and the brace-span readers). `compiler/src/parser.ts` re-exports `speck-span` and does not call `parseSpeckDocument`. `parseSpeckContent` still calls the line walker after `assertClosedSpec`. Nothing outside `rd-parser.ts` and the comparison test imports that file. `compiler/vitest.config.ts` excludes `src/rd-parser.ts` and `src/speck-span.ts` from coverage until the call switches. `lowers every speck in the repo to the same IR` and `matches the line walker on malformed input, including the AST when both accept` in `compiler/src/__tests__/walker-vs-rd.test.ts` compare the line-walker copy with `parseSpeckDocument`. `parseSpeckContent does not call the token parser` asserts that production does not import `rd-parser.ts`. `parser-coverage-edges.test.ts` calls `isAliasTypeText` and `stripInvariantExpr` directly. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
+
 ## Rejected structure
 
 These inputs used to parse. Each one is now an error. The same rule is in [speckdl/SPEC.md](speckdl/SPEC.md).
