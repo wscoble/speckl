@@ -250,7 +250,7 @@ domain Billing {
 }
 ```
 
-`members` is required and lists speck names. `language` is optional. A domain may also declare `consumes EventName;`, `produces EventName;`, and `budget 5 per tick;`. `event Name external` marks an event that enters from outside the compilation. An action may declare `cost 2`. `compiler/src/__tests__/domain-contracts.test.ts` checks the contract and the budget obligation. A `}`
+`members` is required and lists speck names. `language` is optional. A `}`
 inside a `"` string does not end the block. A domain that never closes is
 `missing final "}"`. A member listed twice, a speck listed by two domains,
 a name that is not a speck, and the same domain name twice are compile

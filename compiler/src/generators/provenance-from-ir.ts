@@ -283,9 +283,6 @@ function renderProvGraph(speck: IRSpeck, domains: IRDomain[]): any {
       'speckl:kind': 'domain',
       ...(domain.language !== undefined ? { 'speckl:language': domain.language } : {}),
       'prov:hadMember': domain.members.map(member => `speck:${member}`),
-      ...(domain.consumes?.length ? { 'speckl:consumes': domain.consumes } : {}),
-      ...(domain.produces?.length ? { 'speckl:produces': domain.produces } : {}),
-      ...(domain.budgetPerTick !== undefined ? { 'speckl:budgetPerTick': domain.budgetPerTick } : {}),
     });
   }
 

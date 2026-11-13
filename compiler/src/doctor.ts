@@ -1,8 +1,7 @@
 // speckl doctor: a domain member's `effect act` tool must be a `map` target
 // in every harness block on that speck. Observe tools are not checked.
 // A speck that is not a domain member is not checked. A domain error from
-// lower, including a consumes/produces contract that cannot be wired, is
-// reported as-is. A file that cannot be read or parsed fails closed.
+// lower is reported as-is. A file that cannot be read or parsed fails closed.
 
 import { existsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
