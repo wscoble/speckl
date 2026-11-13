@@ -47,6 +47,7 @@ import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
 import { expandImports, importLinks, importsExpanded, speckSourceFile } from '../imports.js';
 import { localDomains } from './domains.js';
+import { checkEventContracts } from './event-contracts.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -99,6 +100,7 @@ export function lower(ast: AST, options: LowerOptions): IR {
   }
 
   const domains = localDomains(unit.domains, specks.map(s => s.name), options.filePath, diagnostics);
+  checkEventContracts(specks, domains, diagnostics);
 
   return {
     specks,
@@ -337,11 +339,21 @@ function lowerBehavior(
       const rawStmts = rawStatementsByAction.get(a.name) || [];
       // No caller lowers a signal-injected AST: the agent block's synthetic
       // __signal_* actions are added to the IR below, from the agent block.
-      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
+      // `cost` is action metadata, not a transition statement.
+      const stmts: IRStmt[] = [];
+      let cost: number | undefined;
+      for (const s of rawStmts) {
+        if (s.type === 'cost') {
+          cost = s.amount;
+          continue;
+        }
+        stmts.push(lowerStatement(s, diagnostics, speck.name));
+      }
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
         statements: stmts,
+        ...(cost !== undefined ? { cost } : {}),
       });
     } else if (m.type === 'event') {
       const e = m as EventNode;
@@ -352,6 +364,7 @@ function lowerBehavior(
           type: lowerTypeExpr(f.type),
           optional: false,
         })),
+        ...(e.external ? { external: true } : {}),
       });
     }
   }
@@ -951,6 +964,8 @@ function lowerStatement(
         kind: 'return',
         expr: lowerExpr(s.expr, diagnostics, speckName),
       };
+    case 'cost':
+      throw new Error('cost is action metadata and is not a transition statement');
     case 'ifblock':
       // Future: lower the ifblock properly. For now, keep as a synthetic
       // statement that the generators can choose to ignore.

@@ -93,6 +93,15 @@ export interface IRDomain {
   members: string[];
   /** Ubiquitous-language note from `language:`, when declared. */
   language?: string;
+  /** Events the domain consumes, in source order. Absent when none are declared. */
+  consumes?: string[];
+  /** Events the domain produces, in source order. Absent when none are declared. */
+  produces?: string[];
+  /**
+   * `budget <n> per tick`. Absent when the domain declares no budget.
+   * Zero is a real budget, not "unset".
+   */
+  budgetPerTick?: number;
   /** File that declared the domain. */
   sourcePath: string;
 }
@@ -292,6 +301,12 @@ export interface IRAction {
   name: string;
   params: IRParam[];
   statements: IRStmt[];
+  /**
+   * `cost <n>` on the action. Absent when the action declares no cost.
+   * Zero is a real cost. This is a verification annotation. Generators do
+   * not turn it into a runtime throttle.
+   */
+  cost?: number;
   doc?: string;
 }
 
@@ -326,6 +341,8 @@ export interface IRStmt {
 export interface IREvent {
   name: string;
   fields: IRFieldDef[];
+  /** `event Name external`. Absent means the event is internal. */
+  external?: boolean;
   doc?: string;
 }
 
