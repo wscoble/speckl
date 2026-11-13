@@ -30,5 +30,6 @@ describe('domain contract check docs', () => {
     expect(tests).toContain('rejects the same consume in a second clause');
     expect(tests).toContain('rejects a budget with no integer');
     expect(tests).toContain('rejects a cost above the safe integer range');
+    expect(tests).toContain('does not route, queue, or schedule a tick');
   });
 });
