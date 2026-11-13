@@ -279,6 +279,10 @@ The class has no runtime method. A speck with no domain emits no contract class.
 
 The agent generator copies an action `priority` onto the tool, or the domain `priority` when the action declares none and the domain's members include the speck. `kpis` are the `kpi` tags of events that action emits with a straight-line `emit`, in source order, each distinct tag once, stopping at `return`. That stop is a `return` expression such as `return stage`. A line that is only `return` does not stop the scan. An emit after `return` is not tagged. A domain priority is not used when the speck is not a member of that domain. An observe tool gets the same fields. An `emit` inside an `if` or a `for`, or an `emit` in a comment, is not tagged. Both fields are omitted when absent. This does not write the decision line, and it does not route, queue, or run a tick. `compiler/src/__tests__/agent-signal-fields.test.ts` covers each case. `docs/signal-fields.md` says the same thing.
 
+### 2.8.8 Swarm routes
+
+A one hop from a domain that produces an event to each other domain that consumes it. An external event comes from `external`. A cycle is two hops, and neither hop is followed. A domain does not route to itself. `compileSpec` does not call `planRoutes`. This module does not enqueue, schedule a tick, or apply backpressure. The priority number as a queue rank, the per-domain budget as the tick, and backpressure as the budget stop are later modules. `docs/swarm-routing.md` says the same thing. `compiler/src/__tests__/swarm-route.test.ts` covers each case.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
