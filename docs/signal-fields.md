@@ -4,4 +4,4 @@ The agent generator copies an action `priority` onto the tool, or the domain `pr
 
 This slice does not write the decision line. This slice does not route events, queue work, or run a tick, and it does not enforce a queue.
 
-`compiler/src/__tests__/agent-signal-fields.test.ts` covers `copies an action priority and a straight-line kpi onto the tool`, `uses the domain priority when the action declares none`, `does not tag an emit inside an if or a comment`, and `omits priority and kpis when the speck declares neither`.
+`compiler/src/__tests__/agent-signal-fields.test.ts` covers `copies an action priority and a straight-line kpi onto the tool`, `uses the domain priority when the action declares none`, `does not use a domain priority when the speck is not a member`, `does not tag an emit after return`, `tags a repeated kpi once`, `copies an action priority onto an observe tool`, `copies a kpi onto an observe tool`, `a line that is only return does not stop the scan`, `does not tag an emit inside an if or a comment`, `omits priority and kpis when the speck declares neither`, `does not write a decision line`, and `does not route, queue, or run a tick`.
