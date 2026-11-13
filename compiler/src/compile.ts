@@ -10,6 +10,7 @@ import { generateProtobuf } from './generators/protobuf.js';
 import { generateZ3, Z3Options } from './generators/z3.js';
 import type { InvariantMemberNode } from './parser.js';
 import { generateZ3FromIR } from './generators/z3-from-ir.js';
+import { generateDomainBudgets } from './generators/z3-budget.js';
 import { generateRust } from './generators/rust.js';
 import { generateGo } from './generators/go.js';
 import { generateElm } from './generators/elm.js';
@@ -50,15 +51,15 @@ export function compileSpec(file: string, options: CompileOptions): void {
   const speckCount = ast.specks.length;
   const memberCount = ast.specks.reduce((sum, s) => sum + s.members.length, 0);
   console.log(`AST parsed successfully: ${speckCount} speck(s), ${memberCount} member(s)`);
-  
-  if (!fs.existsSync(options.outputDir)) {
-    fs.mkdirSync(options.outputDir, { recursive: true });
-  }
-  
+
   const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: options.rootDir });
   const domainErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('domain:'));
   if (domainErrors.length > 0) {
     throw new Error(domainErrors.map(d => d.message).join('\n'));
+  }
+
+  if (!fs.existsSync(options.outputDir)) {
+    fs.mkdirSync(options.outputDir, { recursive: true });
   }
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
@@ -138,6 +139,9 @@ export function compileSpec(file: string, options: CompileOptions): void {
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
     checked('z3', astForProof);
     generateZ3(astForProof, options.outputDir, z3Options);
+    // Domain budgets are a separate obligation. Specs with no budget get no
+    // extra file, so existing Z3 output stays byte-identical.
+    generateDomainBudgets(astForProof, irAst.domains ?? [], options.outputDir, options.verifyDepth);
   }
 
   // IR-driven Z3 for the all-ir target (formal_spec facet only)

@@ -4,6 +4,21 @@ import { findBlockEnd, isExpressionComplete, maskCode } from './speck-part1.js';
 import { parseActionHeader, parseEvent, parseTypeExpr } from './speck-part3.js';
 import { splitFields } from './speck-part7.js';
 
+/** Text before the first `{`/`}` that is not inside a string or a comment. */
+function textBeforeCodeClose(line: string): string {
+  const masked = maskCode(line).text;
+  const at = masked.indexOf('}');
+  if (at < 0) return '';
+  return line.slice(0, at).trim();
+}
+
+/** A `cost <n>` statement, not an assignment whose name starts with "cost". */
+function isCostLine(stmt: string): boolean {
+  const cut = stmt.indexOf('//');
+  const text = (cut >= 0 ? stmt.slice(0, cut) : stmt).trim();
+  return /^cost\s+\S/.test(text) && !/^cost\s*:=/.test(text);
+}
+
 export function parseActionBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): ActionNode | null {
   const firstLine = lines[startIndex].trim();
   const header = parseActionHeader(firstLine);
@@ -14,9 +29,17 @@ export function parseActionBlockMultiline(lines: string[], startIndex: number, s
   // inside `//` was not what stopped that scan.
   const inline = inlineActionBody(firstLine);
   const endIndex = inline !== null ? startIndex : findBlockEnd(lines, startIndex + 1, startBraceCount);
+  // A statement on the opening line or on the closing line is still a
+  // statement. `action Go { cost 1` / `cost 2 }` must not disappear.
+  const headerTail = inline === null ? firstLine.slice(firstLine.indexOf('{') + 1).trim() : '';
+  const closeTail = inline === null && endIndex < lines.length ? textBeforeCodeClose(lines[endIndex]) : '';
   const bodySource = inline !== null
     ? (inline.trim() ? [inline] : [])
-    : lines.slice(startIndex + 1, endIndex);
+    : [
+        ...(headerTail ? [headerTail] : []),
+        ...lines.slice(startIndex + 1, endIndex),
+        ...(closeTail ? [closeTail] : []),
+      ];
   // Keep blank lines as null to separate statements, filter only comments.
   // Preserve indentation: it bounds colon-form if/else regions.
   type BodyEntry = { text: string; indent: number } | null;
@@ -129,7 +152,7 @@ export function parseActionBlockMultiline(lines: string[], startIndex: number, s
         if (nextLine.startsWith('precondition:') || nextLine.startsWith('postcondition:') ||
             nextLine.startsWith('require ') || nextLine.startsWith('return ') ||
             nextLine.startsWith('emit ') || nextLine.startsWith('let ') ||
-            nextLine.startsWith('if ') ||
+            nextLine.startsWith('if ') || isCostLine(nextLine) ||
             nextLine.includes(':=')) {
           break;
         }
@@ -163,6 +186,19 @@ export function parseActionBlockMultiline(lines: string[], startIndex: number, s
         }
       }
       statements.push({ type: 'emit', event: eventName, fields });
+      continue;
+    }
+    if (isCostLine(stmt)) {
+      const text = stmt.slice(0, stmt.includes('//') ? stmt.indexOf('//') : stmt.length).trim();
+      const costMatch = text.match(/^cost\s+(\d+)\s*$/);
+      const amount = costMatch ? Number(costMatch[1]) : NaN;
+      if (!costMatch || !Number.isSafeInteger(amount)) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} cost must be a non-negative integer`);
+      }
+      if (statements.some(s => s.type === 'cost')) {
+        throw new Error(`Parse error at line ${startIndex + 1}: action ${header.name} declares cost more than once`);
+      }
+      statements.push({ type: 'cost', amount });
       continue;
     }
     // for v in coll { ... } - range loop captured as a forblock statement
@@ -255,7 +291,7 @@ export function parseEventBlockMultiline(lines: string[], startIndex: number, st
 
   // Handle single-line events: event Foo { a: Type, b: Type }
   // extract fields from the first line itself
-  const inlineMatch = firstLine.match(/^event\s+(\w+)\s*\{(.*)\}\s*$/);
+  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?\s*\{(.*)\}\s*$/);
   const inlineFields: { name: string; type: TypeExpr }[] = [];
   if (inlineMatch && inlineMatch[2].trim()) {
     const fieldStr = inlineMatch[2].trim();

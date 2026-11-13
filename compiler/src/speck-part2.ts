@@ -388,4 +388,3 @@ export function parseStateBlock(inner: string): StateNode {
   return { type: 'state', variables };
 }
 
-/** Split on `,` `;` and newlines that are not inside `()` `[]` or `{}`. */

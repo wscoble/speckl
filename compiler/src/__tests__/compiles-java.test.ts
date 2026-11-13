@@ -29,6 +29,7 @@ describe.skipIf(skip)(title, () => {
   const cases: [string, string][] = [
     ...exampleNames().map((e): [string, string] => [e, e]),
     ['fixture CamelTranslation', join(FIXTURES_DIR, 'CamelTranslation.speckdl')],
+    ['fixture DomainContract', join(FIXTURES_DIR, 'DomainContract.speckdl')],
   ];
   it.each(cases)('%s', (_label, example) => {
     expect(toolchain.ok).toBe(true);

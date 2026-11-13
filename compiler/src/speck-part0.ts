@@ -48,6 +48,12 @@ export interface DomainNode {
   members: string[];
   /** Text of `language:`, quotes removed. Absent when the clause is omitted. */
   language?: string;
+  /** Events this domain receives. Names of existing `event` declarations. */
+  consumes?: string[];
+  /** Events this domain's members may emit. Names of existing `event` declarations. */
+  produces?: string[];
+  /** `budget <n> per tick`. Absent when the clause is omitted. Zero is a real budget. */
+  budgetPerTick?: number;
   startLine?: number;
   endLine?: number;
   /** Absolute path of the file that declared the domain, after import merge. */
@@ -120,6 +126,12 @@ export interface EventNode {
   type: 'event';
   name: string;
   fields: { name: string; type: TypeExpr }[];
+  /**
+   * `event Name external`. The event enters from outside the compilation.
+   * A domain may consume it without any domain producing it. Absent means
+   * the event is internal.
+   */
+  external?: boolean;
 }
 
 // oneof: discriminated-union variant for proto wire-format compatibility.
@@ -249,7 +261,8 @@ export type ActionStatement =
   | { type: 'postcondition'; expr: string }
   | { type: 'emit'; event: string; fields: { name: string; value: string }[] }
   | { type: 'return'; expr: string }
-  | { type: 'ifblock'; raw: string };
+  | { type: 'ifblock'; raw: string }
+  | { type: 'cost'; amount: number };
 
 /** Source line span (1-based, inclusive) attached to nodes by parseSpeck. */
 export interface LineSpan {
