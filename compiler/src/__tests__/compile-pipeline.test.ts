@@ -99,7 +99,10 @@ describe('in-process pipeline matches the CLI', () => {
 // reordered file move the hash and are not a reason to update it.
 // Moved when the generated hook started writing completion-signal fields.
 // hook.mjs, state-integrity.mjs, and AGENTS.md changed. Other artifacts did not.
-const OUTPUT_SHA256 = '121fcc203428a31351aec56b0d2195cff4b9e74844a9c3c061697ea30028f37a';
+// The AGENTS.md sentence now says the hook copies priority and kpis from the
+// tool and does not scan the action body. The previous sentence said the hook
+// reads them from the action or the domain.
+const OUTPUT_SHA256 = 'b2a6e3d2418cdd327687fd98c43aff54279f90a6092495101146d21af7ec112b';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {
