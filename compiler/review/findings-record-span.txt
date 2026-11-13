@@ -1,0 +1,30 @@
+Reviewer findings: one-line record span
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Why. The old output was wrong. A one-line `type Name = { ... }` closed on its header, and the line walker started reading fields on the next line. Those next lines are the state and the init, not the record.
+
+Probe `speck S` with `type LogEntry = { term: Nat, value: Value }` and a multi-line `state { currentTerm: Nat }` plus `init { currentTerm := 0 }`.
+
+Target compiler (the byte-identical parser swap) stored LogEntry fields `currentTerm:Nat` and `currentTerm:= 0`. Its TypeScript was:
+
+```
+export interface LogEntry {
+  currentTerm: number;
+  currentTerm: = 0;
+```
+
+That second line is not a field. Working compiler stores `term:Nat` and `value:Value`, and the state still has `currentTerm`. Its TypeScript is:
+
+```
+export interface LogEntry {
+  term: number;
+  value: Value;
+```
+
+`examples/KafkaKRaft.speckdl` is the same mistake: LogEntry had been the following state fields. It is now `{ term, value }`.
+
+The example output pin moved because every target's digest for KafkaKRaft changes. The new pin is sha256 d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73. It was updated on purpose. The old pin 9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1 hashed the broken LogEntry. The other examples are unchanged.
+
+Limits. An empty `type Empty = { }` stores no fields. A comment after the closing brace is not a field. A `//` on a field line is not part of the type. A nested `{ n: Nat }` stays one field. A header-line `}` and a one-line state still match the line walker.
+
+`compiler/src/__tests__/record-span-edges.test.ts` pins the before list and the after list.

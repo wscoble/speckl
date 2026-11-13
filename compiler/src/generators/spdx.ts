@@ -1,4 +1,5 @@
 import { AST, MemberNode } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -6,6 +7,7 @@ import path from 'path';
  * Generate SPDX 3.0.1 JSON-LD for a Speck
  */
 export function generateSPDX(ast: AST, outputDir: string): void {
+  guardAst('spdx', ast);
   for (const speck of ast.specks) {
     const spdx = createSPDXDocument(speck);
     
