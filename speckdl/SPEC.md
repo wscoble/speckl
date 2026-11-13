@@ -135,6 +135,7 @@ The line walker used to accept each input below and store a program that dropped
 - Text after a member's closing brace. `invariant P { x >= 0 } junk` used to parse as invariant P with an empty expression. The predicate was dropped. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28).
 - A member brace on the next line. `invariant P` with `{` on the following line used to parse as a speck whose only member was an empty state. The invariant was dropped. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5).
 - An unrecognized state field. Inside `state`, `y Nat` after `x: Nat` used to be stored as the type `Nat y Nat`. The diagnostic is: Parse error at st.speckdl:2: unrecognized state field "y Nat". The message names the state header's line and does not name a column.
+- An unrecognized init line. `y = 0` after `x := 0` used to be stored as the expression `0 y = 0`. `garbage line` used to be stored as `0 garbage line`. The diagnostics are: Parse error at in.speckdl:3: unrecognized init line "y = 0", and unrecognized init line "garbage line". The message names the init header's line and does not name a column. `x := 0` is still an assignment.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

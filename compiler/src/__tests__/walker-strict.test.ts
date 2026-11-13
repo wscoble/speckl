@@ -151,6 +151,16 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src, 'st.speckdl')).toBe('Parse error at st.speckdl:2: unrecognized state field "y Nat"');
   });
 
+  it('rejects an unrecognized init line, without a column', () => {
+    const eq = 'speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        y = 0\n    }\n}\n';
+    expect(stored(eq, 'in.speckdl')).toBe('[{"name":"A","endLine":7,"members":[{"type":"state","vars":[]},{"type":"init","asg":[{"name":"x","expr":"0 y = 0"}]}]}]');
+    expect(message(eq, 'in.speckdl')).toBe('Parse error at in.speckdl:3: unrecognized init line "y = 0"');
+
+    const garbage = 'speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        garbage line\n    }\n}\n';
+    expect(stored(garbage, 'in.speckdl')).toBe('[{"name":"A","endLine":7,"members":[{"type":"state","vars":[]},{"type":"init","asg":[{"name":"x","expr":"0 garbage line"}]}]}]');
+    expect(message(garbage, 'in.speckdl')).toBe('Parse error at in.speckdl:3: unrecognized init line "garbage line"');
+  });
+
   it('still accepts a section sign', () => {
     const src = 'speck A {\n §\n}\n';
     expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
@@ -167,7 +177,7 @@ describe('line walker rejects malformed structure', () => {
       'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
       'ascii', 'numeric', 'unclosed',
     ]);
-    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state']);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state', 'init']);
   });
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
