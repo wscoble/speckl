@@ -175,6 +175,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - Text after a speck's `}` (`} junk`) is text after a speck's "}" at column 3. It used to be ignored.
 - `speck A { } speck B { }` is a second speck on one line at column 13. Speck B used to be dropped.
 - A member line the parser does not recognize (`garbage line here`, `actoin go {`, `enum`, a description line, a bare `x :=`) is unrecognized member. It used to be dropped or folded into a neighbor.
+- `spek B {` and `*/ speck A {` are unrecognized top-level. The speck used to be dropped.
 
 ## Documentation
 

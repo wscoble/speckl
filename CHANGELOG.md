@@ -415,6 +415,7 @@ Parse errors below are breaking changes. A file that used to compile now fails, 
 - **Text after a speck's closing brace is rejected.** `} junk` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3). `rejects text after a close` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **A second speck on one line is rejected.** `speck A { } speck B { }` used to parse as only speck A. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13). `rejects a second speck on one line` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **An unrecognized member is rejected.** `garbage line here`, `actoin go {`, `enum Status { Active, Inactive }`, a description line, and a bare `x := x + 3` used to be dropped or folded into a neighbor. Each diagnostic is unrecognized member with a line and column. `rejects an unrecognized member` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Unrecognized top-level text is rejected.** `spek B {` after a closed speck used to leave only speck A. `*/ speck A {` used to leave no specks. Both diagnostics are unrecognized top-level at column 1. `rejects an unrecognized top-level name` in `compiler/src/__tests__/walker-strict.test.ts`.
 
 ## [0.3.1] and earlier
 
