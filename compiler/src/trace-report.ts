@@ -6,7 +6,9 @@
 // run the hook and it does not enforce a queue. Durations are a throughput
 // signal, not a risk signal.
 //
-// The hash chain of the bytes read is checked. With --state, head.json is
+// When the log parses, the hash chain of those lines is checked. A torn
+// file, a blank line, or a line that is not JSON is refused before that
+// check. With --state, head.json is
 // required whenever <state>.decisions/ exists. A shortened or deleted log
 // fails when that head is still there. --log does not know the head. The
 // HMAC is checked only when a key is passed and the log has a line, and
@@ -393,7 +395,7 @@ export const TRACE_USAGE = [
   '--key <file>     check HMAC-SHA256 macs on each line, and on the head',
   '                 when --state is used',
   '',
-  'The hash chain of the bytes read is always checked. A line with no',
+  'When the log parses, the hash chain of those lines is checked. A line with no',
   'trailing newline is torn and fails. With --state, if head.json exists',
   'it is checked for seq and hash (and its mac with --key). A log shorter',
   'than that head, or a missing log when the head is not empty, fails.',
