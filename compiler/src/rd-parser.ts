@@ -1,8 +1,5 @@
-// Token parser. `parseSpeckContent` in `parser.ts` still calls the line
-// walker. `walker-vs-rd.test.ts` imports `parseSpeckDocument` and compares
-// it with the line-walker copy. The swap changes `parseSpeckContent` to
-// call `parseSpeckDocument`. Coverage excludes this file until that call
-// (`compiler/vitest.config.ts`).
+// Token parser. `parseSpeckContent` in `parser.ts` calls
+// `parseSpeckDocument`. Coverage includes this file.
 //
 // SpeckDL parser. `lexSpeck` produces one token stream for the file.
 //

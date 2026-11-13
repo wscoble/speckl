@@ -44,6 +44,19 @@ describe('token parser matches the line walker', () => {
     );
   });
 
+  it('a header-line close still absorbs the next speck, as the line walker did', () => {
+    const src = 'speck A { state { x: Nat } }\nspeck B {\n  state { y: Nat }\n}\n';
+    const ast = parseSpeckContent(src, 'header.speckdl');
+    expect(ast.specks.map(s => ({
+      name: s.name,
+      endLine: s.endLine,
+      fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
+    }))).toEqual([
+      { name: 'A', endLine: 3, fields: [] },
+      { name: 'B', endLine: 4, fields: [] },
+    ]);
+  });
+
   it('a one-line state stores no variables, as the line walker did', () => {
     const src = 'speck A {\n    state { x: Nat }\n    init { x := 0 }\n}\n';
     const speck = parseSpeckContent(src, 'one.speckdl').specks[0];

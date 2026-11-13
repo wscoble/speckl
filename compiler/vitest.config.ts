@@ -10,13 +10,10 @@ export default defineConfig({
       exclude: [
         // Tests and their helpers/fixtures are not product code.
         'src/**/__tests__/**',
-        // Verbatim copy of the line walker. parseSpeck does not call it.
-        // line-walker-copy.test.ts checks it against the live parser.
+        // Verbatim copy of the previous line walker. It is the compatibility
+        // result when the token parser throws, not new logic. Parity is
+        // measured by walker-vs-rd.test.ts.
         'src/line-walker/**',
-        // The token parser is not called until the swap. The swap PR removes
-        // these two lines, and its tests cover the files.
-        'src/rd-parser.ts',
-        'src/speck-span.ts',
       ],
       reporter: ['text-summary', 'json-summary'],
       // Floor at the level reached in fix/coverage (rounded down), so a drop

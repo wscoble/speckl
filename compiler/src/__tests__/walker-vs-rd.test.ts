@@ -1,7 +1,7 @@
 // The line walker copied under ../line-walker is one side. parseSpeckDocument
-// in rd-parser.ts is the other. parseSpeckContent still calls the line walker;
-// parseSpeckContent does not call the token parser asserts that. This file
-// lowers both ASTs with the same lower() and compares the IR.
+// is the other, called the way parseSpeckContent calls it. parseSpeckContent
+// calls the token parser asserts that production import. This file lowers
+// both ASTs with the same lower() and compares the IR.
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -110,7 +110,7 @@ describe('line walker and token parser', () => {
     }
   });
 
-  it('parseSpeckContent does not call the token parser', () => {
+  it('parseSpeckContent calls the token parser', () => {
     const srcRoot = join(repoRoot, 'compiler', 'src');
     const hits: string[] = [];
     const walk = (dir: string) => {
@@ -127,9 +127,9 @@ describe('line walker and token parser', () => {
       }
     };
     walk(srcRoot);
-    expect(hits).toEqual([]);
+    expect(hits).toEqual([join(srcRoot, 'parser.ts')]);
     const parser = readFileSync(join(srcRoot, 'parser.ts'), 'utf8');
-    expect(parser).not.toContain('parseSpeckDocument');
-    expect(parser).toContain('assertClosedSpec');
+    expect(parser).toContain("from './rd-parser.js'");
+    expect(parser).toContain('parseSpeckDocument(content, filePath)');
   });
 });

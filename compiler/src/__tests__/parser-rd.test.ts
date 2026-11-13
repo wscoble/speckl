@@ -3,22 +3,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { setParseFile } from '../speck-part0.js';
-import { parseSpeckDocument } from '../rd-parser.js';
+import { parseSpeckContent } from '../parser.js';
 import { lexSpeck } from '../speck-lex.js';
 import { compileSpec } from '../compile.js';
 import { parseSpeckContent as parseWalker } from '../line-walker/parser.js';
-
-// This file calls the token parser. Production parseSpeckContent still
-// calls the line walker.
-function parseSpeckContent(content: string, filePath?: string) {
-  setParseFile(filePath ?? '');
-  try {
-    return parseSpeckDocument(content, filePath);
-  } finally {
-    setParseFile('');
-  }
-}
 
 function sameAsWalker(src: string, file = 'bad.speckdl'): void {
   let walker = '';

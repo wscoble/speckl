@@ -104,8 +104,7 @@ yet lowered to Z3 (see §3.5).
 inside a comment or a `"` string is not a structural brace, including when
 Go emits an `if` or a `for`, and including a trailing `// }` after a one-line
 action. That action closes on its own structural `}`. A brace in a comment
-or a string does not hide the next speck. A one-line speck that packs its
-members on the header line can still absorb the next speck. A line that is
+or a string does not hide the next speck. A line that is
 only `speck`, with `Name {` on a later line, is `speck name must be on the
 same line as "speck"`. `'` is post-state prime notation, not a string
 quote. A block comment may continue onto the next line. A `"` string may
@@ -120,7 +119,7 @@ header, that header is `header is not at the start of the line`. A header
 later on the line is outside this scan. A speck written entirely inside a
 block comment is not a speck. Go still drops an `else if`, a nested `if`,
 a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
-from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` calls that lexer before the line walk. A missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§` are errors with a line and column. An unrecognized state field and an unrecognized init line name the line and do not name a column. A file that passes is still parsed by the line walker. The examples are well-formed, so their output is unchanged. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `parser.ts` still calls it, and example member outlines are unchanged.
+from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` calls that lexer through `compiler/src/rd-parser.ts`. It stores the same members the line walker stored, and it reports the same error, line, and column. A missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§` are errors with a line and column. An unrecognized state field and an unrecognized init line name the line and do not name a column. File-level `import` is syntax-checked and not resolved. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend.
 
 ### 2.2.1 Rejected structure
 
@@ -144,9 +143,9 @@ The line walker used to accept each input below and store a program that dropped
 - An unsupported numeric literal. `state { t: 1h30m }` used to parse as speck A whose state stored no fields. The diagnostic is: Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16). `state { t: 24h }` still parses.
 - The column of an unclosed string or comment. `x: "ab` with no closer was already Parse error at bad.speckdl:2: unterminated string. It is now Parse error at bad.speckdl:2: unterminated string (column 8). `/* c` with no closer was unterminated block comment and is now Parse error at bad.speckdl:2: unterminated block comment (column 5).
 
-### 2.2.2 Token parser, not wired
+### 2.2.2 Token parser
 
-`compiler/src/rd-parser.ts` exports `parseSpeckDocument`. It walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers that parser uses. `parseSpeckContent` does not call `parseSpeckDocument`. It still calls the line walker after `assertClosedSpec`. `walker-vs-rd.test.ts` calls `parseSpeckDocument` and compares it with the line-walker copy. Nothing else outside `rd-parser.ts` imports that file. `compiler/vitest.config.ts` excludes `src/rd-parser.ts` and `src/speck-span.ts` from coverage until that call switches. `parser.ts` re-exports `speck-span`. `parser-coverage-edges.test.ts` calls `isAliasTypeText` and `stripInvariantExpr` from that file. The other exports are unused until the swap.
+`parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. That function walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parser.ts` is the production file that imports `rd-parser.ts`. The line-walker copy under `compiler/src/line-walker/` is test-only. `lowers every speck in the repo to the same IR` in `compiler/src/__tests__/walker-vs-rd.test.ts` compares the two.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

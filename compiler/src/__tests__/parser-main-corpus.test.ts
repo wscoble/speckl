@@ -108,6 +108,18 @@ describe('example corpus', () => {
     expect(alone.specks.map(s => ({ name: s.name, members: s.members.length, endLine: s.endLine }))).toEqual([
       { name: 'A', members: 0, endLine: 1 },
     ]);
+    const packed = parseSpeckContent(
+      'speck A { state { x: Nat } }\nspeck B {\n  state { y: Nat }\n}\n',
+      'packed.speckdl',
+    );
+    expect(packed.specks.map(s => ({
+      name: s.name,
+      endLine: s.endLine,
+      fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
+    }))).toEqual([
+      { name: 'A', endLine: 3, fields: [] },
+      { name: 'B', endLine: 4, fields: [] },
+    ]);
   });
 
   it('a brace inside an agent prompt or description does not drop the next action', () => {

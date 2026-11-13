@@ -20,8 +20,6 @@ alias.
   skip covers agent advisory strings (`instruction`, `prompt tool`, and
   `tool … description`), so a brace inside that text does not end the agent
   block. A brace in a comment or a string does not hide the next speck. A
-  one-line speck that packs its members on the header line can still absorb
-  the next speck; that is the same on `main` and is not this scan. A
   one-line action closes on the structural `}` of its header line, so a
   trailing `// }` is not a brace and does not take the next action's
   statements. A line that is only `speck`, with `Name {` on a later line,
@@ -51,8 +49,9 @@ alias.
   before its closer is `unterminated string` on the line where it opened.
   Non-ASCII text inside a string or a comment stays in that text. `1e5`, `0x1F`,
   `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
-  `24h` and `500ms` stay a number plus a unit. The line walker rejects a non-ASCII identifier (`naïve` is identifier must be ASCII).
+  `24h` and `500ms` stay a number plus a unit.
   `compiler/src/__tests__/speck-lex.test.ts` calls the lexer directly.
+  `parseSpeck` calls this lexer.
 - **Backend conservation.** `compiler/src/conservation.ts` lists every AST
   member type. Each backend marks each type `emit`, `reject`, or `n/a`.
   `compileSpec` checks that table immediately before it calls the backend.
@@ -60,10 +59,9 @@ alias.
   `transition` are rejected by every backend except Protobuf, which emits
   `oneof` and `transition`. A direct call to a generator does not run the
   check. `compiler/src/__tests__/conservation.test.ts` checks the table.
-- **Line walker files.** The line walker lives in `compiler/src/speck-part0.ts`
-  through `speck-part9.ts`. `compiler/src/parser.ts` still calls it.
-  `parseSpeck` does not call the token lexer yet. Example member outlines
-  are unchanged. `compiler/src/__tests__/line-walker-move.test.ts` compares
+- **Line walker files.** Member phrase parsers live in
+  `compiler/src/speck-part0.ts` through `speck-part9.ts`, plus
+  `speck-span.ts`. `compiler/src/__tests__/line-walker-move.test.ts` compares
   every example's member outline to `fixtures/line-walker-outline.txt`, the
   outline from before this move, and checks its sha256.
 - **Example output pin.** `compiler/src/__tests__/compile-pipeline.test.ts` pins
@@ -71,6 +69,19 @@ alias.
   digests. The digest snapshot file is gone. The pin matches the previous
   snapshot, so compiled output is unchanged. Appending one byte to a
   generated file changes that file's digest and the pin.
+- **Recursive-descent parser.** `compiler/src/parser.ts` calls
+  `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
+  lexer. A `{` or `}` in a string or a comment is not structure. The members
+  it stores match the line walker, and the example output pin is unchanged.
+  A missing `}`, an extra `}`, text after `}`, an unrecognized member, `§`,
+  an unrecognized state field, and an unrecognized init line are the same
+  error from this parser and from the line walker, including the line and
+  column. There is no second result. File-level `import` is syntax-checked and not attached to a speck. Go still
+  drops an `else if`, a nested `if`, a `for` inside an `if`, and a
+  `require` inside an `if`.
+  `compiler/src/__tests__/parser-rd.test.ts`,
+  `parser-main-corpus.test.ts`, and `parser-intended-diff.test.ts` cover
+  this. `compiler/review/findings-rd-parser.txt` records that the output matches.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
@@ -252,11 +263,11 @@ alias.
   measured, not from missing tests. Generated example output is pinned by a
   digest snapshot.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
-- **Token parser, not wired.** `compiler/src/rd-parser.ts` exports `parseSpeckDocument`. `compiler/src/speck-span.ts` holds its span helpers. `parseSpeckContent` does not call `parseSpeckDocument`. It still calls the line walker. `walker-vs-rd.test.ts` compares `parseSpeckDocument` with the line-walker copy. Coverage excludes both files. `parseSpeckContent does not call the token parser` asserts that production does not import the token parser.
+- **Token parser is called by `parseSpeckContent`.** `compiler/src/parser.ts` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. Coverage includes `rd-parser.ts` and `speck-span.ts`. `parseSpeckContent calls the token parser` and `lowers every speck in the repo to the same IR` are in `compiler/src/__tests__/walker-vs-rd.test.ts`.
 
 ### Changed
 
-- **Malformed spec structure is rejected.** The line walker used to accept a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`, and it folded an unrecognized state field or init line into the previous text. `parseSpeck` now rejects those before the walk. The message names the line and column, except an unrecognized state field and an unrecognized init line, which name the line only. The examples are well-formed, so the output pin is unchanged.
+- **Malformed spec structure is rejected.** The line walker used to accept a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`, and it folded an unrecognized state field or init line into the previous text. It now rejects those. The message names the line and column, except an unrecognized state field and an unrecognized init line, which name the line only. The examples are well-formed, so the output pin is unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
