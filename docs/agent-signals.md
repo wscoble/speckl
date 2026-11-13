@@ -411,6 +411,40 @@ decision chain checks. Each such allow, and each such deny, is one line:
   rotation or a new binding does not move it.
 - `mac` is HMAC-SHA256 of that hash. Unsigned `--dev` states (no key) keep
   the chain only, same as `state.json`. `head.json` is HMAC'd the same way.
+  This seal is a shared-key HMAC. It proves nothing to an outside auditor.
+  Anyone who can read the key can forge a line.
+
+## Completion signals
+
+A `post` for an `effect act` tool stores a completion signal on that same
+decision line. The line's `signal` is `prime`. The fields are `trace_id`
+copied from the matching allow `pre`, `branch_id` unique in this log and
+never equal to its parent, `parent_branch_id`, `call_id`, `ok` (true only
+when that post says `ok: true`), `priority` (the action's label, else the
+domain's, else null), and `kpis`.
+
+`kpis` are the `kpi "<name>"` tags of events that action emits with a
+straight-line `emit`, in source order, once each. An `emit` inside an `if`
+or a `for`, or an `emit` in a comment, is not included. The tag is static.
+The hook does not read a runtime payload.
+
+A missing, empty, or ill-formed `trace_id` is replaced with a fresh root,
+the parent is cleared, and `trace_flagged` is true. The call is not denied
+for that alone. A `parent_branch_id` that is present but not an id is
+stored as null and flagged. Absent, null, and `""` are an unflagged root.
+
+An act `post` whose `call_id` and tool do not match the pending pre is a
+deny. That deny is still a completion signal. It does not keep the
+caller's `ok`, `kpis`, or `trace_id`: `ok` is false, `kpis` is empty, and
+the trace is a fresh flagged root. An observe tool does not get these
+fields.
+
+The allow `pre` of an act tool stores the same trace fields without
+`signal`, `ok`, or `kpis`. The hook does not enforce a queue.
+
+`speckl trace report` reads the log offline. It does not run the agent and
+it does not enforce a queue. `compiler/src/__tests__/hook-completion-signal.test.ts`
+checks the pre, the prime post, a bad trace id, and a post with no matching pre.
 
 A call-bound mismatch is one of those denials: the reason names the wanted
 digest and the digest of this call, `state.boundCall` stays put, and
