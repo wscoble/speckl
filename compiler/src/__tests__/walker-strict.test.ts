@@ -1,6 +1,5 @@
-// `stored` is the AST the line walker returns. `message` is what
-// parseSpeckContent reports. Every rejection class is off, so a missing
-// `}` still parses. Later classes reuse this harness.
+// Each case is an input the line walker used to accept. `stored` is the AST
+// it returned. `parseSpeckContent` is the error it reports now.
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,11 +76,11 @@ function stored(src: string, file = 'bad.speckdl'): string {
   })));
 }
 
-describe('strict structure check', () => {
-  it('still parses a missing close', () => {
+describe('line walker rejects malformed structure', () => {
+  it('rejects a missing close', () => {
     const src = 'speck A {\n';
     expect(stored(src)).toBe(JSON.stringify([{ name: 'A', endLine: 1, members: [] }]));
-    expect(message(src)).toBe('accept');
+    expect(message(src)).toBe('Parse error at bad.speckdl:1: missing final "}" (column 9)');
   });
 
   it('still accepts an extra close', () => {
@@ -108,7 +107,7 @@ describe('strict structure check', () => {
     expect(message(src)).toBe('accept');
   });
 
-  it('keeps every rejection class off', () => {
+  it('turns on only a missing close', () => {
     const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
     const start = text.indexOf('const ON');
     const block = text.slice(start, text.indexOf('};', start) + 2);
@@ -118,7 +117,7 @@ describe('strict structure check', () => {
       'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
       'ascii', 'numeric', 'unclosed',
     ]);
-    expect(flags.every(([, value]) => value === 'false')).toBe(true);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing']);
   });
 
   it('does not treat a brace inside a string as an extra close', () => {

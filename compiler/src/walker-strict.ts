@@ -1,7 +1,9 @@
-// Strict structure check. parseSpeckContent calls assertClosedSpec before
-// the line walk. Every name in ON is off, so a missing `}`, an extra `}`,
-// text after `}`, an unrecognized member, and `§` still parse. The messages
-// below are the ones a later class reports, including the column, except an
+// The line walker used to keep an AST when the spec was broken: a missing
+// `}`, an extra `}`, text after `}`, an unrecognized member, and `§` were
+// not part of the program, and the file still parsed. An unrecognized
+// state field and an unrecognized init line were folded into the previous
+// text. This check rejects those shapes before the walk. The messages are
+// the ones the token parser reports, including the column, except an
 // unrecognized state field and an unrecognized init line, which name the
 // line only.
 
@@ -19,7 +21,7 @@ import { lexSpeck, parseErrorAt, type SpeckToken } from './speck-lex.js';
 // The messages and positions are the ones below; a class that is off
 // leaves that input to the line walker.
 const ON: { [name: string]: boolean } = {
-  missing: false,
+  missing: true,
   extra: false,
   text: false,
   second: false,
