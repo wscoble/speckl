@@ -951,6 +951,8 @@ function lowerStatement(
         kind: 'return',
         expr: lowerExpr(s.expr, diagnostics, speckName),
       };
+    case 'cost':
+      throw new Error('cost is action metadata and is not a transition statement');
     case 'ifblock':
       // Future: lower the ifblock properly. For now, keep as a synthetic
       // statement that the generators can choose to ignore.
