@@ -246,7 +246,8 @@ domain Billing {
     expect(errorsOf(file).join('\n')).toMatch(/domain: Billing consumes Note, which no domain produces and which is not external/);
     const out = join(root, 'out');
     expect(() => compileSpec(file, { outputDir: out, target: 'all', bomFormat: 'both', verifyDepth: 4 })).toThrow(/consumes Note/);
-    expect(existsSync(out)).toBe(false);
+    expect(existsSync(out)).toBe(true);
+    expect(readdirSync(out)).toEqual([]);
   });
 
   it('rejects an unknown event, an emit the domain does not produce, and an emit hidden in if', () => {
@@ -262,7 +263,8 @@ domain Billing { members: A; }
     expect(errorsOf(emit).join('\n')).toMatch(/member A action Go emits Note, which Billing does not produce/);
     const out = join(root, 'emit-out');
     expect(() => compileSpec(emit, { outputDir: out, target: 'camel', bomFormat: 'both', verifyDepth: 4 })).toThrow(/does not produce/);
-    expect(existsSync(out)).toBe(false);
+    expect(existsSync(out)).toBe(true);
+    expect(readdirSync(out)).toEqual([]);
 
     const hidden = write(root, 'if.speckdl', `${machine('A', 'if n > 0 { emit Hidden { n: n } }', 'event Hidden { n: Nat }')}
 domain Billing { members: A; produces Note; event }
@@ -1000,7 +1002,8 @@ domain Billing { members: A, A; }
     expect(errorsOf(file).join('\n')).toMatch(/domain: Billing lists A more than once/);
     const out = join(root, 'out');
     expect(() => compileSpec(file, { outputDir: out, target: 'z3', bomFormat: 'both', verifyDepth: 2 })).toThrow(/lists A more than once/);
-    expect(existsSync(out)).toBe(false);
+    expect(existsSync(out)).toBe(true);
+    expect(readdirSync(out)).toEqual([]);
   });
 
   it('allows produces to name an event no member emits', () => {
