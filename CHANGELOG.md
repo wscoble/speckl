@@ -421,6 +421,7 @@ Parse errors below are breaking changes. A file that used to compile now fails, 
 - **An unrecognized state field is rejected.** `y Nat` after `x: Nat` used to be stored as the type `Nat y Nat`. The diagnostic is: Parse error at st.speckdl:2: unrecognized state field "y Nat", with no column. `rejects an unrecognized state field` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **An unrecognized init line is rejected.** `y = 0` after `x := 0` used to be stored as `0 y = 0`. `garbage line` used to be stored as `0 garbage line`. Each diagnostic is unrecognized init line on the init header's line, with no column. `rejects an unrecognized init line, without a column` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **Code after `*/` on a `/*` line is rejected.** `/* c */ action go {` used to drop the action. The diagnostic is: Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13). `rejects code after a block comment on the same line` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **CR-only line endings are rejected.** A file of `speck A {` and a state joined by a bare carriage return used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still accepted. `rejects a CR-only file` in `compiler/src/__tests__/walker-strict.test.ts`.
 
 ## [0.3.1] and earlier
 
