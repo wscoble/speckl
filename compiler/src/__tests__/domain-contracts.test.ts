@@ -1,22 +1,14 @@
 // Domain consumes/produces contracts, per-action cost, and budget per tick.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
 import { lower } from '../ir/lower.js';
 import { compileSpec } from '../compile.js';
 import { doctorFile } from '../doctor.js';
 import { generateProvenanceFromIR } from '../generators/provenance-from-ir.js';
-
-const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const viteNode = join(compilerDir, 'node_modules', 'vite-node', 'vite-node.mjs');
-const indexTs = join(compilerDir, 'src', 'index.ts');
-const verifyScript = join(compilerDir, 'scripts', 'verify-z3.mjs');
-const hasZ3 = spawnSync('z3', ['--version']).status === 0;
 
 beforeAll(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -50,16 +42,6 @@ function compile(file: string, target: 'z3' | 'camel' | 'all' | 'all-ir' = 'z3',
   const out = join(path.dirname(file), 'out-' + target + '-' + depth);
   compileSpec(file, { outputDir: out, target, bomFormat: 'both', verifyDepth: depth });
   return out;
-}
-
-function runZ3(smt: string): { verdict: { status: string; obligations: { got?: string; expect?: string }[] }; model: string } {
-  const res = spawnSync('z3', ['-smt2', '-in', '-T:20'], { input: smt, encoding: 'utf-8' });
-  const verdict = judge(smt, res.stdout ?? '', res.stderr ?? '');
-  const model = spawnSync('z3', ['-smt2', '-in', '-T:20'], {
-    input: smt.replace(/\(check-sat\)/, '(check-sat)\n(get-model)'),
-    encoding: 'utf-8',
-  });
-  return { verdict, model: (model.stdout ?? '') + (model.stderr ?? '') };
 }
 
 function machine(name: string, actionBody: string, extra = '', next = 'Go'): string {
