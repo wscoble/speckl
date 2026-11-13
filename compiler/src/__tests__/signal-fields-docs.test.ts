@@ -28,5 +28,8 @@ describe('tool signal field docs', () => {
     expect(tests).toContain('does not tag an emit after return');
     expect(tests).toContain('tags a repeated kpi once');
     expect(tests).toContain('copies an action priority onto an observe tool');
+    expect(tests).toContain('copies a kpi onto an observe tool');
+    expect(tests).toContain('a line that is only return does not stop the scan');
+    expect(tests).toContain('does not write a decision line');
   });
 });
