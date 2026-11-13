@@ -1,5 +1,5 @@
 // Priority and kpi tags copied onto the generated agent config.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -146,5 +146,39 @@ domain Ops { members: Idle; priority P9; }
     );
     const { config } = compile(source);
     expect(config.tools.find(t => t.name === 'commented')?.priority).toBe('P3');
+  });
+
+  it('copies a kpi onto an observe tool', () => {
+    const source = base.replace(
+      '    action Commented {\n        stage := stage\n    }',
+      '    action Commented {\n        stage := stage\n        emit Noted { }\n    }',
+    );
+    const { config } = compile(source);
+    expect(config.tools.find(t => t.name === 'commented')?.kpis).toEqual(['notes']);
+  });
+
+  it('a line that is only return does not stop the scan', () => {
+    const source = base.replace(
+      '        emit Noted { }',
+      '        return\n        emit Noted { }',
+    );
+    const { config } = compile(source);
+    expect(config.tools.find(t => t.name === 'go')?.kpis).toEqual(['notes']);
+    expect(config.tools.find(t => t.name === 'go')?.priority).toBe('P0');
+  });
+
+  it('does not write a decision line', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-signal-fields-'));
+    const file = join(dir, 't.speckdl');
+    writeFileSync(file, base);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      compileSpec(file, { outputDir: join(dir, 'out'), target: 'agent', bomFormat: 'cdx', verifyDepth: 1 });
+      const names = readdirSync(join(dir, 'out'), { recursive: true }).map(String);
+      expect(names.some(name => name.endsWith('log.jsonl') || name.endsWith('head.json'))).toBe(false);
+    } finally {
+      log.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
