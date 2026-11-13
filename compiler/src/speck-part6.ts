@@ -8,10 +8,13 @@ import { takeExpressionLines } from './speck-span.js';
 export function parseInterfaceBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InterfaceNode {
   const firstLine = lines[startIndex].trim();
   const header = parseInterface(firstLine);
-  // Read from the next line, the same span the line walker used. A one-line
-  // record therefore still takes the following fields. A later change stores
-  // only the brace span.
-  const innerLines = lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
+  // A one-line record closes on its header. The line walker started on the
+  // next line and kept the following state fields. Those fields are not
+  // part of the record.
+  const inline = inlineActionBody(firstLine);
+  const innerLines = inline !== null
+    ? (inline.trim() ? [inline.trim()] : [])
+    : lines.slice(startIndex + 1, findBlockEnd(lines, startIndex + 1, startBraceCount)).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
 
   const methods: MethodSignature[] = [];
   const fields: InterfaceField[] = [];

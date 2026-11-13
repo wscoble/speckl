@@ -1,8 +1,8 @@
-// compiler/src/line-walker is a callable copy of the line walker.
-// parseSpeckContent in parser.ts still calls the live walker. The copy is
-// what walker-vs-rd.test.ts compares against once that call switches to the
-// token parser. Delete compiler/src/line-walker and the tests that import it
-// (this file and walker-vs-rd.test.ts) after that comparison is no longer run.
+// compiler/src/line-walker is the line walker from before the token parser
+// swap. parseSpeckContent calls the token parser. walker-vs-rd.test.ts
+// compares this copy with that parser. Later edits store different spans on
+// the AST, so this file compares lowered IR. Delete compiler/src/line-walker
+// and the tests that import it after that comparison is no longer run.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

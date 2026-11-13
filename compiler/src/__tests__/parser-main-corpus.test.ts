@@ -72,7 +72,7 @@ function outlineExamples(): string {
   return JSON.stringify(out);
 }
 
-const CORPUS_SHA256 = 'b80e7947fe49fac28c2aff382c5f8821fc88768ebd6cb18b3c70cc5fe47b715b';
+const CORPUS_SHA256 = '159810590eb991b240663097088c9a8c956471e8acc5c89cc46ab8d079085224';
 
 describe('example corpus', () => {
   it('matches the line-walker outline of every example', () => {
@@ -81,13 +81,12 @@ describe('example corpus', () => {
     expect(hash).toBe(CORPUS_SHA256);
   });
 
-  it('keeps Kafka state fields, and LogEntry keeps the walker field list', () => {
+  it('keeps Kafka state fields, and LogEntry is only term and value', () => {
     const outline = JSON.parse(outlineExamples()) as Record<string, { members: OutlineMember[] }[]>;
     const speck = outline['KafkaKRaft.speckdl'][0];
     const logEntry = speck.members.find(m => m.name === 'LogEntry');
     const state = speck.members.find(m => m.type === 'state');
-    expect(logEntry?.iface?.kind).toBe('mixed');
-    expect(logEntry?.iface?.fields).toContain('currentTerm');
+    expect(logEntry?.iface).toEqual({ kind: 'record', fields: ['term', 'value'], methods: [] });
     expect(state?.vars?.map(v => v.split(':')[0])).toEqual([
       'currentTerm', 'state', 'votedFor', 'log', 'commitIndex', 'nextIndex', 'matchIndex', 'votesGranted',
     ]);
