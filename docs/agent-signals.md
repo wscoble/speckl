@@ -491,7 +491,7 @@ The allow `pre` of an act tool stores the same trace fields without
 does not run the agent.
 
 `compiler/src/__tests__/hook-completion-signal.test.ts` checks the pre, the
-prime post, a bad trace id, and a post with no matching pre.
+prime post, a bad trace id, a post with no matching pre, `a null parent is a root and is not flagged`, and `does not scan the action body, enforce a queue, or run the agent`.
 
 ## Stuck tool calls
 
