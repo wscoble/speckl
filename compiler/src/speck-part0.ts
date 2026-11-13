@@ -38,6 +38,22 @@ export interface ImportNode {
   hash?: string;
 }
 
+/**
+ * File-level bounded context. Members are speck names. The block is not a
+ * speck member: it groups specks, and each speck stays one speck.
+ */
+export interface DomainNode {
+  type: 'domain';
+  name: string;
+  members: string[];
+  /** Text of `language:`, quotes removed. Absent when the clause is omitted. */
+  language?: string;
+  startLine?: number;
+  endLine?: number;
+  /** Absolute path of the file that declared the domain, after import merge. */
+  sourceFile?: string;
+}
+
 export interface InputNode {
   type: 'input';
   typeExpr: TypeExpr;
@@ -425,6 +441,8 @@ export interface AST {
   specks: SpeckNode[];
   /** File-level imports, outside any speck. Omitted when the file has none. */
   imports?: ImportNode[];
+  /** File-level `domain` blocks. Omitted when the file has none. */
+  domains?: DomainNode[];
 }
 
 /**

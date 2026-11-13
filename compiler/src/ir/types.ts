@@ -83,9 +83,28 @@ export interface IRImport {
   resolved: IRSpeck;
 }
 
+/**
+ * A bounded context: a named group of specks. Each member is still one speck.
+ * Domains do not merge member state or actions.
+ */
+export interface IRDomain {
+  name: string;
+  /** Speck names in source order. Duplicates are preserved and are an error. */
+  members: string[];
+  /** Ubiquitous-language note from `language:`, when declared. */
+  language?: string;
+  /** File that declared the domain. */
+  sourcePath: string;
+}
+
 /** The top-level IR: a file may declare multiple specks. */
 export interface IR {
   specks: IRSpeck[];
+  /**
+   * Local domains, then domains merged from imports. Absent on IR values
+   * built before domain blocks. `lower` always sets this.
+   */
+  domains?: IRDomain[];
   /** Global file-level metadata, shared across all specks in the file. */
   fileMetadata: FileMetadata;
   /** Diagnostics from the lower pass (errors, warnings, info). */
