@@ -22,5 +22,8 @@ describe('agent signal docs', () => {
     expect(tests).toContain('stores the ingress trace on an allow pre and a prime signal on the matching post');
     expect(tests).toContain('replaces a bad trace id and still allows the call');
     expect(tests).toContain('denies a post with no matching pre and does not keep the caller trace');
+    expect(tests).toContain('replaces an empty trace id and still allows the call');
+    expect(tests).toContain('an observe tool does not get the signal fields');
+    expect(tests).toContain('a matching post does not keep the caller kpis');
   });
 });

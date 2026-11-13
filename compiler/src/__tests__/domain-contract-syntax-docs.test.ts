@@ -26,5 +26,9 @@ describe('domain contract check docs', () => {
     expect(tests).toContain('a domain with no contract clauses still lowers');
     expect(tests).toContain('stores the parsed cost on the action');
     expect(tests).toContain('rejects consumes with no event');
+    expect(tests).toContain('rejects a produce name that is not an identifier');
+    expect(tests).toContain('rejects the same consume in a second clause');
+    expect(tests).toContain('rejects a budget with no integer');
+    expect(tests).toContain('rejects a cost above the safe integer range');
   });
 });
