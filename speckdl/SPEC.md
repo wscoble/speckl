@@ -255,6 +255,10 @@ domain Billing {
 
 After the block parses, `lower` checks it. A member that is not a speck in the file is `domain: <Name> member <Member> is not a speck in <file>`. A member listed twice, the same speck in two domains, and the same domain name twice are errors. An imported domain is part of that check. A file with no domain has no domain diagnostic. `compileSpec` creates the output directory before it reports a domain error, and it does not write the generated file. `speckl doctor` fails when an `effect act` tool has no harness block (`not mapped in a harness block`), and when a harness block does not map that tool. Zero harnesses is a failure, not a pass. An observe tool is not checked. This check does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-check-each.test.ts` covers each case.
 
+### 2.8.3 Domain contract syntax
+
+A domain may add `consumes PaymentReceived;`, `produces InvoiceIssued;`, and `budget 0 per tick;`. `consumes` and `produces` name events. An empty list is `has no event`. A name that is not an identifier is `not an event name`. The same name twice, on one clause or on a second clause, is `more than once`. A produce name is checked the same way as a consume name. A budget or a cost above the safe integer range is rejected. `budget` must be a non-negative integer followed by `per tick`. Zero is a real budget. An action may declare `cost 0`. Zero is a real cost. A negative cost, a cost that is not an integer, and a second `cost` are errors. `cost := 1` stays an assignment. While lowering, `cost` is skipped, so the action has no `cost` field. This slice does not check that a consumed event is produced. It does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers each case. `docs/domain-contract-syntax.md` says the same thing.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:

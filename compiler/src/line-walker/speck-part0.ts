@@ -104,6 +104,8 @@ export interface EventNode {
   type: 'event';
   name: string;
   fields: { name: string; type: TypeExpr }[];
+  /** `event Name external`. Absent means the event is internal. */
+  external?: boolean;
 }
 
 // oneof: discriminated-union variant for proto wire-format compatibility.

@@ -255,7 +255,7 @@ export function parseEventBlockMultiline(lines: string[], startIndex: number, st
 
   // Handle single-line events: event Foo { a: Type, b: Type }
   // extract fields from the first line itself
-  const inlineMatch = firstLine.match(/^event\s+(\w+)\s*\{(.*)\}\s*$/);
+  const inlineMatch = firstLine.match(/^event\s+(\w+)(?:\s+external)?\s*\{(.*)\}\s*$/);
   const inlineFields: { name: string; type: TypeExpr }[] = [];
   if (inlineMatch && inlineMatch[2].trim()) {
     const fieldStr = inlineMatch[2].trim();

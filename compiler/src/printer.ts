@@ -42,9 +42,12 @@ export function printAST(ast: AST): string {
   return parts.length > 0 ? parts.join('\n') + '\n' + body : body;
 }
 
-function printDomain(domain: { name: string; members: string[]; language?: string }): string {
+function printDomain(domain: { name: string; members: string[]; language?: string; consumes?: string[]; produces?: string[]; budgetPerTick?: number }): string {
   const language = domain.language !== undefined ? ` language: ${JSON.stringify(domain.language)};` : '';
-  return `domain ${domain.name} { members: ${domain.members.join(', ')};${language} }`;
+  const consumes = (domain.consumes ?? []).map(name => ` consumes ${name};`).join('');
+  const produces = (domain.produces ?? []).map(name => ` produces ${name};`).join('');
+  const budget = domain.budgetPerTick !== undefined ? ` budget ${domain.budgetPerTick} per tick;` : '';
+  return `domain ${domain.name} { members: ${domain.members.join(', ')};${language}${consumes}${produces}${budget} }`;
 }
 
 function printSpeck(speck: SpeckNode): string {
@@ -108,7 +111,7 @@ function printMember(member: MemberNode, actionNames: Set<string>): string[] {
     case 'agent':
       return printAgent(member, actionNames);
     case 'event': {
-      const lines = [`event ${member.name} {`];
+      const lines = [`event ${member.name}${member.external ? ' external' : ''} {`];
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
       lines.push('}');
       return lines;
@@ -256,6 +259,9 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
         break;
       case 'postcondition':
         lines.push(`    postcondition: ${stmt.expr}`);
+        break;
+      case 'cost':
+        lines.push(`    cost ${stmt.amount}`);
         break;
       case 'emit': {
         const fields = (stmt.fields as { name: string; value: string }[] | undefined) ?? [];

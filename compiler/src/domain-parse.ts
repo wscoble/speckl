@@ -21,6 +21,11 @@ export function parseDomain(lines: string[], startIndex: number): DomainNode {
   const stmts = splitOnSemicolons(body);
   let members: string[] | undefined;
   let language: string | undefined;
+  const consumes: string[] = [];
+  const produces: string[] = [];
+  let budgetPerTick: number | undefined;
+  const seenConsumes = new Set<string>();
+  const seenProduces = new Set<string>();
   for (const raw of stmts) {
     const stmt = raw.trim();
     if (!stmt) continue;
@@ -49,6 +54,39 @@ export function parseDomain(lines: string[], startIndex: number): DomainNode {
       language = parseLanguageValue(lang[1].trim(), name, startIndex);
       continue;
     }
+    const flow = stmt.match(/^(consumes|produces)(?:\s+([\s\S]*))?$/);
+    if (flow) {
+      const kind = flow[1] as 'consumes' | 'produces';
+      const seen = kind === 'consumes' ? seenConsumes : seenProduces;
+      const into = kind === 'consumes' ? consumes : produces;
+      const ids = (flow[2] ?? '').split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length === 0) {
+        throw lexProblem(startIndex + 1, `domain ${name} ${kind} has no event`);
+      }
+      for (const id of ids) {
+        if (!/^[A-Za-z_]\w*$/.test(id)) {
+          throw lexProblem(startIndex + 1, `domain ${name} ${kind} ${JSON.stringify(id)} is not an event name`);
+        }
+        if (seen.has(id)) {
+          throw lexProblem(startIndex + 1, `domain ${name} ${kind} ${id} more than once`);
+        }
+        seen.add(id);
+        into.push(id);
+      }
+      continue;
+    }
+    if (stmt.startsWith('budget')) {
+      const bud = stmt.match(/^budget\s+(\d+)\s+per\s+tick$/);
+      const n = bud ? Number(bud[1]) : NaN;
+      if (!bud || !Number.isSafeInteger(n)) {
+        throw lexProblem(startIndex + 1, `domain ${name} budget must be a non-negative integer per tick`);
+      }
+      if (budgetPerTick !== undefined) {
+        throw lexProblem(startIndex + 1, `domain ${name} declares budget twice`);
+      }
+      budgetPerTick = n;
+      continue;
+    }
     throw lexProblem(startIndex + 1, `domain ${name} has unexpected clause ${JSON.stringify(stmt)}`);
   }
   if (!members) {
@@ -59,6 +97,9 @@ export function parseDomain(lines: string[], startIndex: number): DomainNode {
     name,
     members,
     ...(language !== undefined ? { language } : {}),
+    ...(consumes.length > 0 ? { consumes } : {}),
+    ...(produces.length > 0 ? { produces } : {}),
+    ...(budgetPerTick !== undefined ? { budgetPerTick } : {}),
     startLine: startIndex + 1,
     endLine: extracted.endLine,
   };

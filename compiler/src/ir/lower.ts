@@ -337,7 +337,13 @@ function lowerBehavior(
       const rawStmts = rawStatementsByAction.get(a.name) || [];
       // No caller lowers a signal-injected AST: the agent block's synthetic
       // __signal_* actions are added to the IR below, from the agent block.
-      const stmts: IRStmt[] = rawStmts.map(s => lowerStatement(s, diagnostics, speck.name));
+      // `cost` is parsed here and copied onto the action by the check slice.
+      // Skipping it keeps a fixture that uses `cost` lowerable.
+      const stmts: IRStmt[] = [];
+      for (const s of rawStmts) {
+        if (s.type === 'cost') continue;
+        stmts.push(lowerStatement(s, diagnostics, speck.name));
+      }
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
@@ -951,6 +957,8 @@ function lowerStatement(
         kind: 'return',
         expr: lowerExpr(s.expr, diagnostics, speckName),
       };
+    case 'cost':
+      throw new Error('cost is action metadata and is not a transition statement');
     case 'ifblock':
       // Future: lower the ifblock properly. For now, keep as a synthetic
       // statement that the generators can choose to ignore.
