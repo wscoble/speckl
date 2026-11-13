@@ -133,6 +133,7 @@ The line walker used to accept each input below and store a program that dropped
 - An unrecognized member. `garbage line here` used to parse as speck A with no members. `actoin go {` dropped the action. `enum Status { Active, Inactive }` kept only interface Foo. A description line dropped the description. `x := x + 3` after init stored the state type as `= x + 3` and the init expression as `x + 3`. Each diagnostic is unrecognized member with the line and column. One of them is: Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5).
 - Unrecognized top-level text. `spek B {` after a closed speck used to parse as only speck A. `*/ speck A {` used to parse as no specks. The diagnostics are: Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1), and Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1).
 - Text after a member's closing brace. `invariant P { x >= 0 } junk` used to parse as invariant P with an empty expression. The predicate was dropped. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28).
+- A member brace on the next line. `invariant P` with `{` on the following line used to parse as a speck whose only member was an empty state. The invariant was dropped. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5).
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
