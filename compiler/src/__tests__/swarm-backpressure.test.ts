@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -13,6 +13,23 @@ const routes = [
 ];
 
 describe('swarm backpressure', () => {
+  it('does not name backpressure for a delivery that fits', () => {
+    const result = deliver(
+      [{ name: 'Right', budgetPerTick: 5 }],
+      [{ from: 'Left', to: 'Right', event: 'Note' }],
+      [{ id: 'go', from: 'Left', event: 'Note', cost: 2, priority: 'P0' }],
+    );
+    expect(result.ran.map(item => item.id)).toEqual(['go->Right']);
+    expect(result.waiting).toEqual([]);
+    expect(result.backpressure).toEqual([]);
+  });
+
+  it('compileSpec does not call deliver', () => {
+    const src = readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
+    expect(src.includes('deliver')).toBe(false);
+    expect(src.includes('swarm-backpressure')).toBe(false);
+  });
+
   it('names the consumer that cannot take the delivery and keeps that delivery waiting', () => {
     const arrival: Arrival = { id: 'go', from: 'Left', event: 'Note', cost: 2, priority: 'P0' };
     const result = deliver([{ name: 'Right', budgetPerTick: 1 }, { name: 'Audit', budgetPerTick: 5 }], routes, [arrival]);

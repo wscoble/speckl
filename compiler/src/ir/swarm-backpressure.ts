@@ -1,5 +1,7 @@
 // Backpressure on a routed delivery.
 //
+// compileSpec does not call this. Backpressure is the budget stop: the
+// delivery stays in `waiting` and is not dropped. Camel does not throttle.
 // A delivery is one hop from planRoutes, queued at the consumer in priority
 // order, then admitted by runTick. When the consumer's budget stops the
 // tick, each delivery still waiting is named `{ domain, event, id, reason:
