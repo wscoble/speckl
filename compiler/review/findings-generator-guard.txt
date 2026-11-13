@@ -1,6 +1,6 @@
 Reviewer findings: direct generator check
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Target: the previous slice. Working: Provenance, Kubernetes CRDs, and Protobuf call the check. Protobuf emits oneof. The other two reject it. compileSpec already checked before each backend. A direct call did not.
+Target: the previous slice. Working: generateZ3FromIR calls the check. compileSpec already checked before each backend. A direct call did not.
 
 No example contains oneof, except the Protobuf case which still emits it. Example output is unchanged. The CHANGELOG names the generator in this slice. That text does not change compiled output.

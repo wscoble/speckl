@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AST, MemberNode } from '../parser.js';
 import { lower } from '../ir/lower.js';
+import { generateZ3FromIR } from '../generators/z3-from-ir.js';
 import { generateProtobuf } from '../generators/protobuf.js';
 import { generateK8sCRD } from '../generators/k8s-crd.js';
 import { generateProvenanceFromIR } from '../generators/provenance-from-ir.js';
@@ -42,6 +43,7 @@ describe('direct generator calls', () => {
     let protobuf: Error | undefined;
     try { generateProtobuf(ast(), out); } catch (e) { protobuf = e as Error; }
     expect(protobuf?.message ?? '').not.toMatch(reject);
+    expect(() => generateZ3FromIR(irWithOneof(out), { outputDir: out })).toThrow(reject);
     expect(() => new OpenAPITarget().generate(irWithOneof(out), { outputDir: out })).toThrow(reject);
   });
 });
