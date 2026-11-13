@@ -24,6 +24,16 @@ describe('swarm priority queue', () => {
     expect(ordered.map(item => item.id)).toEqual(['hot', 'alpha', 'beta']);
   });
 
+  it('an empty priority is unnumbered and is not last', () => {
+    const ordered = orderByPriority([
+      { id: 'none' },
+      { id: 'blank', priority: '' },
+      { id: 'hot', priority: 'P0' },
+    ]);
+    expect(ordered.map(item => item.id)).toEqual(['hot', 'blank', 'none']);
+    expect(comparePriority('', undefined)).toBeLessThan(0);
+  });
+
   it('puts a missing priority last and keeps arrival order for one rank', () => {
     const ordered = orderByPriority([
       { id: 'earlier', priority: 'P0' },
