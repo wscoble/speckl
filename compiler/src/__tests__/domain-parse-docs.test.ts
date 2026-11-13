@@ -17,6 +17,7 @@ describe('domain parser docs', () => {
       expect(text).toContain('does not check that a member names a speck');
       expect(text).toContain('does not route');
       expect(text).toContain('missing final "}"');
+      expect(text).toContain('unclosed domain');
       expect(text).toContain('does not check harnesses');
     }
   });
@@ -26,5 +27,9 @@ describe('domain parser docs', () => {
     expect(tests).toContain('keeps a semicolon that sits inside the language string');
     expect(tests).toContain('rejects a domain nested inside a speck');
     expect(tests).toContain('reports a missing brace before an unclosed domain body');
+    expect(tests).toContain('ignores a comment between clauses');
+    expect(tests).toContain('keeps a closing brace that sits inside the language string');
+    expect(tests).toContain('the domain scanner reports unclosed domain when no brace check runs first');
+    expect(tests).toContain('a brace after an unclosed quote is unclosed domain');
   });
 });

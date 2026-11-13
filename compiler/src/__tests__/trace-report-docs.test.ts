@@ -24,6 +24,7 @@ describe('trace report docs', () => {
   it('names the tests for the golden report, the hash chain, and a short state log', () => {
     expect(tests).toContain('matches the golden report, including an empty log');
     expect(tests).toContain('checks the hash chain and leaves the HMAC for a key');
+    expect(tests).toContain('rejects a key that is not 64 hex characters');
     expect(tests).toContain('fails closed when --state log is shorter than the decision head or gone');
     expect(tests).toContain('does not claim macs on an empty record');
   });
