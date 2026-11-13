@@ -256,8 +256,12 @@ inside a `"` string does not end the block. A domain that never closes is
 a name that is not a speck, and the same domain name twice are compile
 errors. An imported file's domains are part of the same check. `speckl
 doctor` fails when a member's `effect act` tool is not a `map` target in
-every harness block on that speck. `compiler/src/__tests__/domain.test.ts`
-checks these cases.
+every harness block on that speck. An observe tool is not checked.
+`compileSpec` creates the output directory before it reports a domain
+error, and it does not write the generated file. A domain block does not
+route events, queue work, or schedule a tick.
+`compiler/src/__tests__/domain.test.ts` and
+`compiler/src/__tests__/domain-check-each.test.ts` check these cases.
 
 ### 2.9 Expression Operators
 
