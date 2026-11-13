@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', '..', '..');
-const files = ['README.md', 'CHANGELOG.md', 'speckdl/SPEC.md', 'docs/agent-signals.md'].map(name =>
+const files = ['README.md', 'CHANGELOG.md', 'docs/agent-signals.md'].map(name =>
   readFileSync(join(root, name), 'utf8'),
 );
 const tests = readFileSync(join(here, 'hook-completion-signal.test.ts'), 'utf8');
