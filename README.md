@@ -168,7 +168,11 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 ## Domain blocks
 
-A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed string does not end the block. An unclosed block whose source has no `}` is `missing final "}"`. A `}` after an unclosed quote is counted by the brace check, and the domain scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of this change.
+A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed string does not end the block. An unclosed block whose source has no `}` is `missing final "}"`. A `}` after an unclosed quote is counted by the brace check, and the domain scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of the parser change.
+
+## Domain checks
+
+`lower` rejects a member that is not a speck, a member listed twice, a speck in two domains, and a domain name declared twice. Imported domains are part of the check. A file with no domain has no domain diagnostic. `compileSpec` creates the output directory before it reports a domain error, and it does not write the generated file. `speckl doctor` fails when an `effect act` tool has no harness block (`not mapped in a harness block`), and when a harness block does not map that tool. Zero harnesses is a failure, not a pass. An observe tool is not checked. This check does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-check-each.test.ts` covers each case.
 
 ## Token parser
 

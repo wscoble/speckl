@@ -251,6 +251,10 @@ domain Billing {
 
 `members` is required. Each name is text. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed `"` or `'` string does not end the block or the clause. A `//` comment inside the block is not a clause. A hyphenated domain name and a hyphenated member name are accepted. An unclosed block whose source has no `}` is `missing final "}"` from the brace check, which runs before this scanner. A `}` after an unclosed quote is counted by that check, and this scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick. It does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each of those cases.
 
+### 2.8.2 Domain checks
+
+After the block parses, `lower` checks it. A member that is not a speck in the file is `domain: <Name> member <Member> is not a speck in <file>`. A member listed twice, the same speck in two domains, and the same domain name twice are errors. An imported domain is part of that check. A file with no domain has no domain diagnostic. `compileSpec` creates the output directory before it reports a domain error, and it does not write the generated file. `speckl doctor` fails when an `effect act` tool has no harness block (`not mapped in a harness block`), and when a harness block does not map that tool. Zero harnesses is a failure, not a pass. An observe tool is not checked. This check does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-check-each.test.ts` covers each case.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
