@@ -14,17 +14,183 @@ alias.
 
 ### Added
 
-- **`import` resolution and `domain`.** `import "file.speckdl"` is read,
-  lowered, and merged, with cycle detection, hash checks, and errors that
-  name the file. `domain Name { members: ...; language: ... }` groups
-  specks into a bounded context (`IRDomain`) and a PROV-O collection linked
-  to those specks. A duplicate member or a speck in two domains is a
-  compile error. `speckl doctor` fails when a domain member's `act` tool
-  is not mapped in its harness block. Brace counting ignores strings and
-  comments, so a `{` there cannot hide a later speck or a property. An
-  import that declares no specks and no domains is an error. `sha256:`
-  is case-insensitive; an empty hash is a parse error. Contracts, cost,
-  budgets, and runtime routing are not yet implemented.
+- **File-level domain blocks.** `domain Name { members: A, B; language: "..."; }` groups speck names. It is not a speck member. `language` is optional. A member named twice, a speck in two domains, an unknown member, and the same domain name twice are `domain:` errors. `compileSpec` throws those before it writes a generated file. An imported file's domains are merged. A domain member's `effect act` tool must be a `map` target in every harness block; `speckl doctor` reports one that is not. A domain member's provenance graph gains a `prov:Collection` with `prov:hadMember`. `compiler/src/__tests__/domain.test.ts` covers each of these.
+
+- **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
+  inside a finished `"` string, a `//` comment, or a `/* */` comment, so
+  that brace cannot end a speck, a member, an `if`, or a `for`. The same
+  skip covers agent advisory strings (`instruction`, `prompt tool`, and
+  `tool … description`), so a brace inside that text does not end the agent
+  block. A brace in a comment or a string does not hide the next speck. A
+  one-line action closes on the structural `}` of its header line, so a
+  trailing `// }` is not a brace and does not take the next action's
+  statements. A line that is only `speck`, with `Name {` on a later line,
+  is `speck name must be on the same line as "speck"`. The same skip is
+  used when Go emits an `if` or a `for`, so a brace in a comment or a
+  string does not drop that body. `'` is post-state prime notation, not a
+  string quote. A block comment may continue onto the next line, including
+  one that opens on a speck's closing line and closes later. A `"` string
+  may not: an unclosed `"` is `unterminated string` on the line where it
+  opened, at file level, after the last speck, or inside domain text. An
+  unclosed `/*` is `unterminated block comment` on the line where it opened,
+  in those same places. A `/*` written inside an already-open block comment
+  is comment text, not a nested comment. When `*/` is the first text on a
+  line and the code after it is a `speck`, `action`, `invariant`, `state`,
+  or `init` header, that header is `header is not at the start of the
+  line`. A header later on the line, after other text or after `/* ... */`,
+  is outside this scan. A speck written entirely inside a block comment is
+  not a speck. Go still drops an `else if`, a nested `if`, a `for` inside
+  an `if`, and a `require` inside an `if`. That is unchanged from before
+  this scan.
+- **Token lexer.** `compiler/src/speck-lex.ts` tokenizes a file. A `{` or `}`
+  inside a finished `"` string, a `//` comment, or a `/* */` comment is not
+  a token. `'` is prime notation, not a string quote. An unclosed string or
+  block comment is an error on the line and column where it opened. A
+  non-ASCII identifier is `identifier must be ASCII`. A `\r\n` break and a
+  tab are whitespace. A `"` that reaches `\r`, `\n`, or the end of the file
+  before its closer is `unterminated string` on the line where it opened.
+  Non-ASCII text inside a string or a comment stays in that text. `1e5`, `0x1F`,
+  `1_000`, and `5min` are `unsupported numeric literal`. Durations such as
+  `24h` and `500ms` stay a number plus a unit.
+  `compiler/src/__tests__/speck-lex.test.ts` calls the lexer directly.
+  `parseSpeck` calls this lexer.
+- **Backend conservation.** `compiler/src/conservation.ts` lists every AST
+  member type. Each backend marks each type `emit`, `reject`, or `n/a`.
+  `compileSpec` checks that table immediately before it calls the backend.
+  A reject throws, and that backend does not write. `oneof` and `transition` are rejected by every backend except Protobuf,
+  which emits them. `import` is `n/a`: `compileSpec` inlines it before
+  generation. A direct call to a generator runs the same check.
+  `compiler/src/__tests__/conservation.test.ts` checks the table.
+- **Line walker files.** Member phrase parsers live in
+  `compiler/src/speck-part0.ts` through `speck-part9.ts`, plus
+  `speck-span.ts`. `compiler/src/__tests__/line-walker-move.test.ts` compares
+  every example's member outline to `fixtures/line-walker-outline.txt`, the
+  outline from before this move, and checks its sha256.
+- **Example output pin.** `compiler/src/__tests__/compile-pipeline.test.ts` pins
+  `-t all` and `-t all-ir` for every example as one sha256 of the file
+  digests. The digest snapshot file is gone. The pin matches the previous
+  snapshot, so compiled output is unchanged. Appending one byte to a
+  generated file changes that file's digest and the pin.
+- **Recursive-descent parser.** `compiler/src/parser.ts` calls
+  `parseSpeckDocument` in `compiler/src/rd-parser.ts`, which calls the token
+  lexer. A `{` or `}` in a string or a comment is not structure. A one-line
+  record, a trailing invariant comment, a header-line `}`, and a one-line
+  state are stored as the follow-up changes describe. Malformed structure is
+  rejected; see "Fail closed on malformed spec structure" above. The example output pin
+  is the pin those changes set.
+  An opening `{` on the next line is `opening "{" must be on the same line as
+  the member header`. A non-blank line that is not a known member is
+  `unrecognized member`. A state field that is not `name: type` is
+  `unrecognized state field`. `x = 0` inside `init` is
+  `unrecognized init line`. `x := 0` is stored. File-level `import` is
+  stored on the AST and inlined by `compileSpec` before generation. `type LogEntry = { term: Nat,
+  value: Value }` in `examples/KafkaKRaft.speckdl` is the record
+  `{ term, value }`. The state fields that follow stay on the state. Two
+  invariants in `examples/OAuth2AuthorizationCode.speckdl` drop a trailing
+  `//` comment, and the Rust output for that example changes. Go still
+  drops an `else if`, a nested `if`, a `for` inside an `if`, and a
+  `require` inside an `if`.
+  `compiler/src/__tests__/parser-rd.test.ts`,
+  `parser-main-corpus.test.ts`, and `parser-intended-diff.test.ts` cover
+  this. `compiler/review/findings-rd-parser.txt` records that the output matches.
+- **One-line record span.** A `type Name = { ... }` that closes on its header
+  stores only that brace span. The line walker had kept the following state
+  fields, so KafkaKRaft `LogEntry` was not `{ term, value }` and a probe's
+  TypeScript contained `currentTerm: = 0`. The new output is
+  `{ term, value }`. An empty record stores no fields. A comment after the
+  closing brace is not a field. The example output pin moved for that
+  reason, from `9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1`
+  to `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`. See
+  `compiler/review/findings-record-span.txt`.
+- **Invariant comments.** A trailing `//` or a block comment is not part of
+  an invariant expression. The line walker had kept it, so two OAuth
+  invariants carried comment text and a Rust doc line contained `// max`.
+  The new expression is the text before the comment. A `//` inside a string
+  stays. An empty or comment-only invariant is an error. An invariant with
+  no comment is unchanged. The example output pin moved for that reason,
+  from `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`
+  to `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
+  `compiler/review/findings-invariant-comment.txt`.
+- **Header-line close.** A `}` on the speck header ends that speck. The
+  line walker stepped past it, so `speck A { state { x: Nat } }` followed
+  by `speck B` stored B's state field on A as well as on B. A now ends on
+  line 1 with no members, and B keeps its own state. A `}` inside a string
+  is not that close. Example output does not change, so the output pin stays
+  `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
+  `compiler/review/findings-header-close.txt`.
+- **One-line state.** `state { x: Nat }` and `init { x := 0 }` store the
+  field and the assignment. The line walker left both lists empty. An empty
+  `state { }` stores no fields. A comment after the closing brace is not
+  part of the field. A `}` inside `//` does not close the block. A comma in
+  `state { x: Nat, y: Nat }` stays in the type. Example output does not
+  change, so the output pin stays
+  `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
+  `compiler/review/findings-oneline-state.txt`.
+- **Direct generator check.** `generate` for OpenAPI, CycloneDX, SPDX, and
+  the TypeScript IR backend calls the conservation check before it writes.
+  A direct call cannot drop a `oneof`. A missing member list
+  (`sourceMemberTypes` on IR, `members` on an AST) is an error, and so is a
+  type the table does not name. An empty list is a speck with no members.
+  `lower` records `sourceMemberTypes`. `compiler/src/__tests__/generator-guard.test.ts`
+  and `guard-fail-closed-small.test.ts` call those generators without `compileSpec`.
+- **Direct schema check.** Provenance, Kubernetes CRDs, and Protobuf call the conservation check before they write. Protobuf emits `oneof`. The other two reject it. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-schema.test.ts` call them without `compileSpec`.
+- **Direct Z3 IR check.** `generateZ3FromIR` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-z3ir.test.ts` call it without `compileSpec`.
+- **Direct agent check.** `generateAgent` calls `guardAst('agent', ast)` before it emits. A missing member list throws `members are missing on speck "S"`. An unknown type throws `no handler for AST node type "not-a-member"`. A `oneof` throws `agent backend rejects AST node type "oneof"`. A speck with no `agent` block logs `skip S: no agent { } block` and does not emit that speck's agent files. `guard-fail-closed-agent.test.ts` checks the three throws. It does not check that the output directory is empty.
+- **Direct Camel check.** `generateCamel` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-camel.test.ts` call it without `compileSpec`.
+- **Direct Rust check.** `generateRust` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct TypeScript state-machine check.** `generateTypeScriptStateMachine` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct Z3 check.** `generateZ3` calls the conservation check before it writes, and a direct call reads invariant members from the AST unless an `_invariants` list is attached. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `next:` naming an unknown action is an error and writes no SMT file. `generator-guard.test.ts` and `guard-z3-limits.test.ts` call it without `compileSpec`.
+- **Direct Elm check.** `generateElm` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Direct Go check.** `generateGo` calls the conservation check before it writes. A direct call cannot drop a `oneof`. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` calls it without `compileSpec`.
+- **Import paths.** `compiler/src/imports.ts` reads a relative import. The real
+  path has to stay inside the root (the entry file's directory, unless a
+  caller passes `rootDir`). The hash pin is the raw bytes, 64 hex digits,
+  with an optional `sha256:` prefix. A symlink that leaves the root, a
+  directory, a FIFO, a cycle, and a file that changes while it is read are
+  errors. `/proc/self/fd` is an extra check when that path exists. There is
+  no package registry. File-level `import` is stored on the AST.
+  `compiler/src/__tests__/imports.test.ts` covers the resolver.
+- **Import wiring.** `compileSpec` expands imports before it calls a backend.
+  `lower` does the same when `resolveImports` is set, and it no longer warns
+  that import resolution is not implemented. `import` is `n/a` in the
+  conservation table. A missing file, a cycle, a duplicate alias, an absolute
+  path, and a root that does not contain the import are errors. A missing
+  member-type list after lowering is an error.
+  `compiler/src/__tests__/import-wire-edges.test.ts` covers those cases.
+- **Import CLI.** `speckl --root` sets the directory `compileSpec` already
+  accepted. `--root /` widens it to the whole filesystem. An absolute import
+  path, a missing file, a cycle, and a duplicate alias are errors.
+  `--root` with no directory does not widen the root, so `import "../x"`
+  still fails. `--root` set to the entry file itself does not contain an
+  import. A same-directory import does not need the flag.
+  `compiler/src/__tests__/cli-root.test.ts` runs the CLI.
+- **Agent tool short form.** `tool FetchAssets effect act` infers the
+  agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
+  custom_name effect act` specifies an alias. Effects remain required and the
+  existing `tool custom_name -> FetchAssets effect act` form remains supported.
+  Prompt tool references use the agent-facing name.
+- **`prompt tool`.** `prompt tool NAME` attaches an advisory work brief to a
+  declared agent-facing tool. NAME is that tool's agent-facing name, such as
+  `draft_metadata`, not the action name. The brief may be inline text (a JSON
+  string) or a relative file, and may also name a declared stage and/or await
+  (`stage` before `await` when both are present). At compile time the text is
+  written into that tool's `tools.json` description and the matching
+  `AGENTS.md` section: the tool section, or the named await's section when an
+  await is set. Hooks and Z3 do not execute the prompt text. Stage and await
+  labels are associations on the compiled brief, not runtime filters. Unknown
+  tool, stage, or await names are rejected at parse time. A stage qualifier
+  requires a `stages` map. Prompt file paths are local and relative to the
+  spec, not the current working directory; absolute paths and URLs are
+  rejected at compile time. The spec hash fingerprints the spec text, not
+  referenced prompt files. `instruction` remains for standing agent-level
+  defaults. Existing tool `description` and `description file` remain
+  supported.
+- **`examples/PodcastPublishing.speckdl`.** A podcast metadata workflow
+  with call-bound host approval for initial updates and corrections. Two
+  model invariants are checked to depth 8, with a weakened-guard regression
+  test. The example models the workflow; platform integrations and content
+  validation remain the implementer's responsibility. See
+  `examples/PodcastPublishing.md` and `example-podcast-publishing.test.ts`.
 - **`examples/DeployGate.speckdl`.** The first example that uses `bind call on
   approve`: one signed approval covers one exact `deploy` call (tool plus
   arguments), once. Tested end to end in `example-deploy-gate.test.ts`.
@@ -179,8 +345,11 @@ alias.
   measured, not from missing tests. Generated example output is pinned by a
   digest snapshot.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
+- **Token parser is called by `parseSpeckContent`.** `compiler/src/parser.ts` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. Coverage includes `rd-parser.ts` and `speck-span.ts`. `parseSpeckContent calls the token parser` and `lowers every speck in the repo to the same IR` are in `compiler/src/__tests__/walker-vs-rd.test.ts`.
 
 ### Changed
+
+- **Malformed spec structure is rejected.** The line walker used to accept a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`, and it folded an unrecognized state field or init line into the previous text. It now rejects those. The message names the line and column, except an unrecognized state field and an unrecognized init line, which name the line only. The examples are well-formed, so the output pin is unchanged.
 
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
@@ -331,6 +500,28 @@ alias.
 - 31 of the 34 example verify blocks are not yet proven (see
   `examples/.speckl-unchecked.json`), mostly because the AST Z3 sanitizer
   drops forms it cannot translate (model incomplete).
+
+### Breaking
+
+Parse errors below are breaking changes. A file that used to compile now fails, or the diagnostic text changed.
+
+- **A speck that never closes is rejected.** `speck A {` with no closing brace used to parse as speck A with no members. The body was missing. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9). `rejects a missing close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An extra closing brace is rejected.** `speck A {` followed by `}` and another `}` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). `rejects an extra close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Text after a speck's closing brace is rejected.** `} junk` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3). `rejects text after a close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **A second speck on one line is rejected.** `speck A { } speck B { }` used to parse as only speck A. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13). `rejects a second speck on one line` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An unrecognized member is rejected.** `garbage line here`, `actoin go {`, `enum Status { Active, Inactive }`, a description line, and a bare `x := x + 3` used to be dropped or folded into a neighbor. Each diagnostic is unrecognized member with a line and column. `rejects an unrecognized member` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Unrecognized top-level text is rejected.** `spek B {` after a closed speck used to leave only speck A. `*/ speck A {` used to leave no specks. Both diagnostics are unrecognized top-level at column 1. `rejects an unrecognized top-level name` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Text after a member's closing brace is rejected.** `invariant P { x >= 0 } junk` used to store an empty expression. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28). `rejects text after a member close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **A member `{` on the next line is rejected.** `invariant P` with `{` on the next line used to drop the invariant and keep an empty state. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5). `rejects a brace on the next line` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An unrecognized state field is rejected.** `y Nat` after `x: Nat` used to be stored as the type `Nat y Nat`. The diagnostic is: Parse error at st.speckdl:2: unrecognized state field "y Nat", with no column. `rejects an unrecognized state field` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An unrecognized init line is rejected.** `y = 0` after `x := 0` used to be stored as `0 y = 0`. `garbage line` used to be stored as `0 garbage line`. Each diagnostic is unrecognized init line on the init header's line, with no column. `rejects an unrecognized init line, without a column` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **Code after `*/` on a `/*` line is rejected.** `/* c */ action go {` used to drop the action. The diagnostic is: Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13). `rejects code after a block comment on the same line` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **CR-only line endings are rejected.** A file of `speck A {` and a state joined by a bare carriage return used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still accepted. `rejects a CR-only file` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An unexpected non-ASCII character is rejected.** `§` and `→` used to parse as speck A with no members. The diagnostics are unexpected character "§" at column 2 and unexpected character "→" at column 7. `rejects a section sign` and `rejects an arrow character` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An identifier that starts with a digit is rejected.** `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `state { t: 24h }` still parses. `rejects a digit name` and `still parses a duration` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **A non-ASCII identifier is rejected.** `naïve` used to be dropped, leaving speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). `rejects a non-ASCII identifier` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An unsupported numeric literal is rejected.** `state { t: 1h30m }` used to store an empty state. The diagnostic is: Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16). `rejects an unsupported numeric literal` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An unclosed string or block comment names its column.** `x: "ab` was unterminated string with no column. It is now Parse error at bad.speckdl:2: unterminated string (column 8). `/* c` was unterminated block comment and is now Parse error at bad.speckdl:2: unterminated block comment (column 5). `names the column of an unclosed string and an unclosed block comment` in `compiler/src/__tests__/walker-strict.test.ts`.
 
 ## [0.3.1] and earlier
 
