@@ -275,6 +275,22 @@ domain Billing { members: A; produces Note; }
     expect(errorsOf(hidden).join('\n')).toMatch(/emits Hidden, which Billing does not produce/);
   });
 
+  it('rejects a consume of a name that is not an event', () => {
+    const root = dir();
+    const file = write(root, 'gone.speckdl', `${machine('A', 'n := 1', 'event Tick { price: Nat }')}
+domain Billing { members: A; consumes Gone; }
+`);
+    expect(errorsOf(file).join('\n')).toMatch(/consumes Gone, which is not an event/);
+  });
+
+  it('rejects producing an external event', () => {
+    const root = dir();
+    const file = write(root, 'ext.speckdl', `${machine('A', 'n := 1', 'event Tick external { price: Nat }')}
+domain Billing { members: A; consumes Tick; produces Tick; }
+`);
+    expect(errorsOf(file).join('\n')).toMatch(/produces Tick, which is declared external/);
+  });
+
   it('accepts an external event, and rejects producing that same event', () => {
     const root = dir();
     const ok = write(root, 'ok.speckdl', `${machine('A', 'n := 1', 'event Tick external { price: Nat }')}
