@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { lexProblem, lexStart, setParseFile, type SpeckNode } from '../speck-part0.js';
 import { maskLine, nextCodeIsNamedBlock, parseSpeck } from '../speck-part1.js';
 import { parseSpeckContent } from '../parser.js';
+import { lexSpeck } from '../speck-lex.js';
 
 function message(src: string, file = 'bad.speckdl'): string {
   try {
@@ -227,18 +228,49 @@ describe('line walker rejects malformed structure', () => {
     expect(parsed.specks.map(s => s.name)).toEqual(['A']);
   });
 
-  it('records which rejection classes are on', () => {
+  it('no longer has the class switches', () => {
     const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
-    const start = text.indexOf('const ON');
-    const block = text.slice(start, text.indexOf('};', start) + 2);
-    const flags = [...block.matchAll(/(\w+):\s*(true|false)/g)].map(m => [m[1], m[2]] as const);
-    expect(flags.map(([name]) => name)).toEqual([
+    expect(text).not.toContain('rethrowLexer');
+    expect(text).not.toContain('const ON');
+    expect(text).toContain('const lexed = lexSpeck(content, file);');
+    expect(text).not.toMatch(/catch\s*\(/);
+  });
 
-      'missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail',
-      'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
-      'ascii', 'numeric', 'unclosed',
-    ]);
-    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit', 'ascii', 'numeric', 'unclosed']);
+  it('keeps each class error from before the switches were removed', () => {
+    const cases: { src: string; file?: string; error: string }[] = [
+      { src: 'speck A {\n', error: 'Parse error at bad.speckdl:1: missing final "}" (column 9)' },
+      { src: 'speck A {\n}\n}\n', error: 'Parse error at bad.speckdl:3: extra "}" (column 1)' },
+      { src: 'speck A {\n} junk\n', error: 'Parse error at bad.speckdl:2: text after a speck\'s "}" (column 3)' },
+      { src: 'speck A { } speck B { }\n', error: 'Parse error at bad.speckdl:1: a second speck on one line (column 13)' },
+      { src: 'speck A {\n    garbage line here\n}\n', error: 'Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5)' },
+      { src: 'speck A {\n    state { x: Nat }\n}\nspek B {\n}\n', error: 'Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1)' },
+      { src: 'speck A {\n    invariant P { x >= 0 } junk\n}\n', error: 'Parse error at bad.speckdl:2: text after a member\'s "}" (column 28)' },
+      { src: 'speck A {\n    state { x: Nat }\n    invariant P\n    {\n        x >= 0\n    }\n}\n', file: 'allman.speckdl', error: 'Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5)' },
+      { src: 'speck A {\n    state {\n        x: Nat\n        y Nat\n    }\n}\n', file: 'st.speckdl', error: 'Parse error at st.speckdl:2: unrecognized state field "y Nat"' },
+      { src: 'speck A {\n    state { x: Nat }\n    init {\n        x := 0\n        y = 0\n    }\n}\n', file: 'in.speckdl', error: 'Parse error at in.speckdl:3: unrecognized init line "y = 0"' },
+      { src: 'speck A {\n    /* c */ action go {\n        x := 1\n    }\n}\n', error: 'Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13)' },
+      { src: 'speck A {\r    state { x: Nat }\r}\r', error: 'Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10)' },
+      { src: 'speck A {\n §\n}\n', error: 'Parse error at bad.speckdl:2: unexpected character "§" (column 2)' },
+      { src: 'speck 9A {\n}\n', error: 'Parse error at bad.speckdl:1: identifier must not start with a digit (column 7)' },
+      { src: 'speck A {\n    naïve x\n}\n', error: 'Parse error at bad.speckdl:2: identifier must be ASCII (column 7)' },
+      { src: 'speck A {\n    state { t: 1h30m }\n}\n', error: 'Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16)' },
+      { src: 'speck A {\n    x: "ab\n}\n', error: 'Parse error at bad.speckdl:2: unterminated string (column 8)' },
+    ];
+    for (const row of cases) {
+      expect(message(row.src, row.file), row.error).toBe(row.error);
+    }
+  });
+
+  it('passes a lexer error through unchanged', () => {
+    const src = 'speck A {\n    x: "ab\n}\n';
+    let lexer = '';
+    try {
+      lexSpeck(src, 'bad.speckdl');
+    } catch (err) {
+      lexer = (err as Error).message;
+    }
+    expect(lexer).toBe('Parse error at bad.speckdl:2: unterminated string (column 8)');
+    expect(message(src)).toBe(lexer);
   });
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
