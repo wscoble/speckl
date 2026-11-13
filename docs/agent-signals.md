@@ -411,6 +411,8 @@ decision chain checks. Each such allow, and each such deny, is one line:
   rotation or a new binding does not move it.
 - `mac` is HMAC-SHA256 of that hash. Unsigned `--dev` states (no key) keep
   the chain only, same as `state.json`. `head.json` is HMAC'd the same way.
+  This seal is a shared-key HMAC. It proves nothing to an outside auditor.
+  Anyone who can read the key can forge a line.
 
 A call-bound mismatch is one of those denials: the reason names the wanted
 digest and the digest of this call, `state.boundCall` stays put, and
