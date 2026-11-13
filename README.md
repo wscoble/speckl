@@ -198,6 +198,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
 - [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
+- [Claims layer dossier (v0.4)](docs/claims-dossier.md) — design record for the claims layer (primitives, block form, claims surface, verdict lattice). Build tasks: [v0.4 work order](docs/v0.4-work-order.md).
 
 ## Status
 
