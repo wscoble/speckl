@@ -166,6 +166,10 @@ A one-line speck that packs its members on the header line can still absorb the 
 
 The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `compiler/src/parser.ts` still calls it. `parseSpeck` does not call the token lexer yet, and example member outlines are unchanged. Example `-t all` and `-t all-ir` output is pinned as one sha256 in `compiler/src/__tests__/compile-pipeline.test.ts`.
 
+## Strict structure check
+
+`parseSpeckContent` calls `assertClosedSpec` before the line walk. Every rejection class is off, so this call does not change what the line walker accepts. `speck A {` with no closing brace still parses as speck A with no members, ending on line 1. A `}` inside a string is still a string. A speck name on the next line already throws `speck name must be on the same line as "speck"`, and that message is unchanged. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
+
 ## Documentation
 
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft

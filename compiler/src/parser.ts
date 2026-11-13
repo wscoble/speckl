@@ -2,6 +2,7 @@ import fs from 'fs';
 import { AST, SpeckNode, lexProblem, setParseFile, lexStart } from './speck-part0.js';
 import { maskLine, nextCodeIsNamedBlock, parseSpeck } from './speck-part1.js';
 import { parseImportStatement } from './speck-part3.js';
+import { assertClosedSpec } from './walker-strict.js';
 
 export * from './speck-part0.js';
 export * from './speck-part1.js';
@@ -26,6 +27,9 @@ export function parseSpeckFile(filePath: string): AST {
 export function parseSpeckContent(content: string, filePath?: string): AST {
   setParseFile(filePath ?? '');
   try {
+  // Reject a broken speck before the walk. A file that passes is parsed
+  // by the line walker, and the example output does not change.
+  assertClosedSpec(content, filePath);
   const specks: SpeckNode[] = [];
   const lines = content.split('\n');
   // A `"` must close on its line, and a `/*` must close before the file ends,
