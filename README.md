@@ -213,6 +213,8 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed; acknowledged obligations are listed in `examples/.speckl-unchecked.json`.
 - TLA+ models: Two-Phase Commit, Paxos, and Raft are ported as `.speckdl` specs (inspired by the original TLA+ models, not TLA+ output)
 
+Operating principles: [OPERATING_PRINCIPLES.md](OPERATING_PRINCIPLES.md).
+
 ## License
 
 MIT
