@@ -89,9 +89,7 @@ describe('in-process pipeline matches the CLI', () => {
   }
 });
 
-// One hash of every example's `-t all` and `-t all-ir` digests. The previous
-// snapshot file was the full digest map (about 86k characters) and made any
-// output change pull that whole file into review.
+// One hash of every example's `-t all` and `-t all-ir` digests.
 //
 // Update this constant only in the PR that intentionally changes generated
 // output. Run this test, replace the constant with the hash it prints, and

@@ -20,7 +20,6 @@ describe('example output baseline docs', () => {
       expect(text).toContain('does not decide whether the hook is correct');
       expect(text).toContain('does not rewrite the hook');
     }
-    expect(page).toContain('about 86k characters');
   });
 
   it('names the negative tests', () => {
