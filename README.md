@@ -206,6 +206,10 @@ A one hop from a domain that produces an event to each other domain that consume
 
 The trailing integer is the rank. P0 comes before P1, and P2 comes before P10. A smaller number wins across prefixes, so B0 comes before A1. The same number is ordered by the prefix, and the same label keeps arrival order. An unnumbered label comes after every numbered label. A missing priority comes last. The input array is not mutated. `compileSpec` does not call `orderByPriority`. This module does not route events, enqueue work, or stop on a budget. `docs/swarm-queue.md` says the same thing. `compiler/src/__tests__/swarm-queue.test.ts` covers each case.
 
+## Swarm tick
+
+The per-domain `budgetPerTick` is the tick. A missing budget is no cap. Zero is a real budget, and cost 0 still fits. An item whose cost is greater than the budget does not run. The tick does not skip a head that does not fit in order to run a cheaper item behind it. A negative cost, or a cost that is not a number, waits and blocks the rest of that domain. It does not increase the remaining budget. An item after the one that fills the budget waits. Work for a domain the tick does not name waits. The caller's work list is not mutated. `compileSpec` does not call `runTick`. This module does not route events and it does not apply backpressure. `docs/swarm-tick.md` says the same thing. `compiler/src/__tests__/swarm-tick.test.ts` covers each case.
+
 ## Token parser
 
 `parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parseSpeckContent calls the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts that `parser.ts` is the production file that imports `rd-parser.ts` and that the call passes the source and the file path. `lowers every speck in the repo to the same IR` in that file compares the live parser with the line-walker copy. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).

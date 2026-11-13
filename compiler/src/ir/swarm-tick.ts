@@ -4,7 +4,9 @@
 // apply backpressure. The per-domain budget is the tick. Each domain spends
 // its own budget. `budgetPerTick` absent means no cap.
 // Zero is a real budget. Cost 0 is a real cost and still fits in a zero
-// budget. The tick does not skip a head that does not fit in order to run
+// budget. A negative cost, or a cost that is not a number, waits and
+// blocks the rest of that domain. It does not increase the remaining budget.
+// The tick does not skip a head that does not fit in order to run
 // a cheaper item behind it. Work left waiting is not dropped. A later tick
 // starts each budget again from zero. Work for a domain that is not in the
 // tick waits.
@@ -40,7 +42,7 @@ export function runTick(domains: readonly TickDomain[], work: readonly TickWork[
     let blocked = false;
     for (const item of items) {
       const fits = cap === undefined || spent + item.cost <= cap;
-      if (blocked || !fits) {
+      if (!(item.cost >= 0) || blocked || !fits) {
         blocked = true;
         waiting.push(item);
         continue;

@@ -283,6 +283,10 @@ A one hop from a domain that produces an event to each other domain that consume
 
 The trailing integer is the rank. P0 comes before P1, and P2 comes before P10. A smaller number wins across prefixes, so B0 comes before A1. The same number is ordered by the prefix, and the same label keeps arrival order. An unnumbered label comes after every numbered label. A missing priority comes last. The input array is not mutated. `compileSpec` does not call `orderByPriority`. This module does not route events, enqueue work, or stop on a budget. `docs/swarm-queue.md` says the same thing. `compiler/src/__tests__/swarm-queue.test.ts` covers each case.
 
+### 2.8.10 Swarm tick
+
+The per-domain `budgetPerTick` is the tick. A missing budget is no cap. Zero is a real budget, and cost 0 still fits. An item whose cost is greater than the budget does not run. The tick does not skip a head that does not fit in order to run a cheaper item behind it. A negative cost, or a cost that is not a number, waits and blocks the rest of that domain. It does not increase the remaining budget. An item after the one that fills the budget waits. Work for a domain the tick does not name waits. The caller's work list is not mutated. `compileSpec` does not call `runTick`. This module does not route events and it does not apply backpressure. `docs/swarm-tick.md` says the same thing. `compiler/src/__tests__/swarm-tick.test.ts` covers each case.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
