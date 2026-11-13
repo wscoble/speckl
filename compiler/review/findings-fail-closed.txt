@@ -1,0 +1,3 @@
+This branch does not change what `parseSpeck` accepts or rejects. The line walker already rejects a missing `}`, an extra `}`, text after `}`, an unrecognized member, `§`, an unrecognized state field, and an unrecognized init line. The token parser reports that same error, line, and column. There is no fallback.
+
+`compiler/src/__tests__/parser-malformed.test.ts` and `compiler/src/__tests__/walker-vs-rd.test.ts` run both parsers. The messages are equal. When both accept, the ASTs match. Example output stays on the output-hash pin.
