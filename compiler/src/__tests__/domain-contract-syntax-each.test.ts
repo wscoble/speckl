@@ -108,6 +108,18 @@ describe('each contract syntax clause', () => {
     expect(() => parseSpeckContent('speck A {\n    action Go { cost 9007199254740993 }\n}\n')).toThrow(/non-negative integer/);
   });
 
+  it('rejects a cost with trailing text', () => {
+    expect(() => parseSpeckContent('speck A {\n    action Go { cost 1 extra }\n}\n')).toThrow(/non-negative integer/);
+  });
+
+  it('rejects a signed cost', () => {
+    expect(() => parseSpeckContent('speck A {\n    action Go { cost +1 }\n}\n')).toThrow(/non-negative integer/);
+  });
+
+  it('rejects a budget with trailing text', () => {
+    expect(() => parseSpeckContent(domain('budget 1 per tick extra;'))).toThrow(/non-negative integer per tick/);
+  });
+
   it('rejects a budget that is not an integer', () => {
     expect(() => parseSpeckContent(domain('budget 1.5 per tick;'))).toThrow(/non-negative integer per tick/);
   });
