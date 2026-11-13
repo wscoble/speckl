@@ -267,6 +267,10 @@ A domain may add `consumes PaymentReceived;`, `produces InvoiceIssued;`, and `bu
 
 A domain becomes a comment and an empty `NameContract` class with a private constructor. The class has no runtime method. A speck with no domain emits no contract class. Camel does not throttle, queue, or route, and it does not run a tick. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, and the speck with no domain. `docs/domain-contract-camel.md` says the same thing.
 
+### 2.8.6 Priority and kpi syntax
+
+An action may declare `priority P0`. A domain may declare `priority P0`. An event may declare `kpi "notes"`. `priority := 1` stays an assignment. A priority that is not an identifier, a second priority, and a kpi that is not a string are errors. Two kpi tags for one event name are an error. A `}` inside a kpi string or a `//` comment does not end the speck. This slice does not copy the labels onto tools, and it does not enforce a queue. `compiler/src/__tests__/signal-syntax.test.ts` covers each case. `docs/signal-syntax.md` says the same thing. The changelog entry for this slice is not in `CHANGELOG.md` because that file would put this pull request over the token cap.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
