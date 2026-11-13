@@ -34,6 +34,16 @@ describe('each domain check', () => {
     }
   });
 
+  it('a file with no domain has no domain diagnostic', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-domain-none-'));
+    try {
+      const file = write(dir, 'plain.speckdl', speck('A'));
+      expect(messages(file, dir)).not.toMatch(/domain:/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a member that is not a speck', () => {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-domain-miss-'));
     try {
