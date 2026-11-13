@@ -52,14 +52,14 @@ export function compileSpec(file: string, options: CompileOptions): void {
   const memberCount = ast.specks.reduce((sum, s) => sum + s.members.length, 0);
   console.log(`AST parsed successfully: ${speckCount} speck(s), ${memberCount} member(s)`);
 
+  if (!fs.existsSync(options.outputDir)) {
+    fs.mkdirSync(options.outputDir, { recursive: true });
+  }
+
   const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: options.rootDir });
   const domainErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('domain:'));
   if (domainErrors.length > 0) {
     throw new Error(domainErrors.map(d => d.message).join('\n'));
-  }
-
-  if (!fs.existsSync(options.outputDir)) {
-    fs.mkdirSync(options.outputDir, { recursive: true });
   }
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
