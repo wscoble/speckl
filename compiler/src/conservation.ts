@@ -454,8 +454,14 @@ function note(backend: BackendId, type: string): void {
 export function guardAst(backend: BackendId, ast: AST): void {
   const expected: string[] = [];
   const start = conservationLog.length;
-  for (const speck of ast.specks) {
+    for (const speck of ast.specks) {
+    if (!speck.members) {
+      throw new Error(`${backend} backend cannot check member types: members are missing on speck "${speck.name}"`);
+    }
     for (const member of speck.members) {
+      if (!member?.type) {
+        throw new Error(`${backend} backend cannot check member types: a member type is missing on speck "${speck.name}"`);
+      }
       if (disposition(backend, member.type) === 'emit') expected.push(`${backend}:emit:${member.type}`);
       note(backend, member.type);
     }
@@ -464,16 +470,18 @@ export function guardAst(backend: BackendId, ast: AST): void {
 }
 
 /**
- * Guard an IR. A speck with no `sourceMemberTypes` is skipped. `lower` does
- * not set that field yet, so `compileSpec` checks the AST before each
- * backend instead. A later change can record the member types on the IR
- * and this function will check them.
+ * Guard an IR. `lower` records `sourceMemberTypes`. A speck without that
+ * list is an error: skipping it would let a direct call drop a member type
+ * the table rejects. A type the table does not name is also an error.
  */
 export function guardIr(
   backend: BackendId,
-  ir: { specks: ReadonlyArray<{ sourceMemberTypes?: readonly string[] }> },
+  ir: { specks: ReadonlyArray<{ name?: string; sourceMemberTypes?: readonly string[] }> },
 ): void {
   for (const speck of ir.specks) {
-    for (const type of speck.sourceMemberTypes ?? []) note(backend, type);
+    if (!speck.sourceMemberTypes) {
+      throw new Error(`${backend} backend cannot check member types: sourceMemberTypes is missing on speck "${speck.name ?? ''}"`);
+    }
+    for (const type of speck.sourceMemberTypes) note(backend, type);
   }
 }

@@ -36,8 +36,10 @@ describe('backend conservation', () => {
     expect(conservationLog).toContain('protobuf:emit:oneof');
   });
 
-  it('skips an IR speck that did not record its member types', () => {
-    expect(() => guardIr('go', { specks: [{}] })).not.toThrow();
+  it('rejects an IR speck with a missing list or an unknown member type', () => {
+    expect(() => guardIr('go', { specks: [{ name: 'S' }] })).toThrow(/sourceMemberTypes is missing on speck "S"/);
+    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: ['not-a-member'] }] })).toThrow(/no handler for AST node type "not-a-member"/);
+    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: [] }] })).not.toThrow();
     expect(() => guardIr('go', { specks: [{ sourceMemberTypes: ['oneof'] }] })).toThrow(/rejects AST node type "oneof"/);
   });
 
