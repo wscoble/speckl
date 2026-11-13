@@ -71,6 +71,24 @@ describe('domain blocks', () => {
     expect(() => parse(src)).toThrow(/domain blocks are file-level/);
   });
 
+  it('does not check that a member names a speck in this file', () => {
+    const ast = parse('domain D { members: Missing; }\n');
+    expect(ast.domains?.[0].members).toEqual(['Missing']);
+    expect(ast.specks).toEqual([]);
+  });
+
+  it('keeps a semicolon that sits inside the language string', () => {
+    const ast = parse('domain D { members: A; language: "a; b"; }\n');
+    expect(ast.domains?.[0].language).toBe('a; b');
+    expect(ast.domains?.[0].members).toEqual(['A']);
+  });
+
+  it('parses a hyphenated domain name and a hyphenated member', () => {
+    const ast = parse('domain pay-ops { members: inv-oice; }\n');
+    expect(ast.domains?.[0].name).toBe('pay-ops');
+    expect(ast.domains?.[0].members).toEqual(['inv-oice']);
+  });
+
   it('round-trips domains through printAST', () => {
     const src = [
       'domain Billing {',

@@ -2,6 +2,7 @@
 // merge those specks. Each name must be a speck in the lowered unit,
 // once per domain, and in only one domain. The same domain name in two
 // files is an error. Same name in the same file is also an error.
+// This check does not route events, queue work, or schedule a tick.
 
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
