@@ -22,9 +22,9 @@ describe('contract docs', () => {
     }
   });
 
-  it('points at a direct test for a negative cost, a skipped cost, a missing producer, and the Camel comment', () => {
+  it('points at a direct test for a negative cost, a stored cost, a missing producer, and the Camel comment', () => {
     expect(each).toContain('rejects a negative cost');
-    expect(each).toContain('skips cost while lowering and does not store it on the action');
+    expect(each).toContain('stores the parsed cost on the action');
     expect(contracts).toContain('rejects a consumed event that no domain produces and that is not external');
     expect(contracts).toContain('proves an in-budget tick and records the obligation on the IR backend as unchecked');
     expect(contracts).toContain('emits a comment block and a typed event class, and does not throttle');
