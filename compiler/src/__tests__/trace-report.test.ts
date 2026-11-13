@@ -206,6 +206,16 @@ describe('speckl trace report', () => {
     expect(run(['report', '--log']).err).toMatch(/exactly one/);
   });
 
+  it('rejects a key that is not 64 hex characters', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speckl-trace-badkey-'));
+    const log = join(dir, 'log.jsonl');
+    writeFileSync(log, chain([baseLine()]));
+    writeFileSync(join(dir, 'k'), 'not-hex\n');
+    const badKey = run(['report', '--log', log, '--key', join(dir, 'k')]);
+    expect(badKey.code).toBe(1);
+    expect(badKey.err).toMatch(/state key could not be read/);
+  });
+
   it('prints the golden report for a chained log and fails closed on a bad one', () => {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-trace-cli-'));
     const bodies = (JSON.parse(readFileSync(join(fix, 'report-lines.json'), 'utf8')) as Record<string, unknown>[]).map(row => baseLine({

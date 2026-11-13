@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { compileSpec } from '../compile.js';
 import { doctorFile } from '../doctor.js';
 import { lower } from '../ir/lower.js';
-import { parseSpeckFile } from '../parser.js';
+import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 
 const speck = (name: string) => `speck ${name} {\n state { x: Nat }\n init { x := 0 }\n}\n`;
 
@@ -32,6 +32,12 @@ describe('each domain check', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('the parser still accepts a member that is not a speck', () => {
+    const ast = parseSpeckContent('domain D { members: Missing; }\n');
+    expect(ast.domains?.[0].members).toEqual(['Missing']);
+    expect(ast.specks).toEqual([]);
   });
 
   it('a file with no domain has no domain diagnostic', () => {
