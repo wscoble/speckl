@@ -107,7 +107,7 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('accept');
   });
 
-  it('keeps every rejection class off', () => {
+  it('turns on only a missing close', () => {
     const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
     const start = text.indexOf('const ON');
     const block = text.slice(start, text.indexOf('};', start) + 2);
@@ -117,7 +117,7 @@ describe('line walker rejects malformed structure', () => {
       'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
       'ascii', 'numeric', 'unclosed',
     ]);
-    expect(flags.every(([, value]) => value === 'false')).toBe(true);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing']);
   });
 
   it('does not treat a brace inside a string as an extra close', () => {
