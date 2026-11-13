@@ -87,7 +87,8 @@ describe('each contract syntax clause', () => {
     writeFileSync(file, source);
     const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
     expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
-    expect(ir.specks[0].facets.behavior.actions[0].cost).toBeUndefined();
-    expect(ir.specks[0].facets.behavior.actions[0].statements.some(s => s.kind === 'assign')).toBe(true);
+    const action = ir.specks[0].facets.behavior.actions[0];
+    expect(Object.prototype.hasOwnProperty.call(action, 'cost')).toBe(false);
+    expect(action.statements.some(s => s.kind === 'assign')).toBe(true);
   });
 });
