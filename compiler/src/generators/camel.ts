@@ -31,6 +31,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { guardIr } from '../conservation.js';
 import {
   IR,
   IRSpeck,
@@ -62,6 +63,7 @@ export interface CamelOptions {
  * Generate Camel (camel-quarkus) Java sources for every speck in the IR.
  */
 export function generateCamel(ir: IR, options: CamelOptions): void {
+  guardIr('camel', ir);
   const outputDir = options.outputDir;
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
