@@ -22,7 +22,7 @@ import { lexSpeck, parseErrorAt, type SpeckToken } from './speck-lex.js';
 // leaves that input to the line walker.
 const ON: { [name: string]: boolean } = {
   missing: true,
-  extra: false,
+  extra: true,
   text: false,
   second: false,
   member: false,

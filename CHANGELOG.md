@@ -411,6 +411,7 @@ alias.
 Parse errors below are breaking changes. A file that used to compile now fails, or the diagnostic text changed.
 
 - **A speck that never closes is rejected.** `speck A {` with no closing brace used to parse as speck A with no members. The body was missing. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9). `rejects a missing close` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An extra closing brace is rejected.** `speck A {` followed by `}` and another `}` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). `rejects an extra close` in `compiler/src/__tests__/walker-strict.test.ts`.
 
 ## [0.3.1] and earlier
 

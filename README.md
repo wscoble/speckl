@@ -171,6 +171,7 @@ The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`.
 These inputs used to parse. Each one is now an error. The same rule is in [speckdl/SPEC.md](speckdl/SPEC.md).
 
 - `speck A {` with no closing brace is missing final "}" at column 9. It used to parse as an empty speck.
+- An extra `}` after a closed speck is extra "}" at line 3 column 1. It used to be ignored.
 
 ## Documentation
 
