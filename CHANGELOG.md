@@ -252,7 +252,7 @@ alias.
   measured, not from missing tests. Generated example output is pinned by a
   digest snapshot.
 - Examples: `AgentPolicy`, `ReviewGate`, `ClaudeCodePolicy`.
-- **Token parser, not wired.** `compiler/src/rd-parser.ts` exports `parseSpeckDocument`. `compiler/src/speck-span.ts` holds its span helpers. `parseSpeckContent` does not call `parseSpeckDocument`. It still calls the line walker. Coverage excludes both files. `parseSpeckContent does not call the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts`.
+- **Token parser, not wired.** `compiler/src/rd-parser.ts` exports `parseSpeckDocument`. `compiler/src/speck-span.ts` holds its span helpers. `parseSpeckContent` does not call `parseSpeckDocument`. It still calls the line walker. `walker-vs-rd.test.ts` compares `parseSpeckDocument` with the line-walker copy. Coverage excludes both files. `parseSpeckContent does not call the token parser` asserts that production does not import the token parser.
 
 ### Changed
 

@@ -146,7 +146,7 @@ The line walker used to accept each input below and store a program that dropped
 
 ### 2.2.2 Token parser, not wired
 
-`compiler/src/rd-parser.ts` exports `parseSpeckDocument`. It walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers that parser uses. `parseSpeckContent` does not call `parseSpeckDocument`. It still calls the line walker after `assertClosedSpec`. Nothing outside `rd-parser.ts` imports that file. `compiler/vitest.config.ts` excludes `src/rd-parser.ts` and `src/speck-span.ts` from coverage until that call switches. `parser.ts` re-exports `speck-span`. `parser-coverage-edges.test.ts` calls `isAliasTypeText` and `stripInvariantExpr` from that file. The other exports are unused until the swap.
+`compiler/src/rd-parser.ts` exports `parseSpeckDocument`. It walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers that parser uses. `parseSpeckContent` does not call `parseSpeckDocument`. It still calls the line walker after `assertClosedSpec`. `walker-vs-rd.test.ts` calls `parseSpeckDocument` and compares it with the line-walker copy. Nothing else outside `rd-parser.ts` imports that file. `compiler/vitest.config.ts` excludes `src/rd-parser.ts` and `src/speck-span.ts` from coverage until that call switches. `parser.ts` re-exports `speck-span`. `parser-coverage-edges.test.ts` calls `isAliasTypeText` and `stripInvariantExpr` from that file. The other exports are unused until the swap.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

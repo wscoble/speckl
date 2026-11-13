@@ -1,4 +1,5 @@
-// Span helpers for `rd-parser.ts`. `parseSpeckContent` does not call them.
+// Span helpers for `rd-parser.ts`. `parseSpeckDocument` calls them.
+// `parseSpeckContent` does not.
 // `parser.ts` re-exports this module. `parser-coverage-edges.test.ts` calls
 // `isAliasTypeText` and `stripInvariantExpr` directly. The other exports wait
 // until `parseSpeckContent` calls the token parser. Coverage excludes this
