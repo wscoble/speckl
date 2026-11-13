@@ -1,5 +1,5 @@
 // One contract-syntax behavior per test. The bundled cases stay in domain-contracts.test.ts.
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -188,5 +188,31 @@ domain D { members: A; }
     expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
     expect(ir.specks[0].facets.behavior.actions[0].cost).toBe(2);
     expect(ir.specks[0].facets.behavior.actions[0].statements.some(s => s.kind === 'assign')).toBe(true);
+  });
+
+  it('rejects a consumed event that nobody produces', () => {
+    const source = `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    event PaymentReceived { n: Nat }
+    action Go { n := n + 1 }
+    next: Go
+}
+domain D { members: A; consumes PaymentReceived; }
+`;
+    const file = join(mkdtempSync(join(tmpdir(), 'speckl-consume-open-')), 'a.speckdl');
+    writeFileSync(file, source);
+    const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
+    expect(ir.diagnostics.map(d => d.message).join('\n')).toMatch(/consumes PaymentReceived, which no domain produces/);
+  });
+
+  it('does not route, queue, or schedule a tick', () => {
+    const lowerSrc = readFileSync(new URL('../ir/lower.ts', import.meta.url), 'utf8');
+    const compileSrc = readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
+    for (const src of [lowerSrc, compileSrc]) {
+      expect(src.includes('planRoutes')).toBe(false);
+      expect(src.includes('orderByPriority')).toBe(false);
+      expect(src.includes('runTick')).toBe(false);
+    }
   });
 });
