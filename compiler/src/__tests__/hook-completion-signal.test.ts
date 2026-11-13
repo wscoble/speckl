@@ -212,4 +212,13 @@ describe('generated hook completion signals', () => {
     expect(closed.kpis).toEqual([]);
     expect(closed.ok).toBe(true);
   });
+
+  it('does not scan the action body, enforce a queue, or run the agent', () => {
+    const src = readFileSync(join(agentDir, 'hook.mjs'), 'utf8');
+    expect(src.includes('orderByPriority')).toBe(false);
+    expect(src.includes('planRoutes')).toBe(false);
+    expect(src.includes('runTick')).toBe(false);
+    expect(src.includes('.speckdl')).toBe(false);
+    expect(src.includes('spawnSync')).toBe(false);
+  });
 });

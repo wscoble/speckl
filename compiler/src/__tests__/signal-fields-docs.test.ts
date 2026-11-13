@@ -31,5 +31,6 @@ describe('tool signal field docs', () => {
     expect(tests).toContain('copies a kpi onto an observe tool');
     expect(tests).toContain('a line that is only return does not stop the scan');
     expect(tests).toContain('does not write a decision line');
+    expect(tests).toContain('does not route, queue, or run a tick');
   });
 });

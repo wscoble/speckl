@@ -33,5 +33,7 @@ describe('completion signal docs', () => {
     expect(tests).toContain('does not keep a branch id equal to its parent');
     expect(tests).toContain('an observe tool does not get the signal fields');
     expect(tests).toContain('a matching post does not keep the caller kpis');
+    expect(tests).toContain('a null parent is a root and is not flagged');
+    expect(tests).toContain('does not scan the action body, enforce a queue, or run the agent');
   });
 });
