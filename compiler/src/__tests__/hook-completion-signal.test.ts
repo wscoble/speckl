@@ -153,6 +153,18 @@ describe('generated hook completion signals', () => {
     expect(opened.trace_flagged).toBe(false);
   });
 
+  it('a null parent is a root and is not flagged', () => {
+    const state = freshState(agentDir);
+    const pre = hook(agentDir, 'pre', state, {
+      tool: 'run_tests', input: {}, call_id: 'null-parent', trace_id: 'root-np', parent_branch_id: null,
+    });
+    expect(pre.status, pre.stderr).toBe(0);
+    const opened = lines(state).at(-1)!;
+    expect(opened.trace_id).toBe('root-np');
+    expect(opened.parent_branch_id).toBeNull();
+    expect(opened.trace_flagged).toBe(false);
+  });
+
   it('an empty parent is a root and is not flagged', () => {
     const state = freshState(agentDir);
     const pre = hook(agentDir, 'pre', state, {

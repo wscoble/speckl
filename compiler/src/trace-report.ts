@@ -9,11 +9,8 @@
 // When the log parses, the hash chain of those lines is checked. A torn
 // file, a blank line, or a line that is not JSON is refused before that
 // check. With --state, head.json is
-// required whenever <state>.decisions/ exists. A shortened or deleted log
-// fails when that head is still there. --log does not know the head. The
-// HMAC is checked only when a key is passed and the log has a line, and
-// the report says so. An empty log prints "macs not checked". That HMAC
-// is a shared-key seal. It proves nothing to an outside auditor. An older
+// required whenever <state>.decisions/ exists. --log does not know the head.
+// An empty log prints "macs not checked". An older
 // log and its matching head from the same run still verify: there is no
 // anchor outside this directory.
 
@@ -409,9 +406,7 @@ export const TRACE_USAGE = [
   'including an empty log. A chain rebuilt without the key can have a',
   'valid hash. That is not a verified seal. Replacing the log and head',
   'with an older pair from the same run is accepted: there is no anchor',
-  'outside this directory. The HMAC is a shared-key seal.',
-  'It proves nothing to an outside auditor: anyone who can read the key',
-  'can forge a line, and someone without the key cannot check the mac.',
+  'outside this directory.',
   '',
   'This command does not run the agent and does not enforce a queue.',
   'The durations are a throughput signal, not a risk signal.',
