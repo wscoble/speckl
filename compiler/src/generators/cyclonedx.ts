@@ -1,4 +1,5 @@
 import { AST, BOMNode } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -6,6 +7,7 @@ import path from 'path';
  * Generate CycloneDX v1.6 JSON for a Speck
  */
 export function generateCycloneDX(ast: AST, outputDir: string): void {
+  guardAst('cyclonedx', ast);
   for (const speck of ast.specks) {
     const bom = createCycloneDXBOM(speck);
     

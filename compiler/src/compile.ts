@@ -1,6 +1,8 @@
 // The compile pipeline behind `speckl <file> -t <target>`. Kept apart from
 // the CLI entry (index.ts) so tests can run it in-process.
 import { parseSpeckFile, type AST } from './parser.js';
+import { expandImports } from './imports.js';
+import { conservationLog, guardAst, type BackendId } from './conservation.js';
 import { generateCycloneDX } from './generators/cyclonedx.js';
 import { generateSPDX } from './generators/spdx.js';
 import { generateTypeScriptStateMachine } from './generators/typescript-state-machine.js';
@@ -20,94 +22,100 @@ import { generateAgent } from './generators/agent/index.js';
 import { injectSignalActions } from './generators/agent/inject-signals.js';
 import fs from 'fs';
 import path from 'path';
-import type { IR } from './ir/types.js';
 
 export interface CompileOptions {
   outputDir: string;
   bomFormat: 'cdx' | 'spdx' | 'both';
   target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'agent' | 'all' | 'all-ir';
   verifyDepth: number;
+  /** Directory imports may resolve inside. Default: the entry file's directory. */
+  rootDir?: string;
+}
+
+/** Reject a member this backend does not handle, before that backend writes. */
+function checked(backend: BackendId, ast: AST): void {
+  guardAst(backend, ast);
 }
 
 /** Compile one SpeckDL file to the requested target(s). Throws on invalid input. */
 export function compileSpec(file: string, options: CompileOptions): void {
+  conservationLog.length = 0;
   console.log(`Compiling ${file}...`);
   
-  const ast = parseSpeckFile(file);
+  const ast = expandImports(parseSpeckFile(file), file, { rootDir: options.rootDir });
+  // Synthetic __signal_* actions are injected only for Z3 BMC (and again
+  // inside the agent target). Other backends keep the source AST clean.
+  const astForProof = injectSignalActions(ast);
 
   const speckCount = ast.specks.length;
   const memberCount = ast.specks.reduce((sum, s) => sum + s.members.length, 0);
   console.log(`AST parsed successfully: ${speckCount} speck(s), ${memberCount} member(s)`);
   
-  const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: path.dirname(path.resolve(file)) });
-  const fatal = irAst.diagnostics.filter(d =>
-    d.level === 'error' && (d.message.startsWith('import:') || d.message.startsWith('domain:')));
-  if (fatal.length > 0) {
-    throw new Error(fatal.map(d => d.message).join('\n'));
-  }
-
-  // AST-driven generators only see the file that was parsed. Append specks
-  // merged in from imports so those backends emit them too. A file with no
-  // imports keeps the same speck list.
-  const mergedAst = withImportedSpecks(ast, irAst);
-  // Synthetic __signal_* actions are injected only for Z3 BMC (and again
-  // inside the agent target). Other backends keep the source AST clean.
-  const astForProof = injectSignalActions(mergedAst);
-
   if (!fs.existsSync(options.outputDir)) {
     fs.mkdirSync(options.outputDir, { recursive: true });
   }
+  
+  const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: options.rootDir });
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
 
   // K8s CRDs
   if (options.target === 'k8s' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating Kubernetes CustomResourceDefinitions...');
+    checked('k8s', ast);
     generateK8sCRD(irAst, { outputDir: options.outputDir });
   }
 
   // OpenAPI 3.1
   if (options.target === 'openapi' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating OpenAPI 3.1 specification...');
+    checked('openapi', ast);
     new OpenAPITarget().generate(irAst, { outputDir: options.outputDir });
   }
 
   // Camel (camel-quarkus Java routes + processors)
   if (options.target === 'camel' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating Apache Camel (camel-quarkus) routes...');
+    checked('camel', ast);
     generateCamel(irAst, { outputDir: options.outputDir });
   }
 
   // Rust
   if (options.target === 'go' || options.target === 'all') {
     // go backend
-    generateGo(mergedAst, options.outputDir);
+    checked('go', ast);
+    generateGo(ast, options.outputDir);
   }
   if (options.target === 'rust' || options.target === 'all') {
     console.log('\nGenerating Rust state machine...');
+    checked('rust', ast);
     generateRust(irAst, options.outputDir, ast);
   }
 
   // Elm
   if (options.target === 'elm' || options.target === 'all') {
-    generateElm(mergedAst, options.outputDir);
+    checked('elm', ast);
+    generateElm(ast, options.outputDir);
   }
 
   // Protobuf
   if (options.target === 'protobuf' || options.target === 'all') {
     console.log('\nGenerating protobuf schema (.proto)...');
-    generateProtobuf(mergedAst, options.outputDir);
+    checked('protobuf', ast);
+    generateProtobuf(ast, options.outputDir);
   }
 
   // Provenance (core output)
   if (options.target !== 'z3' && options.target !== 'rust') {
     console.log('\nGenerating provenance graph (PROV-O JSON-LD) from IR...');
+    checked('provenance', ast);
     generateProvenanceFromIR(irAst, options.outputDir);
   }
 
   // Z3 SMT-LIB2
   if (options.target === 'z3' || options.target === 'all') {
     console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
+    checked('z3-ir', ast);
     generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
     console.log('\nGenerating Z3 SMT-LIB2 (AST-driven, state machine + transitions)...');
     for (const speck of astForProof.specks) {
@@ -124,28 +132,33 @@ export function compileSpec(file: string, options: CompileOptions): void {
       (speck as any)._invariants = invariants;
     }
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
+    checked('z3', astForProof);
     generateZ3(astForProof, options.outputDir, z3Options);
   }
 
   // IR-driven Z3 for the all-ir target (formal_spec facet only)
   if (options.target === 'all-ir') {
     console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
+    checked('z3-ir', ast);
     generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
   }
 
   // TypeScript state machine + BOMs
   if (options.target !== 'z3' && options.target !== 'rust') {
     console.log('\nGenerating TypeScript state machine...');
-    generateTypeScriptStateMachine(mergedAst, options.outputDir);
+    checked('typescript', ast);
+    generateTypeScriptStateMachine(ast, options.outputDir);
 
     if (options.bomFormat === 'cdx' || options.bomFormat === 'both') {
       console.log('\nGenerating CycloneDX BOM...');
-      generateCycloneDX(mergedAst, options.outputDir);
+      checked('cyclonedx', ast);
+      generateCycloneDX(ast, options.outputDir);
     }
 
     if (options.bomFormat === 'spdx' || options.bomFormat === 'both') {
       console.log('\nGenerating SPDX BOM...');
-      generateSPDX(mergedAst, options.outputDir);
+      checked('spdx', ast);
+      generateSPDX(ast, options.outputDir);
     }
   }
   
@@ -158,32 +171,10 @@ export function compileSpec(file: string, options: CompileOptions): void {
     if (agentErrors.length > 0) {
       throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
     }
-    generateAgent(mergedAst, { outputDir: options.outputDir, sourcePath: file });
+    checked('typescript', ast);
+    checked('agent', ast);
+    generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
   }
 
   console.log(`\nCompilation complete. Output: ${options.outputDir}/`);
-}
-
-/**
- * Root AST plus specks that import resolution merged into the IR.
- * Returns `root` itself when every IR speck is already in the file, so
- * generators see the same AST they did before imports existed.
- */
-function withImportedSpecks(root: AST, ir: IR): AST {
-  const specks = [...root.specks];
-  const names = new Set(specks.map(s => s.name));
-  const files: string[] = [];
-  for (const s of ir.specks) {
-    if (names.has(s.name)) continue;
-    if (!files.includes(s.sourcePath) && fs.existsSync(s.sourcePath)) files.push(s.sourcePath);
-  }
-  for (const file of files) {
-    for (const s of parseSpeckFile(file).specks) {
-      if (names.has(s.name)) continue;
-      names.add(s.name);
-      specks.push(s);
-    }
-  }
-  if (specks.length === root.specks.length) return root;
-  return { specks, imports: root.imports ?? [], domains: root.domains ?? [] };
 }

@@ -10,10 +10,7 @@
 //   2. Re-parses constraint/verify expressions via parseExpression.
 //   3. Synthesizes a ProvenanceFacet from file metadata if the source
 //      didn't declare one (provenance is non-optional in the IR).
-//   4. Resolves `import` (when asked) by reading, lowering, and merging the
-//      imported compilation, with cycle detection.
-//   5. Lowers file-level `domain` blocks into IRDomain values.
-//   6. Returns a fully-resolved IR ready for generator consumption.
+//   4. Returns a fully-resolved IR ready for generator consumption.
 //
 // Generators should consume the IR, not the AST. The IR's contract:
 //   - Every fact in the source is in the IR.
@@ -23,15 +20,16 @@
 
 import { exprToSource } from '../expr/print.js';
 import { readFileSync } from 'fs';
+import { verifiedSource } from '../imports.js';
 import {
-  AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode,
+  AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, inlineActionBody,
   EventNode, ConstraintNode, VerifyNode, InterfaceNode, ServiceNode,
   ProvenanceNode, ReviewNode, AuthorNode, SourceNode, DerivesNode,
   SatisfiesNode, BOMNode, TypeExpr, OneofNode, TransitionNode,
-  InputNode, OutputNode, AgentMemberNode, ImportNode,
+  InputNode, OutputNode, AgentMemberNode,
 } from '../parser.js';
 import {
-  IR, IRSpeck, IRFacets, IRImport, IRDomain,
+  IR, IRSpeck, IRFacets, IRImport,
   TypedSchemaFacet, IRType, IRRecordType, IREnumType, IRAliasType,
   IRFieldDef, IRTypeRef, IRService, IRServiceMethod,
   BehaviorFacet, IRStateVar, IRAssign, IRAction, IRParam, IRStmt, IREvent,
@@ -47,10 +45,7 @@ import {
 } from './types.js';
 import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
-import {
-  canonical, crossCheckDomains, dedupeDiagnostics, localDomains, mergeUnit, resolveImportNodes,
-  type LowerFile,
-} from './resolve-imports.js';
+import { expandImports, importLinks, importsExpanded, speckSourceFile } from '../imports.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -66,52 +61,48 @@ export interface LowerOptions {
 }
 
 export function lower(ast: AST, options: LowerOptions): IR {
-  return lowerFile(ast, options, { stack: [], cache: new Map() });
-}
-
-const lowerFile: LowerFile = (ast, options, ctx) => {
-  const fileId = canonical(options.filePath);
-  if (options.resolveImports) {
-    const hit = ctx.cache.get(fileId);
-    if (hit) return hit;
-  }
-
-  const fileMetadata = extractFileMetadata(ast, options);
+  const unit = options.resolveImports && !importsExpanded(ast)
+    ? expandImports(ast, options.filePath, { rootDir: options.rootDir })
+    : ast;
+  const fileMetadata = extractFileMetadata(unit, options);
   const diagnostics: IRDiagnostic[] = [];
-  const specks = ast.specks.map((speck) => lowerSpeck(speck, ast, options, diagnostics, []));
 
-  if (!options.resolveImports) {
-    const domains = localDomains(ast, specks, diagnostics, options.filePath);
-    crossCheckDomains(domains, diagnostics);
-    dedupeDiagnostics(diagnostics);
-    return { specks, imports: [], domains, fileMetadata, diagnostics };
-  }
+  const specks: IRSpeck[] = unit.specks.map((speck) =>
+    lowerSpeck(speck, unit, options, diagnostics, speckSourceFile(unit, speck.name, options.filePath))
+  );
 
-  ctx.stack.push(fileId);
-  try {
-    const merged = [...specks];
-    const importedDomains: IRDomain[] = [];
-    const fileLevel = resolveImportNodes(ast.imports ?? [], undefined, options, ctx, diagnostics, lowerFile);
-    for (const unit of fileLevel.units) mergeUnit(unit, merged, importedDomains, diagnostics);
-    for (let i = 0; i < specks.length; i++) {
-      const memberImports = ast.specks[i].members.filter((m): m is ImportNode => m.type === 'import');
-      const own = resolveImportNodes(memberImports, specks[i].name, options, ctx, diagnostics, lowerFile);
-      for (const unit of own.units) mergeUnit(unit, merged, importedDomains, diagnostics);
-      specks[i].imports = [...fileLevel.imports, ...own.imports];
+  if (options.resolveImports) {
+    const byName = new Map(specks.map(s => [s.name, s]));
+    for (const link of importLinks(unit)) {
+      const owner = specks.find(s => s.name === link.owner);
+      if (!owner) {
+        throw new Error(`Parse error: import "${link.node.path}" has no speck "${link.owner}" to attach to`);
+      }
+      for (const name of link.speckNames) {
+        const resolved = byName.get(name);
+        if (!resolved) {
+          throw new Error(`Parse error: import "${link.node.path}" did not resolve speck "${name}"`);
+        }
+        const alias = link.speckNames.length === 1
+          ? (link.node.alias ?? name)
+          : `${link.node.alias ?? 'import'}.${name}`;
+        owner.imports.push({
+          path: link.node.path,
+          alias,
+          version: link.node.version,
+          hash: link.node.hash,
+          resolved,
+        });
+      }
     }
-    const domains = [
-      ...localDomains(ast, merged, diagnostics, options.filePath),
-      ...importedDomains,
-    ];
-    crossCheckDomains(domains, diagnostics);
-    dedupeDiagnostics(diagnostics);
-    const ir: IR = { specks: merged, imports: fileLevel.imports, domains, fileMetadata, diagnostics };
-    ctx.cache.set(fileId, ir);
-    return ir;
-  } finally {
-    ctx.stack.pop();
   }
-};
+
+  return {
+    specks,
+    fileMetadata,
+    diagnostics,
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Per-speck lower
@@ -122,12 +113,18 @@ function lowerSpeck(
   ast: AST,
   options: LowerOptions,
   diagnostics: IRDiagnostic[],
-  imports: IRImport[],
+  sourcePath: string,
 ): IRSpeck {
   // Read the raw source for expression re-parsing.
   // The main AST has string expressions; the IR needs typed trees.
-  const rawSource = readFileSync(options.filePath, 'utf-8');
+  const verified = verifiedSource(ast, sourcePath);
+  if (options.resolveImports && verified === undefined) {
+    throw new Error(`Parse error: cannot read verified source for "${sourcePath}"`);
+  }
+  const rawSource = verified ?? readFileSync(sourcePath, 'utf-8');
   const rawStatementsByAction = extractActionStatements(rawSource, speck);
+
+  const imports: IRImport[] = [];
 
   // Build the eight facets.
   const typed_schema = lowerTypedSchema(speck, ast, diagnostics);
@@ -136,12 +133,13 @@ function lowerSpeck(
   const wire_format = lowerWireFormat(speck);
   const validation: ValidationFacet = { rules: new Map() };
   const resource_lifecycle = lowerResourceLifecycle(speck);
-  const provenance = lowerProvenance(speck, options.filePath, diagnostics);
+  const provenance = lowerProvenance(speck, sourcePath, diagnostics);
   const metadata = lowerMetadata(speck);
 
   return {
     name: speck.name,
-    sourcePath: options.filePath,
+    sourcePath,
+    sourceMemberTypes: speck.members.map(m => m.type),
     imports,
     facets: {
       typed_schema,
@@ -210,9 +208,11 @@ function actionBodyLines(lines: string[], startLine: number, endLine: number): s
   while (open < endLine - 1 && !lines[open].includes('{')) open++;
   const close = endLine - 1;
   if (open >= close) {
-    // Single-line action: `action Name { stmt }`.
+    // Single-line action: `action Name { stmt }`. A `}` in a trailing
+    // `//` comment is not the close.
     const l = lines[open] ?? '';
-    const body = l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
+    const inline = inlineActionBody(l);
+    const body = inline !== null ? inline : l.slice(l.indexOf('{') + 1, l.lastIndexOf('}'));
     return body.trim() ? [body] : [];
   }
   const body = lines.slice(open + 1, close);
@@ -590,20 +590,6 @@ function lowerAgent(
     tools,
     awaits,
     ...(agent.pendingTimeout ? { pendingTimeout: { ...agent.pendingTimeout } } : {}),
-    ...(agent.harnesses && agent.harnesses.length > 0
-      ? {
-          harnesses: agent.harnesses.map(h => ({
-            name: h.name,
-            rules: h.rules.map(r => ({
-              tools: [...r.tools],
-              ...(r.field !== undefined ? { field: r.field } : {}),
-              ...(r.pattern !== undefined ? { pattern: r.pattern } : {}),
-              target: r.target,
-              params: r.params.map(p => ({ param: p.param, field: p.field })),
-            })),
-          })),
-        }
-      : {}),
   };
 }
 
