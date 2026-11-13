@@ -160,11 +160,11 @@ The parser counts `{` and `}` and skips a brace inside a finished `"` string, a 
 
 A one-line speck that packs its members on the header line can still absorb the next speck. That is the same as before this scan. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`. That is unchanged from before this scan.
 
-`compiler/src/speck-lex.ts` tokenizes a file: a brace in a string or a comment is not a token, `'` is prime notation, and an unclosed string or block comment names the line and column where it opened. `\r\n` and a tab are whitespace. A non-ASCII identifier is an error. Non-ASCII text inside a string or a comment is kept. The line walker rejects `naïve` with identifier must be ASCII at column 7.
+`compiler/src/speck-lex.ts` tokenizes a file: a brace in a string or a comment is not a token, `'` is prime notation, and an unclosed string or block comment names the line and column where it opened. `\r\n` and a tab are whitespace. A non-ASCII identifier is an error. Non-ASCII text inside a string or a comment is kept. `parseSpeck` calls that lexer before the line walk. A missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§` are errors, and the message names the line and column. An unrecognized state field and an unrecognized init line name the line and do not name a column. A file that passes that check is still parsed by the line walker. The examples are well-formed, so their output is unchanged.
 
 `compiler/src/conservation.ts` marks every AST member type `emit`, `reject`, or `n/a` for every backend. `compileSpec` checks the table immediately before it calls that backend, and a reject throws. `import`, `oneof`, and `transition` are rejected except by Protobuf, which emits `oneof` and `transition`. A direct call to a generator does not run the check.
 
-The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `compiler/src/parser.ts` still calls it. `parseSpeck` does not call the token lexer yet, and example member outlines are unchanged. Example `-t all` and `-t all-ir` output is pinned as one sha256 in `compiler/src/__tests__/compile-pipeline.test.ts`.
+The line walker lives in `compiler/src/speck-part0.ts` through `speck-part9.ts`. `compiler/src/parser.ts` still calls it after the malformed-structure check. Example member outlines are unchanged. Example `-t all` and `-t all-ir` output is pinned as one sha256 in `compiler/src/__tests__/compile-pipeline.test.ts`.
 
 ## Rejected structure
 

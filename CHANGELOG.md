@@ -255,6 +255,8 @@ alias.
 
 ### Changed
 
+- **Malformed spec structure is rejected.** The line walker used to accept a missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§`, and it folded an unrecognized state field or init line into the previous text. `parseSpeck` now rejects those before the walk. The message names the line and column, except an unrecognized state field and an unrecognized init line, which name the line only. The examples are well-formed, so the output pin is unchanged.
+
 - **Short key paths now deny.** A `--key` or `SPECKL_STATE_KEY_FILE` path
   shorter than 8 characters — as given, as `path.resolve` returns it, as
   `realpath` of the key file, or as that real path's parent directory — is
