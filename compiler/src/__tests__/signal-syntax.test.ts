@@ -72,20 +72,34 @@ describe('priority and kpi syntax', () => {
     expect(prov).toContain('"speckl:priority": "P1"');
   });
 
-  it('rejects a bad, duplicate, or assigned priority and a bad kpi', () => {
+  it('rejects a domain priority that is not an identifier', () => {
     expect(() => parseSpeckContent('domain D { members: A; priority; }')).toThrow(/priority must be an identifier/);
-    expect(() => parseSpeckContent('domain D { members: A; priority P0; priority P1; }')).toThrow(/priority twice/);
     expect(() => parseSpeckContent('domain D { members: A; priority 1; }')).toThrow(/priority must be an identifier/);
-    const act = (body: string) => `speck S {\n    action Go {\n        ${body}\n    }\n}\n`;
-    expect(() => parseSpeckContent(act('priority'))).toThrow(/priority must be an identifier/);
-    expect(() => parseSpeckContent(act('priority P0\n        priority P1'))).toThrow(/priority more than once/);
-    expect(parseSpeckContent(act('priority := 1')).specks[0].members.find(m => m.type === 'action')).toMatchObject({
+  });
+
+  it('rejects a domain priority declared twice', () => {
+    expect(() => parseSpeckContent('domain D { members: A; priority P0; priority P1; }')).toThrow(/priority twice/);
+  });
+
+  it('rejects an action priority that is not an identifier', () => {
+    expect(() => parseSpeckContent('speck S {\n    action Go {\n        priority\n    }\n}\n')).toThrow(/priority must be an identifier/);
+    expect(() => parseActionStatements(['priority 1'])).toThrow(/identifier/);
+  });
+
+  it('rejects an action priority declared more than once', () => {
+    expect(() => parseSpeckContent('speck S {\n    action Go {\n        priority P0\n        priority P1\n    }\n}\n')).toThrow(/priority more than once/);
+    expect(() => parseActionStatements(['priority P0', 'priority P1'])).toThrow(/more than once/);
+  });
+
+  it('keeps priority := as an assignment', () => {
+    expect(parseSpeckContent('speck S {\n    action Go {\n        priority := 1\n    }\n}\n').specks[0].members.find(m => m.type === 'action')).toMatchObject({
       statements: [{ type: 'assign', target: 'priority' }],
     });
+  });
+
+  it('rejects a kpi that is not a string', () => {
     expect(() => parseSpeckContent('speck S {\n    event E kpi "" { }\n}\n')).toThrow(/Failed to parse event/);
     expect(() => parseSpeckContent('speck S {\n    event E kpi notes { }\n}\n')).toThrow(/Failed to parse event/);
-    expect(() => parseActionStatements(['priority P0', 'priority P1'])).toThrow(/more than once/);
-    expect(() => parseActionStatements(['priority 1'])).toThrow(/identifier/);
   });
 
   it('keeps the next speck when a brace sits in a // comment', () => {

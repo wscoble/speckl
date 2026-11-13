@@ -93,4 +93,56 @@ describe('swarm tick', () => {
     expect(tick.ran.map(item => item.id)).toEqual(['left']);
     expect(tick.waiting.map(item => item.id)).toEqual(['right', 'other']);
   });
+
+  it('a negative cost waits and blocks the cheaper item behind it', () => {
+    const tick = runTick(
+      [{ name: 'Left', budgetPerTick: 5 }],
+      [
+        { domain: 'Left', id: 'bad', cost: -1, priority: 'P0' },
+        { domain: 'Left', id: 'cheap', cost: 1, priority: 'P1' },
+      ],
+    );
+    expect(tick.ran).toEqual([]);
+    expect(tick.waiting.map(item => item.id)).toEqual(['bad', 'cheap']);
+  });
+
+  it('a cost that is not a number waits', () => {
+    const tick = runTick(
+      [{ name: 'Left', budgetPerTick: 5 }],
+      [{ domain: 'Left', id: 'nan', cost: Number.NaN, priority: 'P0' }],
+    );
+    expect(tick.ran).toEqual([]);
+    expect(tick.waiting.map(item => item.id)).toEqual(['nan']);
+  });
+
+  it('waits every item when the tick names no domain', () => {
+    const tick = runTick([], [
+      { domain: 'Left', id: 'a', cost: 0, priority: 'P0' },
+      { domain: 'Left', id: 'b', cost: 0, priority: 'P1' },
+    ]);
+    expect(tick.ran).toEqual([]);
+    expect(tick.waiting.map(item => item.id)).toEqual(['a', 'b']);
+  });
+
+  it('does not run the item after the one that fills the budget', () => {
+    const tick = runTick(
+      [{ name: 'Left', budgetPerTick: 3 }],
+      [
+        { domain: 'Left', id: 'fill', cost: 3, priority: 'P0' },
+        { domain: 'Left', id: 'after', cost: 1, priority: 'P1' },
+      ],
+    );
+    expect(tick.ran.map(item => item.id)).toEqual(['fill']);
+    expect(tick.waiting.map(item => item.id)).toEqual(['after']);
+  });
+
+  it('does not mutate the caller work list', () => {
+    const work = [
+      { domain: 'Left', id: 'b', cost: 1, priority: 'P1' },
+      { domain: 'Left', id: 'a', cost: 1, priority: 'P0' },
+    ];
+    const before = work.map(item => item.id);
+    runTick([{ name: 'Left', budgetPerTick: 5 }], work);
+    expect(work.map(item => item.id)).toEqual(before);
+  });
 });

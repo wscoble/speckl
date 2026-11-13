@@ -42,6 +42,24 @@ function normalized(out: string, file: string): string {
     .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, '<TIME>');
 }
 
+const BASELINE_ALLOW = ['agent/hook.mjs', 'agent/state-integrity.mjs', 'agent/AGENTS.md', 'agent/README.md'];
+
+/** Files other than the hook, its decision-record module, and the agent docs stay byte-identical. */
+export function assertExampleOutput(name: string, target: string, got: Record<string, string>, baseline: { allow: string[]; digests: Record<string, Record<string, string>> }): void {
+  const key = `${name} -t ${target}`;
+  const expected = baseline.digests[key];
+  expect(expected, key).toBeTruthy();
+  const allow = new Set(baseline.allow);
+  for (const [file, hash] of Object.entries(expected)) {
+    if (allow.has(file)) continue;
+    expect(got[file], `${key} ${file}`).toBe(hash);
+  }
+  for (const file of Object.keys(got)) {
+    if (allow.has(file)) continue;
+    expect(expected, `${key} unexpected file ${file}`).toHaveProperty(file);
+  }
+}
+
 function digests(out: string): Record<string, string> {
   const r: Record<string, string> = {};
   for (const f of walk(out)) r[relative(out, f)] = createHash('sha256').update(normalized(out, f)).digest('hex').slice(0, 16);
@@ -79,7 +97,23 @@ describe('in-process pipeline matches the CLI', () => {
 // output. Run this test, replace the constant with the hash it prints, and
 // say in that PR why the old bytes were wrong. A whitespace-only edit and a
 // reordered file move the hash and are not a reason to update it.
-const OUTPUT_SHA256 = '4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a';
+// Moved when the generated hook started writing completion-signal fields.
+// hook.mjs, state-integrity.mjs, and AGENTS.md changed. Other artifacts did not.
+// The AGENTS.md sentence now says the hook copies priority and kpis from the
+// tool and does not scan the action body. The previous sentence said the hook
+// reads them from the action or the domain.
+const OUTPUT_SHA256 = 'b2a6e3d2418cdd327687fd98c43aff54279f90a6092495101146d21af7ec112b';
+
+describe('example output baseline', () => {
+  it('ignores an allow-listed hook file and rejects a changed artifact', () => {
+    const baseline = {
+      allow: ['agent/hook.mjs'],
+      digests: { 'A.speckdl -t all': { 'agent/hook.mjs': 'old', 'A.ts': 'pin' } },
+    };
+    expect(() => assertExampleOutput('A.speckdl', 'all', { 'agent/hook.mjs': 'new', 'A.ts': 'pin' }, baseline)).not.toThrow();
+    expect(() => assertExampleOutput('A.speckdl', 'all', { 'agent/hook.mjs': 'old', 'A.ts': 'other' }, baseline)).toThrow(/A\.ts/);
+  });
+});
 
 describe('generated output is pinned for every example', () => {
   it('pins -t all and -t all-ir for every example', () => {
@@ -91,6 +125,16 @@ describe('generated output is pinned for every example', () => {
     }
     const hash = createHash('sha256').update(JSON.stringify(pinned)).digest('hex');
     expect(hash).toBe(OUTPUT_SHA256);
+    const baselinePath = join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'trace', 'example-output-baseline.json');
+    if (process.env.SPECKL_WRITE_BASELINE === '1') {
+      writeFileSync(baselinePath, JSON.stringify({ allow: BASELINE_ALLOW, digests: pinned }, null, 2) + '\n');
+    }
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8')) as { allow: string[]; digests: Record<string, Record<string, string>> };
+    for (const name of examples) {
+      for (const target of ['all', 'all-ir'] as const) {
+        assertExampleOutput(name, target, pinned[`${name} -t ${target}`], baseline);
+      }
+    }
   }, 180_000);
 
   it('a one-byte change in generated output changes that file digest and the pin', () => {

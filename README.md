@@ -168,11 +168,47 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 ## Domain blocks
 
-A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The members are speck names. The domain does not merge those specks, and the block is not a member of a speck. `language` is optional. `compiler/src/__tests__/domain.test.ts` parses `compiler/src/__tests__/fixtures/domain/two-domain.speckdl`, rejects a nested domain, a missing brace, a bad clause, and a member that is not a speck name, and round-trips the block through `printAST`. The same file checks that `lower` records the domain, rejects a missing member, a duplicate member, two owners, a repeated domain name, and a member that already belongs to an imported domain. `compileSpec` throws a `domain:` error and does not write the generated file. A domain member's provenance graph includes `@id` `domain:Billing` with `prov:hadMember`. `speckl doctor` fails when that member's `effect act` tool is not a `map` target in a harness block, and prints `doctor: <file> ok` when it is.
+A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a string does not end the block. An unclosed block is `missing final "}"`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of the parser change.
 
-## Domain contracts
+## Domain checks
 
-A domain may add `consumes MarketTick;`, `produces Filled;`, and `budget 5 per tick;`. `consumes` and `produces` name `event` declarations. `event Name external` is an event from outside the compilation, so a domain may consume it without another domain producing it. An action may declare `cost 2`, and `cost 0` is a real cost. `compiler/src/__tests__/domain-contracts.test.ts` parses and round-trips those clauses, rejects a consumed event that nobody produces, an emit the domain does not produce, a negative cost, and a duplicate consume, and accepts an external event. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` checks each clause and each rejection on its own, and checks that lowering skips `cost`. Z3 unsat proves an in-budget tick only inside the BMC depth, and the same contracts file fails an over-budget tick. The IR budget file is `speckl-unchecked` and is not a proof. Camel writes the contract as a comment and does not throttle. Provenance omits empty `consumes` and `produces`. This does not route events between domains, queue them, or run a tick.
+`lower` rejects a member that is not a speck, a member listed twice, a speck in two domains, and a domain name declared twice. Imported domains are part of the check. A file with no domain has no domain diagnostic. `compileSpec` creates the output directory before it reports a domain error, and it does not write the generated file. `speckl doctor` fails when an `effect act` tool is not a `map` target in every harness. An observe tool is not checked. This check does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-check-each.test.ts` covers each case.
+
+## Domain contract check
+
+Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. A domain with no contract clauses still lowers. This check rejects a consumed event that nobody produces and that is not external, a produce of something that is not an event, and an emit the domain does not produce. It does not route events, queue work, or schedule a tick. Provenance omits empty `consumes` and `produces`. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers the non-regression cases. `compiler/src/__tests__/domain-contracts.test.ts` covers the wiring rejections. `docs/domain-contract-syntax.md` says the same thing.
+
+## Domain budget
+
+`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
+
+## Camel contract class
+
+A domain becomes a comment and an empty `NameContract` class with a private constructor. The class has no runtime method. A speck with no domain emits no contract class. Camel does not throttle, queue, or route, and it does not run a tick. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, and the speck with no domain. `docs/domain-contract-camel.md` says the same thing.
+
+## Trace report
+
+`speckl trace report` reads a decision log offline. It checks the hash chain. The HMAC is checked only when a key is passed. With `--state`, `head.json` is required when `<state>.decisions/` exists. An empty log prints `macs not checked`. The report does not run the hook and it does not enforce a queue. `compiler/src/__tests__/trace-report.test.ts` covers the golden report, the hash chain, a missing path, `--state`, and an empty record. `docs/trace-report.md` says the same thing.
+
+## Tool signal fields
+
+The agent generator copies an action `priority` onto the tool, or the domain `priority` when the action declares none and the domain's members include the speck. `kpis` are the `kpi` tags of events that action emits with a straight-line `emit`, in source order, once each, stopping at `return`. An `emit` inside an `if` or a `for`, or an `emit` in a comment, is not tagged. Both fields are omitted when absent. This does not write the decision line, and it does not route, queue, or run a tick. `compiler/src/__tests__/agent-signal-fields.test.ts` covers each case. `docs/signal-fields.md` says the same thing.
+
+## Completion signals
+
+An `effect act` post writes `signal` `prime` on that decision line. `trace_id` comes from the matching allow pre. `priority` and `kpis` are copied from the tool. The hook does not scan the action body. A bad `trace_id` is replaced and the call is not denied for that alone. A post with no matching pre is a deny and does not keep the caller's `ok`, `kpis`, or `trace_id`. An observe tool does not get these fields. The hook does not enforce a queue and it does not run the agent. `compiler/src/__tests__/hook-completion-signal.test.ts` covers each case. `docs/agent-signals.md` says the same thing.
+
+## Swarm routes
+
+A one hop from a domain that produces an event to each other domain that consumes it. An external event comes from `external`. A cycle is two hops, and neither hop is followed. A domain does not route to itself. `compileSpec` does not call `planRoutes`. This module does not enqueue, schedule a tick, or apply backpressure. The priority number as a queue rank, the per-domain budget as the tick, and backpressure as the budget stop are later modules. `docs/swarm-routing.md` says the same thing. `compiler/src/__tests__/swarm-route.test.ts` covers each case.
+
+## Swarm queue
+
+The trailing integer is the rank. P0 comes before P1, and P2 comes before P10. A smaller number wins across prefixes, so B0 comes before A1. The same number is ordered by the prefix, and the same label keeps arrival order. An unnumbered label comes after every numbered label. A missing priority comes last. The input array is not mutated. `compileSpec` does not call `orderByPriority`. This module does not route events, enqueue work, or stop on a budget. `docs/swarm-queue.md` says the same thing. `compiler/src/__tests__/swarm-queue.test.ts` covers each case.
+
+## Swarm tick
+
+The per-domain `budgetPerTick` is the tick. A missing budget is no cap. Zero is a real budget, and cost 0 still fits. An item whose cost is greater than the budget does not run. The tick does not skip a head that does not fit in order to run a cheaper item behind it. A negative cost, or a cost that is not a number, waits and blocks the rest of that domain. It does not increase the remaining budget. An item after the one that fills the budget waits. Work for a domain the tick does not name waits. The caller's work list is not mutated. `compileSpec` does not call `runTick`. This module does not route events and it does not apply backpressure. `docs/swarm-tick.md` says the same thing. `compiler/src/__tests__/swarm-tick.test.ts` covers each case.
 
 ## Token parser
 

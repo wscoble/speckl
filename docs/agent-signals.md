@@ -411,6 +411,8 @@ decision chain checks. Each such allow, and each such deny, is one line:
   rotation or a new binding does not move it.
 - `mac` is HMAC-SHA256 of that hash. Unsigned `--dev` states (no key) keep
   the chain only, same as `state.json`. `head.json` is HMAC'd the same way.
+  This seal is a shared-key HMAC. It proves nothing to an outside auditor.
+  Anyone who can read the key can forge a line.
 
 A call-bound mismatch is one of those denials: the reason names the wanted
 digest and the digest of this call, `state.boundCall` stays put, and
@@ -460,6 +462,36 @@ node signal.mjs verify --state ./state.json
 process died before replacing `head.json`. The lines still chain; the next
 hook call moves the head forward. Anything else (a bad hash, a bad MAC, a
 truncated log, a head for a different run) exits 2.
+
+## Completion signals
+
+A `post` for an `effect act` tool stores a completion signal on that same
+decision line. The line's `signal` is `prime`. `trace_id` is copied from the
+matching allow `pre`. `branch_id` is unique in this log and never equal to
+its parent. The other fields are `parent_branch_id`, `call_id`, `ok` (true
+only when that post says `ok: true`), `priority`, and `kpis`.
+
+`priority` and `kpis` are copied from the tool. The generator stored them.
+The hook does not scan the action body. An `emit` inside an `if` or a `for`
+is left out by the generator, not by the hook.
+
+A missing, empty, or ill-formed `trace_id` is replaced with a fresh root,
+the parent is cleared, and `trace_flagged` is true. The call is not denied
+for that alone. A `parent_branch_id` that is present but not an id is
+stored as null and flagged. Absent, null, and `""` are an unflagged root.
+
+An act `post` whose `call_id` and tool do not match the pending pre is a
+deny. That deny is still a completion signal. It does not keep the
+caller's `ok`, `kpis`, or `trace_id`: `ok` is false, `kpis` is empty, and
+the trace is a fresh flagged root. An observe tool does not get these
+fields.
+
+The allow `pre` of an act tool stores the same trace fields without
+`signal`, `ok`, or `kpis`. The hook does not enforce a queue. The hook
+does not run the agent.
+
+`compiler/src/__tests__/hook-completion-signal.test.ts` checks the pre, the
+prime post, a bad trace id, and a post with no matching pre.
 
 ## Stuck tool calls
 
