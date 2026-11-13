@@ -178,6 +178,10 @@ A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`.
 
 Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. A domain with no contract clauses still lowers. This check rejects a consumed event that nobody produces and that is not external, a produce of a name that is not an event, a produce of an external event (`declared external`, which is a different rejection), and an emit the domain does not produce. It does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers the non-regression cases. `compiler/src/__tests__/domain-contracts.test.ts` covers the wiring rejections. `docs/domain-contract-syntax.md` says the same thing.
 
+## Domain budget
+
+`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. A domain that declares no budget writes no budget file. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
+
 ## Token parser
 
 `parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parseSpeckContent calls the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts that `parser.ts` is the production file that imports `rd-parser.ts` and that the call passes the source and the file path. `lowers every speck in the repo to the same IR` in that file compares the live parser with the line-walker copy. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
