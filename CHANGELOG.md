@@ -14,6 +14,7 @@ alias.
 
 ### Added
 
+- **Domain blocks (parser).** A file may declare `domain Name { members: ...; language: "..."; }`. The block is not a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a string does not end the block. An unclosed block is `missing final "}"`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case.
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
   that brace cannot end a speck, a member, an `if`, or a `for`. The same
