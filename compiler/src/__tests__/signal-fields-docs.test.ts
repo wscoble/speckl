@@ -24,5 +24,9 @@ describe('tool signal field docs', () => {
     expect(tests).toContain('uses the domain priority when the action declares none');
     expect(tests).toContain('does not tag an emit inside an if or a comment');
     expect(tests).toContain('omits priority and kpis when the speck declares neither');
+    expect(tests).toContain('does not use a domain priority when the speck is not a member');
+    expect(tests).toContain('does not tag an emit after return');
+    expect(tests).toContain('tags a repeated kpi once');
+    expect(tests).toContain('copies an action priority onto an observe tool');
   });
 });
