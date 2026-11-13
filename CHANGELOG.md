@@ -122,6 +122,7 @@ alias.
   type the table does not name. An empty list is a speck with no members.
   `lower` records `sourceMemberTypes`. `compiler/src/__tests__/generator-guard.test.ts`
   and `guard-fail-closed-small.test.ts` call those generators without `compileSpec`.
+- **Direct schema check.** Provenance, Kubernetes CRDs, and Protobuf call the conservation check before they write. Protobuf emits `oneof`. The other two reject it. A missing member-type list, or a type the table does not name, is an error. `generator-guard.test.ts` and `guard-fail-closed-schema.test.ts` call them without `compileSpec`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
