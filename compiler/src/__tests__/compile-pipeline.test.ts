@@ -42,6 +42,24 @@ function normalized(out: string, file: string): string {
     .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, '<TIME>');
 }
 
+const BASELINE_ALLOW = ['agent/hook.mjs', 'agent/state-integrity.mjs', 'agent/AGENTS.md', 'agent/README.md'];
+
+/** Files other than the hook, its decision-record module, and the agent docs stay byte-identical. */
+export function assertExampleOutput(name: string, target: string, got: Record<string, string>, baseline: { allow: string[]; digests: Record<string, Record<string, string>> }): void {
+  const key = `${name} -t ${target}`;
+  const expected = baseline.digests[key];
+  expect(expected, key).toBeTruthy();
+  const allow = new Set(baseline.allow);
+  for (const [file, hash] of Object.entries(expected)) {
+    if (allow.has(file)) continue;
+    expect(got[file], `${key} ${file}`).toBe(hash);
+  }
+  for (const file of Object.keys(got)) {
+    if (allow.has(file)) continue;
+    expect(expected, `${key} unexpected file ${file}`).toHaveProperty(file);
+  }
+}
+
 function digests(out: string): Record<string, string> {
   const r: Record<string, string> = {};
   for (const f of walk(out)) r[relative(out, f)] = createHash('sha256').update(normalized(out, f)).digest('hex').slice(0, 16);
@@ -83,6 +101,17 @@ describe('in-process pipeline matches the CLI', () => {
 // hook.mjs, state-integrity.mjs, and AGENTS.md changed. Other artifacts did not.
 const OUTPUT_SHA256 = '121fcc203428a31351aec56b0d2195cff4b9e74844a9c3c061697ea30028f37a';
 
+describe('example output baseline', () => {
+  it('ignores an allow-listed hook file and rejects a changed artifact', () => {
+    const baseline = {
+      allow: ['agent/hook.mjs'],
+      digests: { 'A.speckdl -t all': { 'agent/hook.mjs': 'old', 'A.ts': 'pin' } },
+    };
+    expect(() => assertExampleOutput('A.speckdl', 'all', { 'agent/hook.mjs': 'new', 'A.ts': 'pin' }, baseline)).not.toThrow();
+    expect(() => assertExampleOutput('A.speckdl', 'all', { 'agent/hook.mjs': 'old', 'A.ts': 'other' }, baseline)).toThrow(/A\.ts/);
+  });
+});
+
 describe('generated output is pinned for every example', () => {
   it('pins -t all and -t all-ir for every example', () => {
     const pinned: Record<string, Record<string, string>> = {};
@@ -93,6 +122,16 @@ describe('generated output is pinned for every example', () => {
     }
     const hash = createHash('sha256').update(JSON.stringify(pinned)).digest('hex');
     expect(hash).toBe(OUTPUT_SHA256);
+    const baselinePath = join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'trace', 'example-output-baseline.json');
+    if (process.env.SPECKL_WRITE_BASELINE === '1') {
+      writeFileSync(baselinePath, JSON.stringify({ allow: BASELINE_ALLOW, digests: pinned }, null, 2) + '\n');
+    }
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8')) as { allow: string[]; digests: Record<string, Record<string, string>> };
+    for (const name of examples) {
+      for (const target of ['all', 'all-ir'] as const) {
+        assertExampleOutput(name, target, pinned[`${name} -t ${target}`], baseline);
+      }
+    }
   }, 180_000);
 
   it('a one-byte change in generated output changes that file digest and the pin', () => {
