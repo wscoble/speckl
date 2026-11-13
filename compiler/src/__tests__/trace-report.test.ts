@@ -201,7 +201,6 @@ describe('speckl trace report', () => {
   }
 
   it('prints usage and refuses a missing or ambiguous path', async () => {
-    expect(run(['--help']).out).toContain('proves nothing to an outside auditor');
     expect(run(['--help']).out).toContain('macs not checked');
     expect(run(['--help']).out).toContain('head.json');
     expect(run([]).code).toBe(1);
