@@ -10,6 +10,9 @@ export default defineConfig({
       exclude: [
         // Tests and their helpers/fixtures are not product code.
         'src/**/__tests__/**',
+        // Verbatim copy of the line walker. parseSpeck does not call it.
+        // line-walker-copy.test.ts checks it against the live parser.
+        'src/line-walker/**',
       ],
       reporter: ['text-summary', 'json-summary'],
       // Floor at the level reached in fix/coverage (rounded down), so a drop
