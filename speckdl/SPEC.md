@@ -271,6 +271,10 @@ A domain may add `consumes PaymentReceived;`, `produces InvoiceIssued;`, and `bu
 
 The class has no runtime method. A speck with no domain emits no contract class. A domain with no contract clauses emits no contract class. The contract class does not throttle, queue, or route messages. The Camel target still emits a RouteBuilder for the speck's actions. This class does not run a tick and does not call Z3. Camel generation does not run Z3. The RouteBuilder emits one route per action. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, the speck with no domain, `emits one route per action`, and `does not run Z3 while generating Camel`. `docs/domain-contract-camel.md` says the same thing.
 
+### 2.8.6 Trace report
+
+`speckl trace report` reads a decision log offline. When the log parses, it checks the hash chain. A torn file, a blank line, or a line that is not JSON is refused before that check. With `--state`, `head.json` is required when `<state>.decisions/` exists. An empty log prints `macs not checked`. The report does not run the hook and it does not enforce a queue. `compiler/src/__tests__/trace-report.test.ts` covers the golden report, the hash chain, a missing path, `--state`, and an empty record. `docs/trace-report.md` says the same thing.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
