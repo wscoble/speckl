@@ -168,7 +168,15 @@ Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `requi
 
 ## Domain blocks
 
-A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The members are speck names. The domain does not merge those specks, and the block is not a member of a speck. `language` is optional. `compiler/src/__tests__/domain.test.ts` parses `compiler/src/__tests__/fixtures/domain/two-domain.speckdl`, rejects a nested domain, a missing brace, a bad clause, and a member that is not a speck name, and round-trips the block through `printAST`. The same file checks that `lower` records the domain, rejects a missing member, a duplicate member, two owners, a repeated domain name, and a member that already belongs to an imported domain. `compileSpec` throws a `domain:` error and does not write the generated file. A domain member's provenance graph includes `@id` `domain:Billing` with `prov:hadMember`. `speckl doctor` fails when that member's `effect act` tool is not a `map` target in a harness block, and prints `doctor: <file> ok` when it is.
+A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`. The block is not a speck and it is not a member of a speck. `members` is required. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a string does not end the block. An unclosed block is `missing final "}"`. This parser does not route events, queue work, or schedule a tick, and it does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each case, including a member that is not a speck in the file, a semicolon inside the language string, and a hyphenated name. Checking that a member names a speck, doctor, and provenance are not part of the parser change.
+
+## Domain checks
+
+`lower` rejects a member that is not a speck, a member listed twice, a speck in two domains, and a domain name declared twice. Imported domains are part of the check. A file with no domain has no domain diagnostic. `compileSpec` creates the output directory before it reports a domain error, and it does not write the generated file. `speckl doctor` fails when an `effect act` tool is not a `map` target in every harness. An observe tool is not checked. This check does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-check-each.test.ts` covers each case.
+
+## Domain contract check
+
+Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. A domain with no contract clauses still lowers. This check rejects a consumed event that nobody produces and that is not external, a produce of something that is not an event, and an emit the domain does not produce. It does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers the non-regression cases. `compiler/src/__tests__/domain-contracts.test.ts` covers the wiring rejections. `docs/domain-contract-syntax.md` says the same thing.
 
 ## Token parser
 
