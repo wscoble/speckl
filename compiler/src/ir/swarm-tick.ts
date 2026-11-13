@@ -1,6 +1,8 @@
 // One tick of a swarm.
 //
-// Each domain spends its own budget. `budgetPerTick` absent means no cap.
+// compileSpec does not call this. It does not route events and it does not
+// apply backpressure. The per-domain budget is the tick. Each domain spends
+// its own budget. `budgetPerTick` absent means no cap.
 // Zero is a real budget. Cost 0 is a real cost and still fits in a zero
 // budget. The tick does not skip a head that does not fit in order to run
 // a cheaper item behind it. Work left waiting is not dropped. A later tick
