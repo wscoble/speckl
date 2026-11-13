@@ -80,6 +80,34 @@ describe('each contract syntax clause', () => {
     expect(() => parseSpeckContent(domain('consumes A-B;'))).toThrow(/not an event name/);
   });
 
+  it('rejects a produce name that is not an identifier', () => {
+    expect(() => parseSpeckContent(domain('produces A-B;'))).toThrow(/produces "A-B" is not an event name/);
+  });
+
+  it('rejects the same consume in a second clause', () => {
+    expect(() => parseSpeckContent(domain('consumes Gone;\n    consumes Gone;'))).toThrow(/consumes Gone more than once/);
+  });
+
+  it('rejects the same produce in a second clause', () => {
+    expect(() => parseSpeckContent(domain('produces Gone;\n    produces Gone;'))).toThrow(/produces Gone more than once/);
+  });
+
+  it('rejects a budget with no integer', () => {
+    expect(() => parseSpeckContent(domain('budget per tick;'))).toThrow(/non-negative integer per tick/);
+  });
+
+  it('rejects a cost with no integer', () => {
+    expect(() => parseSpeckContent('speck A {\n    action Go { cost n }\n}\n')).toThrow(/non-negative integer/);
+  });
+
+  it('rejects a budget above the safe integer range', () => {
+    expect(() => parseSpeckContent(domain('budget 9007199254740993 per tick;'))).toThrow(/non-negative integer per tick/);
+  });
+
+  it('rejects a cost above the safe integer range', () => {
+    expect(() => parseSpeckContent('speck A {\n    action Go { cost 9007199254740993 }\n}\n')).toThrow(/non-negative integer/);
+  });
+
   it('rejects a budget that is not an integer', () => {
     expect(() => parseSpeckContent(domain('budget 1.5 per tick;'))).toThrow(/non-negative integer per tick/);
   });

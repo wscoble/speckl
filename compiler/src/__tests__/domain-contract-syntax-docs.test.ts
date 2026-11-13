@@ -23,6 +23,12 @@ describe('domain contract syntax docs', () => {
   it('names the negative tests for an empty consume, a bad event name, and an assignment', () => {
     expect(tests).toContain('rejects consumes with no event');
     expect(tests).toContain('rejects an event name that is not an identifier');
+    expect(tests).toContain('rejects a produce name that is not an identifier');
+    expect(tests).toContain('rejects the same consume in a second clause');
+    expect(tests).toContain('rejects a budget with no integer');
+    expect(tests).toContain('rejects a cost with no integer');
+    expect(tests).toContain('rejects a budget above the safe integer range');
+    expect(tests).toContain('rejects a cost above the safe integer range');
     expect(tests).toContain('rejects a budget that is not an integer');
     expect(tests).toContain('keeps cost := as an assignment');
     expect(tests).toContain('skips cost while lowering and does not store it on the action');
