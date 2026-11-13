@@ -136,7 +136,7 @@ describe('line walker rejects malformed structure', () => {
 
   it('rejects text after a member close', () => {
     const src = 'speck A {\n    invariant P { x >= 0 } junk\n}\n';
-    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[{"type":"invariant","name":"P","expr":""}]}]');
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[{"type":"invariant","name":"P","expr":"x >= 0"}]}]');
     expect(message(src)).toBe('Parse error at bad.speckdl:2: text after a member\'s "}" (column 28)');
   });
 
