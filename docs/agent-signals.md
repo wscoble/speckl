@@ -478,7 +478,7 @@ is left out by the generator, not by the hook.
 A missing, empty, or ill-formed `trace_id` is replaced with a fresh root,
 the parent is cleared, and `trace_flagged` is true. The call is not denied
 for that alone. A `parent_branch_id` that is present but not an id is
-stored as null and flagged. Absent, null, and `""` are an unflagged root.
+stored as null and flagged. When `trace_id` is a valid id, an absent, null, or empty parent is an unflagged root. A bad `trace_id` is flagged even when the parent is absent.
 
 An act `post` whose `call_id` and tool do not match the pending pre is a
 deny. That deny is still a completion signal. It does not keep the

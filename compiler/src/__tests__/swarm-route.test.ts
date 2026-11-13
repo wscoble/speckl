@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -7,6 +7,12 @@ import { lower } from '../ir/lower.js';
 import { EXTERNAL, planRoutes, routesFromIR } from '../ir/swarm-route.js';
 
 describe('swarm routes', () => {
+  it('compileSpec does not call planRoutes', () => {
+    const src = readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
+    expect(src.includes('planRoutes')).toBe(false);
+    expect(src.includes('swarm-route')).toBe(false);
+  });
+
   it('returns no routes for an empty domain list', () => {
     expect(planRoutes([])).toEqual([]);
     expect(planRoutes([], ['Note'])).toEqual([]);

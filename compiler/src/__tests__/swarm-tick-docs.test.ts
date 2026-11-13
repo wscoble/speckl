@@ -25,6 +25,7 @@ describe('swarm tick docs', () => {
     for (const name of [
       'a negative cost waits and blocks the cheaper item behind it',
       'a cost that is not a number waits',
+      'a cost that is not a number blocks the item behind it',
       'an infinite cost waits and blocks the item behind it',
       'waits every item when the tick names no domain',
       'does not run the item after the one that fills the budget',
