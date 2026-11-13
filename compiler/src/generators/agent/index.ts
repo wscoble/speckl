@@ -7,7 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import {
-  AST, SpeckNode, ActionNode, AgentMemberNode, AgentPrompt, StateNode,
+  AST, SpeckNode, ActionNode, AgentMemberNode, AgentPrompt, StateNode, DomainNode,
 } from '../../parser.js';
 import { generateTypeScriptStateMachine } from '../typescript-state-machine.js';
 import { guardAst } from '../../conservation.js';
@@ -46,7 +46,7 @@ export function generateAgent(ast: AST, options: AgentGenerateOptions): void {
       prompts: agent.prompts?.map(p => ({ ...p, prompt: resolvePrompt(p.prompt, options.sourcePath) })),
       tools: agent.tools.map(t => t.description === undefined ? t : { ...t, description: resolvePrompt(t.description, options.sourcePath) }),
     };
-    emitAgentForSpeck(speck, resolvedAgent, options);
+    emitAgentForSpeck(speck, resolvedAgent, options, ast.domains ?? []);
   }
 }
 
@@ -66,6 +66,7 @@ function emitAgentForSpeck(
   speck: SpeckNode,
   agent: AgentMemberNode,
   options: AgentGenerateOptions,
+  domains: DomainNode[],
 ): void {
   const agentDir = path.join(options.outputDir, 'agent');
   fs.mkdirSync(path.join(agentDir, 'verifiers'), { recursive: true });
@@ -86,10 +87,10 @@ function emitAgentForSpeck(
 
   const actions = speck.members.filter((m): m is ActionNode => m.type === 'action');
   const state = speck.members.find((m): m is StateNode => m.type === 'state');
-  const config = buildConfig(speck, agent, actions, state, specHash);
+  const config = buildConfig(speck, agent, actions, state, specHash, domains);
   fs.writeFileSync(path.join(agentDir, 'agent-config.json'), JSON.stringify(config, null, 2) + '\n');
 
-  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(agent, actions, options.sourcePath), null, 2) + '\n');
+  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(speck, agent, actions, domains, options.sourcePath), null, 2) + '\n');
   fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), buildAgentsMd(speck, agent, config, specHash, options.sourcePath));
   fs.writeFileSync(path.join(agentDir, 'hook.mjs'), emitHookMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'signal.mjs'), emitSignalMjs(speck.name));
@@ -154,7 +155,7 @@ export interface AgentRuntimeConfig {
   machineExport: string;
   stageVariable: string;
   stages: Record<string, number>;
-  tools: { name: string; action: string; effect: 'act' | 'observe' }[];
+  tools: { name: string; action: string; effect: 'act' | 'observe'; priority?: string; kpis?: string[] }[];
   /** In-flight tool calls older than this are cleared as failed. */
   pendingTimeout: { durationMs: number; durationText: string };
   /** Compiled `harness` blocks; present only when the spec declares one. */
@@ -175,12 +176,67 @@ export interface AgentRuntimeConfig {
   }[];
 }
 
+/**
+ * Events this action emits on the generated agent machine.
+ * Only a straight-line `emit Name` counts. An `emit` inside an `if`
+ * or `for` does not: those bodies are not run by the machine. An `emit`
+ * in a comment is not an emit statement. The list stops at `return`.
+ */
+function emittedEventNames(action: ActionNode): string[] {
+  const names: string[] = [];
+  for (const s of action.statements) {
+    if (s.type === 'return') break;
+    if (s.type === 'emit') names.push(s.event);
+  }
+  return names;
+}
+
+/**
+ * Priority is the action's `priority` label, otherwise the domain's.
+ * KPIs are the tags on events this action emits with a straight-line
+ * `emit`, in source order, once each. Both are omitted when absent.
+ * This does not write the decision line. The hook does that.
+ */
+function toolAnnotations(
+  speck: SpeckNode,
+  action: ActionNode | undefined,
+  domains: DomainNode[],
+): { priority?: string; kpis?: string[] } {
+  if (!action) return {};
+  let priority: string | undefined;
+  for (const s of action.statements) {
+    if (s.type === 'priority') priority = s.name;
+  }
+  if (!priority) {
+    const domain = domains.find(d => d.members.includes(speck.name));
+    if (domain?.priority) priority = domain.priority;
+  }
+  const kpiByEvent = new Map<string, string>();
+  for (const m of speck.members) {
+    if (m.type === 'event' && m.kpi) kpiByEvent.set(m.name, m.kpi);
+  }
+  const kpis: string[] = [];
+  const seen = new Set<string>();
+  for (const name of emittedEventNames(action)) {
+    const kpi = kpiByEvent.get(name);
+    if (kpi && !seen.has(kpi)) {
+      seen.add(kpi);
+      kpis.push(kpi);
+    }
+  }
+  return {
+    ...(priority ? { priority } : {}),
+    ...(kpis.length > 0 ? { kpis } : {}),
+  };
+}
+
 function buildConfig(
   speck: SpeckNode,
   agent: AgentMemberNode,
   _actions: ActionNode[],
   _state: StateNode | undefined,
   specHash: string,
+  domains: DomainNode[],
 ): AgentRuntimeConfig {
   const labels = new Map((agent.stages?.labels ?? []).map(l => [l.name, l.value]));
   const stageVariable = agent.stages?.variable ?? 'stage';
@@ -194,7 +250,10 @@ function buildConfig(
     machineExport: `${speck.name}Machine`,
     stageVariable,
     stages,
-    tools: agent.tools.map(t => ({ name: t.name, action: t.action, effect: t.effect })),
+    tools: agent.tools.map(t => {
+      const action = _actions.find(a => a.name === t.action);
+      return { name: t.name, action: t.action, effect: t.effect, ...toolAnnotations(speck, action, domains) };
+    }),
     pendingTimeout: agent.pendingTimeout
       ? { ...agent.pendingTimeout }
       : { durationMs: DEFAULT_PENDING_TIMEOUT_MS, durationText: DEFAULT_PENDING_TIMEOUT_TEXT },
@@ -297,7 +356,7 @@ function listWords(words: string[]): string {
   return words.length <= 2 ? words.join(' and ') : words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
 }
 
-function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[], sourcePath?: string) {
+function buildToolsJson(speck: SpeckNode, agent: AgentMemberNode, actions: ActionNode[], domains: DomainNode[], sourcePath?: string) {
   const byName = new Map(actions.map(a => [a.name, a]));
   return {
     tools: agent.tools.map(t => {
@@ -317,7 +376,7 @@ function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[], sourcePat
           required,
           additionalProperties: false,
         },
-        'x-speckl': { action: t.action, effect: t.effect },
+        'x-speckl': { action: t.action, effect: t.effect, ...toolAnnotations(speck, action, domains) },
       };
     }),
   };
@@ -490,6 +549,14 @@ function buildAgentsMd(
   lines.push('  `state.log` entry; the process does not exit 0.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
+  lines.push('- On `post` of an `effect act` tool the decision line is a completion signal');
+  lines.push('  (`signal` is `prime`): `trace_id` from the matching allow `pre`, `branch_id`,');
+  lines.push('  `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` and `kpis` copied from');
+  lines.push('  the tool. The generator stored those. The hook does not scan the action body.');
+  lines.push('  A missing or ill-formed `trace_id` is a fresh flagged root. The call is');
+  lines.push('  not denied for that alone. An observe tool does not get these fields. A post');
+  lines.push('  with no matching pre is a deny and does not keep the caller\'s `ok`, `kpis`,');
+  lines.push('  or `trace_id`. The hook does not enforce a queue.');
   lines.push('');
   lines.push('## Tamper-evident state');
   lines.push('');
