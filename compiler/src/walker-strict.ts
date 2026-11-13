@@ -23,7 +23,7 @@ import { lexSpeck, parseErrorAt, type SpeckToken } from './speck-lex.js';
 const ON: { [name: string]: boolean } = {
   missing: true,
   extra: true,
-  text: false,
+  text: true,
   second: false,
   member: false,
   top: false,

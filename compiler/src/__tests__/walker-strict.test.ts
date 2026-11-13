@@ -89,24 +89,21 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:3: extra "}" (column 1)');
   });
 
-  it('still accepts text after a close', () => {
+  it('rejects text after a close', () => {
     const src = 'speck A {\n} junk\n';
     expect(stored(src)).toBe('[{"name":"A","endLine":2,"members":[]}]');
-    expect(message(src)).toBe('accept');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: text after a speck\'s "}" (column 3)');
   });
-
   it('still accepts an unrecognized member', () => {
     const src = 'speck A {\n    garbage line here\n}\n';
     expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
     expect(message(src)).toBe('accept');
   });
-
   it('still accepts a section sign', () => {
     const src = 'speck A {\n §\n}\n';
     expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
     expect(message(src)).toBe('accept');
   });
-
   it('records which rejection classes are on', () => {
     const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
     const start = text.indexOf('const ON');
@@ -117,7 +114,7 @@ describe('line walker rejects malformed structure', () => {
       'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
       'ascii', 'numeric', 'unclosed',
     ]);
-    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra']);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text']);
   });
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
