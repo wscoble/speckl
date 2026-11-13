@@ -275,6 +275,10 @@ A domain becomes a comment and an empty `NameContract` class with a private cons
 
 The agent generator copies an action `priority` onto the tool, or the domain `priority` when the action declares none and the domain's members include the speck. `kpis` are the `kpi` tags of events that action emits with a straight-line `emit`, in source order, once each, stopping at `return`. An `emit` inside an `if` or a `for`, or an `emit` in a comment, is not tagged. Both fields are omitted when absent. This does not write the decision line, and it does not route, queue, or run a tick. `compiler/src/__tests__/agent-signal-fields.test.ts` covers each case. `docs/signal-fields.md` says the same thing.
 
+### 2.8.8 Completion signals
+
+An `effect act` post writes `signal` `prime` on that decision line. `trace_id` comes from the matching allow pre. `priority` and `kpis` are copied from the tool. The hook does not scan the action body. A bad `trace_id` is replaced and the call is not denied for that alone. A post with no matching pre is a deny and does not keep the caller's `ok`, `kpis`, or `trace_id`. An observe tool does not get these fields. The hook does not enforce a queue and it does not run the agent. `compiler/src/__tests__/hook-completion-signal.test.ts` covers each case. `docs/agent-signals.md` says the same thing.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:

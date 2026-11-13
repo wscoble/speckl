@@ -551,11 +551,12 @@ function buildAgentsMd(
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
   lines.push('- On `post` of an `effect act` tool the decision line is a completion signal');
   lines.push('  (`signal` is `prime`): `trace_id` from the matching allow `pre`, `branch_id`,');
-  lines.push('  `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` from the action or the');
-  lines.push('  domain. A missing or ill-formed `trace_id` is a fresh flagged root. The call is');
-  lines.push('  not denied for that alone. `kpis` are straight-line `emit` tags. An observe tool');
-  lines.push('  does not get these fields. A post with no matching pre is a deny and does not keep');
-  lines.push('  the caller\'s `ok`, `kpis`, or `trace_id`. The hook does not enforce a queue.');
+  lines.push('  `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` and `kpis` copied from');
+  lines.push('  the tool. The generator stored those. The hook does not scan the action body.');
+  lines.push('  A missing or ill-formed `trace_id` is a fresh flagged root. The call is');
+  lines.push('  not denied for that alone. An observe tool does not get these fields. A post');
+  lines.push('  with no matching pre is a deny and does not keep the caller\'s `ok`, `kpis`,');
+  lines.push('  or `trace_id`. The hook does not enforce a queue.');
   lines.push('');
   lines.push('## Tamper-evident state');
   lines.push('');
