@@ -156,6 +156,13 @@ describe('each contract syntax clause', () => {
     expect(action.statements.some(s => s.kind === 'assign')).toBe(true);
   });
 
+  it('does not reject a consumed event that nobody produces', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'c-')), 'a.speckdl');
+    const s = 'speck A {\n state { n: Nat }\n init { n := 0 }\n action Go { n := n }\n next: Go\n}\ndomain D { members: A; consumes X; }\n';
+    writeFileSync(file, s);
+    expect(lower(parseSpeckContent(s, file), { filePath: file, resolveImports: false }).diagnostics.some(d => d.level === 'error')).toBe(false);
+  });
+
   it('does not route, queue, or schedule a tick', () => {
     const src = readFileSync(new URL('../ir/lower.ts', import.meta.url), 'utf8') + readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
     expect(/planRoutes|orderByPriority|runTick/.test(src)).toBe(false);
