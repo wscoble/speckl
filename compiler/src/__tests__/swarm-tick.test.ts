@@ -118,6 +118,18 @@ describe('swarm tick', () => {
     expect(tick.waiting.map(item => item.id)).toEqual(['inf', 'behind']);
   });
 
+  it('a cost that is not a number blocks the item behind it', () => {
+    const tick = runTick(
+      [{ name: 'Left', budgetPerTick: 5 }],
+      [
+        { domain: 'Left', id: 'nan', cost: Number.NaN, priority: 'P0' },
+        { domain: 'Left', id: 'behind', cost: 0, priority: 'P1' },
+      ],
+    );
+    expect(tick.ran).toEqual([]);
+    expect(tick.waiting.map(item => item.id)).toEqual(['nan', 'behind']);
+  });
+
   it('a cost that is not a number waits', () => {
     const tick = runTick(
       [{ name: 'Left', budgetPerTick: 5 }],
