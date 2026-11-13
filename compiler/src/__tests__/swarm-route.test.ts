@@ -7,6 +7,15 @@ import { lower } from '../ir/lower.js';
 import { EXTERNAL, planRoutes, routesFromIR } from '../ir/swarm-route.js';
 
 describe('swarm routes', () => {
+  it('returns no routes for an empty domain list', () => {
+    expect(planRoutes([])).toEqual([]);
+    expect(planRoutes([], ['Note'])).toEqual([]);
+  });
+
+  it('does not invent a producer for an event only a consumer names', () => {
+    expect(planRoutes([{ name: 'Right', consumes: ['Note'] }])).toEqual([]);
+  });
+
   it('routes a produced event to every other domain that consumes it', () => {
     const routes = planRoutes([
       { name: 'Left', produces: ['Note'] },
