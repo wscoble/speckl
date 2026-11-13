@@ -1,4 +1,5 @@
 import { AST, SpeckNode, MemberNode, StateNode, InitNode, ActionNode, ConstraintNode, EventNode } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -17,6 +18,7 @@ import path from 'path';
  */
 
 export function generateGo(ast: AST, outputDir: string): void {
+  guardAst('go', ast);
   for (const speck of ast.specks) {
     const pkg = snakeCase(speck.name);
     const speckDir = path.join(outputDir, pkg);
@@ -217,6 +219,19 @@ function goType(t: any, speckName: string, enumMap: Map<string, string[]>): stri
 
 // ─── expression rewriting ───────────────────────────────────────────
 
+// strip a trailing // comment (outside string literals) from an expression
+function stripComment(expr: string): string {
+  let inStr = false; let esc = false;
+  for (let i = 0; i < expr.length - 1; i++) {
+    const ch = expr[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { esc = true; continue; }
+    if (ch === '"') inStr = !inStr;
+    if (!inStr && ch === '/' && expr[i + 1] === '/') return expr.slice(0, i).trim();
+  }
+  return expr;
+}
+
 function rewriteGoExpr(
   expr: string,
   nameMap: Map<string, string>,
@@ -226,6 +241,7 @@ function rewriteGoExpr(
   knownStateValues: string[],
   localRecords: Map<string, string> = new Map()
 ): string {
+  expr = stripComment(expr);
   // existential quantifier: (not) exists v in coll(.values())?: pred
   const em = expr.match(/(not\s+)?exists\s+(\w+)\s+in\s+([\w.]+?)(?:\.values(?:\(\))?)?:\s*([\s\S]+)$/);
   if (em) {
@@ -860,9 +876,8 @@ function emitSpeck(speck: SpeckNode): string {
         : st.type === 'emit' ? 'emit' : st.type === 'return' ? 'return' : 'value';
       ctxExprs.push({ text: String((st as any).expr ?? ''), ctx });
       if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
-        const blockText = String((st as any).raw ?? '').replace(/\n/g, ' ');
-        ctxExprs.push({ text: blockText, ctx: 'value' });
-        const cm2 = blockText.match(/^if\s+(.+?)\s*\{/);
+        ctxExprs.push({ text: String((st as any).raw ?? ''), ctx: 'value' });
+        const cm2 = String((st as any).raw ?? '').match(/^if\s+(.+?)\s*\{/);
         if (cm2) ctxExprs.push({ text: cm2[1].trim(), ctx: 'guard' });
       }
       if (st.type === 'emit') for (const f of (st as any).fields ?? []) {
@@ -874,7 +889,7 @@ function emitSpeck(speck: SpeckNode): string {
         if (m && !builtin.has(m[1])) letVarFn.set(String((st as any).name), m[1]);
       }
       if (st.type === 'ifblock' || (st.type as any) === 'forblock') {
-        const raw = String((st as any).raw ?? '').replace(/\n/g, ' ');
+        const raw = String((st as any).raw ?? '');
         for (const lm of raw.matchAll(/let\s+(\w+)\s*:=\s*([a-z_]\w*)\s*\(/g)) {
           if (!builtin.has(lm[2])) letVarFn.set(lm[1], lm[2]);
         }
@@ -1345,36 +1360,7 @@ function emitAction(
   const emitIfBlock = (raw: string): string => {
     const open = firstCodeBrace(raw);
     if (open < 0) return `\t// TODO: conditional not lowered: ${raw.replace(/\n/g, ' ')}`;
-    // Drop a comment between the condition and `{`. String contents stay.
-    let cond = '';
-    {
-      const src = raw.slice(3, open);
-      let quote = false;
-      let block = false;
-      for (let i = 0; i < src.length; i++) {
-        const ch = src[i];
-        const next = src[i + 1];
-        if (quote) {
-          cond += ch;
-          if (ch === '\\' && next !== undefined) { cond += next; i++; continue; }
-          if (ch === '"') quote = false;
-          continue;
-        }
-        if (block) {
-          if (ch === '*' && next === '/') { block = false; i++; }
-          continue;
-        }
-        if (ch === '/' && next === '/') {
-          while (i < src.length && src[i] !== '\n') i++;
-          if (i < src.length) cond += '\n';
-          continue;
-        }
-        if (ch === '/' && next === '*') { block = true; i++; continue; }
-        if (ch === '"') { quote = true; cond += ch; continue; }
-        cond += ch;
-      }
-    }
-    cond = cond.trim().replace(/:\s*$/, '');
+    const cond = raw.slice(3, open).trim().replace(/:\s*$/, '');
     // find the top-level '} else {' (if any) and the final top-level '}'
     // A brace inside a string or a comment is not structural.
     let depth = 0, elseSplit = -1, closeIdx = -1;
