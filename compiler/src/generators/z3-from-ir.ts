@@ -22,8 +22,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { sanitizeSMT } from './smt-sanitize.js';
+import { guardIr } from '../conservation.js';
 import { obligationKey } from './obligation-key.js';
-import { budgetKey, uncheckedBudget } from './budget-marker.js';
 import {
   IR, IRSpeck, IRConstraint, IRVerify, IRStateVar, IRExpr, IRBinOp,
   IRFieldDef, IRTypeRef, IRBoolLit
@@ -47,6 +47,7 @@ const DEFAULT_OPTIONS = { verifyDepth: 10 };
  *   - Bounded model checking for verifies (unrolled N times)
  */
 export function generateZ3FromIR(ir: IR, options: Partial<Z3FromIROptions> = {}): void {
+  guardIr('z3-ir', ir);
   const opts = { ...DEFAULT_OPTIONS, ...options };
   if (!opts.outputDir) {
     throw new Error('generateZ3FromIR requires outputDir');
@@ -62,18 +63,6 @@ export function generateZ3FromIR(ir: IR, options: Partial<Z3FromIROptions> = {})
         `  note: skipped ${sanitized.dropped.length} untranslatable form(s) in ${speck.name}.ir.smt2`
       );
     }
-    console.log(`Generated Z3 (from IR): ${filename}`);
-  }
-  // The IR backend does not unroll transitions, so a domain budget is
-  // declared unchecked here. The AST backend proves it, or leaves its own
-  // unchecked marker when the tick cannot be lowered. No budget, no file.
-  for (const domain of ir.domains ?? []) {
-    if (domain.budgetPerTick === undefined) continue;
-    const filename = path.join(opts.outputDir, `${domain.name}.budget.ir.smt2`);
-    fs.writeFileSync(filename, uncheckedBudget(
-      budgetKey(domain.name),
-      'IR backend does not unroll transitions; proof delegated to the AST backend',
-    ));
     console.log(`Generated Z3 (from IR): ${filename}`);
   }
 }

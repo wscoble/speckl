@@ -148,7 +148,6 @@ speck NullableListTest {
 speck NullableIdentTest {
   k8s_group: "test.example.com"
   k8s_version: "v1alpha1"
-  enum Status { Active, Inactive }
   type Foo = {
     status: Status | null
   }

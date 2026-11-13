@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { IR, IRRecordType, IRFieldDef, IRTypeRef, IRSpeck, IRFacets, IREnumType } from '../ir/types.js';
+import { guardIr } from '../conservation.js';
 
 /**
  * The K8s CRD target options.
@@ -55,6 +56,7 @@ export interface K8sCRDOptions {
  * Returns the multi-doc YAML string and writes to disk.
  */
 export function generateK8sCRD(ir: IR, options: K8sCRDOptions): string {
+  guardIr('k8s', ir);
   const outputDir = options.outputDir;
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });

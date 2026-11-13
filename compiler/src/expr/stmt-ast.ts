@@ -13,8 +13,7 @@ export type ActionStatement =
   | PostconditionStmt
   | EmitStmt
   | ReturnStmt
-  | IfBlockStmt
-  | CostStmt;
+  | IfBlockStmt;
 
 export interface AssignStmt {
   type: 'assign';
@@ -64,10 +63,4 @@ export interface IfBlockStmt {
   type: 'ifblock';
   raw: string;
   // Future: properly parsed conditional block
-}
-
-/** `cost <n>` — a non-negative integer literal. One per action. */
-export interface CostStmt {
-  type: 'cost';
-  amount: number;
 }

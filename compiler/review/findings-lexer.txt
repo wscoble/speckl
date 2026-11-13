@@ -1,0 +1,12 @@
+Reviewer findings: token lexer vs the brace-scan branch
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: cursor/speckl-brace-scan-main-fb9b at 6de2b68719b4bbb219eafacfdb5ddf32b6e91513
+Working: this branch. The only new compiler module is compiler/src/speck-lex.ts.
+Nothing in the compile path imports it. parseSpeckContent is unchanged. A search of compiler/src for lexSpeck finds the new module and its test only.
+
+Because the lexer is not called, every examples/*.speckdl compiled with the target compiler and this compiler is the same program. There is no output difference to classify. No previously valid input is rejected, and nothing that compiled is dropped.
+
+The tests in compiler/src/__tests__/speck-lex.test.ts call lexSpeck directly. They check that a brace in a string or a comment is not a token, that a prime is not a quote, that an unclosed string or block comment is an error on the opening line, and that a non-ASCII identifier is an error. An escaped quote does not end the string, so a `}` after `"a\"b}"` is a brace token and the `}` inside the string is not. An empty file and a comment-only file produce no tokens. A `§` on line 2 is `unexpected character` at column 2. A leading U+FEFF is removed before the first token, so `speck` stays column 1. A U+FEFF on a later line is `unexpected character "\uFEFF"` at that column. A NUL between tokens is a `punct` token. A NUL inside a string stays in the string. A NUL inside a `//` comment is not a token. `1.5.2` is the number `1.5`, a `.` at column 4, and the number `2` at column 5. U+3000 between `speck` and `S` is whitespace, so the tokens are `speck`, `S`, `{`, `}`. `/*/` does not close a block comment: `/*/ still */ speck S` still yields `speck`, and `x /*/` at end of line is `unterminated block comment` at column 3. Those results are not yet the parser's results.
+
+The README, SPEC, and CHANGELOG now describe that lexer. The documentation does not change compiled output.

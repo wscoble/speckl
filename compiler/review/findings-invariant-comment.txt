@@ -1,0 +1,18 @@
+Reviewer findings: trailing comments in invariants
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+The old parser stored a `//` tail and a block comment inside the invariant expression. A comment is not an expression. This branch drops that tail. An invariant with no comment is unchanged. Each row is the assertion in `compiler/src/__tests__/invariant-comment-edges.test.ts`.
+
+| Change | Before | After | Test |
+| --- | --- | --- | --- |
+| `invariant Bound { n <= 1  // max }` | the walker stored `n <= 1  // max` | the expression is `n <= 1` and does not contain `//` | drops a trailing line comment and keeps an invariant that has none |
+| `invariant Plain { n >= 0 }` | `n >= 0` | `n >= 0` | drops a trailing line comment and keeps an invariant that has none |
+| OAuth `TokenValidityBounded` | the tail was `7776000  // 90 days max` | the expression ends with `7776000` and does not contain `90 days` | drops the OAuth tails and keeps the expression |
+| OAuth `RedirectUriConsistency` | the tail was `true  // This is enforced in the ExchangeCode action` | the expression ends with `true` and does not contain `ExchangeCode` | drops the OAuth tails and keeps the expression |
+| `s = "a // b"` | the marker is inside a string | the expression still contains `"a // b"` | keeps a comment marker inside a string and drops a block comment |
+| `n >= 0 /* note */` | the block comment was part of the text | the expression is `n >= 0` and does not contain `note` | keeps a comment marker inside a string and drops a block comment |
+| `invariant Empty { }` and a body that is only `// nothing` | the walker stored an empty or comment-only expression | both throw `invariant expression is empty` | rejects an empty invariant and a comment-only invariant |
+
+The example output pin moved because the generated text for that OAuth example no longer includes the comment tails. `compiler/src/__tests__/compile-pipeline.test.ts` pins sha256 `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. The previous pin was `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`.
+
+A header-line `}` and a one-line state still match the line walker. Those shapes are not this change.
