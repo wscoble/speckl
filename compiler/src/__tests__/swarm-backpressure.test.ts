@@ -13,6 +13,20 @@ const routes = [
 ];
 
 describe('swarm backpressure', () => {
+  it('a negative cost with no budget waits and is not named', () => {
+    const result = deliver(
+      [{ name: 'Right' }],
+      [{ from: 'Left', to: 'Right', event: 'Note' }],
+      [
+        { id: 'bad', from: 'Left', event: 'Note', cost: -1, priority: 'P0' },
+        { id: 'after', from: 'Left', event: 'Note', cost: 1, priority: 'P1' },
+      ],
+    );
+    expect(result.ran).toEqual([]);
+    expect(result.waiting.map(item => item.id)).toEqual(['bad->Right', 'after->Right']);
+    expect(result.backpressure).toEqual([]);
+  });
+
   it('names a negative-cost delivery and does not run it', () => {
     const result = deliver(
       [{ name: 'Right', budgetPerTick: 5 }],

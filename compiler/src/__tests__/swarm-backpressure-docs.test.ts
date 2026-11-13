@@ -25,6 +25,7 @@ describe('swarm backpressure docs', () => {
   it('names the negative tests', () => {
     expect(tests).toContain('does not name backpressure for a delivery that fits');
     expect(tests).toContain('names a negative-cost delivery and does not run it');
+    expect(tests).toContain('a negative cost with no budget waits and is not named');
     expect(tests).toContain('does not report backpressure for a domain that declares no budget');
     expect(tests).toContain('keeps a delivery that can never fit, and does not invent a route');
     expect(tests).toContain('compileSpec does not call deliver');
