@@ -22,6 +22,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { sanitizeSMT } from './smt-sanitize.js';
+import { guardIr } from '../conservation.js';
 import { obligationKey } from './obligation-key.js';
 import {
   IR, IRSpeck, IRConstraint, IRVerify, IRStateVar, IRExpr, IRBinOp,
@@ -46,6 +47,7 @@ const DEFAULT_OPTIONS = { verifyDepth: 10 };
  *   - Bounded model checking for verifies (unrolled N times)
  */
 export function generateZ3FromIR(ir: IR, options: Partial<Z3FromIROptions> = {}): void {
+  guardIr('z3-ir', ir);
   const opts = { ...DEFAULT_OPTIONS, ...options };
   if (!opts.outputDir) {
     throw new Error('generateZ3FromIR requires outputDir');

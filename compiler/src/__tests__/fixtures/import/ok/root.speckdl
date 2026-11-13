@@ -1,7 +1,0 @@
-import "lib.speckdl" as ledger version "1.2.0"
-
-speck Invoice {
-    state { issued: Bool }
-    init { issued := false }
-    action Issue { issued := true }
-}

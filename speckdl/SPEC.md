@@ -100,7 +100,52 @@ speck ToggleSwitch {
 `var.values`, or a range. This sugar is recognized by the language but not
 yet lowered to Z3 (see §3.5).
 
-**Comments** — `//` line comments and `/* ... */` block comments.
+**Comments** — `//` line comments and `/* ... */` block comments. A `{` or `}`
+inside a comment or a `"` string is not a structural brace, including when
+Go emits an `if` or a `for`, and including a trailing `// }` after a one-line
+action. That action closes on its own structural `}`. A brace in a comment
+or a string does not hide the next speck. A line that is
+only `speck`, with `Name {` on a later line, is `speck name must be on the
+same line as "speck"`. `'` is post-state prime notation, not a string
+quote. A block comment may continue onto the next line. A `"` string may
+not: an unclosed `"` is `unterminated string` on the line where it opened,
+including at file level, after the last speck, and inside domain text. An
+unclosed `/*` is `unterminated block comment` on the line where it opened,
+in those same places. A comment that opens on a speck's closing line and
+closes on a later line is closed. A `/*` written inside an already-open
+block comment is comment text, not a nested comment. When `*/` is the first text on a line and
+the code after it is a `speck`, `action`, `invariant`, `state`, or `init`
+header, that header is `header is not at the start of the line`. A header
+later on the line is outside this scan. A speck written entirely inside a
+block comment is not a speck. Go still drops an `else if`, a nested `if`,
+a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
+from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` calls that lexer through `compiler/src/rd-parser.ts`. A `}` on the speck header ends that speck. A `}` inside a string does not end the speck. A one-line record stores its brace span. `type LogEntry = { term: Nat, value: Value }` is `{ term, value }`. A trailing `//` or block comment is not part of an invariant. A `//` inside a string stays. An empty invariant is an error. `state { x: Nat }` stores that field. `state { }` stores no fields. A `}` inside `//` does not close the block. `x := 0` is stored and `x = 0` is `unrecognized init line`. A missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§` are the same error from this parser and from the line walker, with a line and column. An unrecognized state field and an unrecognized init line name the line and do not name a column. File-level `import` is stored on the AST. `compiler/src/imports.ts` resolves a relative path (`\` is `/`) inside the entry directory, checks the hash pin, and names the importing file and line on failure. `compileSpec` calls that resolver before it generates. `speckl --root` widens the directory. `speckl --root /` widens it to the whole filesystem. An absolute import path is still an error. `import` is not applicable at generation time because the import has already been inlined. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. Each generator also calls that check, so a direct call cannot drop a member type. A missing member-type list, or a type the table does not name, is an error. `generateAgent` calls that check before it emits. A missing member list, an unknown member type, and `oneof` are errors. A speck with no `agent` block logs `skip S: no agent { } block` and does not emit that speck's agent files.
+
+### 2.2.1 Rejected structure
+
+The line walker used to accept each input below and store a program that dropped or rewrote the text. That was a bug. The input is now a parse error.
+
+- A speck that never closes. `speck A {` with no closing brace used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9).
+- An extra closing brace. `speck A {` then a line `}` then another `}` used to parse as speck A with no members, ending on line 2. The extra brace was ignored. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). A `}` inside a string is still a string.
+- Text after a speck's closing brace. `speck A {` then `} junk` used to parse as speck A with no members, ending on line 2. The word was ignored. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3).
+- A second speck on the same line. `speck A { } speck B { }` used to parse as only speck A, with no members. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13).
+- An unrecognized member. `garbage line here` used to parse as speck A with no members. `actoin go {` dropped the action. `enum Status { Active, Inactive }` kept only interface Foo. A description line dropped the description. `x := x + 3` after init stored the state type as `= x + 3` and the init expression as `x + 3`. Each diagnostic is unrecognized member with the line and column. One of them is: Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5).
+- Unrecognized top-level text. `spek B {` after a closed speck used to parse as only speck A. `*/ speck A {` used to parse as no specks. The diagnostics are: Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1), and Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1).
+- Text after a member's closing brace. `invariant P { x >= 0 } junk` used to parse as invariant P with an empty expression. The predicate was dropped. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28).
+- A member brace on the next line. `invariant P` with `{` on the following line used to parse as a speck whose only member was an empty state. The invariant was dropped. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5).
+- An unrecognized state field. Inside `state`, `y Nat` after `x: Nat` used to be stored as the type `Nat y Nat`. The diagnostic is: Parse error at st.speckdl:2: unrecognized state field "y Nat". The message names the state header's line and does not name a column.
+- An unrecognized init line. `y = 0` after `x := 0` used to be stored as the expression `0 y = 0`. `garbage line` used to be stored as `0 garbage line`. The diagnostics are: Parse error at in.speckdl:3: unrecognized init line "y = 0", and unrecognized init line "garbage line". The message names the init header's line and does not name a column. `x := 0` is still an assignment.
+- Code after a block comment on the same line. `/* c */ action go {` used to parse as speck A with no members. The action was dropped. The diagnostic is: Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13).
+- A CR that is not part of CRLF. `speck A {` then a state, with a bare carriage return and no line feed, used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still whitespace.
+- An unexpected non-ASCII character outside a string or a comment. A line containing `§` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: unexpected character "§" (column 2). `→` is: Parse error at bad.speckdl:2: unexpected character "→" (column 7). Non-ASCII text inside a string or a comment is kept.
+- An identifier that starts with a digit. `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `state { t: 24h }` still parses.
+- A non-ASCII identifier. `naïve` used to be dropped, and the file parsed as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). Non-ASCII text inside a string or a comment is kept.
+- An unsupported numeric literal. `state { t: 1h30m }` used to parse as speck A whose state stored no fields. The diagnostic is: Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16). `state { t: 24h }` still parses.
+- The column of an unclosed string or comment. `x: "ab` with no closer was already Parse error at bad.speckdl:2: unterminated string. It is now Parse error at bad.speckdl:2: unterminated string (column 8). `/* c` with no closer was unterminated block comment and is now Parse error at bad.speckdl:2: unterminated block comment (column 5).
+
+### 2.2.2 Token parser
+
+`parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. That function walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parser.ts` is the production file that imports `rd-parser.ts`. The line-walker copy under `compiler/src/line-walker/` is test-only. `lowers every speck in the repo to the same IR` in `compiler/src/__tests__/walker-vs-rd.test.ts` compares the two.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
@@ -190,129 +235,8 @@ import "common.speckdl" as common
 import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 ```
 
-An import is a file path, resolved relative to the file that contains it
-(absolute paths are taken as written). The lower pass reads that file,
-lowers it, and merges its specks into the compilation unit. A file-level
-import is attached to every speck in the importing file; an import written
-inside one speck is attached to that speck. `as` names the import: one
-speck uses the alias, several specks use `alias.SpeckName`. With no alias
-the speck's own name is used.
-
-Failures name the file and stop the compile:
-
-- the path cannot be read (missing file, or a directory);
-- the import graph cycles (`a.speckdl -> b.speckdl -> a.speckdl`);
-- `hash "sha256:..."` (or a bare hex digest) does not match the file bytes;
-- the same speck name is declared in two files.
-
-`version` is stored on the resolved import. Looking that pin up in a
-package registry is **not yet implemented**. Requiring a version when
-`review` is `manual` or `hybrid` is **not yet implemented** — a missing
-version is not an error today.
-
-Merging does not inline the imported speck's members into the importer,
-and it does not rewrite expressions that mention an imported name. That
-name resolution is **not yet implemented**. Each merged speck stays one
-speck.
-
-The file-level scan that finds the next speck skips a `{` or `}` inside a
-finished `"` string, a `//` comment, or a `/* */` comment. `'` is prime
-notation, not a string quote. A `"` string ends on the line it starts: an
-unclosed `"` is a parse error on that line (`unterminated string`), so a
-`"` on a later line does not close it. An unclosed `/*`, a `/*` inside a
-block comment, and a `*/` that is not closing a block comment are parse
-errors naming the file and the line.
-
-If that depth is not 0 when the next line is a speck header, the parse
-error is `unbalanced braces`, naming the file and the line. At the end of
-the file the same error is reported whenever that depth is not 0. A stray
-`}` is that error on the line where depth goes below 0, even when a
-later `{` or a later comment would bring it back. A `domain`
-block is not parsed in this version. A speck written inside
-`domain D { ... }` hits that error. It is not omitted. Members written
-inside the domain (`action`, `invariant`) are dropped, the same as
-main. Domain blocks are a later change. An `import` inside
-an action, an `if` inside an action, a multi-line state block, a `domain`
-block, or any other brace block that is not the speck itself is
-`import is inside a block`, naming the file and the line. An import that
-is a direct member of a speck is attached to that speck.
-
-A speck header is the trimmed line with comments masked. These are the
-same header: an indent before `speck`, a tab between `speck` and the name,
-`speck /* c */ Name {`, `speck Name /* c */ {`, `speck Name { }`,
-`speck Name {}`, and `speck Name` with `{` alone on a following line. A
-line `{ }` after `speck Name` is not that header. It is
-`expected "speck <Name> {"`. A `/* */` comment on the same line before
-`speck Name {` is also that header. After comments and strings are
-masked, a `speck` written as a header has to be that header. The header
-is at depth 0. A name starts with a letter or `_`. The keyword followed
-by anything else is a parse error naming the file and the line,
-including punctuation before the name (`speck -B {`, `speck (B) {`) and
-an expression (`x := speck + 1`). Mid-line, that is
-`speck must be a header at the start of the line`. A line that starts
-with `speck` and a bad name before `{` is `expected "speck <Name> {"`.
-`unbalanced braces` is the error when the line would be a header except
-for the depth. `speck` inside a string or a comment is not the keyword.
-`specks`, `myspeck`, `speck_count`, and `my-speck` are identifiers.
-`speck` with the name on the next line is
-`speck name must be on the same line as "speck"`, naming the file and
-the line. A one-line speck with members
-(`speck L { state { x: Nat } init { x := 0 } }`) and two specks on one
-line are `one speck per line: put members on their own lines`. On main,
-a split name was dropped, a one-line speck kept the name and dropped
-the members, and a second speck on the same line was dropped or its
-members were attached to the first. Those forms are a parse error in
-this version. Accepting them belongs to the whole-file tokenizer, not
-this version. A line that is only `speck` is
-`speck name must be on the same line as "speck"`. A format character
-(Unicode category Cf) outside a string or a comment is
-`invisible format character`, except a BOM at the start of the file.
-A line that starts at depth 0 and is not a speck header, a `domain`
-line, an `import`, or blank is
-`text outside a speck, domain, or import`. A lone `}` on that line is
-`unbalanced braces`. Non-comment text after the
-`}` that brings file-level depth back to 0, on that same line, is
-`text after a closing brace`. The same error is reported for
-other text after a member's `}` while the speck stays open
-(`} action`, `} invariant`, `}; thing`). A same-line `else`
-(`} else`, `} else if`) is still parsed. A line that is `})` or
-`},` is still parsed: it finishes a record or a call. A line that takes depth to 0
-has to be `}` plus optional whitespace and an optional comment. The
-error is `closing brace must be alone on the line`.
-`action Go { x := x + 1 } }`, `state { x: Nat } }`, and
-`invariant P { x >= 0 }}` are that error. On a line that opens or
-closes a speck, a `{` or `}` inside a `//` or `/* */` comment is
-`comment contains a brace`. That includes `speck A { // }`, `} // {`,
-`} /* { */`, and `} // speck B { follows`. `speck A // {` with `{` on
-the next line still parses, because that comment is not on the line
-that opens the speck. `} // done` and `} // speck B` with no brace in
-the comment still parse. This check only rejects that text. An
-unknown block that stays inside a speck (`thing B {`, `Speck B {`, a
-Cyrillic lookalike of `speck`) is merged into that speck, the same as
-main. `speck` is a
-reserved keyword. On main, a line such as `speck := speck + 1` or
-`speck >= 0` was accepted. It is now `"speck" is a reserved keyword`,
-naming the file and the line. A
-header `speck Name` whose `{` never appears is
-`expected "speck <Name> {"`. A colon-form `if` nested inside another
-colon-form `if` is never rewritten. That is the same as main.
-
-Inside a member, `{` and `}` are still counted in the raw text, including
-inside a `//` comment, a `/* */` comment, and a string. That walk is
-unchanged, and it is the same as main. A comment brace can decide where
-the member ends: `if x > 5 { // }` and `if x > 5 { /* } */` can run the
-following statements unconditionally and drop a following invariant
-Canary. The same gap drops invariant Canary in g07, g09, g26, and g27.
-`description: "{ } }}"` can drop the members of that speck, and
-`log := "}"` in an action can drop the action's statements and a following
-invariant. Comment braces inside member blocks are a known gap. They are
-fixed in #47, not in this version.
-
-An import line is `import`, a quoted path, then optional `as`, `version`,
-and `hash` clauses, then an optional `//` comment. `hash ""`, a mistyped
-clause such as `hsh` or `verison`, and a `/* */` comment on that line
-fail with `Failed to parse import statement` followed by the line. The
-path does not swallow the leftover text.
+Version pinning is optional for local development and required for Specks
+with `review: manual` or `review: hybrid`.
 
 ### 2.9 Expression Operators
 
@@ -420,8 +344,7 @@ result is then advisory, not a proof, and the verify block is UNCHECKED.
 
 Generators consume the IR, not the AST. The IR is complete (every fact in
 the spec is in a named facet), lossless (expressions are typed trees, not
-strings), resolved (`import` paths are read and merged at lower time; using
-an imported name inside an expression is not yet implemented), and
+strings), resolved (cross-spec references resolved at lower time), and
 provenanced (missing provenance is synthesized from file metadata).
 
 ### 4.1 Planned Stages (not implemented)
