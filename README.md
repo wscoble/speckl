@@ -186,6 +186,10 @@ Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cos
 
 A domain becomes a comment and an empty `NameContract` class with a private constructor. The class has no runtime method. A speck with no domain emits no contract class. Camel does not throttle, queue, or route, and it does not run a tick. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, and the speck with no domain. `docs/domain-contract-camel.md` says the same thing.
 
+## Trace report
+
+`speckl trace report` reads a decision log offline. It checks the hash chain. The HMAC is checked only when a key is passed. With `--state`, `head.json` is required when `<state>.decisions/` exists. An empty log prints `macs not checked`. The report does not run the hook and it does not enforce a queue. `compiler/src/__tests__/trace-report.test.ts` covers the golden report, the hash chain, a missing path, `--state`, and an empty record. `docs/trace-report.md` says the same thing.
+
 ## Token parser
 
 `parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parseSpeckContent calls the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts that `parser.ts` is the production file that imports `rd-parser.ts` and that the call passes the source and the file path. `lowers every speck in the repo to the same IR` in that file compares the live parser with the line-walker copy. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
