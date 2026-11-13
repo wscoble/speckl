@@ -20,9 +20,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { IR, IRSpeck, IRDomain, ProvenanceClause, Author, Source, SourceKind } from '../ir/types.js';
+import { IR, IRDomain, IRSpeck, ProvenanceClause, Author, Source, SourceKind } from '../ir/types.js';
+import { guardIr } from '../conservation.js';
 
 export function generateProvenanceFromIR(ir: IR, outputDir: string): void {
+  guardIr('provenance', ir);
   for (const speck of ir.specks) {
     const graph = renderProvGraph(speck, ir.domains ?? []);
     const filename = path.join(outputDir, `${speck.name}.prov.jsonld`);
@@ -270,24 +272,17 @@ function renderProvGraph(speck: IRSpeck, domains: IRDomain[]): any {
     });
   }
 
-  // Domain collections are appended, so a speck that is not a member keeps
-  // the same @graph as before. prov:hadMember links the domain to its specks.
+  const seen = new Set<string>();
   for (const domain of domains) {
-    if (!domain.members.includes(speck.name)) continue;
-    const seen = new Set<string>();
-    const members: string[] = [];
-    for (const member of domain.members) {
-      if (seen.has(member)) continue;
-      seen.add(member);
-      members.push(`speck:${member}`);
-    }
+    if (!domain.members.includes(speck.name) || seen.has(domain.name)) continue;
+    seen.add(domain.name);
     graph.push({
       '@type': ['prov:Entity', 'prov:Collection'],
       '@id': `domain:${domain.name}`,
       'rdfs:label': domain.name,
       'speckl:kind': 'domain',
       ...(domain.language !== undefined ? { 'speckl:language': domain.language } : {}),
-      'prov:hadMember': members,
+      'prov:hadMember': domain.members.map(member => `speck:${member}`),
     });
   }
 

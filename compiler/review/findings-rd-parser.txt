@@ -1,0 +1,35 @@
+The token parser and the line walker agree. There is no fallback. `parseSpeck` is `parseSpeckDocument`, and that function returns the token parser's result. `compiler/src/__tests__/walker-vs-rd.test.ts` and `compiler/src/__tests__/parser-malformed.test.ts` run both parsers.
+
+| Input | Line walker | Token parser | Test |
+| --- | --- | --- | --- |
+| every `.speckdl` file in the repo | IR from `lower()` | the same IR | lowers every speck in the repo to the same IR |
+| empty file and a comment-only file | IR | the same IR | matches the line walker on malformed input, including the AST when both accept |
+| `speck A {` with no close | `missing final "}"` at `bad.speckdl:1` column 9 | the same message | rejects a missing close |
+| extra `}` | `extra "}"` at line 3 column 1 | the same message | rejects an extra close |
+| `} junk` | `text after a speck's "}"` at line 2 column 3 | the same message | rejects text after a close |
+| `garbage line here` | `unrecognized member "garbage line here"` at line 2 column 5 | the same message | rejects an unrecognized member |
+| `§` | `unexpected character "§"` at line 2 column 2 | the same message | rejects a section sign |
+| `y Nat` | `unrecognized state field "y Nat"` at line 2, no column | the same message | rejects an unrecognized state field and an unrecognized init line, without a column |
+| `y = 0` | `unrecognized init line "y = 0"` at line 3, no column | the same message | rejects an unrecognized state field and an unrecognized init line, without a column |
+| unterminated `"` | `unterminated string (column 8)` | the same message | reports an unterminated string with the column |
+| a well-formed action whose string contains `}` | the AST | `JSON.stringify` of the same AST | does not treat a brace inside a string as an extra close |
+
+`walker-vs-rd.test.ts` also compares the error text for `→`, `speck` with the name on the next line, a second speck on one line, code after `*/`, text after a member `}`, a misspelled member, a misspelled top-level name, and `speck 9A`. The messages are equal. When both accept, `JSON.stringify` of the ASTs is equal.
+
+Output hash. The target compiler is the output-hash branch. The working compiler is this branch. Both hash every `examples/*.speckdl` file at `-t all` and `-t all-ir` to the same sha256:
+
+9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1
+
+That constant is `OUTPUT_SHA256` in `compiler/src/__tests__/compile-pipeline.test.ts`. The hash did not move.
+
+Shapes that still match the line walker, on purpose, in this PR:
+
+| Input | What this parser stores | What the line walker stored |
+| --- | --- | --- |
+| `examples/KafkaKRaft.speckdl` `type LogEntry = { term: Nat, value: Value }` | mixed interface whose fields include the following state fields | the same list |
+| OAuth invariant `TokenValidityBounded` | expr ends with `7776000  // 90 days max` | the same text |
+| OAuth invariant `RedirectUriConsistency` | expr ends with `true  // This is enforced in the ExchangeCode action` | the same text |
+| `speck A { state { x: Nat } }\nspeck B { state { y: Nat } }` | A ends on line 3 with an empty state. B's state is empty. | the same |
+| `speck A {\n    state { x: Nat }\n    init { x := 0 }\n}` | the state stores no variables and the init stores no assignments | the same |
+
+File-level `import` is syntax-checked and not resolved. Go still drops an `else if`, a nested `if`, a `for` inside an `if`, and a `require` inside an `if`.
