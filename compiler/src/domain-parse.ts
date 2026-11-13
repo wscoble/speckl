@@ -3,6 +3,8 @@
 // A `}` inside a `"` or `'` string does not end the block. The strict
 // brace check still runs first, so a domain that never closes is
 // `missing final "}"` before this scanner reports `unclosed domain`.
+// This parses the block. It does not check that a member names a speck.
+// It does not route events, queue work, or schedule a tick.
 
 import { DomainNode, lexProblem } from './speck-part0.js';
 
