@@ -190,6 +190,10 @@ The class has no runtime method. A speck with no domain emits no contract class.
 
 `speckl trace report` reads a decision log offline. When the log parses, it checks the hash chain. A torn file, a blank line, or a line that is not JSON is refused before that check. With `--state`, `head.json` is required when `<state>.decisions/` exists. An empty log prints `macs not checked`. The report does not run the hook and it does not enforce a queue. `compiler/src/__tests__/trace-report.test.ts` covers the golden report, the hash chain, a missing path, `--state`, and an empty record. `docs/trace-report.md` says the same thing.
 
+## Tool signal fields
+
+The agent generator copies an action `priority` onto the tool, or the domain `priority` when the action declares none and the domain's members include the speck. `kpis` are the `kpi` tags of events that action emits with a straight-line `emit`, in source order, each distinct tag once, stopping at `return`. That stop is a `return` expression such as `return stage`. A line that is only `return` does not stop the scan. An emit after `return` is not tagged. A domain priority is not used when the speck is not a member of that domain. An observe tool gets the same fields. An `emit` inside an `if` or a `for`, or an `emit` in a comment, is not tagged. Both fields are omitted when absent. This does not write the decision line, and it does not route, queue, or run a tick. `compiler/src/__tests__/agent-signal-fields.test.ts` covers each case. `docs/signal-fields.md` says the same thing.
+
 ## Token parser
 
 `parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parseSpeckContent calls the token parser` in `compiler/src/__tests__/walker-vs-rd.test.ts` asserts that `parser.ts` is the production file that imports `rd-parser.ts` and that the call passes the source and the file path. `lowers every speck in the repo to the same IR` in that file compares the live parser with the line-walker copy. The same statement is in [speckdl/SPEC.md](speckdl/SPEC.md).
