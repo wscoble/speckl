@@ -249,7 +249,7 @@ domain Billing {
 }
 ```
 
-`members` is required. Each name is text. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a `"` or `'` string does not end the block or the clause. A `//` comment inside the block is not a clause. A hyphenated domain name and a hyphenated member name are accepted. An unclosed block is `missing final "}"` from the brace check, which runs before this scanner. This parser does not route events, queue work, or schedule a tick. It does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each of those cases.
+`members` is required. Each name is text. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed `"` or `'` string does not end the block or the clause. A `//` comment inside the block is not a clause. A hyphenated domain name and a hyphenated member name are accepted. An unclosed block whose source has no `}` is `missing final "}"` from the brace check, which runs before this scanner. A `}` after an unclosed quote is counted by that check, and this scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick. It does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each of those cases.
 
 ### 2.9 Expression Operators
 
