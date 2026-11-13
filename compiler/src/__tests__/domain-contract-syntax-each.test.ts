@@ -126,9 +126,9 @@ domain D { members: A; }
     writeFileSync(file, source);
     const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
     expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
-    expect(ir.domains.map(d => d.name)).toEqual(['D']);
-    expect(ir.domains[0].consumes).toBeUndefined();
-    expect(ir.domains[0].produces).toBeUndefined();
+    expect(ir.domains?.map(d => d.name)).toEqual(['D']);
+    expect(ir.domains?.[0].consumes).toBeUndefined();
+    expect(ir.domains?.[0].produces).toBeUndefined();
   });
 
   it('stores the parsed cost on the action', () => {
