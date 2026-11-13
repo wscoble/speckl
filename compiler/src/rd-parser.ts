@@ -15,7 +15,7 @@
 import {
   AST, SpeckNode, MemberNode,
   lexStart, maskLine, lexProblem,
-  parseImportStatement, parseMember, parseMemberBlock, isAliasTypeText,
+  parseImportStatement, parseMember, parseMemberBlock, stripInvariantExpr, isAliasTypeText,
   parseMultiLineConstraintVerify, expressionSpanEnd, unsupportedVerify, parseNextRelation,
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
@@ -228,6 +228,11 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
         }
       }
       const member = parseMemberAt(lines, i, actionNames);
+      if (member && member.type === 'invariant' && open && close) {
+        const expr = stripInvariantExpr(content.slice(open.end, close.start));
+        if (!expr) throw parseErrorAt(filePath, open.line, open.column, 'invariant expression is empty');
+        member.expr = expr;
+      }
       if (!member && line.startsWith('verify')) throw unsupportedVerify(line, i);
       if (!member) rejectUnparsed(filePath, rawLine, i + 1, line);
       if (closeCount < openCount) {

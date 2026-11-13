@@ -32,17 +32,26 @@ describe('token parser matches the line walker', () => {
     ]);
   });
 
-  it('OAuth invariants keep the trailing line comment the line walker stored', () => {
+  it('OAuth invariants drop a trailing line comment', () => {
     const speck = parseExample('OAuth2AuthorizationCode.speckdl').specks[0];
     const expr = (name: string) => {
       const member = speck.members.find(m => m.type === 'invariant' && m.name === name);
       if (member?.type !== 'invariant') throw new Error(`missing ${name}`);
       return member.expr;
     };
-    expect(expr('TokenValidityBounded')).toContain('7776000  // 90 days max');
-    expect(expr('RedirectUriConsistency')).toBe(
-      'forall code in authorizationCodes.keys: let c := authorizationCodes[code] true  // This is enforced in the ExchangeCode action',
+    // The line walker stored `7776000  // 90 days max` and
+    // `true  // This is enforced in the ExchangeCode action`. A `//` tail
+    // is a comment, not part of the expression.
+    const bounded = expr('TokenValidityBounded');
+    expect(bounded).toBe(
+      'forall token in accessTokens.keys: let t := accessTokens[token] t.expires_at > currentTime forall rt in refreshTokens.keys: let r := refreshTokens[rt] currentTime - r.created_at <= 7776000',
     );
+    expect(bounded).not.toContain('//');
+    const redirect = expr('RedirectUriConsistency');
+    expect(redirect).toBe(
+      'forall code in authorizationCodes.keys: let c := authorizationCodes[code] true',
+    );
+    expect(redirect).not.toContain('//');
   });
 
   it('a header-line close still absorbs the next speck, as the line walker did', () => {

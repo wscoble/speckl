@@ -2,7 +2,7 @@ import { InitNode, InvariantMemberNode, StateNode, lexStart, lexProblem } from '
 import { findBlockEnd, maskCode } from './speck-part1.js';
 import { parseStateBlock } from './speck-part2.js';
 import { parseInitBlock } from './speck-part3.js';
-import { codeWithoutComments, angleUnbalanced, initStatementClosed, isInitStarter } from './speck-span.js';
+import { codeWithoutComments, angleUnbalanced, initStatementClosed, isInitStarter, stripInvariantExpr, braceInner } from './speck-span.js';
 
 export function parseStateBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): StateNode {
   // Cycle 59: support `state as <MessageName> { ... }` to override the
@@ -145,15 +145,10 @@ export function parseInvariantBlockMultiline(lines: string[], startIndex: number
   const firstLine = lines[startIndex].trim();
   const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
-  // Keep a trailing `//` on a code line. The line walker stored that text.
-  // A later change drops it, because it is a comment.
-  const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const body = lines
-    .slice(startIndex + 1, endIndex)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('//') && !l.startsWith('/*'))
-    .join(' ');
-  return { type: 'invariant', name, expr: body.trim() };
+  // A trailing `//` is a comment. The line walker left it in the expression.
+  const expr = stripInvariantExpr(braceInner(lines, startIndex));
+  if (!expr) throw lexProblem(startIndex + 1, 'invariant expression is empty');
+  return { type: 'invariant', name, expr };
 }
 
 /**

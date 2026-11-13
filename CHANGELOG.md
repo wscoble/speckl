@@ -91,6 +91,15 @@ alias.
   reason, from `9bdc5a8a21f64044b1200534581f67a08a8fb8aea206cdb61c365a8b1ca18bc1`
   to `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`. See
   `compiler/review/findings-record-span.txt`.
+- **Invariant comments.** A trailing `//` or a block comment is not part of
+  an invariant expression. The line walker had kept it, so two OAuth
+  invariants carried comment text and a Rust doc line contained `// max`.
+  The new expression is the text before the comment. A `//` inside a string
+  stays. An empty or comment-only invariant is an error. An invariant with
+  no comment is unchanged. The example output pin moved for that reason,
+  from `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`
+  to `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
+  `compiler/review/findings-invariant-comment.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the
