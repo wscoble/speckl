@@ -240,8 +240,7 @@ with `review: manual` or `review: hybrid`.
 
 ### 2.8.1 Domain blocks
 
-A domain names specks that belong to one bounded context. It is file-level.
-It is not a speck, and it is not a member inside a speck.
+A file may declare a domain block. The block is not a speck, and it is not a member of a speck.
 
 ```
 domain Billing {
@@ -250,14 +249,11 @@ domain Billing {
 }
 ```
 
-`members` is required and lists speck names. `language` is optional. A `}`
-inside a `"` string does not end the block. A domain that never closes is
-`missing final "}"`. A member listed twice, a speck listed by two domains,
-a name that is not a speck, and the same domain name twice are compile
-errors. An imported file's domains are part of the same check. `speckl
-doctor` fails when a member's `effect act` tool is not a `map` target in
-every harness block on that speck. `compiler/src/__tests__/domain.test.ts`
-checks these cases.
+`members` is required. Each name is text. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a `"` or `'` string does not end the block or the clause. A `//` comment inside the block is not a clause. A hyphenated domain name and a hyphenated member name are accepted. An unclosed block is `missing final "}"` from the brace check, which runs before this scanner. This parser does not route events, queue work, or schedule a tick. It does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each of those cases.
+
+### 2.8.2 Domain checks
+
+After the block parses, `lower` checks it. A member that is not a speck in the file is `domain: <Name> member <Member> is not a speck in <file>`. A member listed twice, the same speck in two domains, and the same domain name twice are errors. An imported domain is part of that check. A file with no domain has no domain diagnostic. `compileSpec` creates the output directory before it reports a domain error, and it does not write the generated file. `speckl doctor` fails when a domain member's `effect act` tool is not a `map` target in every harness block on that speck. An observe tool is not checked. This check does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-check-each.test.ts` covers each case.
 
 ### 2.9 Expression Operators
 
