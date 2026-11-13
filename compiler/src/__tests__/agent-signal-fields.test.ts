@@ -181,4 +181,9 @@ domain Ops { members: Idle; priority P9; }
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('does not route, queue, or run a tick', () => {
+    const src = readFileSync(new URL('../generators/agent/index.ts', import.meta.url), 'utf8');
+    expect(src.includes('planRoutes') || src.includes('orderByPriority') || src.includes('runTick')).toBe(false);
+  });
 });
