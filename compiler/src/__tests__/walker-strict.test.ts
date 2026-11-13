@@ -89,6 +89,32 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:3: extra "}" (column 1)');
   });
 
+  it('still accepts text after a close', () => {
+    const src = 'speck A {\n} junk\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":2,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
+  it('still accepts an unrecognized member', () => {
+    const src = 'speck A {\n    garbage line here\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
+  it('still accepts a section sign', () => {
+    const src = 'speck A {\n §\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('accept');
+  });
+
+  it('turns on only a missing close', () => {
+    const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
+    const start = text.indexOf('const ON');
+    const block = text.slice(start, text.indexOf('};', start) + 2);
+    const flags = [...block.matchAll(/(\w+):\s*(true|false)/g)].map(m => [m[1], m[2]] as const);
+    expect(flags.map(([name]) => name)).toEqual(['missing', 'extra']);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing']);
+  });
   // NEXT
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
