@@ -20,7 +20,10 @@
 // When the tick cannot be lowered (no next, a next action with no cost, a
 // state sort or guard this encoding does not translate, an if/let block),
 // the file is a `speckl-unchecked` marker and nothing else. Unchecked is
-// never a proof. This file does not emit a runtime throttle.
+// never a proof. unsat proves the bound only inside the BMC depth.
+// This file does not route events, queue work, run a tick, or emit a
+// runtime throttle. The IR budget file is `speckl-unchecked` and is not
+// a proof.
 
 import * as fs from 'fs';
 import * as path from 'path';
