@@ -17,6 +17,8 @@ describe('Camel contract docs', () => {
       expect(text).toContain('private constructor');
       expect(text).toContain('does not throttle');
       expect(text).toContain('does not run a tick');
+      expect(text).toContain('RouteBuilder');
+      expect(text).toContain('no contract clauses emits no contract class');
       expect(text).toContain('no domain emits no contract class');
     }
   });
