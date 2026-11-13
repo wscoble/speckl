@@ -186,6 +186,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - `speck 9A` is identifier must not start with a digit at column 7. It used to be stored under that name. `state { t: 24h }` still parses.
 - `naïve` is identifier must be ASCII at column 7. It used to be dropped. Non-ASCII text inside a string or a comment is kept.
 - `1h30m` is unsupported numeric literal "1h30m" at column 16. The state used to be stored with no fields.
+- An unclosed quote is unterminated string (column 8). An unclosed `/*` is unterminated block comment (column 5). The old messages named the line and not the column.
 
 ## Documentation
 

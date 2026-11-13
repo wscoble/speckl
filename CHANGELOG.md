@@ -425,6 +425,7 @@ Parse errors below are breaking changes. A file that used to compile now fails, 
 - **An identifier that starts with a digit is rejected.** `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `state { t: 24h }` still parses. `rejects a digit name` and `still parses a duration` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **A non-ASCII identifier is rejected.** `naïve` used to be dropped, leaving speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). `rejects a non-ASCII identifier` in `compiler/src/__tests__/walker-strict.test.ts`.
 - **An unsupported numeric literal is rejected.** `state { t: 1h30m }` used to store an empty state. The diagnostic is: Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16). `rejects an unsupported numeric literal` in `compiler/src/__tests__/walker-strict.test.ts`.
+- **An unclosed string or block comment names its column.** `x: "ab` was unterminated string with no column. It is now Parse error at bad.speckdl:2: unterminated string (column 8). `/* c` was unterminated block comment and is now Parse error at bad.speckdl:2: unterminated block comment (column 5). `names the column of an unclosed string and an unclosed block comment` in `compiler/src/__tests__/walker-strict.test.ts`.
 
 ## [0.3.1] and earlier
 
