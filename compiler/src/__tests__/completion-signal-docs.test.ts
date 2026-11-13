@@ -24,5 +24,14 @@ describe('completion signal docs', () => {
     expect(tests).toContain('stores the ingress trace on an allow pre and a prime signal on the matching post');
     expect(tests).toContain('replaces a bad trace id and still allows the call');
     expect(tests).toContain('denies a post with no matching pre and does not keep the caller trace');
+    expect(tests).toContain('replaces an empty trace id and still allows the call');
+    expect(tests).toContain('replaces a trace id longer than 200 characters');
+    expect(tests).toContain('replaces a trace id that contains a disallowed character');
+    expect(tests).toContain('replaces a missing trace id and still allows the call');
+    expect(tests).toContain('flags a parent branch id that is not an id and clears it');
+    expect(tests).toContain('an absent parent is a root and is not flagged');
+    expect(tests).toContain('does not keep a branch id equal to its parent');
+    expect(tests).toContain('an observe tool does not get the signal fields');
+    expect(tests).toContain('a matching post does not keep the caller kpis');
   });
 });

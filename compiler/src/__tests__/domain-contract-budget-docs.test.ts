@@ -18,6 +18,7 @@ describe('domain budget docs', () => {
       expect(text).toContain('not a proof');
       expect(text).toContain('does not route');
       expect(text).toContain('BMC depth');
+      expect(text).toContain('writes no budget file');
     }
   });
 
