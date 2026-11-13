@@ -42,12 +42,13 @@ export function printAST(ast: AST): string {
   return parts.length > 0 ? parts.join('\n') + '\n' + body : body;
 }
 
-function printDomain(domain: { name: string; members: string[]; language?: string; consumes?: string[]; produces?: string[]; budgetPerTick?: number }): string {
+function printDomain(domain: { name: string; members: string[]; language?: string; consumes?: string[]; produces?: string[]; budgetPerTick?: number; priority?: string }): string {
   const language = domain.language !== undefined ? ` language: ${JSON.stringify(domain.language)};` : '';
   const consumes = (domain.consumes ?? []).map(name => ` consumes ${name};`).join('');
   const produces = (domain.produces ?? []).map(name => ` produces ${name};`).join('');
+  const priority = domain.priority !== undefined ? ` priority ${domain.priority};` : '';
   const budget = domain.budgetPerTick !== undefined ? ` budget ${domain.budgetPerTick} per tick;` : '';
-  return `domain ${domain.name} { members: ${domain.members.join(', ')};${language}${consumes}${produces}${budget} }`;
+  return `domain ${domain.name} { members: ${domain.members.join(', ')};${language}${consumes}${produces}${priority}${budget} }`;
 }
 
 function printSpeck(speck: SpeckNode): string {
@@ -111,7 +112,10 @@ function printMember(member: MemberNode, actionNames: Set<string>): string[] {
     case 'agent':
       return printAgent(member, actionNames);
     case 'event': {
-      const lines = [`event ${member.name}${member.external ? ' external' : ''} {`];
+      let head = `event ${member.name}`;
+      if (member.external) head += ' external';
+      if (member.kpi !== undefined) head += ` kpi ${JSON.stringify(member.kpi)}`;
+      const lines = [`${head} {`];
       for (const f of member.fields) lines.push(`    ${f.name}: ${printType(f.type)}`);
       lines.push('}');
       return lines;
@@ -262,6 +266,9 @@ function printAction(action: { name: string; params: { name: string; type: TypeE
         break;
       case 'cost':
         lines.push(`    cost ${stmt.amount}`);
+        break;
+      case 'priority':
+        lines.push(`    priority ${stmt.name}`);
         break;
       case 'emit': {
         const fields = (stmt.fields as { name: string; value: string }[] | undefined) ?? [];

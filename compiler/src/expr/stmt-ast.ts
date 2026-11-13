@@ -14,7 +14,8 @@ export type ActionStatement =
   | EmitStmt
   | ReturnStmt
   | IfBlockStmt
-  | CostStmt;
+  | CostStmt
+  | PriorityStmt;
 
 export interface AssignStmt {
   type: 'assign';
@@ -70,4 +71,10 @@ export interface IfBlockStmt {
 export interface CostStmt {
   type: 'cost';
   amount: number;
+}
+
+/** `priority <Name>` — a label. One per action. Not a transition. */
+export interface PriorityStmt {
+  type: 'priority';
+  name: string;
 }
