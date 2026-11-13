@@ -185,6 +185,19 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:2: unexpected character "→" (column 7)');
   });
 
+  it('records which rejection classes are on', () => {
+    const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
+    const start = text.indexOf('const ON');
+    const block = text.slice(start, text.indexOf('};', start) + 2);
+    const flags = [...block.matchAll(/(\w+):\s*(true|false)/g)].map(m => [m[1], m[2]] as const);
+    expect(flags.map(([name]) => name)).toEqual([
+
+      'missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail',
+      'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
+      'ascii', 'numeric', 'unclosed',
+    ]);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state', 'init', 'comment', 'cr', 'section']);
+  });
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
       'speck A {\n    state {\n        x: Nat\n    }\n    action Go {\n        note := "}"\n    }\n}\n',
