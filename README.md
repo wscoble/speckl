@@ -176,7 +176,7 @@ A file may declare `domain Name { members: Invoice, Ledger; language: "..."; }`.
 
 ## Domain contract check
 
-Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. A domain with no contract clauses still lowers. This check rejects a consumed event that nobody produces and that is not external, a produce of something that is not an event, and an emit the domain does not produce. It does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers the non-regression cases. `compiler/src/__tests__/domain-contracts.test.ts` covers the wiring rejections. `docs/domain-contract-syntax.md` says the same thing.
+Lowering copies `cost` onto the action, including `cost 0`. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. A domain with no contract clauses still lowers. This check rejects a consumed event that nobody produces and that is not external, a produce of something that is not an event, and an emit the domain does not produce. It does not route events, queue work, or schedule a tick. Provenance omits empty `consumes` and `produces`. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers the non-regression cases. `compiler/src/__tests__/domain-contracts.test.ts` covers the wiring rejections. `docs/domain-contract-syntax.md` says the same thing.
 
 ## Domain budget
 
