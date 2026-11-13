@@ -1,5 +1,6 @@
-// The line walker copied under ../line-walker is the parser from before
-// this swap. parseSpeckContent calls parseSpeckDocument. This file lowers
+// The line walker copied under ../line-walker is one side. parseSpeckDocument
+// is the other, called the way parseSpeckContent calls it. parseSpeckContent
+// calls the token parser asserts that production import. This file lowers
 // both ASTs with the same lower() and compares the IR.
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,8 +9,21 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { lower } from '../ir/lower.js';
 import type { IR } from '../ir/types.js';
-import { parseSpeckContent as parseRd } from '../parser.js';
+import { setParseFile } from '../speck-part0.js';
 import { parseSpeckContent as parseWalker } from '../line-walker/parser.js';
+import { parseSpeckDocument } from '../rd-parser.js';
+
+// parseSpeckDocument reads the file name from setParseFile, which
+// parseSpeckContent sets around the call. The direct call does too,
+// so the error text is comparable.
+function parseRd(content: string, file?: string) {
+  setParseFile(file ?? '');
+  try {
+    return parseSpeckDocument(content, file);
+  } finally {
+    setParseFile('');
+  }
+}
 
 const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..');
 
