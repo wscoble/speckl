@@ -72,6 +72,30 @@ describe('each contract syntax clause', () => {
     expect(() => parseSpeckContent(domain('produces ;'))).toThrow(/produces has no event/);
   });
 
+  it('rejects consumes with no event', () => {
+    expect(() => parseSpeckContent(domain('consumes ;'))).toThrow(/consumes has no event/);
+  });
+
+  it('rejects an event name that is not an identifier', () => {
+    expect(() => parseSpeckContent(domain('consumes A-B;'))).toThrow(/not an event name/);
+  });
+
+  it('rejects a budget that is not an integer', () => {
+    expect(() => parseSpeckContent(domain('budget 1.5 per tick;'))).toThrow(/non-negative integer per tick/);
+  });
+
+  it('keeps cost := as an assignment', () => {
+    const ast = parseSpeckContent('speck A {\n    action Go { cost := 1 }\n}\n');
+    const action = ast.specks[0].members.find(m => m.type === 'action');
+    expect(action && action.type === 'action' && action.statements.some(s => s.type === 'assign')).toBe(true);
+    expect(action && action.type === 'action' && action.statements.some(s => s.type === 'cost')).toBe(false);
+  });
+
+  it('ignores a comment between contract clauses', () => {
+    const ast = parseSpeckContent('domain D {\n    members: A;\n    // not a clause\n    consumes PaymentReceived;\n}\n');
+    expect(ast.domains![0].consumes).toEqual(['PaymentReceived']);
+  });
+
   it('skips cost while lowering and does not store it on the action', () => {
     const source = `speck A {
     state { n: Nat }
