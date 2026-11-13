@@ -238,6 +238,19 @@ import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 Version pinning is optional for local development and required for Specks
 with `review: manual` or `review: hybrid`.
 
+### 2.8.1 Domain blocks
+
+A file may declare a domain block. The block is not a speck, and it is not a member of a speck.
+
+```
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+```
+
+`members` is required. Each name is text. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed `"` or `'` string does not end the block or the clause. A `//` comment inside the block is not a clause. A hyphenated domain name and a hyphenated member name are accepted. An unclosed block whose source has no `}` is `missing final "}"` from the brace check, which runs before this scanner. A `}` after an unclosed quote is counted by that check, and this scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick. It does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each of those cases.
+
 ### 2.9 Expression Operators
 
 Binary operators, from loosest to tightest binding:
