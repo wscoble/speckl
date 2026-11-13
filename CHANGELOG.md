@@ -14,8 +14,6 @@ alias.
 
 ### Added
 
-- **File-level domain blocks.** `domain Name { members: A, B; language: "..."; }` groups speck names. It is not a speck member. `language` is optional. A member named twice, a speck in two domains, an unknown member, and the same domain name twice are `domain:` errors. `compileSpec` throws those before it writes a generated file. An imported file's domains are merged. A domain member's `effect act` tool must be a `map` target in every harness block; `speckl doctor` reports one that is not. A domain member's provenance graph gains a `prov:Collection` with `prov:hadMember`. `compiler/src/__tests__/domain.test.ts` covers each of these.
-
 - **Comment- and string-aware brace scan.** Brace counts skip a `{` or `}`
   inside a finished `"` string, a `//` comment, or a `/* */` comment, so
   that brace cannot end a speck, a member, an `if`, or a `for`. The same
