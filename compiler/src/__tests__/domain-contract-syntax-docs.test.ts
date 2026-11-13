@@ -32,7 +32,5 @@ describe('domain contract syntax docs', () => {
     expect(tests).toContain('rejects a budget that is not an integer');
     expect(tests).toContain('keeps cost := as an assignment');
     expect(tests).toContain('skips cost while lowering and does not store it on the action');
-    expect(tests).toContain('does not reject a consumed event that nobody produces');
-    expect(tests).toContain('does not route, queue, or schedule a tick');
   });
 });

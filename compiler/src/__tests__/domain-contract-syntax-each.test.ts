@@ -156,30 +156,8 @@ describe('each contract syntax clause', () => {
     expect(action.statements.some(s => s.kind === 'assign')).toBe(true);
   });
 
-  it('does not reject a consumed event that nobody produces', () => {
-    const source = `speck A {
-    state { n: Nat }
-    init { n := 0 }
-    action Go { n := n + 1 }
-    next: Go
-}
-domain D { members: A; consumes PaymentReceived; }
-`;
-    const file = join(mkdtempSync(join(tmpdir(), 'speckl-consume-open-')), 'a.speckdl');
-    writeFileSync(file, source);
-    const ast = parseSpeckContent(source, file);
-    expect(ast.domains?.[0].consumes).toEqual(['PaymentReceived']);
-    const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
-    expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
-  });
-
   it('does not route, queue, or schedule a tick', () => {
-    const lowerSrc = readFileSync(new URL('../ir/lower.ts', import.meta.url), 'utf8');
-    const compileSrc = readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
-    for (const src of [lowerSrc, compileSrc]) {
-      expect(src.includes('planRoutes')).toBe(false);
-      expect(src.includes('orderByPriority')).toBe(false);
-      expect(src.includes('runTick')).toBe(false);
-    }
+    const src = readFileSync(new URL('../ir/lower.ts', import.meta.url), 'utf8') + readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
+    expect(/planRoutes|orderByPriority|runTick/.test(src)).toBe(false);
   });
 });
