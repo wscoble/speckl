@@ -141,6 +141,7 @@ The line walker used to accept each input below and store a program that dropped
 - An unexpected non-ASCII character outside a string or a comment. A line containing `§` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: unexpected character "§" (column 2). `→` is: Parse error at bad.speckdl:2: unexpected character "→" (column 7). Non-ASCII text inside a string or a comment is kept.
 - An identifier that starts with a digit. `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `state { t: 24h }` still parses.
 - A non-ASCII identifier. `naïve` used to be dropped, and the file parsed as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). Non-ASCII text inside a string or a comment is kept.
+- An unsupported numeric literal. `state { t: 1h30m }` used to parse as speck A whose state stored no fields. The diagnostic is: Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16). `state { t: 24h }` still parses.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
