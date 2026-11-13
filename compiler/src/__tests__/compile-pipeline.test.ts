@@ -132,6 +132,24 @@ describe('example output baseline', () => {
     const baseline = { allow: [], digests: {} as Record<string, Record<string, string>> };
     expect(() => assertExampleOutput('A.speckdl', 'all', {}, baseline)).toThrow(/A\.speckdl -t all/);
   });
+
+  it('rejects a missing baseline key', () => {
+    const baseline = { allow: [], digests: { 'B.speckdl -t all': { 'B.ts': 'pin' } } };
+    expect(() => assertExampleOutput('A.speckdl', 'all', { 'A.ts': 'pin' }, baseline)).toThrow(/A\.speckdl -t all/);
+  });
+
+  it('CI does not set SPECKL_WRITE_BASELINE', () => {
+    const ci = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    expect(ci.includes('SPECKL_WRITE_BASELINE')).toBe(false);
+    const src = readFileSync(new URL('./compile-pipeline.test.ts', import.meta.url), 'utf8');
+    expect(src).toContain("process.env.SPECKL_WRITE_BASELINE === '1'");
+  });
+
+  it('does not rewrite the hook', () => {
+    const src = readFileSync(new URL('./compile-pipeline.test.ts', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('export function assertExampleOutput'), src.indexOf('function digests'));
+    expect(fn.includes('writeFileSync')).toBe(false);
+  });
 });
 
 describe('generated output is pinned for every example', () => {
