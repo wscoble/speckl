@@ -1053,6 +1053,19 @@ describe('Camel contract output', () => {
     expect(prov).toContain('"speckl:budgetPerTick": 5');
   });
 
+  it('emits no contract class when the domain has no contract clauses', () => {
+    const root = dir();
+    const file = write(root, 'plain.speckdl', `${machine('Plain', 'n := n + 1')}
+domain Billing { members: Plain; }
+`);
+    const out = compile(file, 'camel');
+    const javaRoot = join(out, 'camel');
+    const files = readdirSync(javaRoot, { recursive: true }).map(String);
+    expect(files.some(f => f.endsWith('Contract.java'))).toBe(false);
+    const routes = readFileSync(join(javaRoot, files.find(f => f.endsWith('Routes.java'))!), 'utf8');
+    expect(routes).toContain('RouteBuilder');
+  });
+
   it('does not emit a contract class when the speck has no domain', () => {
     const root = dir();
     const file = write(root, 'plain.speckdl', machine('Plain', 'n := n + 1'));

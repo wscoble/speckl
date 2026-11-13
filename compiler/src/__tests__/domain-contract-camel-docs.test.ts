@@ -25,6 +25,7 @@ describe('Camel contract docs', () => {
 
   it('names the negative tests', () => {
     expect(tests).toContain('does not emit a contract class when the speck has no domain');
+    expect(tests).toContain('emits no contract class when the domain has no contract clauses');
     expect(tests).toContain('emits an empty contract class and does not add a runtime method');
     expect(tests).toContain('emits a comment block and a typed event class, and does not throttle');
   });
