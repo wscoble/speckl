@@ -100,6 +100,13 @@ alias.
   from `d30665709817d54e85536f899f569a874c46b2ebd3f30d14dae7ae0539188e73`
   to `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
   `compiler/review/findings-invariant-comment.txt`.
+- **Header-line close.** A `}` on the speck header ends that speck. The
+  line walker stepped past it, so `speck A { state { x: Nat } }` followed
+  by `speck B` stored B's state field on A as well as on B. A now ends on
+  line 1 with no members, and B keeps its own state. A `}` inside a string
+  is not that close. Example output does not change, so the output pin stays
+  `4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a`. See
+  `compiler/review/findings-header-close.txt`.
 - **Agent tool short form.** `tool FetchAssets effect act` infers the
   agent-facing name `fetch_assets` from its action; `tool FetchAssets ->
   custom_name effect act` specifies an alias. Effects remain required and the

@@ -102,7 +102,7 @@ describe('example corpus', () => {
     expect(agent?.awaits).toEqual(['AwaitingApproval']);
   });
 
-  it('a speck that closes on its header line still follows the line walker', () => {
+  it('a speck that closes on its header line ends there', () => {
     const alone = parseSpeckContent('speck A { state { x: Nat } }\n', 'one.speckdl');
     expect(alone.specks.map(s => ({ name: s.name, members: s.members.length, endLine: s.endLine }))).toEqual([
       { name: 'A', members: 0, endLine: 1 },
@@ -116,7 +116,7 @@ describe('example corpus', () => {
       endLine: s.endLine,
       fields: s.members.flatMap(m => m.type === 'state' ? m.variables.map(v => v.name) : []),
     }))).toEqual([
-      { name: 'A', endLine: 3, fields: [] },
+      { name: 'A', endLine: 1, fields: [] },
       { name: 'B', endLine: 4, fields: [] },
     ]);
   });

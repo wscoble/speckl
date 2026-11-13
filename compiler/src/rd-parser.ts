@@ -19,7 +19,6 @@ import {
   parseMultiLineConstraintVerify, expressionSpanEnd, unsupportedVerify, parseNextRelation,
 } from './parser.js';
 import { SpeckToken, lexSpeck, parseErrorAt } from './speck-lex.js';
-import { parseSpeck as walkSpeck } from './speck-part1.js';
 
 const BLOCK_STARTERS = [
   'state:', 'init:', 'action ', 'event ', 'provenance ', 'bom ', 'interface ',
@@ -77,18 +76,6 @@ function parseSpeckStrict(content: string, filePath?: string): AST {
     }
 
     if (/^speck\s+\S/.test(line) && /^speck\s+\S/.test(code)) {
-      const headerBrace = (byLine[i + 1] ?? []).find(t => t.kind === '{');
-      const headerClose = headerBrace ? matchingClose(lexed.tokens, headerBrace) : undefined;
-      // The line walker stepped one line after a header and parsed the next
-      // `speck` again. Keep that result. A later change stops on this line.
-      if (headerClose && headerClose.line === i + 1) {
-        const walked = walkSpeck(lines, i);
-        if (walked) {
-          specks.push(walked);
-          i++;
-          continue;
-        }
-      }
       const speck = parseSpeck(content, lines, lexed.tokens, byLine, i, filePath);
       if (!speck) {
         throw parseErrorAt(filePath, i + 1, columnOf(lines[i]), `unrecognized top-level "${line}"`);
@@ -132,8 +119,24 @@ function parseSpeck(content: string, lines: string[], tokens: SpeckToken[], byLi
 
   const headerBrace = (byLine[start + 1] ?? []).find(t => t.kind === '{');
   const speckClose = headerBrace ? matchingClose(tokens, headerBrace) : undefined;
-  // A `}` on the header line does not stop the walk. The line walker also
-  // kept going. A later change stops on this line.
+  // The speck's `}` is on the header line. The line walker also skipped
+  // members packed on that line and then kept going, so a following speck
+  // was parsed twice. Stop on this line.
+  if (speckClose && speckClose.line === start + 1) {
+    return {
+      type: 'speck', name, members,
+      startLine: start + 1,
+      endLine: start + 1,
+      protoPackage: metadata.protoPackage,
+      goPackage: metadata.goPackage,
+      eventSuffix: metadata.eventSuffix,
+      version: metadata.version,
+      author: metadata.author,
+      license: metadata.license,
+      k8sGroup: metadata.k8sGroup,
+      k8sVersion: metadata.k8sVersion,
+    };
+  }
   // Actions declared anywhere in the speck decide which side of `tool`
   // is the action, including an action that appears after the agent block.
   const actionScanEnd = speckClose ? speckClose.line - 1 : lines.length;
