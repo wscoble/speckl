@@ -1,8 +1,9 @@
 // `domain Name { members: ...; language: ... }`.
 // The body may span lines. `members` is required. `language` is optional.
-// A `}` inside a `"` or `'` string does not end the block. The strict
-// brace check still runs first, so a domain that never closes is
-// `missing final "}"` before this scanner reports `unclosed domain`.
+// A `}` inside a closed `"` or `'` string does not end the block. The
+// brace check runs first. A domain whose source has no `}` at all is
+// `missing final "}"`. A `}` after an unclosed quote is counted by that
+// check, and this scanner then reports `unclosed domain`.
 // This parses the block. It does not check that a member names a speck.
 // It does not route events, queue work, or schedule a tick.
 
