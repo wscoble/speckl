@@ -1,5 +1,7 @@
-// speckl doctor: a domain member's `effect act` tool must be a `map` target
-// in every harness block on that speck. Observe tools are not checked.
+// speckl doctor: an effect act tool with no harness block fails
+// (`not mapped in a harness block`). A harness block that does not map
+// that tool fails too. Zero harnesses is a failure, not a pass.
+// Observe tools are not checked.
 // A speck that is not a domain member is not checked. A domain error from
 // lower, including a consumes/produces contract that cannot be wired, is
 // reported as-is. A file that cannot be read or parsed fails closed.
