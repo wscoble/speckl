@@ -207,12 +207,7 @@ domain D { members: A; consumes PaymentReceived; }
   });
 
   it('does not route, queue, or schedule a tick', () => {
-    const lowerSrc = readFileSync(new URL('../ir/lower.ts', import.meta.url), 'utf8');
-    const compileSrc = readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
-    for (const src of [lowerSrc, compileSrc]) {
-      expect(src.includes('planRoutes')).toBe(false);
-      expect(src.includes('orderByPriority')).toBe(false);
-      expect(src.includes('runTick')).toBe(false);
-    }
+    const src = readFileSync(new URL('../ir/lower.ts', import.meta.url), 'utf8') + readFileSync(new URL('../compile.ts', import.meta.url), 'utf8');
+    expect(/planRoutes|orderByPriority|runTick/.test(src)).toBe(false);
   });
 });
