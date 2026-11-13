@@ -1,14 +1,26 @@
 // Domain consumes/produces contracts, per-action cost, and budget per tick.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
 import { lower } from '../ir/lower.js';
 import { compileSpec } from '../compile.js';
 import { doctorFile } from '../doctor.js';
 import { generateProvenanceFromIR } from '../generators/provenance-from-ir.js';
+import { generateDomainBudgets, sealBudgetSmt } from '../generators/z3-budget.js';
+import { injectSignalActions } from '../generators/agent/inject-signals.js';
+// @ts-expect-error untyped helper shared with the verifier
+import { judge, accountObligations } from '../../scripts/lib/obligations.mjs';
+
+const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const viteNode = join(compilerDir, 'node_modules', 'vite-node', 'vite-node.mjs');
+const indexTs = join(compilerDir, 'src', 'index.ts');
+const verifyScript = join(compilerDir, 'scripts', 'verify-z3.mjs');
+const hasZ3 = spawnSync('z3', ['--version']).status === 0;
 
 beforeAll(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -42,6 +54,16 @@ function compile(file: string, target: 'z3' | 'camel' | 'all' | 'all-ir' = 'z3',
   const out = join(path.dirname(file), 'out-' + target + '-' + depth);
   compileSpec(file, { outputDir: out, target, bomFormat: 'both', verifyDepth: depth });
   return out;
+}
+
+function runZ3(smt: string): { verdict: { status: string; obligations: { got?: string; expect?: string }[] }; model: string } {
+  const res = spawnSync('z3', ['-smt2', '-in', '-T:20'], { input: smt, encoding: 'utf-8' });
+  const verdict = judge(smt, res.stdout ?? '', res.stderr ?? '');
+  const model = spawnSync('z3', ['-smt2', '-in', '-T:20'], {
+    input: smt.replace(/\(check-sat\)/, '(check-sat)\n(get-model)'),
+    encoding: 'utf-8',
+  });
+  return { verdict, model: (model.stdout ?? '') + (model.stderr ?? '') };
 }
 
 function machine(name: string, actionBody: string, extra = '', next = 'Go'): string {
@@ -331,6 +353,641 @@ domain D { members: A; consumes Tick; }
   });
 });
 
+describe('budget obligation', () => {
+  function budgetFile(out: string, name: string): string {
+    return readFileSync(join(out, `${name}.budget.smt2`), 'utf8');
+  }
+
+  it('proves an in-budget tick and records the obligation on the IR backend as unchecked', () => {
+    const root = dir();
+    const file = write(root, 'Under.speckdl', `${machine('Meter', 'cost 3\n        require n < 2\n        n := n + 1')}
+domain Books { members: Meter; budget 3 per tick; }
+`);
+    const out = compile(file, 'z3', 4);
+    const smt = budgetFile(out, 'Books');
+    expect(smt).toMatch(/speckl-obligation: Books\.budget/);
+    expect(smt).toMatch(/speckl-expect: unsat/);
+    expect(smt).not.toMatch(/\(throttle|circuitBreaker/);
+    const ir = readFileSync(join(out, 'Books.budget.ir.smt2'), 'utf8');
+    expect(ir).toMatch(/speckl-unchecked: Books\.budget: IR backend does not unroll/);
+    expect(ir).not.toMatch(/\(check-sat/);
+    if (!hasZ3) return;
+    const { verdict } = runZ3(smt);
+    expect(verdict.status).toBe('OK');
+    expect(verdict.obligations[0].got).toBe('unsat');
+    const files = readdirSync(out).filter(f => f.endsWith('.smt2')).map(f => {
+      const text = readFileSync(join(out, f), 'utf8');
+      const judged = text.includes('(check-sat') ? judge(text, spawnSync('z3', ['-smt2', '-in', '-T:20'], { input: text, encoding: 'utf-8' }).stdout ?? '', '') : { obligations: [] };
+      return { smt: text, obligations: judged.obligations };
+    });
+    const acc = accountObligations(files);
+    expect(acc.proven).toContain('Books.budget');
+    expect(acc.unchecked.map((u: { key: string }) => u.key)).not.toContain('Books.budget');
+  });
+
+  it('fails an over-budget tick with a model that names the tick cost', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    const file = write(root, 'Over.speckdl', `${machine('Meter', 'cost 4\n        n := n + 1')}
+domain Books { members: Meter; budget 3 per tick; }
+`);
+    const smt = budgetFile(compile(file, 'z3', 3), 'Books');
+    const { verdict, model } = runZ3(smt);
+    expect(verdict.status).toBe('VIOLATED');
+    expect(verdict.obligations[0].expect).toBe('unsat');
+    expect(verdict.obligations[0].got).toBe('sat');
+    expect(model).toMatch(/tick_cost/);
+    expect(model).toMatch(/Meter_choice/);
+  });
+
+  it('treats cost 0 as a real cost, and a budget with no costs as unchecked', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    const zero = write(root, 'Zero.speckdl', `${machine('Meter', 'cost 0\n        n := n')}
+domain Books { members: Meter; budget 0 per tick; }
+`);
+    const proved = runZ3(budgetFile(compile(zero, 'z3', 2), 'Books'));
+    expect(proved.verdict.obligations[0].got).toBe('unsat');
+
+    const bare = write(root, 'Bare.speckdl', `${machine('Meter', 'n := n + 1')}
+domain Books { members: Meter; budget 10 per tick; }
+`);
+    const text = budgetFile(compile(bare, 'z3', 2), 'Books');
+    expect(text).toMatch(/speckl-unchecked: Books\.budget: action Meter\.Go has no cost/);
+    expect(text).not.toMatch(/\(check-sat/);
+    const ir = load(bare);
+    expect(ir.domains![0].budgetPerTick).toBe(10);
+    expect(ir.specks[0].facets.behavior.actions[0].cost).toBeUndefined();
+  });
+
+  it('sums members, ignores an action that is not in next, and ignores a guard that is never enabled', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    const summed = write(root, 'Sum.speckdl', `
+${machine('A', 'cost 6\n        n := n')}
+${machine('B', 'cost 6\n        n := n')}
+domain Books { members: A, B; budget 10 per tick; }
+`);
+    expect(runZ3(budgetFile(compile(summed, 'z3', 2), 'Books')).verdict.obligations[0].got).toBe('sat');
+
+    const each = write(root, 'Each.speckdl', `
+${machine('A', 'cost 6\n        n := n')}
+domain Books { members: A; budget 10 per tick; }
+`);
+    expect(runZ3(budgetFile(compile(each, 'z3', 2), 'Books')).verdict.obligations[0].got).toBe('unsat');
+
+    const parked = write(root, 'Parked.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Cheap {
+        cost 1
+        n := n
+    }
+    action Dear {
+        cost 100
+        n := n
+    }
+    next: Cheap
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    expect(runZ3(budgetFile(compile(parked, 'z3', 2), 'Books')).verdict.obligations[0].got).toBe('unsat');
+
+    const asleep = write(root, 'Asleep.speckdl', `${machine('Meter', 'cost 100\n        require n < 0\n        n := n')}
+domain Books { members: Meter; budget 1 per tick; }
+`);
+    expect(runZ3(budgetFile(compile(asleep, 'z3', 3), 'Books')).verdict.obligations[0].got).toBe('unsat');
+  });
+
+  it('does not prove a cost that is only enabled past the BMC depth', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    const src = `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Inc {
+        cost 1
+        require n < 3
+        n := n + 1
+    }
+    action Boom {
+        cost 100
+        require n >= 3
+        n := n
+    }
+    next: Inc | Boom
+}
+domain Books { members: Meter; budget 10 per tick; }
+`;
+    const file = write(root, 'Depth.speckdl', src);
+    expect(runZ3(budgetFile(compile(file, 'z3', 1), 'Books')).verdict.obligations[0].got).toBe('unsat');
+    expect(runZ3(budgetFile(compile(file, 'z3', 4), 'Books')).verdict.obligations[0].got).toBe('sat');
+  });
+
+  it('is unchecked without next, with a string state, with an if, and for a synthetic signal action', () => {
+    const root = dir();
+    const noNext = write(root, 'NoNext.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+        cost 1
+        n := n
+    }
+}
+domain Books { members: Meter; budget 1 per tick; }
+`);
+    expect(budgetFile(compile(noNext), 'Books')).toMatch(/no next relation/);
+
+    const str = write(root, 'Str.speckdl', `speck Meter {
+    state { label: String }
+    init { label := "a" }
+    action Go {
+        cost 1
+        label := "b"
+    }
+    next: Go
+}
+domain Books { members: Meter; budget 1 per tick; }
+`);
+    expect(budgetFile(compile(str), 'Books')).toMatch(/sort the budget check does not lower/);
+
+    const branched = write(root, 'If.speckdl', `${machine('Meter', 'cost 1\n        if n > 0 { n := 1 }')}
+domain Books { members: Meter; budget 1 per tick; }
+`);
+    expect(budgetFile(compile(branched), 'Books')).toMatch(/cannot lower/);
+
+    const agent = write(root, 'Agent.speckdl', `speck Mini {
+    state { stage: Nat }
+    init { stage := 0 }
+    action Go {
+        cost 1
+        require stage == 0
+        stage := 1
+    }
+    action Peek {
+        cost 0
+        return true
+    }
+    agent {
+        stages stage {
+            Idle = 0
+            AwaitingReview = 1
+            Approved = 2
+            Rejected = 3
+        }
+        tool go -> Go effect act
+        tool peek -> Peek effect observe
+        await AwaitingReview {
+            signal review
+            mode near
+            require outcome in { approve, reject! }
+            require claims { reviewer: String }
+            on approve -> Approved
+            on reject -> Rejected
+            timeout 24h -> reject
+        }
+    }
+    next: Go | Peek
+}
+domain Ops { members: Mini; budget 5 per tick; }
+`);
+    const text = budgetFile(compile(agent), 'Ops');
+    expect(text).toMatch(/speckl-unchecked: Ops\.budget: action Mini\.__signal_/);
+    const ast = injectSignalActions(parseSpeckFile(agent));
+    const names = ast.specks[0].members.filter(m => m.type === 'action').map(m => m.type === 'action' ? m.name : '');
+    expect(names.some(n => n.startsWith('__signal_'))).toBe(true);
+  });
+
+  it('turns a dropped SMT form into an unchecked marker', () => {
+    const text = sealBudgetSmt('(assert (not_a_real_function 1))\n; speckl-expect: unsat\n(check-sat)\n', 'Books.budget');
+    expect(text).toMatch(/speckl-unchecked: Books\.budget:/);
+    expect(text).not.toMatch(/\(check-sat/);
+  });
+
+  it('proves a budget declared on an imported domain', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    write(root, 'lib.speckdl', `${machine('Meter', 'cost 1\n        n := n + 1')}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const file = write(root, 'root.speckdl', 'import "lib.speckdl"\n');
+    const smt = budgetFile(compile(file, 'z3', 2), 'Books');
+    expect(runZ3(smt).verdict.obligations[0].got).toBe('unsat');
+  });
+});
+
+describe('adversarial contracts and budgets', () => {
+  function reason(src: string, domain = 'Books'): string {
+    const root = dir();
+    const file = write(root, 'c.speckdl', src);
+    return readFileSync(join(compile(file), `${domain}.budget.smt2`), 'utf8');
+  }
+
+  it('rejects budgets the tick encoding cannot lower, and keeps a clean SMT file', () => {
+    const head = `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+`;
+    const tail = `
+    next: Go
+}
+domain Books { members: Meter; budget 1 per tick; }
+`;
+    expect(reason(`${head}    action Go(n: Nat) {\n        cost 1\n        n := 1\n    }${tail}`)).toMatch(/parameter n collides with a state variable/);
+    expect(reason(`${head}    action Go(s: String) {\n        cost 1\n        n := n\n    }${tail}`)).toMatch(/parameter s has a sort the budget check does not lower/);
+    expect(reason(`speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action A(x: Nat) {
+        cost 1
+        n := n
+    }
+    action B(x: Bool) {
+        cost 1
+        n := n
+    }
+    next: A | B
+}
+domain Books { members: Meter; budget 4 per tick; }
+`)).toMatch(/does not match an earlier parameter/);
+    expect(reason(`${head}    action Go {\n        cost 1\n        missing := 1\n    }${tail}`)).toMatch(/assignment to missing cannot be lowered/);
+    expect(reason(`${head}    action Go {\n        cost 1\n        n := 1\n        n := 2\n    }${tail}`)).toMatch(/assigns n more than once/);
+    expect(reason(`${head}    action Go {\n        cost 1\n        let x := 1\n    }${tail}`)).toMatch(/cannot lower/);
+    expect(reason(`${head}    action Go {\n        cost 1\n        require n == "a"\n        n := n\n    }${tail}`)).toMatch(/guard of Meter.Go cannot be lowered/);
+    expect(reason(`${head}    action Go {\n        cost 1\n        n := n.foo\n    }${tail}`)).toMatch(/assignment in Meter.Go cannot be lowered/);
+    expect(reason(`${head}    action Go {\n        cost 1\n        for v in n { n := 1 }\n    }${tail}`)).toMatch(/cannot lower/);
+    expect(reason(`speck Meter {
+    state { n: Nat | null }
+    init { n := 0 }
+    action Go {
+        cost 1
+        n := n
+    }
+    next: Go
+}
+domain Books { members: Meter; budget 1 per tick; }
+`)).toMatch(/sort the budget check does not lower/);
+    expect(reason(`speck Meter {
+    state { n: Nat }
+    init { missing := 1 }
+    action Go {
+        cost 1
+        n := n
+    }
+    next: Go
+}
+domain Books { members: Meter; budget 1 per tick; }
+`)).toMatch(/init of Meter.missing is not a state variable/);
+    expect(() => reason(`speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+        cost 1
+        n := n
+    }
+    next: Missing
+}
+domain Books { members: Meter; budget 1 per tick; }
+`)).toThrow(/unknown action/);
+
+    const kept = sealBudgetSmt('; speckl-expect: unsat\n(check-sat)\n', 'Books.budget');
+    expect(kept).toMatch(/\(check-sat\)/);
+    expect(kept).not.toMatch(/speckl-unchecked/);
+  });
+
+  it('proves a Bool state, a Nat with no init, and an empty member list', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    const boolFile = write(root, 'Bool.speckdl', `speck Meter {
+    state { flag: Bool }
+    init { flag := false }
+    action Go {
+        cost 1
+        flag := true
+    }
+    next: Go
+}
+domain Books { members: Meter; budget 1 per tick; }
+`);
+    expect(runZ3(readFileSync(join(compile(boolFile, 'z3', 2), 'Books.budget.smt2'), 'utf8')).verdict.obligations[0].got).toBe('unsat');
+
+    const bare = write(root, 'BareNat.speckdl', `speck Meter {
+    state { n: Nat }
+    action Go {
+        cost 1
+        n := n
+    }
+    next: Go
+}
+domain Books { members: Meter; budget 1 per tick; }
+`);
+    const bareSmt = readFileSync(join(compile(bare, 'z3', 2), 'Books.budget.smt2'), 'utf8');
+    expect(bareSmt).toMatch(/>= Meter__n_0 0/);
+    expect(runZ3(bareSmt).verdict.obligations[0].got).toBe('unsat');
+
+    const real = write(root, 'Real.speckdl', `speck Meter {
+    state { r: Real }
+    init { r := 1 }
+    action Go {
+        cost 2
+        r := r
+    }
+    next: Go
+}
+domain Books { members: Meter; budget 2 per tick; }
+`);
+    expect(runZ3(readFileSync(join(compile(real, 'z3', 2), 'Books.budget.smt2'), 'utf8')).verdict.obligations[0].got).toBe('unsat');
+
+    const out = join(root, 'direct');
+    mkdirSync(out);
+    const emptyAst = { specks: [], imports: [], domains: [] };
+    generateDomainBudgets(emptyAst, [{
+      name: 'Empty', members: [], consumes: [], produces: [], budgetPerTick: 0, sourcePath: 'x',
+    }], out, 0);
+    const emptySmt = readFileSync(join(out, 'Empty.budget.smt2'), 'utf8');
+    expect(emptySmt).toMatch(/Bounded model checking depth: 1/);
+    expect(runZ3(emptySmt).verdict.obligations[0].got).toBe('unsat');
+
+    generateDomainBudgets(emptyAst, [{
+      name: 'Bad', members: ['Missing'], consumes: [], produces: [], budgetPerTick: -1, sourcePath: 'x',
+    }], out, 2);
+    expect(readFileSync(join(out, 'Bad.budget.smt2'), 'utf8')).toMatch(/budget is not a non-negative integer/);
+
+    const ast = parseSpeckContent(`speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+        cost 1
+        n := n
+    }
+    next: Go
+}
+`);
+    const action = ast.specks[0].members.find(m => m.type === 'action');
+    if (action && action.type === 'action') action.statements.push({ type: 'cost', amount: 3 });
+    generateDomainBudgets(ast, [{
+      name: 'Books', members: ['Meter'], consumes: [], produces: [], budgetPerTick: 1, sourcePath: 'x',
+    }], out, 2);
+    expect(readFileSync(join(out, 'Books.budget.smt2'), 'utf8')).toMatch(/declares cost more than once/);
+    generateDomainBudgets(ast, [{
+      name: 'Gone', members: ['Nope'], consumes: [], produces: [], budgetPerTick: 1, sourcePath: 'x',
+    }], out, 2);
+    expect(readFileSync(join(out, 'Gone.budget.smt2'), 'utf8')).toMatch(/member Nope is not in this compilation/);
+    const missingNext = parseSpeckContent(`speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+        cost 1
+        n := n
+    }
+    next: Missing
+}
+`);
+    generateDomainBudgets(missingNext, [{
+      name: 'Books', members: ['Meter'], consumes: [], produces: [], budgetPerTick: 1, sourcePath: 'x',
+    }], out, 2);
+    expect(readFileSync(join(out, 'Books.budget.smt2'), 'utf8')).toMatch(/unknown action/);
+  });
+
+  it('compares list and nullable event shapes, and copies a foreign event into the Camel unit', () => {
+    const root = dir();
+    const clash = write(root, 'clash.speckdl', `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    event Tick { xs: List<Nat> }
+}
+speck B {
+    state { n: Nat }
+    init { n := 0 }
+    event Tick { xs: List<Bool> }
+}
+domain D { members: A; consumes Tick; }
+`);
+    expect(errorsOf(clash).join('\n')).toMatch(/event Tick is declared with different fields/);
+
+    const same = write(root, 'same.speckdl', `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    event Tick { xs: List<Nat> | null }
+}
+speck B {
+    state { n: Nat }
+    init { n := 0 }
+    event Tick { xs: List<Nat> | null, ys: Map<Nat, Bool> }
+}
+domain D { members: A; consumes Tick; }
+`);
+    const sameErrors = errorsOf(same).join('\n');
+    expect(sameErrors).toMatch(/different fields/);
+    expect(sameErrors).toMatch(/no domain produces/);
+
+    const file = write(root, 'foreign.speckdl', `speck Other {
+    state { n: Nat }
+    init { n := 0 }
+    event Note { n: Nat }
+}
+speck Book {
+    state { n: Nat }
+    init { n := 0 }
+    action Go {
+        cost 1
+        n := n
+        emit Note { n: n }
+    }
+    next: Go
+}
+domain Trading {
+    members: Book;
+    produces Note;
+    budget 3 per tick;
+}
+`);
+    expect(errorsOf(file)).toEqual([]);
+    const out = compile(file, 'camel');
+    const files = readdirSync(join(out, 'camel'), { recursive: true }).map(String);
+    const note = files.find(f => f.endsWith('Note.java'));
+    const contract = files.find(f => f.endsWith('TradingContract.java'));
+    expect(note).toBeTruthy();
+    const noteSrc = readFileSync(join(out, 'camel', note!), 'utf8');
+    expect(noteSrc).toContain('public class Note');
+    expect(noteSrc).toContain('Speckl domain contract: Trading');
+    expect(noteSrc).toContain('Book.Go = 1');
+    expect(readFileSync(join(out, 'camel', contract!), 'utf8')).toContain('consumes: none');
+    const routes = readFileSync(join(out, 'camel', files.find(f => f.endsWith('BookRoutes.java'))!), 'utf8');
+    expect(routes).not.toMatch(/throttle|circuitBreaker/);
+  });
+});
+
+describe('parameterised budget soundness', () => {
+  function spec(body: string, budget = 5): string {
+    return `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+${body}    next: Inc | Big
+}
+domain Books { members: Meter; budget ${budget} per tick; }
+`;
+  }
+
+  it('is violated when two actions need different values of the same parameter', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    const shared = write(root, 'Shared.speckdl', spec(`    action Inc(x: Nat) {
+        cost 1
+        require x < 2
+        n := n + 1
+    }
+    action Big(x: Nat) {
+        cost 100
+        require x > 5
+        require n >= 3
+    }
+`));
+    const stepped = write(root, 'Stepped.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Set(v: Nat) {
+        cost 1
+        require v == n + 1
+        n := v
+    }
+    action Big {
+        cost 100
+        require n >= 3
+    }
+    next: Set | Big
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const fresh = write(root, 'Fresh.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Grow(x: Nat) {
+        cost 1
+        require x > 0
+        n := n + x
+    }
+    action Prize(x: Nat) {
+        cost 100
+        require x == 0
+        require n >= 1
+    }
+    next: Grow | Prize
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const pair = write(root, 'Pair.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Inc(a: Nat, b: Nat) {
+        cost 1
+        require a < 2
+        require b == 1
+        n := n + b
+    }
+    action Big(a: Nat) {
+        cost 100
+        require a > 5
+        require n >= 2
+    }
+    next: Inc | Big
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    for (const file of [shared, stepped, fresh, pair]) {
+      const smt = readFileSync(join(compile(file, 'z3', 4), 'Books.budget.smt2'), 'utf8');
+      expect(smt, file).toMatch(/__p_/);
+      expect(smt, file).toMatch(/__e_/);
+      expect(smt, file).not.toMatch(/declare-const Meter__p_/);
+      const judged = runZ3(smt);
+      expect(judged.verdict.obligations[0].got, file + '\n' + smt).toBe('sat');
+    }
+
+    const impossible = write(root, 'NatFloor.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Big(x: Nat) {
+        cost 100
+        require x < 0
+        n := n
+    }
+    next: Big
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const floor = readFileSync(join(compile(impossible, 'z3', 3), 'Books.budget.smt2'), 'utf8');
+    expect(runZ3(floor).verdict.obligations[0].got).toBe('unsat');
+
+    const two = write(root, 'TwoParam.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Step(a: Nat, b: Nat) {
+        cost 1
+        require a == n
+        require b == 1
+        n := a + b
+    }
+    action Spend(a: Nat, b: Nat) {
+        cost 100
+        require a >= 3
+        require b == a
+        n := a + b
+    }
+    next: Step | Spend
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const twoSmt = readFileSync(join(compile(two, 'z3', 4), 'Books.budget.smt2'), 'utf8');
+    expect(twoSmt).toMatch(/Meter__Step__p_a_/);
+    expect(twoSmt).toMatch(/Meter__Step__p_b_/);
+    expect(twoSmt).toMatch(/Meter__Spend__e_a_/);
+    expect(twoSmt).toMatch(/Meter__Spend__e_b_/);
+    expect(twoSmt).not.toMatch(/speckl-unchecked/);
+    expect(runZ3(twoSmt).verdict.obligations[0].got).toBe('sat');
+
+    const holds = write(root, 'Holds.speckdl', `speck Meter {
+    state { n: Nat }
+    init { n := 0 }
+    action Inc(x: Nat) {
+        cost 1
+        require x < 10
+        n := n + 1
+    }
+    action Also(y: Nat) {
+        cost 2
+        require y == n
+        n := n + 1
+    }
+    next: Inc | Also
+}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const holdsSmt = readFileSync(join(compile(holds, 'z3', 4), 'Books.budget.smt2'), 'utf8');
+    expect(holdsSmt).toMatch(/speckl-expect: unsat/);
+    expect(holdsSmt).not.toMatch(/speckl-unchecked/);
+    expect(runZ3(holdsSmt).verdict.obligations[0].got).toBe('unsat');
+
+    const wrapper = join(root, 'speckl-bin.mjs');
+    writeFileSync(wrapper, `import { spawnSync } from 'node:child_process';
+const r = spawnSync(process.execPath, [${JSON.stringify(viteNode)}, ${JSON.stringify(indexTs)}, ...process.argv.slice(2)], { encoding: 'utf-8', cwd: ${JSON.stringify(compilerDir)} });
+process.stdout.write(r.stdout ?? '');
+process.stderr.write(r.stderr ?? '');
+process.exit(r.status ?? 1);
+`);
+    const res = spawnSync(process.execPath, [verifyScript, shared, stepped, two, holds, '--depth', '4'], {
+      encoding: 'utf-8',
+      env: { ...process.env, SPECKL_BIN: wrapper },
+    });
+    const out = (res.stdout ?? '') + (res.stderr ?? '');
+    expect(res.status, out).toBe(1);
+    expect(out).toMatch(/Shared\.speckdl \[ast\].*VIOLATED/);
+    expect(out).toMatch(/Stepped\.speckdl \[ast\].*VIOLATED/);
+    expect(out).toMatch(/TwoParam\.speckdl \[ast\].*VIOLATED/);
+    expect(out).toMatch(/Holds\.speckdl \[ast\].*unsat/);
+    expect(out).not.toMatch(/Holds\.speckdl \[ast\].*VIOLATED/);
+  }, 180_000);
+});
+
 describe('contract edges', () => {
   it('rejects a domain that names the same member twice, before writing output', () => {
     const root = dir();
@@ -350,6 +1007,42 @@ domain Billing { members: A; produces Note; }
 `);
     expect(errorsOf(file)).toEqual([]);
   });
+});
+
+describe('verifier counterexample trace', () => {
+  it('prints a counterexample for an over-budget spec and UNCHECKED for a budget with no costs', () => {
+    if (!hasZ3) return;
+    const root = dir();
+    mkdirSync(root, { recursive: true });
+    write(root, 'Over.speckdl', `${machine('Meter', 'cost 4\n        n := n + 1')}
+domain Books { members: Meter; budget 3 per tick; }
+`);
+    write(root, 'Under.speckdl', `${machine('Meter', 'cost 1\n        n := n + 1')}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    write(root, 'NoCost.speckdl', `${machine('Meter', 'n := n + 1')}
+domain Books { members: Meter; budget 5 per tick; }
+`);
+    const wrapper = join(root, 'speckl-bin.mjs');
+    writeFileSync(wrapper, `import { spawnSync } from 'node:child_process';
+const r = spawnSync(process.execPath, [${JSON.stringify(viteNode)}, ${JSON.stringify(indexTs)}, ...process.argv.slice(2)], { encoding: 'utf-8', cwd: ${JSON.stringify(compilerDir)} });
+process.stdout.write(r.stdout ?? '');
+process.stderr.write(r.stderr ?? '');
+process.exit(r.status ?? 1);
+`);
+    const res = spawnSync(process.execPath, [verifyScript, root, '--depth', '4'], {
+      encoding: 'utf-8',
+      env: { ...process.env, SPECKL_BIN: wrapper },
+    });
+    const out = (res.stdout ?? '') + (res.stderr ?? '');
+    expect(res.status, out).toBe(1);
+    expect(out).toMatch(/Over\.speckdl \[ast\].*VIOLATED/);
+    expect(out).toMatch(/counterexample state trace/);
+    expect(out).toMatch(/tick_cost=/);
+    expect(out).toMatch(/Under\.speckdl \[ast\].*unsat/);
+    expect(out).toMatch(/NoCost\.speckdl · Books\.budget: UNCHECKED/);
+    expect(out).not.toMatch(/NoCost\.speckdl.*Books\.budget: unsat/);
+  }, 180_000);
 });
 
 describe('provenance keeps a domain without a contract unchanged in shape', () => {
