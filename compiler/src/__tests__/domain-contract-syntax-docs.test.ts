@@ -8,11 +8,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', '..', '..');
 const spec = readFileSync(join(root, 'speckdl', 'SPEC.md'), 'utf8');
 const page = readFileSync(join(root, 'docs', 'domain-contract-syntax.md'), 'utf8');
+const readme = readFileSync(join(root, 'README.md'), 'utf8');
+const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');
 const tests = readFileSync(join(here, 'domain-contract-syntax-each.test.ts'), 'utf8');
 
 describe('domain contract check docs', () => {
   it('says this slice copies cost and does not invent one on a speck with no contract', () => {
-    for (const text of [spec, page]) {
+    for (const text of [spec, page, readme, changelog]) {
       expect(text).toContain('copies `cost` onto the action');
       expect(text).toContain('has no `cost` field');
       expect(text).toContain('does not route');
