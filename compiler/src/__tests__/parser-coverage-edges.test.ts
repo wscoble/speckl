@@ -36,6 +36,10 @@ describe('parser edges the examples do not reach', () => {
       ['conditions', true],
       ['status', false],
     ]);
+    const constraint = ast.specks[0].members.find(m => m.type === 'constraint') as { expr: string };
+    expect(constraint.expr).not.toContain('//');
+    expect(constraint.expr).not.toContain('/*');
+    expect(constraint.expr).toContain('"a  b"');
     expect(stripInvariantExpr('x  /* c */  >= 0 // t\n && s != "a  b"')).toContain('"a  b"');
   });
 

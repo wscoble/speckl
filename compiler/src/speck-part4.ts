@@ -1,7 +1,8 @@
-import { InitNode, InvariantMemberNode, StateNode } from './speck-part0.js';
+import { InitNode, InvariantMemberNode, StateNode, lexStart, lexProblem } from './speck-part0.js';
 import { findBlockEnd, maskCode } from './speck-part1.js';
 import { parseStateBlock } from './speck-part2.js';
 import { parseInitBlock } from './speck-part3.js';
+import { codeWithoutComments, angleUnbalanced, initStatementClosed, isInitStarter } from './speck-span.js';
 
 export function parseStateBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): StateNode {
   // Cycle 59: support `state as <MessageName> { ... }` to override the
@@ -11,19 +12,43 @@ export function parseStateBlockMultiline(lines: string[], startIndex: number, st
   const asMatch = headerLine.match(/^state\s+as\s+(\w+)\s*{/);
   const messageName = asMatch ? asMatch[1] : undefined;
 
+  // A body that closes on the header was not stored by the line walker.
+  // A later change stores that brace span.
+  const inline = inlineActionBody(headerLine);
+  if (inline !== null) {
+    const result = parseStateBlock('');
+    if (messageName !== undefined) result.messageName = messageName;
+    return result;
+  }
+
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
-  const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
-  // State blocks separate fields with commas or newlines/semicolons.
-  // Strip trailing commas (they are field separators, not continuations)
-  // then join with semicolons between complete variable declarations.
-  const cleanedLines = innerLines.map(l => l.replace(/,+\s*$/, ''));
-  const inner = cleanedLines.reduce((acc, line, i) => {
+  // Drop comments before joining. A `//` tail left in the text comments out
+  // every later line that gets concatenated onto it, so the rest of the
+  // block disappears into one field.
+  let commentState = lexStart();
+  const pieces: { text: string; hadComma: boolean }[] = [];
+  for (let li = startIndex + 1; li < endIndex; li++) {
+    const stripped = codeWithoutComments(lines[li], commentState);
+    commentState = stripped.state;
+    const trimmed = stripped.text.trim();
+    if (!trimmed) continue;
+    pieces.push({
+      text: trimmed.replace(/,+\s*$/, ''),
+      hadComma: /,\s*$/.test(trimmed),
+    });
+  }
+  const inner = pieces.reduce((acc, piece, i) => {
+    const line = piece.text;
     if (i === 0) return line;
-    const prevLine = cleanedLines[i - 1];
+    const prevLine = pieces[i - 1].text;
     // Check if this line starts a new variable declaration (name: type)
     const isNewVar = /^\w+\s*:/.test(line);
     // Check if prev line ends with a continuation character (brace or paren, NOT comma)
     const prevIsContinuation = /[{(]\s*$/.test(prevLine);
+    // A type continues onto this line when `<` `(` `[` `{` is still open,
+    // the code (not a comment) ended with `|`, or this line starts a union alternative.
+    // `x: Nat // a |` must not swallow the next field.
+    const continues = angleUnbalanced(acc) || maskCode(acc).text.trimEnd().endsWith('|') || line.startsWith('|');
     // While the accumulated text is unbalanced (a multi-line type expression,
     // e.g. `authorizationCodes: Map(AuthorizationCode, {` opening a multi-
     // line inline record), join every line until brackets balance — record
@@ -34,8 +59,14 @@ export function parseStateBlockMultiline(lines: string[], startIndex: number, st
     // declarations never contain bare operators, and `Map<Nat, Real>` ends
     // with `>` which the operator heuristic would misread as incomplete.
     if (!bracketsUnbalanced(acc)) {
+      if (continues) {
+        return pieces[i - 1].hadComma && !line.startsWith('|') ? acc + ', ' + line : acc + ' ' + line;
+      }
       if (isNewVar && !prevIsContinuation) {
         return acc + '; ' + line;
+      }
+      if (!prevIsContinuation) {
+        throw lexProblem(startIndex + 1, `unrecognized state field "${line}"`);
       }
       return acc + ' ' + line;
     }
@@ -46,7 +77,10 @@ export function parseStateBlockMultiline(lines: string[], startIndex: number, st
   return result;
 }
 
-/** True when an expression text has unbalanced brackets (type declarations). */
+/**
+ * One line of state text with comments removed, via `maskCode`.
+ * A block comment carries `state` onto the next line. `"/*"` and `"a//b"` stay.
+ */
 export function bracketsUnbalanced(text: string): boolean {
   let depth = 0;
   for (const c of maskCode(text).text) {
@@ -56,7 +90,7 @@ export function bracketsUnbalanced(text: string): boolean {
   return depth > 0;
 }
 
-/** True when an expression text has unbalanced brackets or a dangling operator. */
+/** A `<...>` generic that has not closed yet. `>` inside a string is not a closer. */
 export function exprIncomplete(text: string): boolean {
   const code = maskCode(text).text;
   let depth = 0;
@@ -68,6 +102,11 @@ export function exprIncomplete(text: string): boolean {
 }
 
 export function parseInitBlockMultiline(lines: string[], startIndex: number, startBraceCount: number): InitNode {
+  // A body that closes on the header was not stored by the line walker.
+  // A later change stores that brace span.
+  const inline = inlineActionBody(lines[startIndex].trim());
+  if (inline !== null) return parseInitBlock('');
+
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const innerLines = lines.slice(startIndex + 1, endIndex).map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('/*'));
   // Group lines into statements: a `name := ...` line starts a new
@@ -78,12 +117,22 @@ export function parseInitBlockMultiline(lines: string[], startIndex: number, sta
   const stmts: string[] = [];
   let cur: string | null = null;
   for (const raw of innerLines) {
-    if (/^\w+\s*:=/.test(raw) || cur === null) {
-      if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
-      cur = raw;
-    } else {
+    const closed = cur !== null && initStatementClosed(cur);
+    if (cur !== null && !closed) {
       cur += ' ' + raw;
+      continue;
     }
+    // `name :=`, `name ==`, `let`, and `forall` start a statement.
+    // `y = 0` and a stray line do not.
+    if (isInitStarter(raw) || cur === null) {
+      if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
+      if (cur === null && !isInitStarter(raw)) {
+        throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
+      }
+      cur = raw;
+      continue;
+    }
+    throw lexProblem(startIndex + 1, `unrecognized init line "${raw}"`);
   }
   if (cur !== null) stmts.push(cur.replace(/,\s*$/, '').trim());
   return parseInitBlock(stmts.join('\n'));
@@ -96,6 +145,8 @@ export function parseInvariantBlockMultiline(lines: string[], startIndex: number
   const firstLine = lines[startIndex].trim();
   const headerMatch = firstLine.match(/^invariant\s+([\w\s]+?)\s*\{/);
   const name = headerMatch ? headerMatch[1].trim() : `invariant_${startIndex + 1}`;
+  // Keep a trailing `//` on a code line. The line walker stored that text.
+  // A later change drops it, because it is a comment.
   const endIndex = findBlockEnd(lines, startIndex + 1, startBraceCount);
   const body = lines
     .slice(startIndex + 1, endIndex)
@@ -105,7 +156,11 @@ export function parseInvariantBlockMultiline(lines: string[], startIndex: number
   return { type: 'invariant', name, expr: body.trim() };
 }
 
-/** Keep a line break after a `//` comment so the next statement is not commented out. */
+/**
+ * Source between a block's opening `{` and its matching `}`.
+ * Comments and strings are not braces. Includes text on the header
+ * after `{` and text on the closing line before `}`.
+ */
 export function joinBlockLines(lines: string[]): string {
   let out = '';
   for (const line of lines) {
