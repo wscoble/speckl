@@ -275,6 +275,22 @@ domain Billing { members: A; produces Note; }
     expect(errorsOf(hidden).join('\n')).toMatch(/emits Hidden, which Billing does not produce/);
   });
 
+  it('rejects a consume of a name that is not an event', () => {
+    const root = dir();
+    const file = write(root, 'gone.speckdl', `${machine('A', 'n := 1', 'event Tick { price: Nat }')}
+domain Billing { members: A; consumes Gone; }
+`);
+    expect(errorsOf(file).join('\n')).toMatch(/consumes Gone, which is not an event/);
+  });
+
+  it('rejects producing an external event', () => {
+    const root = dir();
+    const file = write(root, 'ext.speckdl', `${machine('A', 'n := 1', 'event Tick external { price: Nat }')}
+domain Billing { members: A; consumes Tick; produces Tick; }
+`);
+    expect(errorsOf(file).join('\n')).toMatch(/produces Tick, which is declared external/);
+  });
+
   it('accepts an external event, and rejects producing that same event', () => {
     const root = dir();
     const ok = write(root, 'ok.speckdl', `${machine('A', 'n := 1', 'event Tick external { price: Nat }')}
@@ -1051,6 +1067,19 @@ describe('Camel contract output', () => {
     expect(prov).toContain('"speckl:consumes"');
     expect(prov).toContain('MarketTick');
     expect(prov).toContain('"speckl:budgetPerTick": 5');
+  });
+
+  it('emits no contract class when the domain has no contract clauses', () => {
+    const root = dir();
+    const file = write(root, 'plain.speckdl', `${machine('Plain', 'n := n + 1')}
+domain Billing { members: Plain; }
+`);
+    const out = compile(file, 'camel');
+    const javaRoot = join(out, 'camel');
+    const files = readdirSync(javaRoot, { recursive: true }).map(String);
+    expect(files.some(f => f.endsWith('Contract.java'))).toBe(false);
+    const routes = readFileSync(join(javaRoot, files.find(f => f.endsWith('Routes.java'))!), 'utf8');
+    expect(routes).toContain('RouteBuilder');
   });
 
   it('does not emit a contract class when the speck has no domain', () => {
