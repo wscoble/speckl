@@ -139,6 +139,7 @@ The line walker used to accept each input below and store a program that dropped
 - Code after a block comment on the same line. `/* c */ action go {` used to parse as speck A with no members. The action was dropped. The diagnostic is: Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13).
 - A CR that is not part of CRLF. `speck A {` then a state, with a bare carriage return and no line feed, used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still whitespace.
 - An unexpected non-ASCII character outside a string or a comment. A line containing `§` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: unexpected character "§" (column 2). `→` is: Parse error at bad.speckdl:2: unexpected character "→" (column 7). Non-ASCII text inside a string or a comment is kept.
+- An identifier that starts with a digit. `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `state { t: 24h }` still parses.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 

@@ -185,6 +185,19 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:2: unexpected character "→" (column 7)');
   });
 
+  it('rejects a digit name', () => {
+    const src = 'speck 9A {\n}\n';
+    expect(stored(src)).toBe('[{"name":"9A","endLine":2,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:1: identifier must not start with a digit (column 7)');
+  });
+
+  it('still parses a duration', () => {
+    const src = 'speck A {\n    state { t: 24h }\n}\n';
+    expect(message(src)).toBe('accept');
+    const parsed = parseSpeckContent(src, 'dur.speckdl');
+    expect(parsed.specks.map(s => s.name)).toEqual(['A']);
+  });
+
   it('records which rejection classes are on', () => {
     const text = readFileSync(new URL('../walker-strict.ts', import.meta.url), 'utf8');
     const start = text.indexOf('const ON');
@@ -196,7 +209,7 @@ describe('line walker rejects malformed structure', () => {
       'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
       'ascii', 'numeric', 'unclosed',
     ]);
-    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state', 'init', 'comment', 'cr', 'section']);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit']);
   });
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
