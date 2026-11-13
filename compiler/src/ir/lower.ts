@@ -47,6 +47,7 @@ import { Expr, ActionStatement } from '../expr/index.js';
 import { parseActionStatements, parseExpression, parseExpressionComplete } from '../expr/index.js';
 import { expandImports, importLinks, importsExpanded, speckSourceFile } from '../imports.js';
 import { localDomains } from './domains.js';
+import { checkEventContracts } from './event-contracts.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // Lower: AST → IR
@@ -99,6 +100,7 @@ export function lower(ast: AST, options: LowerOptions): IR {
   }
 
   const domains = localDomains(unit.domains, specks.map(s => s.name), options.filePath, diagnostics);
+  checkEventContracts(specks, domains, diagnostics);
 
   return {
     specks,
@@ -337,17 +339,21 @@ function lowerBehavior(
       const rawStmts = rawStatementsByAction.get(a.name) || [];
       // No caller lowers a signal-injected AST: the agent block's synthetic
       // __signal_* actions are added to the IR below, from the agent block.
-      // `cost` is parsed here and copied onto the action by the check slice.
-      // Skipping it keeps a fixture that uses `cost` lowerable.
+      // `cost` is action metadata, not a transition statement.
       const stmts: IRStmt[] = [];
+      let cost: number | undefined;
       for (const s of rawStmts) {
-        if (s.type === 'cost') continue;
+        if (s.type === 'cost') {
+          cost = s.amount;
+          continue;
+        }
         stmts.push(lowerStatement(s, diagnostics, speck.name));
       }
       actions.push({
         name: a.name,
         params: a.params.map(p => ({ name: p.name, type: lowerTypeExpr(p.type) })),
         statements: stmts,
+        ...(cost !== undefined ? { cost } : {}),
       });
     } else if (m.type === 'event') {
       const e = m as EventNode;
@@ -358,6 +364,7 @@ function lowerBehavior(
           type: lowerTypeExpr(f.type),
           optional: false,
         })),
+        ...(e.external ? { external: true } : {}),
       });
     }
   }

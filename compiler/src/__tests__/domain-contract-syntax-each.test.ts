@@ -136,7 +136,42 @@ describe('each contract syntax clause', () => {
     expect(ast.domains![0].consumes).toEqual(['PaymentReceived']);
   });
 
-  it('skips cost while lowering and does not store it on the action', () => {
+  it('a speck with no contract still lowers and does not invent a cost', () => {
+    const source = `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    action Go { n := n + 1 }
+    next: Go
+}
+`;
+    const file = join(mkdtempSync(join(tmpdir(), 'speckl-no-cost-')), 'a.speckdl');
+    writeFileSync(file, source);
+    const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
+    expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
+    const action = ir.specks[0].facets.behavior.actions[0];
+    expect(Object.prototype.hasOwnProperty.call(action, 'cost')).toBe(false);
+    expect(action.statements.some(s => s.kind === 'assign')).toBe(true);
+  });
+
+  it('a domain with no contract clauses still lowers', () => {
+    const source = `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    action Go { n := n + 1 }
+    next: Go
+}
+domain D { members: A; }
+`;
+    const file = join(mkdtempSync(join(tmpdir(), 'speckl-plain-domain-')), 'a.speckdl');
+    writeFileSync(file, source);
+    const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
+    expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
+    expect(ir.domains?.map(d => d.name)).toEqual(['D']);
+    expect(ir.domains?.[0].consumes).toBeUndefined();
+    expect(ir.domains?.[0].produces).toBeUndefined();
+  });
+
+  it('stores the parsed cost on the action', () => {
     const source = `speck A {
     state { n: Nat }
     init { n := 0 }
@@ -151,16 +186,24 @@ describe('each contract syntax clause', () => {
     writeFileSync(file, source);
     const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
     expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
-    const action = ir.specks[0].facets.behavior.actions[0];
-    expect(Object.prototype.hasOwnProperty.call(action, 'cost')).toBe(false);
-    expect(action.statements.some(s => s.kind === 'assign')).toBe(true);
+    expect(ir.specks[0].facets.behavior.actions[0].cost).toBe(2);
+    expect(ir.specks[0].facets.behavior.actions[0].statements.some(s => s.kind === 'assign')).toBe(true);
   });
 
-  it('does not reject a consumed event that nobody produces', () => {
-    const file = join(mkdtempSync(join(tmpdir(), 'c-')), 'a.speckdl');
-    const s = 'speck A {\n state { n: Nat }\n init { n := 0 }\n action Go { n := n }\n next: Go\n}\ndomain D { members: A; consumes X; }\n';
-    writeFileSync(file, s);
-    expect(lower(parseSpeckContent(s, file), { filePath: file, resolveImports: false }).diagnostics.some(d => d.level === 'error')).toBe(false);
+  it('rejects a consumed event that nobody produces', () => {
+    const source = `speck A {
+    state { n: Nat }
+    init { n := 0 }
+    event PaymentReceived { n: Nat }
+    action Go { n := n + 1 }
+    next: Go
+}
+domain D { members: A; consumes PaymentReceived; }
+`;
+    const file = join(mkdtempSync(join(tmpdir(), 'speckl-consume-open-')), 'a.speckdl');
+    writeFileSync(file, source);
+    const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
+    expect(ir.diagnostics.map(d => d.message).join('\n')).toMatch(/consumes PaymentReceived, which no domain produces/);
   });
 
   it('does not route, queue, or schedule a tick', () => {

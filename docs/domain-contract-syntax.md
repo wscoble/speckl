@@ -1,9 +1,11 @@
-# Domain contract syntax
+# Domain contract check
 
-This slice parses contract clauses. It does not check that a consumed event is produced. It does not route events, queue work, or schedule a tick.
+This slice copies `cost` onto the action. It does not route events, queue work, or schedule a tick.
 
-A domain may add `consumes PaymentReceived;`, `produces InvoiceIssued;`, and `budget 0 per tick;`. An empty `consumes` or `produces` is `has no event`. A name that is not an identifier is `not an event name`. The same name twice, on one clause or on a second clause, is `more than once`. A produce name is checked the same way as a consume name. A budget or a cost above the safe integer range is rejected. `budget` must be a non-negative integer followed by `per tick`. Zero is a real budget. An action may declare `cost 0`. Zero is a real cost. A negative cost, a cost that is not an integer, and a second `cost` are errors. `cost := 1` stays an assignment. While lowering, `cost` is skipped, so the action has no `cost` field.
+The parser records `cost` as a statement. This check copies that number onto the action, including `cost 0`. The parent syntax slice left `cost` unset while lowering. This slice stores it. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. A domain with no contract clauses still lowers. Storing `cost` does not drop the action's other statements.
 
-`compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers each case, including `rejects consumes with no event`, `rejects an event name that is not an identifier`, `rejects a budget that is not an integer`, `keeps cost := as an assignment`, and `skips cost while lowering and does not store it on the action`.
+The parser rejects an empty `consumes` or `produces` as `has no event`. A name that is not an identifier is `not an event name`, for a consume and for a produce. The same name twice, on one clause or on a second clause, is `more than once`. A budget or a cost with no integer, and a budget or a cost above the safe integer range, are rejected by the parser before this check runs. `cost := 1` stays an assignment.
 
-The changelog entry for this slice is not in `CHANGELOG.md`. Adding that file to this pull request puts the diff over the token cap. The sentences above are the record of this change.
+This check rejects a consumed event that nobody produces and that is not external, a produce of a name that is not an event, a produce of an external event (`declared external`, which is a different rejection), and an emit the domain does not produce. `compiler/src/__tests__/domain-contracts.test.ts` covers those rejections. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers `a speck with no contract still lowers and does not invent a cost`, `a domain with no contract clauses still lowers`, and `stores the parsed cost on the action`.
+
+The parent syntax slice left `cost` unset. `a speck with no contract still lowers and does not invent a cost` and `a domain with no contract clauses still lowers` still match that parent. `stores the parsed cost on the action` is the change in this slice.

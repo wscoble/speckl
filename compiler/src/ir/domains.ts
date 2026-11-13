@@ -63,6 +63,9 @@ export function localDomains(
       name: d.name,
       members: [...d.members],
       ...(d.language !== undefined ? { language: d.language } : {}),
+      ...(d.consumes?.length ? { consumes: [...d.consumes] } : {}),
+      ...(d.produces?.length ? { produces: [...d.produces] } : {}),
+      ...(d.budgetPerTick !== undefined ? { budgetPerTick: d.budgetPerTick } : {}),
       sourcePath,
     });
   }
