@@ -27,5 +27,8 @@ describe('example output baseline docs', () => {
     expect(tests).toContain('rejects a file the baseline does not list');
     expect(tests).toContain('rejects a target the baseline does not list');
     expect(tests).toContain('ignores an allow-listed hook file and rejects a changed artifact');
+    expect(tests).toContain('rejects a missing baseline key');
+    expect(tests).toContain('CI does not set SPECKL_WRITE_BASELINE');
+    expect(tests).toContain('does not rewrite the hook');
   });
 });
