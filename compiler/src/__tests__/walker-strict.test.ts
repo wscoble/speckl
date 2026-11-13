@@ -191,6 +191,12 @@ describe('line walker rejects malformed structure', () => {
     expect(message(src)).toBe('Parse error at bad.speckdl:1: identifier must not start with a digit (column 7)');
   });
 
+  it('rejects a non-ASCII identifier', () => {
+    const src = 'speck A {\n    naïve x\n}\n';
+    expect(stored(src)).toBe('[{"name":"A","endLine":3,"members":[]}]');
+    expect(message(src)).toBe('Parse error at bad.speckdl:2: identifier must be ASCII (column 7)');
+  });
+
   it('still parses a duration', () => {
     const src = 'speck A {\n    state { t: 24h }\n}\n';
     expect(message(src)).toBe('accept');
@@ -209,7 +215,7 @@ describe('line walker rejects malformed structure', () => {
       'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit',
       'ascii', 'numeric', 'unclosed',
     ]);
-    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit']);
+    expect(flags.filter(([, value]) => value === 'true').map(([name]) => name)).toEqual(['missing', 'extra', 'text', 'second', 'member', 'top', 'memberTail', 'braceLine', 'state', 'init', 'comment', 'cr', 'section', 'digit', 'ascii']);
   });
   it('does not treat a brace inside a string as an extra close', () => {
     const parsed = parseSpeckContent(
