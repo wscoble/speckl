@@ -96,7 +96,13 @@ export function expandImports(ast: AST, entryPath: string, options: ExpandOption
   const entryText = parsedSource(ast);
   const files = new Map<string, string>();
   if (entryText !== undefined) files.set(entryAbs, entryText);
-  const rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
+  let rootDir: string;
+  try {
+    rootDir = realpathSync(options.rootDir ? resolve(options.rootDir) : dirname(entryAbs));
+  } catch (err) {
+    const code = errno(err);
+    throw new Error(`Parse error: cannot read import root "${options.rootDir ?? dirname(entryAbs)}"${code ? ` (${code})` : ''}`);
+  }
   const rootHas = (ast.imports?.length ?? 0) > 0
     || ast.specks.some(s => s.members.some(m => m.type === 'import'));
   if (!rootHas) {
@@ -306,8 +312,14 @@ function sameInode(a: { dev: number; ino: number }, b: { dev: number; ino: numbe
 /**
  * Open `candidate` and read that fd. `realpath` of the path must stay inside
  * `rootReal` and name the same inode as the fd, before and after the read.
- * On Linux, `/proc/self/fd` is an extra check. A missing `/proc` (macOS,
- * Windows, or a stub that throws `ENOENT`) is not an error.
+ * On Linux, `/proc/self/fd` is an extra check that the fd still names `real`.
+ * A missing or unusable `/proc` is not an error. macOS and Windows have no
+ * `/proc/self/fd`, and a restricted mount can hide it. The errno values for
+ * that are `ENOENT` (the path is absent), `ENOTDIR` (a parent is not a
+ * directory), `EINVAL` (the platform rejects the path), `EACCES` or `EPERM`
+ * (this process cannot read it), and `ENOSYS` (the call is not implemented).
+ * Any other errno, including `EIO`, still throws. A `/proc` result that names
+ * a different file throws `changed while reading`.
  */
 function readViaFd(candidate: string, rootReal: string | null, specPath: string, followed = false, at?: string): { real: string; buf: Buffer } {
   let fd: number;
@@ -370,6 +382,12 @@ function assertProcAgrees(fd: number, real: string, specPath: string, at?: strin
     const via = realpathSync(`/proc/self/fd/${fd}`);
     if (via !== real) throw changedError(specPath, at);
   } catch (err) {
+    // `/proc/self/fd` is a Linux check. These errno values mean it is absent
+    // or unusable, which is normal on macOS, Windows, and a mount that hides
+    // `/proc`: ENOENT (absent), ENOTDIR (a parent is not a directory), EINVAL
+    // (the path is rejected), EACCES and EPERM (not readable here), ENOSYS
+    // (not implemented). EIO and every other code still throw. A path that
+    // resolves to a different file is `changed while reading`, above.
     if (errno(err) === 'ENOENT' || errno(err) === 'ENOTDIR' || errno(err) === 'EINVAL'
       || errno(err) === 'EACCES' || errno(err) === 'EPERM' || errno(err) === 'ENOSYS') return;
     throw err;

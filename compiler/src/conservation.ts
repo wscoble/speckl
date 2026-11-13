@@ -4,6 +4,7 @@
 // fails when this module loads and in the conservation test.
 
 import type { AST, MemberNode } from './parser.js';
+import type { IR } from './ir/types.js';
 
 export const MEMBER_NODE_TYPES = [
   'import',
@@ -34,11 +35,13 @@ export const MEMBER_NODE_TYPES = [
 
 export type MemberNodeType = typeof MEMBER_NODE_TYPES[number];
 
-// One direction: every member the parser's union names is in the table.
-// `lifecycle_metadata` is in the table and is produced with a cast, so it
-// is not part of that union yet.
-type _Listed = MemberNode['type'] extends MemberNodeType ? true : never;
-export const memberNodeTypesMatchUnion: _Listed = true;
+type _Exact =
+  MemberNode['type'] extends MemberNodeType
+    ? MemberNodeType extends MemberNode['type']
+      ? true
+      : never
+    : never;
+export const memberNodeTypesMatchUnion: _Exact = true;
 
 export const BACKENDS = [
   'typescript',
@@ -68,7 +71,7 @@ export interface CoverageCell {
 }
 
 const WIRE = 'oneof and transition are protobuf wire constructs; this backend does not emit them';
-const IMP = 'import is resolved before generation; this backend does not write the import node';
+const IMPORT_NA = 'an import is inlined before generation; the import node is not written';
 
 function cell(disposition: Disposition, reason?: string): CoverageCell {
   return reason ? { disposition, reason } : { disposition };
@@ -91,6 +94,7 @@ function row(
     if (!reason) throw new Error(`conservation: n/a ${t} needs a reason`);
     out[t] = cell('n/a', reason);
   }
+  if (!out.import) out.import = cell('n/a', IMPORT_NA);
   for (const t of MEMBER_NODE_TYPES) {
     if (!out[t]) throw new Error(`conservation: AST node type "${t}" has no backend handling`);
   }
@@ -102,7 +106,7 @@ const wireReject = { oneof: WIRE, transition: WIRE } as const;
 export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> = {
   typescript: row(
     ['verify', 'interface', 'event', 'state', 'init', 'action'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'the TypeScript machine does not declare formal-spec inputs',
       output: 'the TypeScript machine does not declare formal-spec outputs',
@@ -123,7 +127,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   z3: row(
     ['input', 'output', 'constraint', 'verify', 'state', 'init', 'action', 'invariant', 'next'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       interface: 'the SMT file does not declare enum or record sorts for interfaces',
       event: 'events are not SMT sorts',
@@ -141,7 +145,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   'z3-ir': row(
     ['input', 'output', 'constraint', 'verify', 'interface', 'event', 'state', 'init'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       provenance: 'the IR SMT file does not render provenance clauses',
       review: 'review policy is not SMT',
@@ -160,7 +164,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   rust: row(
     ['constraint', 'verify', 'interface', 'event', 'state', 'init', 'action', 'invariant'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'Rust does not declare formal-spec inputs',
       output: 'Rust does not declare formal-spec outputs',
@@ -179,7 +183,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   go: row(
     ['constraint', 'interface', 'event', 'state', 'init', 'action'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'Go does not declare formal-spec inputs',
       output: 'Go does not declare formal-spec outputs',
@@ -200,7 +204,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   elm: row(
     ['interface', 'state', 'action'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'the Elm client does not declare formal-spec inputs',
       output: 'the Elm client does not declare formal-spec outputs',
@@ -224,7 +228,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   protobuf: row(
     ['interface', 'event', 'oneof', 'transition', 'state', 'service'],
-    { import: IMP },
+    {},
     {
       input: 'protobuf is a wire schema, not a formal-spec input',
       output: 'protobuf is a wire schema, not a formal-spec output',
@@ -247,7 +251,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   k8s: row(
     ['interface', 'provenance'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'a CRD schema does not declare formal-spec inputs',
       output: 'a CRD schema does not declare formal-spec outputs',
@@ -272,7 +276,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   openapi: row(
     ['interface', 'event', 'provenance', 'service'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'OpenAPI does not declare formal-spec inputs',
       output: 'OpenAPI does not declare formal-spec outputs',
@@ -295,7 +299,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   camel: row(
     ['interface', 'event', 'state', 'init', 'action'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'Camel routes do not declare formal-spec inputs',
       output: 'Camel routes do not declare formal-spec outputs',
@@ -317,7 +321,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   agent: row(
     ['verify', 'interface', 'event', 'state', 'init', 'action', 'agent'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'agent rails do not declare formal-spec inputs',
       output: 'agent rails do not declare formal-spec outputs',
@@ -337,7 +341,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   cyclonedx: row(
     ['review', 'derives', 'satisfies', 'author', 'bom'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'a CycloneDX BOM does not list formal-spec inputs',
       output: 'a CycloneDX BOM does not list formal-spec outputs',
@@ -359,7 +363,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   spdx: row(
     ['provenance', 'review', 'derives', 'satisfies', 'author', 'source', 'bom'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'an SPDX document does not list formal-spec inputs',
       output: 'an SPDX document does not list formal-spec outputs',
@@ -379,7 +383,7 @@ export const COVERAGE: Record<BackendId, Record<MemberNodeType, CoverageCell>> =
   ),
   provenance: row(
     ['constraint', 'verify', 'interface', 'event', 'provenance', 'review', 'satisfies', 'author', 'source', 'bom'],
-    { import: IMP, ...wireReject },
+    { ...wireReject },
     {
       input: 'the PROV-O graph does not list formal-spec inputs',
       output: 'the PROV-O graph does not list formal-spec outputs',
@@ -474,10 +478,7 @@ export function guardAst(backend: BackendId, ast: AST): void {
  * list is an error: skipping it would let a direct call drop a member type
  * the table rejects. A type the table does not name is also an error.
  */
-export function guardIr(
-  backend: BackendId,
-  ir: { specks: ReadonlyArray<{ name?: string; sourceMemberTypes?: readonly string[] }> },
-): void {
+export function guardIr(backend: BackendId, ir: IR): void {
   for (const speck of ir.specks) {
     if (!speck.sourceMemberTypes) {
       throw new Error(`${backend} backend cannot check member types: sourceMemberTypes is missing on speck "${speck.name ?? ''}"`);

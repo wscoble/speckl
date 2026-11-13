@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { parseSpeckContent, parseSpeckFile } from '../parser.js';
 import { printAST } from '../printer.js';
+import { lower } from '../ir/lower.js';
 import { expandImports, verifyHash } from '../imports.js';
+import { compileSpec } from '../compile.js';
 
 function dir(): string {
   return mkdtempSync(join(tmpdir(), 'speckl-imp-'));
@@ -532,3 +534,84 @@ describe('import resolution', () => {
     expect(expandImports(parseSpeckFile(file), file).specks.map(s => s.name)).toEqual(['Root', 'A', 'C', 'B']);
   });
 });
+
+  describe('import wiring', () => {
+  it('lower uses the bytes expandImports already verified', () => {
+    const folder = dir();
+    const libSrc = 'speck Lib {\n    state { n: Nat }\n    init { n := 0 }\n    action Tick {\n        n := n + 1\n    }\n}\n';
+    const lib = write(folder, 'lib.speckdl', libSrc);
+    const pin = createHash('sha256').update(libSrc).digest('hex');
+    const entry = write(folder, 'pin.speckdl', `import "./lib.speckdl" hash "sha256:${pin}"\nspeck A {\n    state { n: Nat }\n}\n`);
+    const fs = createRequire(import.meta.url)('node:fs');
+    const orig = fs.readFileSync;
+    let reads = 0;
+    fs.readFileSync = function (p: unknown, ...rest: unknown[]) {
+      if (String(p) === lib && ++reads === 1) writeFileSync(lib, libSrc.replace('n := n + 1', 'n := n + 999'));
+      return orig.call(this, p, ...rest);
+    };
+    syncBuiltinESMExports();
+    try {
+      const ast = expandImports(parseSpeckFile(entry), entry);
+      const ir = lower(ast, { filePath: entry, resolveImports: true });
+      expect(JSON.stringify(ir.specks.find(s => s.name === 'Lib'))).not.toContain('999');
+    } finally {
+      fs.readFileSync = orig;
+      syncBuiltinESMExports();
+    }
+  });
+  it('compileSpec accepts --root as rootDir', () => {
+    const parent = dir();
+    const folder = join(parent, 'in');
+    mkdirSync(folder);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(parent, 'out');
+    expect(() => compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'both', verifyDepth: 2 })).toThrow(/outside the import root/);
+    compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'both', verifyDepth: 2, rootDir: parent });
+    expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
+  });
+  it('compiles when /proc/self/fd is missing', () => {
+    const folder = dir();
+    const file = write(folder, 'plain.speckdl', 'speck Plain {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const fs = createRequire(import.meta.url)('node:fs');
+    const orig = fs.realpathSync;
+    fs.realpathSync = function (this: unknown, p: unknown, ...rest: unknown[]) {
+      if (String(p).startsWith('/proc/self/fd/')) {
+        const e = new Error(`ENOENT: realpath '${p}'`) as NodeJS.ErrnoException;
+        e.code = 'ENOENT';
+        throw e;
+      }
+      return orig.call(this, p, ...rest);
+    };
+    syncBuiltinESMExports();
+    try {
+      compileSpec(file, { outputDir: join(folder, 'out'), target: 'typescript', bomFormat: 'cdx', verifyDepth: 2 });
+    } finally {
+      fs.realpathSync = orig;
+      syncBuiltinESMExports();
+    }
+  });
+  it('lower on a fresh parse does not reuse an earlier expand', () => {
+    const folder = dir();
+    const file = write(folder, 'st.speckdl', 'speck St {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 1\n    }\n}\n');
+    expandImports(parseSpeckFile(file), file);
+    writeFileSync(file, 'speck St {\n    state { n: Nat }\n    init { n := 0 }\n    action Go {\n        n := n + 42\n    }\n}\n');
+    expect(JSON.stringify(lower(parseSpeckFile(file), { filePath: file, resolveImports: false }))).toContain('42');
+  });
+  it('--root / reads a file outside the entry directory', () => {
+    const parent = dir();
+    const folder = join(parent, 'in');
+    mkdirSync(folder);
+    write(parent, 'out.speckdl', 'speck Out {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const file = write(folder, 'root.speckdl', 'import "../out.speckdl" as O\nspeck Root {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const out = join(parent, 'gen');
+    compileSpec(file, { outputDir: out, target: 'typescript', bomFormat: 'cdx', verifyDepth: 2, rootDir: '/' });
+    expect(readFileSync(join(out, 'Out.ts'), 'utf8')).toContain('Out');
+  });
+  it('lower with resolveImports compiles the AST it was given, not the file on disk', () => {
+    const folder = dir();
+    const file = write(folder, 'disk.speckdl', 'speck Disk {\n    state { n: Nat }\n    init { n := 0 }\n}\n');
+    const mem = parseSpeckContent('speck Mem {\n    state { m: Nat }\n    init { m := 0 }\n}\n', file);
+    expect(lower(mem, { filePath: file, resolveImports: true }).specks.map(s => s.name)).toEqual(['Mem']);
+  });
+  });

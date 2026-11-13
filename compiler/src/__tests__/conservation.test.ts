@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AST, MemberNode } from '../parser.js';
+import type { IR } from '../ir/types.js';
 import {
   BACKENDS, COVERAGE, MEMBER_NODE_TYPES, checkLineSequence, conservationLog, guardAst, guardIr, memberNodeTypesMatchUnion,
 } from '../conservation.js';
@@ -37,10 +38,10 @@ describe('backend conservation', () => {
   });
 
   it('rejects an IR speck with a missing list or an unknown member type', () => {
-    expect(() => guardIr('go', { specks: [{ name: 'S' }] })).toThrow(/sourceMemberTypes is missing on speck "S"/);
-    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: ['not-a-member'] }] })).toThrow(/no handler for AST node type "not-a-member"/);
-    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: [] }] })).not.toThrow();
-    expect(() => guardIr('go', { specks: [{ sourceMemberTypes: ['oneof'] }] })).toThrow(/rejects AST node type "oneof"/);
+    expect(() => guardIr('go', { specks: [{ name: 'S' }] } as IR)).toThrow(/sourceMemberTypes is missing on speck "S"/);
+    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: ['not-a-member'] }] } as IR)).toThrow(/no handler for AST node type "not-a-member"/);
+    expect(() => guardIr('go', { specks: [{ name: 'S', sourceMemberTypes: [] }] } as unknown as IR)).not.toThrow();
+    expect(() => guardIr('go', { specks: [{ sourceMemberTypes: ['oneof'] }] } as IR)).toThrow(/rejects AST node type "oneof"/);
   });
 
   it('names a dropped line, a duplicated line, and a reordered line', () => {
