@@ -72,7 +72,7 @@ describe('each contract syntax clause', () => {
     expect(() => parseSpeckContent(domain('produces ;'))).toThrow(/produces has no event/);
   });
 
-  it('skips cost while lowering and does not store it on the action', () => {
+  it('stores the parsed cost on the action', () => {
     const source = `speck A {
     state { n: Nat }
     init { n := 0 }
@@ -87,7 +87,7 @@ describe('each contract syntax clause', () => {
     writeFileSync(file, source);
     const ir = lower(parseSpeckContent(source, file), { filePath: file, resolveImports: false });
     expect(ir.diagnostics.filter(d => d.level === 'error')).toEqual([]);
-    expect(ir.specks[0].facets.behavior.actions[0].cost).toBeUndefined();
+    expect(ir.specks[0].facets.behavior.actions[0].cost).toBe(2);
     expect(ir.specks[0].facets.behavior.actions[0].statements.some(s => s.kind === 'assign')).toBe(true);
   });
 });
