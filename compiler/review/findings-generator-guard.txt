@@ -1,8 +1,8 @@
 Reviewer findings: direct generator check
 Question: does every behaviour that is correct on the target stay correct on this branch?
 
-Target: the previous slice. Working: generateElm calls the check. compileSpec already checked before each backend. A direct call did not.
+Target: the previous slice. Working: generateGo calls the check. compileSpec already checked before each backend. A direct call did not.
 
-No example contains oneof, except the Protobuf case which still emits it. Example output is unchanged. The CHANGELOG names the generator in this slice. That text does not change compiled output.
+No example contains oneof, except the Protobuf case which still emits it. Example output is unchanged. The CHANGELOG names the generator in this slice. The README and SPEC now say every generator calls the check, which is true on this slice because the earlier slices already added the others. That text does not change compiled output.
 
-Limits of this direct call. `verifyDepth` is printed as given, including 0 and a negative number. It is not range-checked. `next:` that names two unknown actions throws `unknown action(s): Missing, Also` and writes no SMT file. A state field named `let` is declared as `let_v`, because `let` is reserved in SMT. An invariant with no attached list is read from the AST member.
+Limits of the direct Z3 call, from the previous slice. `verifyDepth` is printed as given, including 0 and a negative number. It is not range-checked. `next:` that names two unknown actions throws `unknown action(s): Missing, Also` and writes no SMT file. A state field named `let` is declared as `let_v`, because `let` is reserved in SMT. An invariant with no attached list is read from the AST member.
