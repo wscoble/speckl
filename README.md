@@ -245,6 +245,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - [Speckl by Example](docs/speckl-by-example.md) — guided tutorial from ToggleSwitch through Raft
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
+- [Verifier plug-ins](docs/verifier-plugins.md) — writing and pinning a signal verifier; Sigstore reference plug-in in [plugins/verifier-sigstore](plugins/verifier-sigstore/)
 - [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
 
 ## Status
@@ -252,9 +253,10 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - About 700 vitest tests (run `npm test` for the current count). The real-solver Z3 cases run when `z3` is installed. `npm run coverage` enforces a floor of 88% lines/statements, 86% branches and 97% functions.
 - Compile tests run against every example (see [Compile tests](#compile-tests)). Known target failures are recorded in `examples/.speckl-compile-baseline.json`.
 - `npm run verify` compiles every example and checks it with Z3; unproven obligations are acknowledged in the baseline (see below).
-- CI (`.github/workflows/ci.yml`) runs on GitHub-hosted `ubuntu-latest` and has two jobs:
+- CI (`.github/workflows/ci.yml`) runs on GitHub-hosted `ubuntu-latest` and has three jobs:
   - **build-and-test:** build, `tsc --noEmit`, `npm test`, `npm run verify` against a pinned z3 release, and coverage with the floors above.
   - **compile-targets:** installs JDK 21, Go 1.23, stable Rust, protoc and Elm 0.19.1, then runs `npm run test:compile`.
+  - **verifier-sigstore:** offline tests and coverage for `plugins/verifier-sigstore` (the package stays private and is not published).
 - Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust, Camel
 - Round-trip property tested: parse → print → parse is identity for all examples
 - Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments

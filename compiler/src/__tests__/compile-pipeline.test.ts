@@ -100,7 +100,11 @@ describe('in-process pipeline matches the CLI', () => {
 // The AGENTS.md sentence now says the hook copies priority and kpis from the
 // tool and does not scan the action body. The previous sentence said the hook
 // reads them from the action or the domain.
-const OUTPUT_SHA256 = 'b2a6e3d2418cdd327687fd98c43aff54279f90a6092495101146d21af7ec112b';
+// Moved again when signal.mjs started pinning verifier plug-ins next to the
+// signer set. signal.mjs bytes changed, and state-integrity.mjs hashes those
+// pins in genesis. The allow list still covers the hook, state-integrity,
+// and the agent docs.
+const OUTPUT_SHA256 = '122ec90796ce396deeec4b5510eacc369844fae68f6af15f38ae6b7357794d01';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

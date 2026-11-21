@@ -9,18 +9,24 @@ signal**; anything verifiable can produce one through a pluggable verifier.
 | --- | --- | --- |
 | `file-drop` | Medium | ed25519-signed JSON file bound to a run, an expiry and a nonce. The signing key must be one pinned at `init`. Evidence = file sha256. |
 | `cli` | **DEV ONLY** | `--outcome` / `--as` / claims on the CLI. Evidence = local user + timestamp. Refused unless the state was created with `signal.mjs init --dev`. |
+| `plugin:<name>` | Depends on the plug-in | A module pinned at init. See [verifier-plugins.md](verifier-plugins.md). |
 
 Unsigned file drops (`--allow-unsigned true`) are also DEV ONLY and need an
 `init --dev` state.
 
-## Plug-in verifiers (interface only)
+## Plug-in verifiers
 
-Implement:
+Any other verifier is a plug-in module, pinned by sha256 in the signed state
+at `signal.mjs init --plugins <file>` and used with `--verifier plugin:<name>`.
+A changed, missing or misbehaving module denies. The interface, the security
+contract, a worked example and a testing checklist are in
+[verifier-plugins.md](verifier-plugins.md).
 
 ```ts
 interface SignalVerifier {
   // opts: verifier CLI options. expect: { signal, outcomes, claims, bindCall }.
-  // ctx: { runId, dev, now, usedNonces, signers? } from the state file.
+  // ctx for file-drop and cli: { runId, dev, now, usedNonces, signers? }.
+  // A plug-in receives that ctx plus { config, plugin } (config pinned at init).
   // signers is absent on a legacy state and the pinned file-drop set otherwise.
   // file-drop enforces it. A plug-in must enforce its own trust anchor;
   // signal.mjs does not re-check the signature against signers.
@@ -36,12 +42,18 @@ interface SignalVerifier {
 // only from ctx.signers.
 ```
 
+In this repository:
+
+- **Sigstore keyless** ([plugins/verifier-sigstore](../plugins/verifier-sigstore/)):
+  approvals signed with an OIDC identity through Fulcio and logged in Rekor,
+  checked with `@sigstore/verify` against an identity pinned per signal.
+- **HMAC webhook** ([examples/verifier-plugins/hmac-webhook.mjs](../examples/verifier-plugins/hmac-webhook.mjs)):
+  the worked example from the guide.
+
 Documented shapes (not shipped):
 
-- **JWT-bearing API call** — JWKS, `iss`/`aud`/`exp`, claim mapping; evidence = `jti`.
-- **OAuth flow** — authorization code → `id_token` claims.
-- **Signed API calls** — HMAC-SHA256 shared secret or ed25519 over the body.
-- **Webhooks / chat** — wrap any of the above.
+- **JWT-bearing API call**: JWKS, `iss`/`aud`/`exp`, claim mapping; evidence = `jti`.
+- **OAuth flow**: authorization code → `id_token` claims.
 
 ## Signed drops are bound to a run
 
@@ -347,8 +359,10 @@ state they can't verify. Two layers:
 1. **Hash-chained log.** Every change (`pre`, `post`, `expire`, `signal`,
    `timeout`, `clear`, `signers`) is appended to `state.log`. Each entry's
    hash covers the previous one; the first links to a genesis hash over the
-   run id, spec hash, dev flag, key id and, when the field exists, the sha256
-   of the canonical `initialSigners`. On load the log is replayed from a
+   run id, spec hash, dev flag, key id and, when each field exists, the sha256
+   of the canonical `initialSigners` and the sha256 of the canonical pinned
+   verifier plug-ins (`state.plugins`). Either field is omitted from the hash
+   when it is absent. On load the log is replayed from a
    fresh machine, and the stored machine, pending call, used nonces, applied
    evidence, current signer set, and call-bound sign-off must equal the
    replayed ones. Editing any of them, or truncating, reordering or splicing

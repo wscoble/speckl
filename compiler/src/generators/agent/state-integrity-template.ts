@@ -3,11 +3,11 @@
 // Two layers, both checked by hook.mjs and signal.mjs before they act:
 //  1. Hash-chained event log. Every state change appends an entry whose
 //     hash covers the previous hash; the genesis hash covers run id, spec
-//     hash, dev flag and (when the run recorded one) the initial sign-off
-//     signer set. The machine, the pending call, used nonces, applied
-//     evidence, the current signer set and any call-bound sign-off are
-//     re-derived by replaying the log from init and must match the stored
-//     copies.
+//     hash, dev flag, key id, any pinned verifier plug-ins and (when the
+//     run recorded one) the initial sign-off signer set. The machine, the
+//     pending call, used nonces, applied evidence, the current signer set
+//     and any call-bound sign-off are re-derived by replaying the log from
+//     init and must match the stored copies.
 //  2. HMAC-SHA256 over the whole canonical state with a key the agent
 //     cannot read (--key <file> or SPECKL_STATE_KEY_FILE). Required for
 //     non-dev states, and whenever a key is configured.
@@ -86,6 +86,9 @@ export function ensureKey(keyPath) {
 export const keyIdOf = key => sha(key).slice(0, 16);
 
 export function genesis(state) {
+  // Pinned plug-ins (module sha256 + config) are part of the genesis, so the
+  // chain breaks if they change. Omitted when there are none (canonical drops
+  // undefined), which keeps states without plug-ins unchanged.
   // initialSigners is hashed in when the field exists, so editing the set
   // the run started with breaks the chain. Omitted when absent (canonical
   // drops undefined): states created before signer pinning keep this genesis.
@@ -93,6 +96,7 @@ export function genesis(state) {
   // below, the same way the machine is.
   return sha('speckl-state-v1:' + canonical({
     run: state.runId, spec: state.specHash, dev: state.dev === true, keyId: state.keyId || null,
+    plugins: state.plugins === undefined ? undefined : sha(canonical(state.plugins)),
     initialSigners: state.initialSigners === undefined ? undefined : sha(canonical(state.initialSigners)),
   }));
 }
