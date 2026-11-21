@@ -106,7 +106,9 @@ All cryptography is done by `@sigstore/verify`:
    compares it again as a plain string.
 5. The trusted root is refused if any authority lacks a `validFor.start`.
 6. Then the same bindings as `file-drop`: `signal`, `run`, `expires`, a
-   single-use `nonce` and an allowed `outcome`.
+   single-use `nonce` and an allowed `outcome`. A `call` digest in the
+   signed drop is returned as-is (lowercased) so `signal.mjs` can require
+   it for a call-bound outcome and refuse it on every other outcome.
 
 Evidence is `sigstore:<sha256 of the bundle file>:rekor:<log index>:<entry
 uuid>`. The entry UUID is the RFC 6962 leaf hash of the entry body, without

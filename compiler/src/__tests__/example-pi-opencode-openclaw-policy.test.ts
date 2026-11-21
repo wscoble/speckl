@@ -141,7 +141,7 @@ describe('Pi wiring (real events through the generated .pi/extensions/speckl.js)
     await allow('pre-bash-npm-test');
     await posted('post-bash-npm-test-exit1');
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
-    await deny('pre-bash-git-commit', /Speckl denied bash \(spec tool request_review\): can\(\) refused/);
+    await deny('pre-bash-git-commit', /Speckl denied bash \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
 
     await allow('pre-bash-npm-test-2');
     await posted('post-bash-npm-test-2');
@@ -176,7 +176,7 @@ describe('Pi wiring (real events through the generated .pi/extensions/speckl.js)
     const f = fixture('pi', 'post-bash-npm-test-2', ctx.project);
     const r = await h.tool_result(f.event, f.ctx);
     expect(r.content[0]).toEqual(f.event.content[0]);
-    expect(r.content[1].text).toMatch(/Speckl could not record bash \(spec tool run_tests\): post: no matching pending call_id/);
+    expect(r.content[1].text).toMatch(/Speckl could not record bash \(spec tool run_tests\): Speckl denied \(internal error \(fail closed\)\): post: no matching pending call_id/);
     expect(r.structuredContent).toEqual(f.event.structuredContent);
   });
 
@@ -186,6 +186,11 @@ describe('Pi wiring (real events through the generated .pi/extensions/speckl.js)
         const r = await pre('pre-read');
         expect(r).toMatchObject({ block: true });
         expect(r.reason).toMatch(/^Speckl/);
+        if (what === 'killed') expect(r.reason).toBe('Speckl adapter failed: killed by SIGKILL');
+        if (what === 'exit1' || what === 'crash') {
+          expect(r.reason).toBe('Speckl adapter failed: exit 1');
+          expect(r.reason).not.toContain(ctx.project);
+        }
       });
     });
   }
@@ -262,7 +267,7 @@ describe('OpenCode wiring (real hook arguments through the generated .opencode/p
     await allow('pre-bash-workdir-root');
     await call('session-idle');
     expect(stateOf(ctx.project).pending).toBeNull();
-    await deny('pre-bash-git-commit', /Speckl denied bash \(spec tool request_review\): can\(\) refused/);
+    await deny('pre-bash-git-commit', /Speckl denied bash \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
 
     await allow('pre-bash-npm-test-2');
     await posted('post-bash-npm-test-2');
@@ -305,7 +310,10 @@ describe('OpenCode wiring (real hook arguments through the generated .opencode/p
   for (const [what, body] of Object.entries(BROKEN)) {
     it(`blocks when the adapter misbehaves (${what})`, async () => {
       await withAdapter(ctx.project, body, async () => {
-        await expect(call('pre-read')).rejects.toThrow(/^Speckl/);
+        const why = what === 'killed' ? /^Speckl adapter failed: killed by SIGKILL$/
+          : what === 'exit1' || what === 'crash' ? /^Speckl adapter failed: exit 1$/
+            : /^Speckl/;
+        await expect(call('pre-read')).rejects.toThrow(why);
       });
     });
   }
@@ -361,7 +369,7 @@ describe('OpenClaw wiring (real hook events through the generated .openclaw/plug
     allow('pre-exec-npm-test');
     posted('post-exec-npm-test-exit1');
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
-    deny('pre-exec-git-commit', /Speckl denied exec \(spec tool request_review\): can\(\) refused/);
+    deny('pre-exec-git-commit', /Speckl denied exec \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
     // A yielded command (details.status "running") is not a success.
     allow('pre-exec-npm-test-2');
     posted('post-exec-npm-test-yielded');
@@ -404,7 +412,7 @@ describe('OpenClaw wiring (real hook events through the generated .openclaw/plug
   it('logs a post-hook problem through api.logger.warn', () => {
     const n = h.warned().length;
     post('post-exec-git-push-2');
-    expect(h.warned().slice(n).join('\n')).toMatch(/Speckl could not record exec \(spec tool open_pr\): post: no matching pending call_id/);
+    expect(h.warned().slice(n).join('\n')).toMatch(/Speckl could not record exec \(spec tool open_pr\): Speckl denied \(internal error \(fail closed\)\): post: no matching pending call_id/);
   });
 
   for (const [what, body] of Object.entries(BROKEN)) {
@@ -413,6 +421,11 @@ describe('OpenClaw wiring (real hook events through the generated .openclaw/plug
         const r = pre('pre-read');
         expect(r).toMatchObject({ block: true });
         expect(r.blockReason).toMatch(/^Speckl/);
+        if (what === 'killed') expect(r.blockReason).toBe('Speckl adapter failed: killed by SIGKILL');
+        if (what === 'exit1' || what === 'crash') {
+          expect(r.blockReason).toBe('Speckl adapter failed: exit 1');
+          expect(r.blockReason).not.toContain(ctx.project);
+        }
       });
     });
   }

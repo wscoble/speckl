@@ -30,6 +30,7 @@ type AwaitSpec = {
   signal: string;                                // e.g. "review", or "clear-pending"
   outcomes: string[];                            // allowed outcomes, e.g. ["approve", "reject"]
   claims: { name: string }[];                    // claims the signal must carry
+  bindCall?: string[];                           // outcomes that must return signal.call
 };
 
 type VerifierContext = {
@@ -37,6 +38,7 @@ type VerifierContext = {
   dev: boolean;                                  // state created with --dev
   now: number;                                   // ms since epoch; use it, not Date.now()
   usedNonces: string[];                          // nonces already applied in this state
+  signers?: { name: string; key: string }[];     // pinned file-drop set; absent on a legacy state
   config: unknown;                               // the plug-in's config, pinned at init
   plugin: string;                                // the name it was pinned under
 };
@@ -56,6 +58,7 @@ type VerifiedSignal = {
   expires?: string;
   nonce?: string;                                // re-checked and recorded if present
   callId?: string;                               // required for clear-pending
+  call?: string;                                 // 64 hex sha256; required iff the outcome is in bindCall
   [extra: string]: unknown;                      // kept in state.signalLog
 };
 ```
@@ -66,7 +69,12 @@ the machine: the result must have exactly `ok: true` and the required fields
 one of its outcomes, and every awaited claim must be present. `run` must
 match the state if present. `nonce` must be unused if present, and
 `evidence` must not have been applied before. `verifier` is overwritten with
-`plugin:<name>`, so a plug-in can't relabel itself.
+`plugin:<name>`, so a plug-in can't relabel itself. When the outcome is
+listed in `expect.bindCall`, `signal.call` must be the 64-char sha256 of
+the canonical tool call; on every other outcome a `call` is refused.
+`signal.mjs` does not check a plug-in result against `ctx.signers`. The
+plug-in enforces its own trust anchor. `ctx.signers` is the pinned
+file-drop set when the state has one, and it is absent on a legacy state.
 
 ## Security contract
 
@@ -119,7 +127,7 @@ Plug-ins are pinned when the state is created. Write a plugins file:
 
 ```
 node signal.mjs init --state ./state.json --key /etc/speckl/state.key --plugins ./plugins.json
-# {"ok":true,...,"plugins":{"sigstore":"<sha256>"}}
+# {"ok":true,...,"signers":[...],"plugins":{"sigstore":"<sha256>"}}
 node signal.mjs apply --state ./state.json --verifier plugin:sigstore --file ./inbox/review.json
 ```
 
@@ -194,7 +202,8 @@ Its tests are in
 ("worked example"). They drive the generated `signal.mjs` and check that a
 correct body is applied with the configured subject, and that a wrong key, a
 tampered body, a wrong run, an expired body, a disallowed outcome, a wrong
-signal, a missing signature and an incomplete config all deny.
+signal, a missing signature, an incomplete config and a `call` hash on a
+stage-level sign-off all deny.
 
 ## Reference implementation: Sigstore
 
@@ -206,7 +215,9 @@ using their OIDC identity. The plug-in checks the bundle with
 and SCTs against the trusted root, and a Rekor entry (signed entry timestamp
 or inclusion proof) against the Rekor key in the trusted root. It then
 checks the certificate's issuer and identity against the policy pinned for
-that signal, and applies the run/expiry/nonce/outcome bindings. Evidence is
+that signal, and applies the run/expiry/nonce/outcome bindings. A `call`
+digest in the signed drop is returned so `signal.mjs` can enforce a
+call-bound sign-off. Evidence is
 the bundle's sha256 plus the Rekor log index and entry UUID.
 
 Two details from building it apply to any identity-based plug-in.

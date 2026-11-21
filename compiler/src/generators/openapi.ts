@@ -8,9 +8,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { IR, IRRecordType, IRFieldDef, IRTypeRef, IRSpeck, IREnumType, IRService } from '../ir/types.js';
+import { guardIr } from '../conservation.js';
 
 export class OpenAPITarget {
   generate(ir: IR, options: { outputDir: string }): string {
+    guardIr('openapi', ir);
     const outDir = path.join(options.outputDir, 'openapi');
     fs.mkdirSync(outDir, { recursive: true });
 

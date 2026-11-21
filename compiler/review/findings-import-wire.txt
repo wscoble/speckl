@@ -1,0 +1,14 @@
+Reviewer findings: import wiring
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the import-path slice. expandImports resolved a relative import, and compileSpec did not call it. Working: compileSpec calls expandImports before every backend, and lower does the same when resolveImports is set. The warning "import resolution not yet implemented in lower pass" is gone.
+
+Every resolver error fails closed, and the output directory is not created. `import-wire-edges.test.ts` checks the exact text. A missing file throws `Parse error: cannot read import "./no-such.speckdl" (resolved <path>) at <file>:1`. A root that cannot be read throws `Parse error: cannot read import root "<path>" (ENOENT)`. A resolved speck that was removed throws `Parse error: import "./lib.speckdl" did not resolve speck "Lib"`. An owner that was renamed throws `Parse error: import "./lib.speckdl" has no speck "Root" to attach to`. A hand-built AST with no verified source throws `Parse error: cannot read verified source for "<realpath>"`. Those three lower failures also leave the entry directory's listing unchanged.
+
+`assertProcAgrees` in `compiler/src/imports.ts` ignores only `ENOENT`, `ENOTDIR`, `EINVAL`, `EACCES`, `EPERM`, and `ENOSYS` from `/proc/self/fd`. Those mean `/proc` is absent or unusable, which is the case on macOS, Windows, and a mount that hides it. `EIO` still throws. A `/proc` path that names a different file throws `changed while reading`. `imports.test.ts` covers that list.
+
+import is n/a in the conservation table because the import node is inlined before a backend writes. oneof and transition stay reject, except Protobuf which emits them.
+
+Example files have no imports, so their compiled output is unchanged. A file that imports another speck now compiles the imported speck too. A path that leaves the entry directory still fails closed. rootDir on compileSpec widens that directory. The CLI does not have --root yet.
+
+The README, SPEC, and CHANGELOG say compileSpec resolves imports. That text does not by itself change compiled output.

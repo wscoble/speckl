@@ -4,17 +4,25 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { compileSpec, type CompileOptions } from './compile.js';
 import { runVerify, packageVersion } from './cli-support.js';
+import { runDoctor } from './doctor.js';
+import { runTrace } from './trace-report.js';
 
-export { runVerify };
+export { runVerify, runDoctor, runTrace };
 
 async function main() {
   if (process.argv[2] === 'verify') {
     process.exit(runVerify(process.argv.slice(3)));
   }
+  if (process.argv[2] === 'doctor') {
+    process.exit(runDoctor(process.argv.slice(3)));
+  }
+  if (process.argv[2] === 'trace') {
+    process.exit(runTrace(process.argv.slice(3)));
+  }
   const argv = await yargs(hideBin(process.argv))
     .scriptName('speckl')
     .version(packageVersion())
-    .usage('Usage:\n  $0 <file> [options]\n  $0 verify [paths..] [--depth <n>]')
+    .usage('Usage:\n  $0 <file> [options]\n  $0 verify [paths..] [--depth <n>]\n  $0 doctor [files..]\n  $0 trace report (--log <file> | --state <file>) [--key <file>]')
     .command('$0 <file>', 'Compile a SpeckDL specification', (yargsCmd) => {
       return yargsCmd
         .positional('file', {
@@ -47,6 +55,10 @@ async function main() {
           type: 'string',
           choices: ['cdx', 'spdx', 'both'],
           default: 'both' as const,
+        })
+        .option('root', {
+          describe: 'Directory imports may resolve inside, after following symlinks. Default: the entry file\'s directory. Absolute import paths are rejected, and a path whose real location leaves this directory is an error.',
+          type: 'string',
         });
     })
     .command('verify [paths..]', 'Check every verify block with Z3 (needs the z3 binary; see `speckl verify --help`)')
@@ -59,6 +71,7 @@ async function main() {
     bomFormat: argv.bomFormat as 'cdx' | 'spdx' | 'both',
     target: argv.target as CompileOptions['target'],
     verifyDepth: argv.verifyDepth as number,
+    rootDir: argv.root as string | undefined,
   };
 
   compileSpec(file, options);

@@ -1,0 +1,1209 @@
+{
+  "speck": "ClaudeCodePolicy",
+  "specHash": "73c7f69f2fc6855ca144eeba3d0dd00cbb46828a59a5c69b23c1531fe512d6f2",
+  "machineModule": "./ClaudeCodePolicy.mjs",
+  "machineExport": "ClaudeCodePolicyMachine",
+  "stageVariable": "stage",
+  "stages": {
+    "Idle": 0,
+    "TestsGreen": 1,
+    "AwaitingReview": 2,
+    "Approved": 3,
+    "Rejected": 4,
+    "PrOpened": 5
+  },
+  "tools": [
+    {
+      "name": "edit_code",
+      "action": "EditCode",
+      "effect": "act"
+    },
+    {
+      "name": "run_tests",
+      "action": "RunTests",
+      "effect": "act"
+    },
+    {
+      "name": "request_review",
+      "action": "RequestReview",
+      "effect": "act"
+    },
+    {
+      "name": "open_pr",
+      "action": "OpenPR",
+      "effect": "act"
+    },
+    {
+      "name": "read_file",
+      "action": "ReadFile",
+      "effect": "observe"
+    },
+    {
+      "name": "inspect",
+      "action": "Inspect",
+      "effect": "observe"
+    }
+  ],
+  "pendingTimeout": {
+    "durationMs": 600000,
+    "durationText": "10m"
+  },
+  "awaits": [
+    {
+      "state": "AwaitingReview",
+      "stateValue": 2,
+      "signal": "review",
+      "mode": "near",
+      "outcomes": [
+        "approve",
+        "reject"
+      ],
+      "rejects": [
+        "reject"
+      ],
+      "claims": [
+        {
+          "name": "reviewer",
+          "typeName": "String"
+        }
+      ],
+      "on": [
+        {
+          "outcome": "approve",
+          "target": "Approved",
+          "targetValue": 3,
+          "action": "__signal_review_approve"
+        },
+        {
+          "outcome": "reject",
+          "target": "Rejected",
+          "targetValue": 4,
+          "action": "__signal_review_reject"
+        }
+      ],
+      "timeout": {
+        "durationMs": 86400000,
+        "durationText": "24h",
+        "outcome": "reject"
+      },
+      "bindCall": []
+    }
+  ],
+  "harness": {
+    "claude-code": {
+      "rules": [
+        {
+          "tools": [
+            "Edit",
+            "Write",
+            "MultiEdit",
+            "NotebookEdit"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "Read"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "Grep",
+            "Glob",
+            "LS",
+            "TodoWrite"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "gh pr create( .*)?"
+        }
+      ]
+    },
+    "cursor": {
+      "rules": [
+        {
+          "tools": [
+            "Write",
+            "Delete"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "Read"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "Grep",
+            "Glob",
+            "LS"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "Shell"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "Shell"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "Shell"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "Shell"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "Shell"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        },
+        {
+          "tools": [
+            "Shell"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "gh pr create( .*)?"
+        }
+      ]
+    },
+    "codex": {
+      "rules": [
+        {
+          "tools": [
+            "apply_patch"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "mcp__ci__run_tests"
+          ],
+          "target": "run_tests",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "mcp__ci__request_review"
+          ],
+          "target": "request_review",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "mcp__github__create_pull_request"
+          ],
+          "target": "open_pr",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "update_plan"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "Bash"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        }
+      ]
+    },
+    "gemini": {
+      "rules": [
+        {
+          "tools": [
+            "write_file",
+            "replace"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read_file"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "glob",
+            "grep_search",
+            "list_directory",
+            "write_todos"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "run_shell_command"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "run_shell_command"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "run_shell_command"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "run_shell_command"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "run_shell_command"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "copilot": {
+      "rules": [
+        {
+          "tools": [
+            "create",
+            "edit"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "apply_patch"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "view"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "grep",
+            "glob"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "goose": {
+      "rules": [
+        {
+          "tools": [
+            "write",
+            "edit"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "tree"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "shell"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "shell"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "shell"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "shell"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "shell"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "hermes": {
+      "rules": [
+        {
+          "tools": [
+            "write_file",
+            "patch"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read_file"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "search_files"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "terminal"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "terminal"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "terminal"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "terminal"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "terminal"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "pi": {
+      "rules": [
+        {
+          "tools": [
+            "write",
+            "edit"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "grep",
+            "find",
+            "ls"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "opencode": {
+      "rules": [
+        {
+          "tools": [
+            "write",
+            "edit"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "filePath"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "apply_patch"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "filePath"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "grep",
+            "glob",
+            "todowrite"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "bash"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "openclaw": {
+      "rules": [
+        {
+          "tools": [
+            "write",
+            "edit"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "apply_patch"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "ls"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "exec"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "exec"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "exec"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "exec"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "exec"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "cline": {
+      "rules": [
+        {
+          "tools": [
+            "editor"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "apply_patch"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read_files",
+            "search_codebase"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "run_commands"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "run_commands"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "run_commands"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "run_commands"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "run_commands"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "kiro": {
+      "rules": [
+        {
+          "tools": [
+            "fs_write",
+            "fs_append",
+            "str_replace",
+            "write"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read_file",
+            "fs_read",
+            "read"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "list_directory",
+            "file_search",
+            "grep_search"
+          ],
+          "target": "inspect",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "execute_bash",
+            "shell"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "execute_bash",
+            "shell"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "execute_bash",
+            "shell"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "execute_bash",
+            "shell"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "execute_bash",
+            "shell"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    },
+    "windsurf": {
+      "rules": [
+        {
+          "tools": [
+            "write_code"
+          ],
+          "target": "edit_code",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "read_code"
+          ],
+          "target": "read_file",
+          "inputs": [
+            {
+              "param": "path",
+              "field": "file_path"
+            }
+          ]
+        },
+        {
+          "tools": [
+            "mcp__ci__run_tests"
+          ],
+          "target": "run_tests",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "mcp__ci__request_review"
+          ],
+          "target": "request_review",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "mcp__github__create_pull_request"
+          ],
+          "target": "open_pr",
+          "inputs": []
+        },
+        {
+          "tools": [
+            "run_command"
+          ],
+          "target": "run_tests",
+          "inputs": [],
+          "field": "command",
+          "pattern": "npm (run )?test( -- [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "run_command"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git (status|diff|log)( [A-Za-z0-9_./=-]+)*"
+        },
+        {
+          "tools": [
+            "run_command"
+          ],
+          "target": "inspect",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git add( [A-Za-z0-9_./-]+)+"
+        },
+        {
+          "tools": [
+            "run_command"
+          ],
+          "target": "request_review",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git commit -m \"[^\"]*\""
+        },
+        {
+          "tools": [
+            "run_command"
+          ],
+          "target": "open_pr",
+          "inputs": [],
+          "field": "command",
+          "pattern": "git push( -u)? origin [A-Za-z0-9_./-]+"
+        }
+      ]
+    }
+  }
+}

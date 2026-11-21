@@ -104,6 +104,38 @@ export function parseActionStatements(lines: string[]): ActionStatement[] {
       continue;
     }
 
+    // --- cost <n> (non-negative integer literal, one per action) ---
+    // `costTotal := ...` and `cost := ...` are assignments, not this statement.
+    // A trailing `//` comment is ignored (`cost 3 // per call`).
+    const costText = stripLineComment(trimmed);
+    if (/^cost\s+\S/.test(costText) && !/^cost\s*:=/.test(costText)) {
+      const costMatch = costText.match(/^cost\s+(\d+)\s*$/);
+      const amount = costMatch ? Number(costMatch[1]) : NaN;
+      if (!costMatch || !Number.isSafeInteger(amount)) {
+        throw new Error(`cost must be a non-negative integer, got ${JSON.stringify(costText)}`);
+      }
+      if (stmts.some(s => s.type === 'cost')) {
+        throw new Error(`cost is declared more than once`);
+      }
+      stmts.push({ type: 'cost', amount });
+      continue;
+    }
+
+    // --- priority <Name> (one identifier per action) ---
+    // `priority := ...` is an assignment, not this statement.
+    const priorityText = stripLineComment(trimmed);
+    if (/^priority\b/.test(priorityText) && !/^priority\s*:=/.test(priorityText)) {
+      const pri = priorityText.match(/^priority\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!pri) {
+        throw new Error(`priority must be an identifier, got ${JSON.stringify(priorityText)}`);
+      }
+      if (stmts.some(s => s.type === 'priority')) {
+        throw new Error('priority is declared more than once');
+      }
+      stmts.push({ type: 'priority', name: pri[1] });
+      continue;
+    }
+
     // --- if condition { ... } else ... ---
     if (trimmed.startsWith('if ')) {
       // Collect the full if/else block as raw text
@@ -277,7 +309,7 @@ function splitTopLevel(text: string): string[] {
   return parts.map(p => p.trim()).filter(Boolean);
 }
 
-const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|precondition:|postcondition:|[\w.]+(\[.*?\])?\s*:=)/;
+const STMT_START_RE = /^(require\s|return\s|emit\s|let\s|cost\s|precondition:|postcondition:|[\w.]+(\[.*?\])?\s*:=)/;
 
 function collectExpression(lines: string[], startIdx: number, prefixLen: number, continuationPfx: string): CollectResult {
   let text = lines[startIdx].trim().substring(prefixLen).trim();

@@ -27,6 +27,11 @@ export interface IRSpeck {
   sourcePath: string;
   /** Cross-spec imports resolved at lower time. Empty for self-contained specs. */
   imports: IRImport[];
+  /**
+   * AST member types in source order. `lower` sets this. A generator
+   * rejects the call when the list is absent.
+   */
+  sourceMemberTypes?: string[];
   /** The named union of facets. Every facet is populated; some may be empty. */
   facets: IRFacets;
   /**
@@ -78,9 +83,42 @@ export interface IRImport {
   resolved: IRSpeck;
 }
 
+/**
+ * A bounded context: a named group of specks. Each member is still one speck.
+ * Domains do not merge member state or actions.
+ */
+export interface IRDomain {
+  name: string;
+  /** Speck names in source order. Duplicates are preserved and are an error. */
+  members: string[];
+  /** Ubiquitous-language note from `language:`, when declared. */
+  language?: string;
+  /** Events the domain consumes, in source order. Absent when none are declared. */
+  consumes?: string[];
+  /** Events the domain produces, in source order. Absent when none are declared. */
+  produces?: string[];
+  /**
+   * `budget <n> per tick`. Absent when the domain declares no budget.
+   * Zero is a real budget, not "unset".
+   */
+  budgetPerTick?: number;
+  /**
+   * `priority <Name>`. Absent when the domain declares no priority.
+   * A label for completion signals. Not a runtime queue.
+   */
+  priority?: string;
+  /** File that declared the domain. */
+  sourcePath: string;
+}
+
 /** The top-level IR: a file may declare multiple specks. */
 export interface IR {
   specks: IRSpeck[];
+  /**
+   * Local domains, then domains merged from imports. Absent on IR values
+   * built before domain blocks. `lower` always sets this.
+   */
+  domains?: IRDomain[];
   /** Global file-level metadata, shared across all specks in the file. */
   fileMetadata: FileMetadata;
   /** Diagnostics from the lower pass (errors, warnings, info). */
@@ -245,6 +283,8 @@ export interface IRAgentAwait {
   claims: { name: string; typeName: string }[];
   on: { outcome: string; target: string }[];
   timeout?: { durationMs: number; durationText: string; outcome: string };
+  /** Outcomes whose sign-off must carry a call digest. Empty = stage-level. */
+  bindCall: string[];
   /** Synthetic action names generated for each on-outcome (and timeout if distinct). */
   syntheticActions: { outcome: string; actionName: string; targetValue: number; awaitValue: number }[];
 }
@@ -266,6 +306,17 @@ export interface IRAction {
   name: string;
   params: IRParam[];
   statements: IRStmt[];
+  /**
+   * `cost <n>` on the action. Absent when the action declares no cost.
+   * Zero is a real cost. This is a verification annotation. Generators do
+   * not turn it into a runtime throttle.
+   */
+  cost?: number;
+  /**
+   * `priority <Name>` on the action. Absent when the action declares none.
+   * The domain priority applies only when this is absent. Not a runtime queue.
+   */
+  priority?: string;
   doc?: string;
 }
 
@@ -300,6 +351,10 @@ export interface IRStmt {
 export interface IREvent {
   name: string;
   fields: IRFieldDef[];
+  /** `event Name external`. Absent means the event is internal. */
+  external?: boolean;
+  /** `kpi "<name>"`. Absent when the event is not tagged. */
+  kpi?: string;
   doc?: string;
 }
 

@@ -1,4 +1,5 @@
 import { AST, SpeckNode, MemberNode, StateNode, ActionNode, ConstraintNode, EventNode } from '../parser.js';
+import { guardAst } from '../conservation.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -388,7 +389,11 @@ function translateAction(action: ActionNode, ctx: ExprCtx, recordTypes: Map<stri
       // events are mirrored client-side as an event-log entry; server is authoritative
       out.bodyElm.push(`            |> logEvent "${(stmt as any).event}"`);
     } else {
-      out.unhandledBody.push(JSON.stringify(stmt));
+      // A newline in block raw only separates a line comment from later
+      // braces. The comment emitted here is the space-joined form.
+      const raw = (stmt as { raw?: string }).raw;
+      const flat = typeof raw === 'string' ? { ...stmt, raw: raw.replace(/\n/g, ' ') } : stmt;
+      out.unhandledBody.push(JSON.stringify(flat));
     }
   }
   return out;
@@ -650,6 +655,7 @@ function metaExprFor(f: any, asHeading: boolean): string {
 // ─── main generator ─────────────────────────────────────────────────
 
 export function generateElm(ast: AST, outputDir: string): void {
+  guardAst('elm', ast);
   for (const speck of ast.specks) {
     const pkg = snakeCase(speck.name);
     const dir = path.join(outputDir, `${pkg}-elm`);

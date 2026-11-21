@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { sanitizeSMT } from './smt-sanitize.js';
 import { obligationKey } from './obligation-key.js';
+import { guardAst } from '../conservation.js';
 
 /**
  * Z3 SMT-LIB2 backend for SpeckDL.
@@ -62,6 +63,7 @@ const SMT_RESERVED_WORDS = new Set([
  * Generate Z3 SMT-LIB2 from a SpeckDL AST.
  */
 export function generateZ3(ast: AST, outputDir: string, options: Z3Options = DEFAULT_OPTIONS): void {
+  guardAst('z3', ast);
   for (const speck of ast.specks) {
     const code = emitZ3(speck, options);
     const filename = `${speck.name}.smt2`;
@@ -82,7 +84,18 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
 
   // Also extract invariants from parsed constraint nodes
   const invariants = extractInvariantsFromConstraints(constraints);
-  const sourceInvariants = (speck as any)._invariants || [];
+  // compileSpec copies invariant members onto `_invariants` in the shape
+  // this emitter consumes. A direct generateZ3 call reads the members.
+  const attached = (speck as any)._invariants as InvariantNode[] | undefined;
+  const sourceInvariants: InvariantNode[] = attached && attached.length > 0
+    ? attached
+    : members
+      .filter((m) => m.type === 'invariant')
+      .map((m) => ({
+        type: 'invariant' as const,
+        name: (m as { name: string }).name,
+        statements: [{ type: 'require' as const, expr: (m as { expr: string }).expr }],
+      }));
   const allInvariants = [...sourceInvariants, ...invariants];
   
   // next: transition relation (first-class AST member). An unknown action

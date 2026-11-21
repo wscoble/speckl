@@ -100,7 +100,52 @@ speck ToggleSwitch {
 `var.values`, or a range. This sugar is recognized by the language but not
 yet lowered to Z3 (see §3.5).
 
-**Comments** — `//` line comments and `/* ... */` block comments.
+**Comments** — `//` line comments and `/* ... */` block comments. A `{` or `}`
+inside a comment or a `"` string is not a structural brace, including when
+Go emits an `if` or a `for`, and including a trailing `// }` after a one-line
+action. That action closes on its own structural `}`. A brace in a comment
+or a string does not hide the next speck. A line that is
+only `speck`, with `Name {` on a later line, is `speck name must be on the
+same line as "speck"`. `'` is post-state prime notation, not a string
+quote. A block comment may continue onto the next line. A `"` string may
+not: an unclosed `"` is `unterminated string` on the line where it opened,
+including at file level, after the last speck, and inside domain text. An
+unclosed `/*` is `unterminated block comment` on the line where it opened,
+in those same places. A comment that opens on a speck's closing line and
+closes on a later line is closed. A `/*` written inside an already-open
+block comment is comment text, not a nested comment. When `*/` is the first text on a line and
+the code after it is a `speck`, `action`, `invariant`, `state`, or `init`
+header, that header is `header is not at the start of the line`. A header
+later on the line is outside this scan. A speck written entirely inside a
+block comment is not a speck. Go still drops an `else if`, a nested `if`,
+a `for` inside an `if`, and a `require` inside an `if`. That is unchanged
+from before this scan. `compiler/src/speck-lex.ts` tokenizes a file the same way (a brace in a comment or a string is not a token; `'` is prime notation; an unclosed string or block comment is an error on the opening line and column; `\r\n` and a tab are whitespace; a non-ASCII identifier is an error and non-ASCII text inside a string or a comment is kept). `parseSpeck` calls that lexer through `compiler/src/rd-parser.ts`. A `}` on the speck header ends that speck. A `}` inside a string does not end the speck. A one-line record stores its brace span. `type LogEntry = { term: Nat, value: Value }` is `{ term, value }`. A trailing `//` or block comment is not part of an invariant. A `//` inside a string stays. An empty invariant is an error. `state { x: Nat }` stores that field. `state { }` stores no fields. A `}` inside `//` does not close the block. `x := 0` is stored and `x = 0` is `unrecognized init line`. A missing `}`, an extra `}`, text after `}`, an unrecognized member, and `§` are the same error from this parser and from the line walker, with a line and column. An unrecognized state field and an unrecognized init line name the line and do not name a column. File-level `import` is stored on the AST. `compiler/src/imports.ts` resolves a relative path (`\` is `/`) inside the entry directory, checks the hash pin, and names the importing file and line on failure. `compileSpec` calls that resolver before it generates. `speckl --root` widens the directory. `speckl --root /` widens it to the whole filesystem. An absolute import path is still an error. `import` is not applicable at generation time because the import has already been inlined. `compiler/src/conservation.ts` records, for every backend, whether each member type is emitted, rejected, or not applicable. `compileSpec` checks that table before it calls the backend. Each generator also calls that check, so a direct call cannot drop a member type. A missing member-type list, or a type the table does not name, is an error. `generateAgent` calls that check before it emits. A missing member list, an unknown member type, and `oneof` are errors. A speck with no `agent` block logs `skip S: no agent { } block` and does not emit that speck's agent files.
+
+### 2.2.1 Rejected structure
+
+The line walker used to accept each input below and store a program that dropped or rewrote the text. That was a bug. The input is now a parse error.
+
+- A speck that never closes. `speck A {` with no closing brace used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: missing final "}" (column 9).
+- An extra closing brace. `speck A {` then a line `}` then another `}` used to parse as speck A with no members, ending on line 2. The extra brace was ignored. The diagnostic is: Parse error at bad.speckdl:3: extra "}" (column 1). A `}` inside a string is still a string.
+- Text after a speck's closing brace. `speck A {` then `} junk` used to parse as speck A with no members, ending on line 2. The word was ignored. The diagnostic is: Parse error at bad.speckdl:2: text after a speck's "}" (column 3).
+- A second speck on the same line. `speck A { } speck B { }` used to parse as only speck A, with no members. Speck B was dropped. The diagnostic is: Parse error at bad.speckdl:1: a second speck on one line (column 13).
+- An unrecognized member. `garbage line here` used to parse as speck A with no members. `actoin go {` dropped the action. `enum Status { Active, Inactive }` kept only interface Foo. A description line dropped the description. `x := x + 3` after init stored the state type as `= x + 3` and the init expression as `x + 3`. Each diagnostic is unrecognized member with the line and column. One of them is: Parse error at bad.speckdl:2: unrecognized member "garbage line here" (column 5).
+- Unrecognized top-level text. `spek B {` after a closed speck used to parse as only speck A. `*/ speck A {` used to parse as no specks. The diagnostics are: Parse error at bad.speckdl:4: unrecognized top-level "spek B {" (column 1), and Parse error at bad.speckdl:1: unrecognized top-level "*/ speck A {" (column 1).
+- Text after a member's closing brace. `invariant P { x >= 0 } junk` used to parse as invariant P with an empty expression. The predicate was dropped. The diagnostic is: Parse error at bad.speckdl:2: text after a member's "}" (column 28).
+- A member brace on the next line. `invariant P` with `{` on the following line used to parse as a speck whose only member was an empty state. The invariant was dropped. The diagnostic is: Parse error at allman.speckdl:3: opening "{" must be on the same line as the member header (column 5).
+- An unrecognized state field. Inside `state`, `y Nat` after `x: Nat` used to be stored as the type `Nat y Nat`. The diagnostic is: Parse error at st.speckdl:2: unrecognized state field "y Nat". The message names the state header's line and does not name a column.
+- An unrecognized init line. `y = 0` after `x := 0` used to be stored as the expression `0 y = 0`. `garbage line` used to be stored as `0 garbage line`. The diagnostics are: Parse error at in.speckdl:3: unrecognized init line "y = 0", and unrecognized init line "garbage line". The message names the init header's line and does not name a column. `x := 0` is still an assignment.
+- Code after a block comment on the same line. `/* c */ action go {` used to parse as speck A with no members. The action was dropped. The diagnostic is: Parse error at bad.speckdl:2: code after */ on a line that starts with /* (column 13).
+- A CR that is not part of CRLF. `speck A {` then a state, with a bare carriage return and no line feed, used to parse as speck A with no members, ending on line 1. The diagnostic is: Parse error at bad.speckdl:1: CR-only line endings are not supported (column 10). CRLF is still whitespace.
+- An unexpected non-ASCII character outside a string or a comment. A line containing `§` used to parse as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: unexpected character "§" (column 2). `→` is: Parse error at bad.speckdl:2: unexpected character "→" (column 7). Non-ASCII text inside a string or a comment is kept.
+- An identifier that starts with a digit. `speck 9A` used to parse as a speck named `9A`. The diagnostic is: Parse error at bad.speckdl:1: identifier must not start with a digit (column 7). `state { t: 24h }` still parses.
+- A non-ASCII identifier. `naïve` used to be dropped, and the file parsed as speck A with no members. The diagnostic is: Parse error at bad.speckdl:2: identifier must be ASCII (column 7). Non-ASCII text inside a string or a comment is kept.
+- An unsupported numeric literal. `state { t: 1h30m }` used to parse as speck A whose state stored no fields. The diagnostic is: Parse error at bad.speckdl:2: unsupported numeric literal "1h30m" (column 16). `state { t: 24h }` still parses.
+- The column of an unclosed string or comment. `x: "ab` with no closer was already Parse error at bad.speckdl:2: unterminated string. It is now Parse error at bad.speckdl:2: unterminated string (column 8). `/* c` with no closer was unterminated block comment and is now Parse error at bad.speckdl:2: unterminated block comment (column 5).
+
+### 2.2.2 Token parser
+
+`parseSpeckContent` calls `parseSpeckDocument` from `compiler/src/rd-parser.ts`. That function walks the token stream from `compiler/src/speck-lex.ts`. `compiler/src/speck-span.ts` holds the span helpers, and `parser.ts` re-exports them. Coverage includes both files. `parser.ts` is the production file that imports `rd-parser.ts`. The line-walker copy under `compiler/src/line-walker/` is test-only. `lowers every speck in the repo to the same IR` in `compiler/src/__tests__/walker-vs-rd.test.ts` compares the two.
 
 ### 2.3 Declarative Form (v0.2, still supported)
 
@@ -192,6 +237,63 @@ import "retry-handler.speckdl" as retry version "1.2.0" hash "sha256:..."
 
 Version pinning is optional for local development and required for Specks
 with `review: manual` or `review: hybrid`.
+
+### 2.8.1 Domain blocks
+
+A file may declare a domain block. The block is not a speck, and it is not a member of a speck.
+
+```
+domain Billing {
+    members: Invoice, Ledger;
+    language: "An invoice is issued before a ledger posts it";
+}
+```
+
+`members` is required. Each name is text. This parser does not check that a member names a speck. `language` is optional. A `}` or a `;` inside a closed `"` or `'` string does not end the block or the clause. A `//` comment inside the block is not a clause. A hyphenated domain name and a hyphenated member name are accepted. An unclosed block whose source has no `}` is `missing final "}"` from the brace check, which runs before this scanner. A `}` after an unclosed quote is counted by that check, and this scanner then reports `unclosed domain`. This parser does not route events, queue work, or schedule a tick. It does not check harnesses. `compiler/src/__tests__/domain.test.ts` covers each of those cases.
+
+### 2.8.2 Domain checks
+
+After the block parses, `lower` checks it. A member that is not a speck in the file is `domain: <Name> member <Member> is not a speck in <file>`. A member listed twice, the same speck in two domains, and the same domain name twice are errors. An imported domain is part of that check. A file with no domain has no domain diagnostic. `compileSpec` creates the output directory before it reports a domain error, and it does not write the generated file. `speckl doctor` fails when an `effect act` tool has no harness block (`not mapped in a harness block`), and when a harness block does not map that tool. Zero harnesses is a failure, not a pass. An observe tool is not checked. This check does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-check-each.test.ts` covers each case.
+
+### 2.8.3 Domain contract syntax
+
+A domain may add `consumes PaymentReceived;`, `produces InvoiceIssued;`, and `budget 0 per tick;`. `consumes` and `produces` name events. An empty list is `has no event`. A name that is not an identifier is `not an event name`. The same name twice, on one clause or on a second clause, is `more than once`. A produce name is checked the same way as a consume name. A budget or a cost above the safe integer range is rejected by the parser. `budget` must be a non-negative integer followed by `per tick`. Zero is a real budget. An action may declare `cost 0`. Zero is a real cost. A negative cost, a cost that is not an integer, and a second `cost` are errors. `cost := 1` stays an assignment. This check copies `cost` onto the action, including `cost 0`. The parent syntax slice left `cost` unset while lowering. This slice stores it. A speck with no `cost` and no domain still lowers, and that action has no `cost` field. A domain with no contract clauses still lowers. Storing `cost` does not drop the action's other statements. This check rejects a consumed event that nobody produces and that is not external, a produce of a name that is not an event, a produce of an external event (`declared external`, which is a different rejection), and an emit the domain does not produce. It does not route events, queue work, or schedule a tick. `compiler/src/__tests__/domain-contract-syntax-each.test.ts` covers the syntax rejections and the two cases that still match the parent. `compiler/src/__tests__/domain-contracts.test.ts` covers the wiring rejections. `docs/domain-contract-syntax.md` says the same thing.
+
+### 2.8.4 Domain budget
+
+`unsat` proves the budget only inside the BMC depth. The IR budget file is `speckl-unchecked` and is not a proof. This file does not route events, queue work, run a tick, or emit a runtime throttle. A domain that declares no budget writes no budget file. `compiler/src/__tests__/domain-contracts.test.ts` covers an in-budget tick and the unchecked IR file. `docs/domain-contract-budget.md` says the same thing.
+
+### Priority and kpi syntax
+
+`priority := 1` stays an assignment. This slice does not copy the labels onto tools and does not enforce a queue. `docs/signal-syntax.md` says the same thing.
+
+### 2.8.5 Camel contract class
+
+The class has no runtime method. A speck with no domain emits no contract class. A domain with no contract clauses emits no contract class. The contract class does not throttle, queue, or route messages. The Camel target still emits a RouteBuilder for the speck's actions. This class does not run a tick and does not call Z3. Camel generation does not run Z3. The RouteBuilder emits one route per action. `compiler/src/__tests__/domain-contracts.test.ts` covers the comment, the empty class, the speck with no domain, `emits one route per action`, and `does not run Z3 while generating Camel`. `docs/domain-contract-camel.md` says the same thing.
+
+### 2.8.6 Trace report
+
+`speckl trace report` reads a decision log offline. When the log parses, it checks the hash chain. A torn file, a blank line, or a line that is not JSON is refused before that check. With `--state`, `head.json` is required when `<state>.decisions/` exists. An empty log prints `macs not checked`. The report does not run the hook and it does not enforce a queue. `compiler/src/__tests__/trace-report.test.ts` covers the golden report, the hash chain, a missing path, `--state`, and an empty record. `docs/trace-report.md` says the same thing.
+
+### 2.8.7 Tool signal fields
+
+The agent generator copies an action `priority` onto the tool, or the domain `priority` when the action declares none and the domain's members include the speck. `kpis` are the `kpi` tags of events that action emits with a straight-line `emit`, in source order, each distinct tag once, stopping at `return`. That stop is a `return` expression such as `return stage`. A line that is only `return` does not stop the scan. An emit after `return` is not tagged. A domain priority is not used when the speck is not a member of that domain. An observe tool gets the same fields. An `emit` inside an `if` or a `for`, or an `emit` in a comment, is not tagged. Both fields are omitted when absent. This does not write the decision line, and it does not route, queue, or run a tick. `compiler/src/__tests__/agent-signal-fields.test.ts` covers each case. `docs/signal-fields.md` says the same thing.
+
+### 2.8.8 Swarm routes
+
+A one hop from a domain that produces an event to each other domain that consumes it. An external event comes from `external`. A cycle is two hops, and neither hop is followed. A domain does not route to itself. `compileSpec` does not call `planRoutes`. This module does not enqueue, schedule a tick, or apply backpressure. The priority number as a queue rank, the per-domain budget as the tick, and backpressure as the budget stop are later modules. `docs/swarm-routing.md` says the same thing. `compiler/src/__tests__/swarm-route.test.ts` covers each case.
+
+### 2.8.9 Swarm queue
+
+The trailing integer is the rank. P0 comes before P1, and P2 comes before P10. A smaller number wins across prefixes, so B0 comes before A1. The same number is ordered by the prefix, and the same label keeps arrival order. An unnumbered label comes after every numbered label. A missing priority means the field is absent, and it comes last. An empty string is an unnumbered label, not a missing priority. This function only orders an array. The assumptions are these. A route is one hop on `produces` and `consumes`. The trailing number on a priority label is the queue rank. The per-domain budget is the tick. Backpressure is the budget stop. This pull request implements only the rank. The input array is not mutated. `compileSpec` does not call `orderByPriority`. This module does not route events, enqueue work, or stop on a budget. `docs/swarm-queue.md` says the same thing. `compiler/src/__tests__/swarm-queue.test.ts` covers each case.
+
+### 2.8.10 Swarm tick
+
+The per-domain `budgetPerTick` is the tick. A missing budget is no cap. Zero is a real budget, and cost 0 still fits. An item whose cost is greater than the budget does not run. The tick does not skip a head that does not fit in order to run a cheaper item behind it. A negative cost, or a cost that is not a number, waits and blocks the rest of that domain. An infinite cost is not negative. It does not fit a finite budget, so it waits and blocks the rest of that domain. It does not increase the remaining budget. An item after the one that fills the budget waits. Work for a domain the tick does not name waits. The caller's work list is not mutated. `compileSpec` does not call `runTick`. This module does not route events and it does not apply backpressure. This pull request implements only the tick. `docs/swarm-tick.md` says the same thing. `compiler/src/__tests__/swarm-tick.test.ts` covers each case.
+
+### 2.8.11 Swarm backpressure
+
+One route hop becomes a delivery at the consumer. Backpressure is the budget stop. The delivery stays in `waiting` and is not dropped. A domain with no budget does not report backpressure. An arrival with no matching route creates no delivery. A delivery that fits is not named. A delivery whose cost is greater than the budget stays named on a later tick. `compileSpec` does not call `deliver`. `deliver` does not throttle. The Camel target still emits a RouteBuilder for the speck's actions. A negative cost waits and is named when the domain has a budget. A negative cost on a domain with no budget waits and is not named. The assumptions are these. A route is one hop on `produces` and `consumes`. The trailing number on a priority label is the queue rank. The per-domain budget is the tick. Backpressure is the budget stop. This pull request implements that stop. `docs/swarm-backpressure.md` says the same thing. `compiler/src/__tests__/swarm-backpressure.test.ts` covers each case.
 
 ### 2.9 Expression Operators
 

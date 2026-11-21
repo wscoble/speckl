@@ -1,0 +1,26 @@
+speckl trace report
+macs not checked
+priority P0
+drain
+  trace tr 1500 ms ingress 2026-01-01T00:00:00.000Z last_leaf 2026-01-01T00:00:01.500Z flagged false
+lag
+  call c1 400 ms
+  call c2 1000 ms
+  call c4 unmatched
+queue_depth
+  2026-01-01T00:00:00.000Z 1
+  2026-01-01T00:00:00.400Z 0
+  2026-01-01T00:00:00.500Z 1
+  2026-01-01T00:00:01.500Z 0
+priority P1
+drain
+  trace tr2 200 ms ingress 2026-01-01T00:00:02.000Z last_leaf 2026-01-01T00:00:02.200Z flagged true
+lag
+  call c3 200 ms
+queue_depth
+  2026-01-01T00:00:02.000Z 1
+  2026-01-01T00:00:02.200Z 0
+kpi notes
+  trace tr call c1 branch b1 ok true priority P0 flagged false verdict allow
+kpi shipments
+  trace tr2 call c3 branch b3 ok false priority P1 flagged true verdict allow

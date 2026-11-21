@@ -146,7 +146,7 @@ describe.skipIf(!hasZ3 || !hasDist)('speckl verify fails closed end to end', () 
     count: Int
   }
   init: {
-    count = 0
+    count := 0
   }
   invariant Bounded {
     count >= 0

@@ -320,7 +320,7 @@ TLA+ proved that formal methods work at scale. SpeckDL makes them deployable.
 ## Next Steps
 
 1. **Read the spec:** `SPEC.md` — full language reference
-2. **Run the examples:** `cd compiler && npm run build && node dist/index.js ../examples/ToggleSwitch.speckdl -o out`
+2. **Run the examples:** `cd compiler && npm ci && npm run build && node dist/index.js ../examples/ToggleSwitch.speckdl -o out`
 3. **Write your own:** Start with a toggle switch, add state variables, write invariants
 4. **Target production:** See `examples/TigerBeetleLedger.speckdl` for a real financial system spec
 

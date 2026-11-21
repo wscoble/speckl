@@ -1,0 +1,18 @@
+Reviewer findings: speckl --root
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Target: the import-wiring slice. compileSpec already took rootDir. The CLI did not pass it. Working: speckl --root sets that option.
+
+Without --root, an import whose real path leaves the entry file's directory fails closed. --root widens the directory. --root / widens it to the whole filesystem. Absolute import paths stay rejected. A missing file, a cycle, a duplicate alias, an absolute path, a --root that is a file, and a --root that does not exist each exit non-zero. `cli-root.test.ts` checks the first stderr line. A missing import is `Compilation failed: Error: Parse error: cannot read import "./no-such.speckdl" (resolved <path>) at <file>:1`. No `.ts` file is written for those failures.
+
+`--root` edges in `cli-root.test.ts`:
+
+| --root | Behavior | Test |
+| --- | --- | --- |
+| directory that does not exist | exit non-zero. First stderr line: `Compilation failed: Error: Parse error: cannot read import root "<path>" (ENOENT)`. The path is the string that was passed. | rejects a --root directory that does not exist |
+| a file, or a symlink to a file | `realpath` succeeds, so the root is that file. A sibling import is `Compilation failed: Error: Parse error: import "<spec>" resolves outside the import root <file real path> at <entry>:1`. | rejects --root when the path is a file; follows a symlink passed as --root |
+| relative path | resolved from the process working directory (`resolve`, then `realpath`). `in/..` that lands on the directory containing the import compiles. A relative path that does not exist is the ENOENT line above, quoting the relative string. | resolves a relative --root from the working directory |
+| symlink to a directory | `realpath` follows it. Imports inside the target directory compile. | follows a symlink passed as --root |
+| outside the entry file's directory | an ancestor compiles an import that stays inside it. A directory that does not contain the imported file rejects that import as outside the root. An entry that itself sits outside the root still compiles when the import's real path is inside the root. | allows a --root outside the entry directory only for imports inside that root | `/proc/self/fd` still ignores only `ENOENT`, `ENOTDIR`, `EINVAL`, `EACCES`, `EPERM`, and `ENOSYS`, because that path is absent or unusable on macOS, Windows, and a mount that hides it. `EIO` still throws.
+
+Example files have no imports, so their compiled output is unchanged. The README, SPEC, and CHANGELOG name the flag. That text does not by itself change compiled output.

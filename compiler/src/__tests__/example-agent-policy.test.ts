@@ -222,11 +222,13 @@ describe('agent hook process', () => {
 });
 
 describe('agent signals', () => {
-  function awaitState(): string {
+  function awaitState(signerHex?: string): string {
     const dir = mkdtempSync(join(tmpdir(), 'speckl-sig-'));
     const state = join(dir, 'state.json');
-    // --dev: these cases use the DEV-only cli verifier.
-    expect(runSignal(agentDir, ['init', '--state', state, '--dev']).status).toBe(0);
+    // --dev: these cases use the DEV-only cli verifier. A signer hex, when
+    // passed, pins that key so file-drop will accept its signatures.
+    const pin = signerHex ? ['--signer', 'reviewer=' + signerHex] : [];
+    expect(runSignal(agentDir, ['init', '--state', state, '--dev', ...pin]).status).toBe(0);
     for (const [tool, id] of [['run_tests', '1'], ['request_review', '2']] as const) {
       expect(runHook(agentDir, 'pre', state, { tool, input: {}, call_id: id }).status).toBe(0);
       expect(runHook(agentDir, 'post', state, { tool, input: {}, call_id: id, ok: true }).status).toBe(0);
@@ -258,10 +260,10 @@ describe('agent signals', () => {
   });
 
   it('file-drop: good signature applies; bad sig / wrong signal / replay rejected', () => {
-    const state = awaitState();
-    const dir = path.dirname(state);
     const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
     const pubRaw = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
+    const state = awaitState(pubRaw.toString('hex'));
+    const dir = path.dirname(state);
     const pubFile = join(dir, 'reviewer.pub');
     writeFileSync(pubFile, pubRaw);
 
@@ -290,7 +292,7 @@ describe('agent signals', () => {
     expect(replay.stderr).toMatch(/replay|not in an await/);
 
     // fresh await for bad-sig / wrong-signal checks
-    const state2 = awaitState();
+    const state2 = awaitState(pubRaw.toString('hex'));
     const badFile = join(dir, 'bad.json');
     writeFileSync(badFile, body);
     writeFileSync(badFile + '.sig', crypto.randomBytes(64));

@@ -61,6 +61,17 @@ describe('a valid keyless signature', () => {
     expect(r.signal.evidence).toBe(`sigstore:${bundleSha}:rekor:${r.signal.rekor.logIndex}:${r.signal.rekor.entryUuid}`);
     expect(r.signal.rekor.entryUuid).toMatch(/^[0-9a-f]{64}$/);
     expect(r.signal.rekor.logId).toMatch(/^[0-9a-f]{64}$/);
+    expect(r.signal.call).toBeUndefined();
+  });
+
+  it('returns a call digest from the signed drop and refuses a malformed one', async () => {
+    const digest = 'ab'.repeat(32);
+    const file = await drop({ call: digest.toUpperCase() });
+    const r = await verify({ file }, expectReview, ctx());
+    expect(r.ok, r.reason).toBe(true);
+    expect(r.signal.call).toBe(digest);
+    const bad = await verify({ file: await drop({ call: 'nope' }) }, expectReview, ctx());
+    expect(bad).toEqual({ ok: false, reason: 'payload call must be a 64-char sha256 hex digest' });
   });
 
   it('accepts --bundle at another path and an anchored identityRegExp when configured', async () => {

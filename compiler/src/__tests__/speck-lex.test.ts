@@ -1,0 +1,167 @@
+import { describe, expect, it } from 'vitest';
+import { lexSpeck } from '../speck-lex.js';
+
+function kinds(src: string): string[] {
+  return lexSpeck(src).tokens.map(t => t.kind === 'punct' || t.kind === '{' || t.kind === '}' ? t.text : `${t.kind}:${t.text}`);
+}
+
+describe('speck lexer', () => {
+  it('does not emit a brace that sits in a string, a line comment, or a block comment', () => {
+    const src = [
+      'speck S {',
+      '  // brace } here',
+      '  state { n: Nat }',
+      '  action Go { n := "{}" }',
+      '  /* } { */',
+      '}',
+      '',
+    ].join('\n');
+    const braces = lexSpeck(src).tokens.filter(t => t.kind === '{' || t.kind === '}').map(t => `${t.kind}@${t.line}`);
+    expect(braces).toEqual(['{@1', '{@3', '}@3', '{@4', '}@4', '}@6']);
+  });
+
+  it('treats a prime as prime notation, not a string quote', () => {
+    expect(kinds("n' >= n")).toEqual(['ident:n', "prime:'", '>', '=', 'ident:n']);
+  });
+
+  it('keeps a duration suffix as a number plus a unit, and rejects other numeric forms', () => {
+    expect(kinds('24h 500ms 1.5h')).toEqual(['number:24', 'ident:h', 'number:500', 'ident:ms', 'number:1.5', 'ident:h']);
+    expect(() => lexSpeck('1e5')).toThrow(/unsupported numeric literal "1e5"/);
+    expect(() => lexSpeck('0x1F')).toThrow(/unsupported numeric literal "0x1F"/);
+    expect(() => lexSpeck('1_000')).toThrow(/unsupported numeric literal "1_000"/);
+    expect(() => lexSpeck('5min')).toThrow(/unsupported numeric literal "5min"/);
+    expect(() => lexSpeck('9A')).toThrow(/identifier must not start with a digit/);
+  });
+
+  it('reports an unclosed string on the line where it opened', () => {
+    expect(() => lexSpeck('speck S {\n  s := "abc\n}\n', 'open.speckdl')).toThrow(
+      /Parse error at open\.speckdl:2: unterminated string \(column 8\)/,
+    );
+  });
+
+  it('reports an unclosed block comment on the line where it opened', () => {
+    expect(() => lexSpeck('speck S {\n  /* oops\n}\n', 'open.speckdl')).toThrow(
+      /Parse error at open\.speckdl:2: unterminated block comment \(column 3\)/,
+    );
+  });
+
+  it('treats a slash-star inside an open block comment as comment text', () => {
+    const lexed = lexSpeck('/* outer /* still */ speck S {\n}\n');
+    expect(lexed.tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
+    expect(lexed.headerAfterComment).toEqual([]);
+  });
+
+  it('records a header that follows a comment closer at the start of the line', () => {
+    const lexed = lexSpeck('/* note\n*/ speck S {\n}\n');
+    expect(lexed.headerAfterComment).toEqual([2]);
+    const later = lexSpeck('keep /* note */ speck S {\n}\n');
+    expect(later.headerAfterComment).toEqual([]);
+  });
+
+  it('rejects a non-ASCII identifier and keeps non-ASCII inside a comment or a string', () => {
+    expect(() => lexSpeck('speck Größe {\n}\n', 'id.speckdl')).toThrow(
+      /Parse error at id\.speckdl:1: identifier must be ASCII \(column 9\)/,
+    );
+    const kept = lexSpeck('// Größe\nspeck S { s := "Größe" }\n');
+    expect(kept.tokens.find(t => t.kind === 'string')?.text).toBe('"Größe"');
+  });
+
+  it('strips a leading byte-order mark before the first token', () => {
+    expect(lexSpeck('\uFEFFspeck S {\n}\n').tokens[0]).toMatchObject({ kind: 'ident', text: 'speck', column: 1 });
+  });
+
+  it('rejects a byte-order mark after the first line and keeps a NUL as a token', () => {
+    let bom = '';
+    try {
+      lexSpeck('speck S {\n  \uFEFFx\n}\n', 'n.speckdl');
+    } catch (err) {
+      bom = (err as Error).message;
+    }
+    expect(bom).toBe('Parse error at n.speckdl:2: unexpected character "\uFEFF" (column 3)');
+
+    const nul = lexSpeck('speck S {\n  x\u0000\n}\n', 'n.speckdl').tokens.find(t => t.text === '\0');
+    expect(nul).toMatchObject({ kind: 'punct', line: 2, column: 4 });
+    expect(lexSpeck('speck S { s := "a\u0000b" }\n').tokens.find(t => t.kind === 'string')?.text).toBe('"a\u0000b"');
+    expect(lexSpeck('// a\u0000b\nspeck S {\n}\n').tokens.some(t => t.text.includes('\0'))).toBe(false);
+  });
+
+  it('treats CRLF as a line break and does not let a comment swallow the next line', () => {
+    const src = 'speck S {\r\n  // brace }\r\n  state { n: Nat }\r\n}\r\n';
+    const braces = lexSpeck(src).tokens.filter(t => t.kind === '{' || t.kind === '}').map(t => `${t.kind}@${t.line}`);
+    expect(braces).toEqual(['{@1', '{@3', '}@3', '}@4']);
+    expect(lexSpeck(src).tokens.filter(t => t.kind === 'ident').map(t => t.text)).toContain('state');
+  });
+
+  it('skips a tab as whitespace and keeps a tab inside a string', () => {
+    const src = 'speck\tS\t{\n\tstate { n: Nat }\n}\n';
+    expect(lexSpeck(src).tokens.filter(t => t.kind === 'ident' || t.kind === '{' || t.kind === '}').map(t => t.text))
+      .toEqual(['speck', 'S', '{', 'state', '{', 'n', 'Nat', '}', '}']);
+    expect(lexSpeck('s := "a\tb"\n').tokens.find(t => t.kind === 'string')?.text).toBe('"a\tb"');
+  });
+
+  it('rejects an unterminated string that stops at CR, and a string that never closes', () => {
+    expect(() => lexSpeck('s := "abc\r\n', 'cr.speckdl')).toThrow(
+      /Parse error at cr\.speckdl:1: unterminated string \(column 6\)/,
+    );
+    expect(() => lexSpeck('s := "abc', 'eof.speckdl')).toThrow(
+      /Parse error at eof\.speckdl:1: unterminated string \(column 6\)/,
+    );
+  });
+
+  it('rejects a non-ASCII identifier after a tab, and keeps a non-ASCII string on a CRLF line', () => {
+    expect(() => lexSpeck('\tspeck Größe {\r\n}\r\n', 'id.speckdl')).toThrow(
+      /Parse error at id\.speckdl:1: identifier must be ASCII \(column 10\)/,
+    );
+    expect(lexSpeck('s := "Größe"\r\n').tokens.find(t => t.kind === 'string')?.text).toBe('"Größe"');
+    expect(lexSpeck('// Größe\r\nspeck S {\r\n}\r\n').tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
+  });
+
+  it('keeps an escaped quote and a comment marker inside a string', () => {
+    const escaped = lexSpeck('s := "a\\"b"\n');
+    expect(escaped.tokens.find(t => t.kind === 'string')).toMatchObject({ text: '"a\\"b"', column: 6 });
+    const marked = lexSpeck('s := "a//b" // }\n');
+    expect(marked.tokens.filter(t => t.kind === '{' || t.kind === '}').length).toBe(0);
+    expect(marked.tokens.find(t => t.kind === 'string')?.text).toBe('"a//b"');
+  });
+
+  it('keeps a hyphenated name as one identifier and a spaced hyphen as minus', () => {
+    expect(kinds('my-speck')).toEqual(['ident:my-speck']);
+    expect(kinds('n - 1')).toEqual(['ident:n', '-', 'number:1']);
+  });
+
+  it('rejects an unexpected character and counts columns after CRLF', () => {
+    expect(() => lexSpeck('speck S { § }\n', 'mark.speckdl')).toThrow(
+      /Parse error at mark\.speckdl:1: unexpected character "§" \(column 11\)/,
+    );
+    const second = lexSpeck('speck S {\r\n  n: Nat\r\n}\r\n');
+    expect(second.tokens.find(t => t.text === 'n')).toMatchObject({ line: 2, column: 3 });
+    expect(() => lexSpeck('speck S {\n §\n}\n', 'mark.speckdl')).toThrow(
+      'Parse error at mark.speckdl:2: unexpected character "§" (column 2)',
+    );
+  });
+
+  it('sees a brace after an escaped quote and ignores a brace inside the string', () => {
+    const src = 's := "a\\"b}" }\n';
+    const lexed = lexSpeck(src);
+    expect(lexed.tokens.filter(t => t.kind === 'string').map(t => t.text)).toEqual(['"a\\"b}"']);
+    const braces = lexed.tokens.filter(t => t.kind === '}');
+    expect(braces).toHaveLength(1);
+    expect(braces[0].column).toBe(src.lastIndexOf('}') + 1);
+  });
+
+  it('emits no tokens for an empty file or a file that is only comments', () => {
+    expect(lexSpeck('').tokens).toEqual([]);
+    expect(lexSpeck('// only\n/* and a } */\n').tokens).toEqual([]);
+  });
+
+  it('splits a second dot off a decimal, skips an ideographic space, and does not close a comment on slash-star-slash', () => {
+    expect(lexSpeck('1.5.2').tokens.map(t => `${t.kind}:${t.text}@${t.column}`)).toEqual([
+      'number:1.5@1', 'punct:.@4', 'number:2@5',
+    ]);
+    expect(lexSpeck('speck\u3000S {\n}\n').tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
+    expect(lexSpeck('/*/ still */ speck S {\n}\n').tokens.map(t => t.text)).toEqual(['speck', 'S', '{', '}']);
+    expect(() => lexSpeck('x /*/\n', 'c.speckdl')).toThrow(
+      'Parse error at c.speckdl:1: unterminated block comment (column 3)',
+    );
+  });
+});

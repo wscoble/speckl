@@ -7,9 +7,10 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import {
-  AST, SpeckNode, ActionNode, AgentMemberNode, StateNode,
+  AST, SpeckNode, ActionNode, AgentMemberNode, AgentPrompt, StateNode, DomainNode,
 } from '../../parser.js';
 import { generateTypeScriptStateMachine } from '../typescript-state-machine.js';
+import { guardAst } from '../../conservation.js';
 import { injectSignalActions, isSignalActionName, signalActionName } from './inject-signals.js';
 import { emitHookMjs } from './hook-template.js';
 import { emitSignalMjs } from './signal-template.js';
@@ -30,6 +31,7 @@ export interface AgentGenerateOptions {
 }
 
 export function generateAgent(ast: AST, options: AgentGenerateOptions): void {
+  guardAst('agent', ast);
   const injected = injectSignalActions(ast);
   for (const speck of injected.specks) {
     const agent = speck.members.find((m): m is AgentMemberNode => m.type === 'agent');
@@ -37,14 +39,34 @@ export function generateAgent(ast: AST, options: AgentGenerateOptions): void {
       console.log(`  skip ${speck.name}: no agent { } block`);
       continue;
     }
-    emitAgentForSpeck(speck, agent, options);
+    // Snapshot each prompt once, before any output is written.
+    const resolvedAgent: AgentMemberNode = {
+      ...agent,
+      instructions: agent.instructions?.map(p => resolvePrompt(p, options.sourcePath)),
+      prompts: agent.prompts?.map(p => ({ ...p, prompt: resolvePrompt(p.prompt, options.sourcePath) })),
+      tools: agent.tools.map(t => t.description === undefined ? t : { ...t, description: resolvePrompt(t.description, options.sourcePath) }),
+    };
+    emitAgentForSpeck(speck, resolvedAgent, options, ast.domains ?? []);
   }
+}
+
+function resolvePrompt(prompt: AgentPrompt, sourcePath?: string): string {
+  if (typeof prompt === 'string') return prompt;
+  const file = prompt.file;
+  if (!file || path.isAbsolute(file) || path.win32.isAbsolute(file) || /^[a-z][a-z\d+.-]*:/i.test(file)) {
+    throw new Error(`Prompt file must be a non-empty relative local path: ${JSON.stringify(file)}`);
+  }
+  if (!sourcePath) throw new Error(`Cannot resolve prompt file ${JSON.stringify(file)} without a spec source path`);
+  const resolved = path.resolve(path.dirname(sourcePath), file);
+  try { return fs.readFileSync(resolved, 'utf8'); }
+  catch (error) { throw new Error(`Cannot read prompt file ${JSON.stringify(file)} relative to spec ${JSON.stringify(sourcePath)}: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 function emitAgentForSpeck(
   speck: SpeckNode,
   agent: AgentMemberNode,
   options: AgentGenerateOptions,
+  domains: DomainNode[],
 ): void {
   const agentDir = path.join(options.outputDir, 'agent');
   fs.mkdirSync(path.join(agentDir, 'verifiers'), { recursive: true });
@@ -65,11 +87,11 @@ function emitAgentForSpeck(
 
   const actions = speck.members.filter((m): m is ActionNode => m.type === 'action');
   const state = speck.members.find((m): m is StateNode => m.type === 'state');
-  const config = buildConfig(speck, agent, actions, state, specHash);
+  const config = buildConfig(speck, agent, actions, state, specHash, domains);
   fs.writeFileSync(path.join(agentDir, 'agent-config.json'), JSON.stringify(config, null, 2) + '\n');
 
-  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(agent, actions), null, 2) + '\n');
-  fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), buildAgentsMd(speck, agent, config, specHash));
+  fs.writeFileSync(path.join(agentDir, 'tools.json'), JSON.stringify(buildToolsJson(speck, agent, actions, domains, options.sourcePath), null, 2) + '\n');
+  fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), buildAgentsMd(speck, agent, config, specHash, options.sourcePath));
   fs.writeFileSync(path.join(agentDir, 'hook.mjs'), emitHookMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'signal.mjs'), emitSignalMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'state-integrity.mjs'), emitStateIntegrityMjs());
@@ -133,7 +155,7 @@ export interface AgentRuntimeConfig {
   machineExport: string;
   stageVariable: string;
   stages: Record<string, number>;
-  tools: { name: string; action: string; effect: 'act' | 'observe' }[];
+  tools: { name: string; action: string; effect: 'act' | 'observe'; priority?: string; kpis?: string[] }[];
   /** In-flight tool calls older than this are cleared as failed. */
   pendingTimeout: { durationMs: number; durationText: string };
   /** Compiled `harness` blocks; present only when the spec declares one. */
@@ -149,7 +171,63 @@ export interface AgentRuntimeConfig {
     claims: { name: string; typeName: string }[];
     on: { outcome: string; target: string; targetValue: number; action: string }[];
     timeout?: { durationMs: number; durationText: string; outcome: string };
+    /** Outcomes that require a call digest. Empty = stage-level sign-off. */
+    bindCall: string[];
   }[];
+}
+
+/**
+ * Events this action emits on the generated agent machine.
+ * Only a straight-line `emit Name` counts. An `emit` inside an `if`
+ * or `for` does not: those bodies are not run by the machine. An `emit`
+ * in a comment is not an emit statement. The list stops at `return`.
+ */
+function emittedEventNames(action: ActionNode): string[] {
+  const names: string[] = [];
+  for (const s of action.statements) {
+    if (s.type === 'return') break;
+    if (s.type === 'emit') names.push(s.event);
+  }
+  return names;
+}
+
+/**
+ * Priority is the action's `priority` label, otherwise the domain's.
+ * KPIs are the tags on events this action emits with a straight-line
+ * `emit`, in source order, once each. Both are omitted when absent.
+ * This does not write the decision line. The hook does that.
+ */
+function toolAnnotations(
+  speck: SpeckNode,
+  action: ActionNode | undefined,
+  domains: DomainNode[],
+): { priority?: string; kpis?: string[] } {
+  if (!action) return {};
+  let priority: string | undefined;
+  for (const s of action.statements) {
+    if (s.type === 'priority') priority = s.name;
+  }
+  if (!priority) {
+    const domain = domains.find(d => d.members.includes(speck.name));
+    if (domain?.priority) priority = domain.priority;
+  }
+  const kpiByEvent = new Map<string, string>();
+  for (const m of speck.members) {
+    if (m.type === 'event' && m.kpi) kpiByEvent.set(m.name, m.kpi);
+  }
+  const kpis: string[] = [];
+  const seen = new Set<string>();
+  for (const name of emittedEventNames(action)) {
+    const kpi = kpiByEvent.get(name);
+    if (kpi && !seen.has(kpi)) {
+      seen.add(kpi);
+      kpis.push(kpi);
+    }
+  }
+  return {
+    ...(priority ? { priority } : {}),
+    ...(kpis.length > 0 ? { kpis } : {}),
+  };
 }
 
 function buildConfig(
@@ -158,6 +236,7 @@ function buildConfig(
   _actions: ActionNode[],
   _state: StateNode | undefined,
   specHash: string,
+  domains: DomainNode[],
 ): AgentRuntimeConfig {
   const labels = new Map((agent.stages?.labels ?? []).map(l => [l.name, l.value]));
   const stageVariable = agent.stages?.variable ?? 'stage';
@@ -171,7 +250,10 @@ function buildConfig(
     machineExport: `${speck.name}Machine`,
     stageVariable,
     stages,
-    tools: agent.tools.map(t => ({ name: t.name, action: t.action, effect: t.effect })),
+    tools: agent.tools.map(t => {
+      const action = _actions.find(a => a.name === t.action);
+      return { name: t.name, action: t.action, effect: t.effect, ...toolAnnotations(speck, action, domains) };
+    }),
     pendingTimeout: agent.pendingTimeout
       ? { ...agent.pendingTimeout }
       : { durationMs: DEFAULT_PENDING_TIMEOUT_MS, durationText: DEFAULT_PENDING_TIMEOUT_TEXT },
@@ -190,6 +272,7 @@ function buildConfig(
         action: signalActionName(a.signal, o.outcome),
       })),
       timeout: a.timeout ? { ...a.timeout } : undefined,
+      bindCall: [...a.bindCall],
     })),
   };
   if (agent.harnesses && agent.harnesses.length > 0) {
@@ -273,7 +356,7 @@ function listWords(words: string[]): string {
   return words.length <= 2 ? words.join(' and ') : words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
 }
 
-function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
+function buildToolsJson(speck: SpeckNode, agent: AgentMemberNode, actions: ActionNode[], domains: DomainNode[], sourcePath?: string) {
   const byName = new Map(actions.map(a => [a.name, a]));
   return {
     tools: agent.tools.map(t => {
@@ -286,14 +369,14 @@ function buildToolsJson(agent: AgentMemberNode, actions: ActionNode[]) {
       }
       return {
         name: t.name,
-        description: `SpeckDL action ${t.action} (${t.effect})`,
+        description: [t.description !== undefined ? resolvePrompt(t.description, sourcePath) : '', ...(agent.prompts ?? []).filter(p => p.tool === t.name).map(p => { const scope = [p.stage && `stage ${p.stage}`, p.await && `await ${p.await}`].filter(Boolean).join(', '); return (scope ? `[Advisory: ${scope}]\n` : '') + resolvePrompt(p.prompt, sourcePath); })].filter(Boolean).join('\n\n') || `SpeckDL action ${t.action} (${t.effect})`,
         inputSchema: {
           type: 'object',
           properties,
           required,
           additionalProperties: false,
         },
-        'x-speckl': { action: t.action, effect: t.effect },
+        'x-speckl': { action: t.action, effect: t.effect, ...toolAnnotations(speck, action, domains) },
       };
     }),
   };
@@ -321,6 +404,7 @@ function buildAgentsMd(
   agent: AgentMemberNode,
   config: AgentRuntimeConfig,
   specHash: string,
+  sourcePath?: string,
 ): string {
   const lines: string[] = [];
   lines.push(`# AGENTS.md — ${speck.name}`);
@@ -332,6 +416,16 @@ function buildAgentsMd(
   lines.push(`- Spec hash: \`${specHash.slice(0, 16)}…\``);
   lines.push(`- Stage variable: \`${config.stageVariable}\``);
   lines.push('');
+  if (agent.instructions?.length) {
+    lines.push('## How to do the work');
+    lines.push('');
+    lines.push('These instructions are advisory; the hooks enforce the rails below.');
+    lines.push('');
+    for (const instruction of agent.instructions) {
+      lines.push(resolvePrompt(instruction, sourcePath));
+      lines.push('');
+    }
+  }
   lines.push('## Tools');
   lines.push('');
   lines.push('| Tool | Action | Effect |');
@@ -340,6 +434,18 @@ function buildAgentsMd(
     lines.push(`| \`${t.name}\` | \`${t.action}\` | ${t.effect} |`);
   }
   lines.push('');
+  for (const t of agent.tools) {
+    const prompts = (agent.prompts ?? []).filter(p => p.tool === t.name && !p.await);
+    if (t.description === undefined && prompts.length === 0) continue;
+    lines.push(`### Tool \`${t.name}\``);
+    lines.push('');
+    if (t.description !== undefined) { lines.push(resolvePrompt(t.description, sourcePath)); lines.push(''); }
+    for (const p of prompts) {
+      const binding = [p.stage && `stage \`${p.stage}\``, p.await && `await \`${p.await}\``].filter(Boolean).join(', ');
+      if (binding) lines.push(`_Applies to ${binding} (advisory)._`, '');
+      lines.push(resolvePrompt(p.prompt, sourcePath), '');
+    }
+  }
   lines.push('Unlisted actions are **refused** (fail closed).');
   lines.push('');
   lines.push('## Wait states (HITL / HNTL)');
@@ -363,6 +469,13 @@ function buildAgentsMd(
       if (a.timeout) {
         lines.push(`- Timeout \`${a.timeout.durationText}\` → \`${a.timeout.outcome}\` (must be a \`!\`-marked reject outcome)`);
       }
+      if (a.bindCall.length > 0) {
+        lines.push(`- Call-bound: ${a.bindCall.map(o => `\`${o}\``).join(', ')} (the signed drop carries \`call\`, the sha256 of one canonical tool call; the hook allows that call once)`);
+      }
+      for (const p of (agent.prompts ?? []).filter(p => p.await === a.state)) {
+        lines.push(`#### Tool \`${p.tool}\`${p.stage ? ` — stage \`${p.stage}\`` : ''}`);
+        lines.push('', resolvePrompt(p.prompt, sourcePath), '');
+      }
       lines.push('');
     }
   }
@@ -373,9 +486,10 @@ function buildAgentsMd(
     lines.push('Calls that match no line are **denied**. A matched command must be one plain');
     lines.push('command: `;`, `&`, `|`, backticks, `$`, `<`, `>` and newlines are refused.');
     const dirs = harnessProtectedDirs(Object.keys(config.harness));
-    if (dirs.length === 4) {
+    const extras = dirs.filter(d => d !== '.claude' && d !== '.cursor' && d !== '.codex' && d !== '.gemini' && d !== '.speckl/harness-install');
+    if (extras.length === 0) {
       lines.push('The rails themselves (this directory, the state file, its key, `.claude/`,');
-      lines.push('`.cursor/`, `.codex/`, `.gemini/`) are off limits to every tool. Make one tool');
+      lines.push('`.cursor/`, `.codex/`, `.gemini/` and `.speckl/harness-install/`) are off limits to every tool. Make one tool');
       lines.push('call at a time.');
     } else {
       lines.push('The rails themselves (this directory, the state file, its key and the harness');
@@ -415,26 +529,73 @@ function buildAgentsMd(
   lines.push('```');
   lines.push('');
   lines.push('- exit 0 allow · exit 2 deny · exit 1 error (=deny)');
+  lines.push('- A deny reason names why, then the next step: not allowed in this stage; waiting on a');
+  lines.push('  sign-off (the signal name and the `signal.mjs apply` command a human runs — `--signer`');
+  lines.push('  for a pinned state, `--pubkey <pubkey>` only when the state has no pins; a call-bound');
+  lines.push('  sign-off uses that command and `sign call <digest>`); a failed');
+  lines.push('  precondition; or an internal error (fail closed). It does not include the state key,');
+  lines.push('  the key path (given, resolved, or the symlink target and its parent; a path under 8 characters is refused and the hook exits 2), the key file contents, or a signer key. The decision');
+  lines.push('  record stores that same redacted sentence. If the reason cannot be built, the call is still denied.');
   lines.push('- State advances only on `post` with `ok: true` and a matching pending call_id.');
   lines.push('- Spec-hash mismatch denies.');
+  lines.push('- After the state verifies, each allow and deny is appended to `<state>.decisions/`');
+  lines.push('  (SHA-256 chain, HMAC-SHA256 with the state key). That is a keyed record, not a');
+  lines.push('  signature a third party can check. A denial does not modify the state file.');
+  lines.push('  Calls that fail before the state verifies are denied and not recorded. If the');
+  lines.push('  record cannot be written, the call is denied. Within 256 KiB the hook rechecks');
+  lines.push('  the whole decision chain; past that it checks the keyed head and the last 64 KiB.');
+  lines.push('  `signal.mjs verify` always walks every line. A crash after the allow line is');
+  lines.push('  written and before `state.json` is replaced can leave an allow with no matching');
+  lines.push('  `state.log` entry; the process does not exit 0.');
   lines.push(`- A pending call older than \`${config.pendingTimeout.durationText}\` is cleared as failed (state not advanced);`);
   lines.push('  `signal.mjs clear-pending` clears one sooner, through a verified signal.');
+  lines.push('- On `post` of an `effect act` tool the decision line is a completion signal');
+  lines.push('  (`signal` is `prime`): `trace_id` from the matching allow `pre`, `branch_id`,');
+  lines.push('  `parent_branch_id`, `call_id`, `ok`, `ts`, and `priority` and `kpis` copied from');
+  lines.push('  the tool. The generator stored those. The hook does not scan the action body.');
+  lines.push('  A missing or ill-formed `trace_id` is a fresh flagged root. The call is');
+  lines.push('  not denied for that alone. An observe tool does not get these fields. A post');
+  lines.push('  with no matching pre is a deny and does not keep the caller\'s `ok`, `kpis`,');
+  lines.push('  or `trace_id`. The hook does not enforce a queue.');
   lines.push('');
   lines.push('## Tamper-evident state');
   lines.push('');
   lines.push('The state file is not trusted as written. Every change is appended to a');
   lines.push('hash-chained log; on load the hook and `signal.mjs` replay the log and check');
-  lines.push('that the machine, pending call, used nonces and applied evidence match it, and');
-  lines.push('verify an HMAC-SHA256 over the whole state. The key file (`--key` or');
+  lines.push('that the machine, pending call, used nonces, applied evidence, pinned signers');
+  lines.push('and any call-bound sign-off match it, and verify an HMAC-SHA256 over the');
+  lines.push('whole state. The key file (`--key` or');
   lines.push('`SPECKL_STATE_KEY_FILE`) must be readable by the hook and signal tooling and');
   lines.push('**not by the agent**. Any mismatch, a missing signature or a missing key denies');
   lines.push('(exit 2). Editing `state.json` by hand (e.g. setting the stage) is refused.');
+  lines.push('');
+  lines.push('Allows and denies after the state verifies are recorded again, separately, in');
+  lines.push('`<state>.decisions/`, HMAC-SHA256 with the same key. Anyone who can read the key');
+  lines.push('can rebuild that record; it is not third-party proof and it is not replayed into');
+  lines.push('the machine, so a denial cannot advance the spec or rewrite `state.json`. Denials');
+  lines.push('before the state verifies are not recorded. Past 256 KiB the hook checks the keyed');
+  lines.push('head and the last 64 KiB; `verify` still walks every line. A crash between the');
+  lines.push('allow line and the `state.json` rename can leave an allow with no matching');
+  lines.push('`state.log` entry. A signer rotation is a `state.log` entry (`signers`), not a');
+  lines.push('decision line. A bound-call mismatch deny and the later allow of the matching');
+  lines.push('call are decision lines; the binding itself stays in `state.log`.');
+  lines.push('`node signal.mjs verify --state <file>` replays both and checks both chains.');
   lines.push('');
   lines.push('## Who may record a signal');
   lines.push('');
   lines.push('Signals are recorded with `signal.mjs`, never by the agent. Production must use a');
   lines.push('**signed** verifier (`file-drop` or a plug-in); a signed drop is bound to this');
   lines.push('run (`run`), expires (`expires`) and is single-use (`nonce`).');
+  lines.push('An outcome marked `bind call` is narrower: the drop also carries `call`, the');
+  lines.push('sha256 of one canonical tool call, and the hook allows that call once. The');
+  lines.push('signature is still checked against the pinned signers. Expiry is checked');
+  lines.push('when the drop is applied, not when that call later runs. A sign-off');
+  lines.push('without `bind call` is unchanged, and a `call` hash on one is refused.');
+  lines.push('');
+  lines.push('`signal.mjs init --signer name=pubkey` (repeatable) pins the ed25519 keys that');
+  lines.push('`file-drop` will accept. The set is sealed into the state at init. A signature');
+  lines.push('from any other key is refused, including a `--pubkey` passed on the command');
+  lines.push('line. `rotate-signers` replaces the set; only a current pinned key can authorize it.');
   lines.push('');
   lines.push('> **DEV ONLY — `cli` verifier.** `--verifier cli` (and unsigned file drops) are');
   lines.push('> refused unless the state file was created with `signal.mjs init --dev`. Anyone');
@@ -462,6 +623,15 @@ the hook. Contract (runtime-agnostic):
 echo '{"tool":"run_tests","input":{},"call_id":"1"}' \\
   | node hook.mjs pre --state ./state.json
 # exit 0 → allow; exit 2 → deny (JSON reason on stdout + stderr); exit 1 → error/deny
+# The reason says which of these happened, then what to do: not allowed in this
+# stage; waiting on a sign-off (the signal and the exact signal.mjs apply
+# command). A pinned state names the signer and does not offer --pubkey.
+# A state with no pins still says --pubkey <pubkey>. A call-bound sign-off
+# uses that same command and shows sign call <digest>. A failed precondition
+# or an internal error (fail closed) has its own next step.
+# It does not include the state key, the key path (given, resolved, or the symlink target and its parent; a path under 8 characters is refused and the hook exits 2), signer key material, or the state contents.
+# The decision record stores that same redacted sentence.
+# See docs/agent-signals.md.
 
 # After the tool finishes:
 echo '{"tool":"run_tests","input":{},"call_id":"1","ok":true}' \\
@@ -473,12 +643,21 @@ Initialize state once (prints the run id signed drops must carry):
 \`\`\`
 # production: signed state + signed verifiers only. The key file is created if
 # missing; keep it (and SPECKL_STATE_KEY_FILE) out of the agent's reach.
-node signal.mjs init --state ./state.json --key /etc/speckl/state.key
+# --signer (repeatable) pins the ed25519 public keys that may sign file-drop
+# approvals. The set is sealed into this state; apply cannot choose another.
+node signal.mjs init --state ./state.json --key /etc/speckl/state.key \\
+  --signer carol=./keys/carol.pub
 # DEV ONLY: also allows the cli verifier; without --key the state is unsigned
 node signal.mjs init --state ./state.json --dev
 
 # Pass the same key to every hook/signal call (or set SPECKL_STATE_KEY_FILE):
 export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
+
+# State chain plus the decision record. The record is an HMAC with the state
+# key, not a third-party signature. It is empty until the first verdict after
+# the state verifies; denials before that are not recorded. verify walks every
+# decision line (the hook's check stops at the tail once the log passes 256 KiB).
+node signal.mjs verify --state ./state.json
 \`\`\`
 
 ## Signals (HITL / HNTL)
@@ -486,18 +665,30 @@ export SPECKL_STATE_KEY_FILE=/etc/speckl/state.key
 The spec never names a human action. It waits for a **verified signal**.
 
 \`\`\`
-# File-drop verifier (ed25519-signed JSON; evidence = file sha256)
+# File-drop verifier (ed25519-signed JSON; evidence = file sha256).
+# The signature must be from a key pinned at init. --pubkey is optional and,
+# if passed, must be one of those keys — it does not add a trust anchor.
 node signal.mjs apply --state ./state.json --verifier file-drop \\
-  --file ./inbox/review.json --pubkey ./keys/reviewer.pub
+  --file ./inbox/review.json
 # The signed JSON names its signal and is bound to this run:
 #   {"signal":"${first?.signal ?? 'review'}","outcome":"...","claims":{...},
 #    "run":"<run id from init>","expires":"<ISO-8601>","nonce":"<unique>"}
+# When the await says \`bind call\` for that outcome, the same object also
+# carries "call":"<sha256>". Compute it (this prints the digest and the exact
+# preimage) and sign the whole file. The signature must still be from a
+# pinned key. Expiry is checked here, not when the bound call later runs.
+#   echo '{"tool":"open_pr","input":{}}' | node signal.mjs digest
 
 # CLI verifier — DEV ONLY (state must be created with init --dev). Whoever can
 # run this can approve, including an agent with shell access.
 node signal.mjs apply --state ./state.json --verifier cli \\
   --outcome ${outcome} --as alice${claimFlags}
 \`\`\`
+
+To replace the pinned set, a current signer signs a \`rotate-signers\` drop
+(\`{"signal":"rotate-signers","outcome":"rotate","signers":[{"name":"…","key":"<hex>"}], …}\`)
+and someone runs \`signal.mjs rotate-signers --verifier file-drop --file <drop>\`.
+Any one pinned key can sign; this is not a threshold. See \`docs/agent-signals.md\`.
 
 ## Stuck tool calls
 
@@ -507,7 +698,7 @@ until it is cleared. It clears itself as failed after the pending timeout
 
 \`\`\`
 node signal.mjs clear-pending --state ./state.json --verifier file-drop \\
-  --file ./inbox/clear.json --pubkey ./keys/reviewer.pub
+  --file ./inbox/clear.json
 #   {"signal":"clear-pending","call_id":"<pending id>","run":"...","expires":"...","nonce":"..."}
 \`\`\`
 

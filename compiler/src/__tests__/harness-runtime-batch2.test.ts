@@ -2,6 +2,7 @@
 // adapter runtime (emitted verbatim into adapter.mjs).
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
+import { createHmac } from 'node:crypto';
 import {
   formatPre, formatPost, postSucceeded, harnessEventName, normalizePayload, normalizeToolInput,
   harnessCallId, harnessConfigFile, harnessProtectedDirs, buildHarnessHooks, mergeHarnessSettings,
@@ -25,6 +26,11 @@ function fakeDeps(files: Record<string, string> = {}, hook?: (cmd: string, msg: 
     agentDir: '/p/.speckl/agent',
     readFile: (p: string) => (p in files ? files[p] : null),
     writeFile: (p: string, t: string) => { files[p] = t; },
+    mac(keyText, text) {
+      const hex = String(keyText || '').trim();
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+      return createHmac('sha256', Buffer.from(hex, 'hex')).update(text).digest('hex');
+    },
   };
   return d;
 }
@@ -47,8 +53,8 @@ describe('event names and config files', () => {
     expect(harnessConfigFile('hermes')).toBe('config.yaml');
   });
   it('protects the config directories of the declared harnesses only', () => {
-    expect(harnessProtectedDirs(['claude-code'])).toEqual(['.claude', '.cursor', '.codex', '.gemini']);
-    expect(harnessProtectedDirs(['goose', 'copilot', 'goose'])).toEqual(['.claude', '.cursor', '.codex', '.gemini', '.agents/plugins', '.config/goose', '.github/hooks']);
+    expect(harnessProtectedDirs(['claude-code'])).toEqual(['.claude', '.cursor', '.codex', '.gemini', '.speckl/harness-install']);
+    expect(harnessProtectedDirs(['goose', 'copilot', 'goose'])).toEqual(['.claude', '.cursor', '.codex', '.gemini', '.agents/plugins', '.config/goose', '.github/hooks', '.speckl/harness-install']);
     expect(harnessProtectedDirs(['hermes'])).toContain('.hermes');
   });
 });
@@ -207,7 +213,7 @@ describe('hook wiring', () => {
 
 describe('install', () => {
   it('Copilot and Goose write absolute paths with --project; Goose adds plugin.json', () => {
-    const d = fakeDeps();
+    const d = fakeDeps({ '/k/state.key': 'cd'.repeat(32) + '\n' });
     const r = installHarness('copilot', { project: '.', state: '.speckl/state.json', key: '/k/state.key' }, d);
     expect(r.code).toBe(0);
     expect(JSON.parse(d.files['/p/.github/hooks/speckl.json']).hooks.preToolUse[0].bash).toContain('--project /p || exit 2');
@@ -231,6 +237,7 @@ describe('install', () => {
   });
   it('Hermes appends to an existing config, keeps foreign approvals, replaces its own', () => {
     const d = fakeDeps({
+      '/k': 'cd'.repeat(32) + '\n',
       '/h/config.yaml': 'model: x',
       '/h/shell-hooks-allowlist.json': JSON.stringify({ approvals: [{ event: 'on_session_start', command: '~/hello.sh' }, { event: 'pre_tool_call', command: 'node /old/adapter.mjs hermes pre --state s' }] }),
     });
@@ -251,7 +258,7 @@ describe('install', () => {
 
 describe('Goose user-scope plugin (--plugins-dir)', () => {
   it('installs speckl-<hash of project> with --outside allow', () => {
-    const d = fakeDeps();
+    const d = fakeDeps({ '/k': 'cd'.repeat(32) + '\n' });
     const r = installHarness('goose', { project: '.', state: '.speckl/state.json', key: '/k', 'plugins-dir': '/home/u/.agents/plugins' }, d);
     expect(r.code).toBe(0);
     const dir = Object.keys(d.files).find(f => f.endsWith('/plugin.json'))!;

@@ -61,7 +61,9 @@ describe('generated hook: malformed calls are denied', () => {
       const state = freshState(agentDir);
       const r = hook(agentDir, 'pre', state, msg);
       expect(r.status).toBe(2);
-      expect(r.body).toEqual({ decision: 'deny', reason: 'pre: tool and call_id are required' });
+      expect(r.body.decision).toBe('deny');
+      expect(r.body.reason).toContain('internal error (fail closed)');
+      expect(r.body.reason).toContain('pre: tool and call_id are required');
       // The deny happened before any state was recorded for the call.
       const after = hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: 'ok' });
       expect(after.status).toBe(0);
@@ -73,7 +75,8 @@ describe('generated hook: malformed calls are denied', () => {
     expect(hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: '1' }).status).toBe(0);
     const r = hook(agentDir, 'post', state, { tool: 'run_tests', ok: true });
     expect(r.status).toBe(2);
-    expect(r.body.reason).toBe('post: tool and call_id are required');
+    expect(r.body.reason).toContain('post: tool and call_id are required');
+    expect(r.body.reason).toContain('internal error (fail closed)');
     expect(stateOf(state).pending.call_id).toBe('1');
   });
 
@@ -83,7 +86,8 @@ describe('generated hook: malformed calls are denied', () => {
     const before = stateOf(state).machine;
     const r = hook(agentDir, 'post', state, { tool: 'request_review', call_id: '1', ok: true });
     expect(r.status).toBe(2);
-    expect(r.body.reason).toBe('post: tool does not match pending');
+    expect(r.body.reason).toContain('post: tool does not match pending');
+    expect(r.body.reason).toContain('internal error (fail closed)');
     expect(stateOf(state).machine).toEqual(before);
     expect(stateOf(state).pending.tool).toBe('run_tests');
   });
@@ -98,7 +102,9 @@ describe('generated hook: mode in (human in the loop)', () => {
     toAwaitingReview(agentDir, state);
     const r = hook(agentDir, 'pre', state, { tool: 'read_file', input: { path: 'README.md' }, call_id: 'r1' });
     expect(r.status).toBe(2);
-    expect(r.body.reason).toBe('HITL: no tools while awaiting signal review');
+    expect(r.body.reason).toContain('HITL: no tools while awaiting signal review');
+    expect(r.body.reason).toContain('waiting on a sign-off');
+    expect(r.body.reason).toContain('signal.mjs');
     expect(stateOf(state).pending).toBeNull();
   });
 });
@@ -116,7 +122,8 @@ describe('generated hook: pending timeout', () => {
     await new Promise(r => setTimeout(r, 1300));
     const r = hook(agentDir, 'post', state, { tool: 'run_tests', call_id: '1', ok: true });
     expect(r.status).toBe(2);
-    expect(r.body.reason).toBe('post: pending call expired; cleared as failed (state not advanced)');
+    expect(r.body.reason).toContain('post: pending call expired; cleared as failed (state not advanced)');
+    expect(r.body.reason).toContain('internal error (fail closed)');
     const after = stateOf(state);
     expect(after.pending).toBeNull();
     expect(after.machine).toEqual(before);
@@ -130,7 +137,7 @@ describe('generated hook: pending timeout', () => {
     expect(hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: '2' }).body.reason).toMatch(/already pending \(1\); it clears as failed after 1s/);
     await new Promise(r => setTimeout(r, 1300));
     // run_tests is still allowed (stage 0), request_review is not: the expired call did not advance.
-    expect(hook(agentDir, 'pre', state, { tool: 'request_review', input: {}, call_id: '3' }).body.reason).toMatch(/^can\(\) refused/);
+    expect(hook(agentDir, 'pre', state, { tool: 'request_review', input: {}, call_id: '3' }).body.reason).toMatch(/not allowed in this stage.*can\(\) refused/);
     expect(hook(agentDir, 'pre', state, { tool: 'run_tests', input: {}, call_id: '4' }).status).toBe(0);
   }, 20_000);
 });

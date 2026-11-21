@@ -1,0 +1,23 @@
+Reviewer findings: a speck that closes on its header line
+Question: does every behaviour that is correct on the target stay correct on this branch?
+
+Why. The old output was wrong. A `}` on the speck header did not end the speck. The line walker stepped one line and parsed the next speck's members as part of the first speck.
+
+Probe:
+
+```
+speck A { state { x: Nat } }
+speck B {
+    state {
+        y: Nat
+    }
+}
+```
+
+Target compiler (the invariant-comment change) stored A ending on line 5 with state field `y`, and B ending on line 6 with state field `y`. A's header `}` was ignored, so A took B's field. Working compiler stores A ending on line 1 with no members, and B ending on line 6 with `y`. A is empty because the one-line `state { x: Nat }` on the header is a separate change. B is its own speck.
+
+Example output does not change, so the output pin stays sha256 4d432ac8c74e6ad7371ac85d09f0266acd7e76cc9ae971b9ad858e8ee41f7c2a. It was not updated. No example uses a header-line `}`.
+
+Limits. `speck A { }` ends on line 1. A `}` inside a string on the header is not the close, and the following speck is still its own speck. Two specks on one line are `a second speck on one line`. A one-line state still stores no variables.
+
+`compiler/src/__tests__/header-close-edges.test.ts` pins the before shape and the after shape.

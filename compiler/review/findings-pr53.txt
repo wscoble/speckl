@@ -1,0 +1,55 @@
+Reviewer findings: PR 53 vs its target
+Question: does every behaviour that is correct on the target stay correct on the working branch? No previously valid input newly rejected or compiled differently, and no input that was handled correctly now silently dropped.
+
+Target: main 4f1e7fa
+Working: cursor/speckl-brace-scan-main-fb9b ad432b2913eb5e3f4542b063ba9583e94638eaf4
+Built both trees and ran compileSpec through each tree's own compiler/src/compile.ts.
+Examples: every examples/*.speckdl, targets typescript, z3, rust, go, protobuf, k8s, openapi, camel, elm, agent, all, all-ir.
+Probes: braces in strings and comments, unclosed string, unclosed block comment, one-line specks, malformed members, header after a block comment, prime notation, a brace in an agent instruction. Probe targets: typescript, go, z3, all.
+Before compare, ISO timestamps and absolute source/output paths were replaced. "Identical" means the normalized output files and the error text match.
+
+Result: 248 identical, 24 differ. Every example is identical on every target. No example regression.
+
+Differences, all probes:
+
+1. comment-and-string-braces.speckdl (typescript, go, all; z3 identical)
+   Target compiles. A `{` or `}` inside a // comment, a string, or a block comment is treated as structure, so action bodies are empty.
+   Working compiles. Those braces are skipped. TypeScript emits this.x = 1 and this.x = 2. Go emits m.x = 1 and m.x = 2. The following speck is still present.
+   Classification: intended fix. The target output was a silent drop. Z3 text did not change.
+
+2. agent-brace.speckdl (typescript, go, all; z3 identical)
+   Target compiles with empty Go() and Later(), because a `}` inside an agent instruction or description ended the block.
+   Working compiles and emits this.x = 1 and this.x = 2 (Go: m.x = 1 and m.x = 2).
+   Classification: intended fix. The target dropped the action bodies.
+
+3. prime-and-string.speckdl (typescript, go, all; z3 identical)
+   Target compiles and drops the action. A prime `n'` was treated as a string quote, so later braces were swallowed.
+   Working compiles and keeps the action body. The state field is still not linked, so TypeScript still has `const x: any = {} as any; // FIXME: parser dropped let/forall` and assigns that local. That FIXME is the same class of drop the line walker already had for a one-line state; it is not a new rejection.
+   Classification: intended fix of prime-not-a-quote. The remaining FIXME is the pre-existing one-line state limit, not a regression of a correct target output.
+
+4. one-line-action-comment.speckdl (typescript, go, all; z3 identical)
+   Target compiles with empty methods. A trailing `// }` was counted as the action close, so the statements were dropped.
+   Working compiles and emits the statements. TypeScript still uses the FIXME local above, because the one-line `state { x: Nat }` still stores no fields. Go emits the assignment.
+   Classification: intended fix of the comment brace. Partial: the statements are no longer dropped, and the unlinked state variable is the same limit as on the target.
+
+5. unclosed-string.speckdl (typescript, go, z3, all)
+   Target compiles (the unclosed quote is not an error).
+   Working rejects: Parse error at <file>:4: unterminated string
+   Classification: newly rejected bad input (fail-closed). The target's success was not a correct compile.
+
+6. unclosed-comment.speckdl (typescript, go, z3, all)
+   Target compiles.
+   Working rejects: Parse error at <file>:4: unterminated block comment
+   Classification: newly rejected bad input (fail-closed).
+
+7. header-after-comment.speckdl (typescript, go, z3, all)
+   The line is `*/ action Evil` after an open block comment, with `*/` the first text.
+   Target compiles.
+   Working rejects: Parse error at <file>:5: header is not at the start of the line
+   Classification: newly rejected bad input (fail-closed). A header after other text on the line is still outside this scan; this probe is the case the scan does reject.
+
+Identical probes (not a change):
+- one-line-alone.speckdl and one-line-then-next.speckdl. A speck that packs members on its header line still stores no members and can still absorb the following speck. Same as main. Documented limit, not a fix and not a regression.
+- malformed-member.speckdl (`actoin go`), malformed-state-field.speckdl (`y Nat`), malformed-init-eq.speckdl (`y = 0`), missing-close.speckdl, extra-close.speckdl. Both sides still accept them. The line walker does not newly reject these. Not a regression.
+
+No previously valid example was rejected or compiled differently. No correct output was silently dropped. No code change was required.

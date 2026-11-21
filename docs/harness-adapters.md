@@ -26,6 +26,16 @@ after every tool call. A `harness` block in the spec's `agent { }` makes
 
 `node adapter.mjs install <harness> ...` merges the wiring into the project's
 settings file with the right paths, keeping any hooks you already have.
+`--dry-run` prints every file it would create or change, and writes nothing.
+A file `install` modifies is copied into `.speckl/harness-install/backups/`
+first; the copy of what it wrote, and the record of which paths it created,
+live next to that. `uninstall` deletes a path only when that path is one
+`install` writes for this harness, it is inside the project, its real path
+stays inside the project, and neither it nor a parent directory is a symlink.
+The bytes still have to match the saved copy; a modified file is then put
+back from the backup. `status` reads the config, the key file and the state
+file. `doctor` does that and then runs the installed pre hook on a tool the
+spec does not map; it passes only when that hook denies the call.
 
 Pi, OpenCode and OpenClaw have no command hooks; they load JavaScript plugins
 in-process. For them `install` writes a small generated plugin that runs
@@ -37,6 +47,72 @@ Cline runs executable files named after the event from `.clinerules/hooks/`;
 `install cline` writes five small `sh` scripts there that pipe the payload to
 the adapter and turn anything but an explicit allow into a cancel. Kiro and
 Windsurf (Devin Desktop) run hook commands from JSON files, as the others do.
+
+## Checking, previewing and removing the wiring
+
+```bash
+node adapter.mjs install <harness> --project <dir> --state <file> [--key <file>] [--dry-run]
+node adapter.mjs status <harness> --project <dir> --state <file> [--key <file>]
+node adapter.mjs doctor <harness> --project <dir> --state <file> [--key <file>]
+node adapter.mjs uninstall <harness> --project <dir> [--key <file>]
+```
+
+Hermes still takes `--hermes-home`. Goose, Pi and OpenCode still take `--plugins-dir`
+on `install`, `status` and `doctor`. `uninstall` does not read those paths out of
+the record: it recomputes the paths `install` would write. A Hermes profile or a
+`--plugins-dir` that is outside the project is not deleted.
+
+- `--dry-run` prints `create` or `modify` for each harness file, a unified diff,
+  the backup path, and `dry-run: no files written`.
+- `install` copies the previous bytes of any file it changes to
+  `.speckl/harness-install/backups/<harness>/` and keeps that first backup on a
+  later install. It also saves exactly the bytes it wrote. It does not weaken
+  the hook: a refusal (bad JSON, a file Speckl did not write, a record it does
+  not understand) still writes nothing.
+- `status` reports whether the Speckl pre hook is in the config, whether the
+  key file is 64 hex characters (it does not print the key), and the state's
+  run id, stage and pending tool. `mac=present` means the signature field is
+  there. It does not replay the log. The key path is printed as `<keyfile>`:
+  stdout and stderr go through the same redaction as a denial, including the
+  resolved path and a symlink target. The state path and the harness config
+  path are still printed.
+- `doctor` does the same checks, then runs **the installed pre command** with
+  a tool name the spec does not map. It exits 0 only when that command's output
+  contains the adapter's unmapped-tool deny **and** the reply is the block that
+  harness actually enforces. For an exit of 0 that means: Cline `cancel: true`
+  (boolean), Pi, OpenCode and OpenClaw `decision: "block"`, Cursor
+  `permission: "deny"`. Any other exit 0 is `FAIL OPEN`, even when the deny
+  text appears somewhere in the output. Claude Code, Codex, Gemini, Copilot,
+  Goose, Hermes, Kiro and Windsurf block with exit 2, so doctor treats every
+  exit 0 from them as `FAIL OPEN`. Exit 0 with the right block field but
+  without the unmapped-tool text is `NOT PROVED`, not a pass. `HOOK MISSING`
+  and `NOT PROVED` (exit 2 with no deny text, which a `|| exit 2` wrapper
+  prints when `node` never started) are failures too.
+  Claude Code commands quote `${CLAUDE_PROJECT_DIR}` (Gemini relative commands
+  quote `${GEMINI_PROJECT_DIR}` the same way) so a project path that contains
+  a space stays one argument when the shell expands it. Doctor runs that
+  installed command under `sh`, so the quote is part of proving the hook is
+  wired.
+- `uninstall` touches a path only when it is inside the project, it is exactly
+  one of the config paths `install` writes for that harness (recomputed, not
+  taken from the record), the real path stays inside the project with no
+  symlinked parent, and the path itself is not a symlink. A file it is unsure
+  about is left untouched and kept in the record. If any file is refused, the
+  record stays so a later `uninstall` can finish the rest; files it already
+  restored or removed are not rolled back. It never deletes the runtime under
+  `.speckl/agent/`. Empty directories it created may remain, and file modes
+  are not restored.
+  When the record has a mac, pass the same `--key`. A mismatch changes
+  nothing: the backup is not read and no file is deleted. A record with no
+  mac is unauthenticated. Every `modify` restore is refused (`re-run with
+  --key`). A `create` is deleted only when the file's current bytes equal
+  what `install` would write now, recomputed from the generated config
+  (`--state`, and `--hermes-home` for Hermes). The saved copy in the record
+  is not that proof. The full rules are under Limits.
+
+Pi, OpenCode and OpenClaw have no command hook to exec. `doctor` runs the
+`node adapter.mjs <harness> pre ...` line stored in the generated plugin and
+says so. That does not prove the host loaded the plugin.
 
 > **Not live-tested: Kiro, Windsurf and the Cline VS Code extension.** Their
 > wiring is built and tested against payloads taken from their documentation
@@ -80,7 +156,8 @@ agent {
 - Every tool input (except free-text fields such as `content`, `new_string`,
   `description`) is checked against the rails: the agent directory, the state
   file (and its directory when that is not the project root), the key file,
-  `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, and for each declared harness
+  `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, `.speckl/harness-install/`,
+  and for each declared harness
   its own config (`.github/hooks/`; `.agents/plugins/` and `.config/goose/`;
   `.hermes/` and the `--hermes-home` directory; `.pi/`; `.opencode/`,
   `opencode.json` and `opencode.jsonc`; `.openclaw/`). A call that names one
@@ -127,6 +204,7 @@ node .speckl/agent/signal.mjs init --state .speckl/state.json --key "$KEY" --dev
 
 # 5. Wire it into Claude Code and give Claude the rules.
 node .speckl/agent/adapter.mjs install claude-code --project . --state .speckl/state.json --key "$KEY"
+node .speckl/agent/adapter.mjs doctor claude-code --project . --state .speckl/state.json --key "$KEY"
 echo '@.speckl/agent/AGENTS.md' >> CLAUDE.md
 
 # 6. Dry run: feed the hook what Claude Code sends before a push.
@@ -153,8 +231,9 @@ node .speckl/agent/signal.mjs apply --state .speckl/state.json --key "$KEY" \
 ```
 
 Then the push goes through. Run `/hooks` inside Claude Code to see the four
-Speckl hooks. Production setups drop `--dev` and approve with a signed
-`file-drop` verifier (see `agent-signals.md`).
+Speckl hooks. Production setups drop `--dev`, pin reviewer keys with
+`signal.mjs init --signer`, and approve with a signed `file-drop` verifier
+(see `agent-signals.md`). A `--pubkey` that was not pinned is refused.
 
 ## Quickstart: GitHub Copilot CLI, Goose and Hermes
 
@@ -404,6 +483,62 @@ session started in a subdirectory would otherwise resolve the rails wrong.
 Codex also only runs project hooks after you review and trust them (`/hooks`).
 Gemini fingerprints project hooks and asks again when they change.
 
+### Deny reasons
+
+The decision is unchanged: exit 0 only for an allow, exit 2 for a deny, and
+the adapter still answers in the harness's own shape (Cursor
+`user_message` and `agent_message` carry the same text, Copilot
+`permissionDecisionReason`, Cline `errorMessage`, Goose / Hermes / Pi /
+OpenCode / OpenClaw a `reason` field, Claude Code / Codex / Gemini / Kiro /
+Windsurf the text on stderr). What changed is the sentence.
+
+A denial from `hook.mjs` starts with one of:
+
+- `Speckl denied (not allowed in this stage)` — the spec's guard refused the
+  action in the current stage. Do not retry it here.
+- `Speckl denied (waiting on a sign-off)` — a human records the named signal.
+  The sentence includes the `signal.mjs apply` command and the signed-drop
+  shape. A pinned state names those signers (`--signer <name>` when there is
+  one, and no `--pubkey` when several may sign). A legacy state, which has
+  no pin field, still prints `--pubkey <pubkey>`. A call-bound sign-off uses
+  that same command and also shows `sign call <digest>`. The public keys
+  themselves are not printed. See [agent-signals.md](agent-signals.md).
+- `Speckl denied (precondition failed)` — the call's inputs, or a call already
+  in flight, do not satisfy the spec.
+- `Speckl denied (internal error (fail closed))` — the hook could not trust
+  its input or the state. Do not retry; a human repairs it. If the
+  explanation itself cannot be built, the text is the fixed line
+  `Speckl denied (internal error, fail closed): the explanation could not be built`.
+
+The sentence does not include the state key, the key file path (the path
+that was passed, the absolute path it resolves to, or the path `realpath`
+follows when that file or its directory is a symlink, including the real
+parent directory), the bytes in that file, a pinned signer key, or the
+contents of `state.json`. Those 32 key bytes are also removed when they
+appear as uppercase hex, as base64 or base64url (with or without padding),
+or, for a pinned signer key, as SPKI DER-base64 or PEM. A `--key` or
+`SPECKL_STATE_KEY_FILE` path shorter than 8 characters is not printed: the
+hook and the adapter deny with a fixed sentence and do not run. The hook
+exits 2, the same as a missing or bad key. That check covers the path as
+given, `path.resolve` of it, `realpath` of the key file, and the parent
+directory of that real path. Commit 09eb03c allowed the call when such a
+path named a real key. This denial is an intended stricter change; the
+comparison against the hook and adapter generated from that commit marks
+the row as an expected difference, and every other compared call still
+matches. The decision record stores that same sentence.
+If building it throws, the call is still denied. A failure to load the
+state, read the key, take the lock, or append the decision record prints a
+fixed sentence and not the Node error.
+
+Denials the adapter makes before `hook.mjs` (an unmapped tool, shell
+metacharacters, a protected path, a payload that is not JSON, a working
+directory outside the project) stay fail-closed and end with a next step.
+A protected-path denial does not repeat the state-key path, including when
+`--key` or `SPECKL_STATE_KEY_FILE` was relative and the rails check saw the
+absolute path. If the adapter throws before it can decide, stderr is the
+fixed line `Speckl adapter error: the adapter failed closed. The call stays denied.`
+and the exception text is not printed.
+
 ### Fail closed
 
 Both harnesses let a call through when a hook fails unless told otherwise
@@ -506,7 +641,119 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   the agent must not reach the key or `signal.mjs` that way.
 - `Grep`/`Glob` over the whole project can return lines from `.speckl/` (the
   state is integrity-protected, not secret). Keep the key outside the project.
-- Path checks see paths as written; they don't follow symlinks.
+- Path checks see paths as written; they don't follow symlinks. Deny text does
+  follow them: the redaction list includes `realpath` of `--key` and of
+  `SPECKL_STATE_KEY_FILE`, and the real directory that contains the key. If
+  `realpath` throws, those entries are not added and the given path stays on
+  the list. `status` and `doctor` run that same redaction over stdout and
+  stderr. A key path they would have printed becomes `<keyfile>`. The state
+  file path and the harness config path stay, because they are not the key.
+- A `--key` or `SPECKL_STATE_KEY_FILE` path makes the hook and the adapter
+  deny, and not run, when any of these is shorter than 8 characters: the
+  path as given, `path.resolve` of it, `realpath` of the key file, or the
+  parent directory of that real path. `keyPathTooShort` in
+  `compiler/src/generators/agent/hook-template.ts` (line 110) and in
+  `runAdapter` (`compiler/src/generators/agent/harness-runtime.ts` line 2345)
+  implements that check. A `realpath` that throws is not treated as short.
+  The path is not printed. The hook exits 2 (`respond` in `hook-template.ts`
+  line 342), the same code a missing or bad key uses (`finishDeny(2)` at
+  line 378 after `readKey` throws). The adapter's pre-tool deny uses
+  `formatPre`, which exits 2 (`harness-runtime.ts` line 260).
+  `deny-secret-paths.test.ts` runs `hook.mjs` directly and expects exit 2
+  (`hook.mjs exits 2 when the key path is shorter than 8 characters`),
+  including a 1–3 character path, a resolved path under 8 characters, and a
+  long symlink whose real path or parent is under 8 characters. Commit
+  09eb03c allowed that call when the path named a real key. This denial is
+  stricter on purpose. The comparison
+  `a long symlink to a key path under 8 characters is an expected difference
+  from 09eb03c` records hook exit 2 and adapter exit 2 against that
+  commit's allow.
+- No Speckl secret is under 8 characters. The state key must be 64 hex
+  characters: `readKey` in
+  `compiler/src/generators/agent/state-integrity-template.ts` line 73
+  (`/^[0-9a-fA-F]{64}$/`). A shorter file is denied with exit 2 by
+  `a missing or malformed key file is denied` in
+  `agent-state-integrity.test.ts` (it writes `short`) and by
+  `a missing, malformed, or unreadable key does not print the path` in
+  `deny-secret-paths.test.ts`. A pinned signer key must be 32 bytes:
+  `decodePubHex` in `compiler/src/generators/agent/signal-template.ts`
+  lines 145–152 throws `pubkey must be 32-byte ed25519 key` otherwise.
+  `refuses a pubkey shorter than 32 bytes and writes no state` in
+  `agent-signer-pins.test.ts` rejects `carol=abcd`.
+- Those 32 bytes are removed from deny text as lowercase and uppercase hex,
+  base64 and base64url with and without padding, and SPKI DER-base64 and
+  PEM (`redactSecrets` in `compiler/src/generators/agent/deny-reason.ts`
+  lines 39–68). `redacts base64, base64url, uppercase hex, and SPKI forms of
+  a 64-hex key` in `deny-reason.test.ts` checks each form. Any other PEM
+  block and any other 64-hex token are removed the same way, except a call
+  digest named on the keep-list. `redacts key paths, PEM blocks and 64-hex
+  secrets, and caps length` in that file still contains the digest and
+  `<keyfile>` and does not contain the key path.
+- Decision-chain sentences are fixed strings in `state-integrity-template.ts`:
+  `decision head is not version 1` (line 332), `decision genesis mismatch`
+  (line 336), `decision head is not JSON` (line 371), and
+  `decision chain broken at seq N` (lines 415 and 478). An OS error with a
+  code becomes `decision record could not be read` (line 507).
+  `agent-decision-record.test.ts` expects `decision chain broken at seq 0`.
+- Log replay reports `log chain broken at entry N` (line 233),
+  `log chain head mismatch (log truncated or extended)` (line 237), and
+  `machine state does not match the log` (line 246). An OS error with a
+  code becomes `log replay failed`; any other derive throw is prefixed
+  `log replay failed:` (lines 242–244). `log truncation is denied` in
+  `agent-state-integrity.test.ts` expects `head mismatch` and
+  `machine state does not match the log`.
+- `can()` text is the spec guard. `hook-deny-reason.test.ts` expects
+  `can() refused: Guard failed: stage == Approved (stage is Idle)`.
+- The call-bound canonical preimage passes through `redactSecrets` before
+  it is stored or printed. The keep-list case above still contains the
+  digest and `<keyfile>` and does not contain the key path.
+- Plugin, hook, and doctor messages are fixed codes. `pluginSource` in
+  `harness-runtime.ts` (lines 1101–1115) emits
+  `Speckl: the hook payload could not be serialised`,
+  `Speckl: could not run the adapter`, and `Speckl adapter failed:` plus
+  `spawn <code>`, `killed by <signal>`, or `exit <status>` when the adapter
+  did not print a Speckl sentence. `example-pi-opencode-openclaw-policy.test.ts`
+  expects `killed by SIGKILL`, `exit 1`, and `ETIMEDOUT`. The adapter's
+  `runHook` in `adapter-template.ts` (lines 72–78) uses
+  `hook.mjs timed out after N ms`, `hook.mjs could not be started`,
+  `hook.mjs killed by <signal>`, or `hook.mjs failed` in place of a Node
+  stack. `interpretHook` (`harness-runtime.ts` lines 248–250) applies that
+  same Node-text filter, and `harness-runtime.test.ts` expects
+  `hook.mjs failed` for an `Error:` line, a leading `/`, a Windows drive,
+  and an `at ` frame. `hookCommandResult` (lines 862–866) uses
+  `command timed out after N ms`, `command killed by <signal>`,
+  `command failed (<code>)`, or `command failed`. `harness-setup.test.ts`
+  expects `command failed (ENOENT)`. A probe line that quotes hook output
+  is then redacted, so a key path in it becomes `<keyfile>` (that file's
+  doctor output contains `<keyfile>` and `HOOK MISSING`).
+- The decision record stores at most 500 characters (`DECISION_REASON_MAX`
+  in `state-integrity-template.ts` line 268; `clipReason` lines 320–323).
+  `clips a deny reason at 500 characters and refuses to store the raw input`
+  in `agent-decision-record.test.ts` expects 500 `R` characters. A deny
+  sentence is capped at 1800 characters (`deny-reason.ts` line 69). The
+  length test above expects `redactSecrets` of 1801 `x` characters to end
+  with `…` and to have length 1801.
+- `status` and `doctor` print the state file path and the harness config
+  path. The key path is `<keyfile>`. `harness-setup.test.ts`
+  `redacts a symlinked key path, its real directory, and the key bytes`
+  expects `key: present <keyfile>` and `/p/.speckl/state.json`, and expects
+  `/k/state.key` to be absent.
+- State-load, key-read, lock, and save failures print fixed sentences:
+  `state file missing`, `state file is not JSON`, `state file could not be
+  read`, `state key not found`, `state key could not be read`,
+  `state key must be 32 bytes as 64 hex chars` (`readKey`, line 73),
+  `state lock timeout`, `state lock could not be taken`, `stdin read failed`,
+  `decision record could not be read`, `decision record unavailable`,
+  `log replay failed`, `state save failed`, `hook failed closed`, the short
+  key-path sentence, and
+  `Speckl adapter error: the adapter failed closed. The call stays denied.`
+  `a missing, malformed, or unreadable key does not print the path` and
+  `a lock error does not print the state path or the key directory` in
+  `deny-secret-paths.test.ts` expect those sentences and the absence of
+  `ENOENT` and `EACCES`.
+  If the key's real parent directory is also the state file's directory,
+  that directory is removed from the printed sign-off command, so the
+  command loses a path segment and does not gain key bytes.
 - Cursor can also load Claude Code hooks ("third-party hooks"). Wire one
   harness per project, or Cursor may call the Claude Code adapter with Cursor
   tool names, which it will deny.
@@ -603,6 +850,46 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
   Terminal commands never advance the policy (above). User, system and cloud
   hooks (`~/.codeium/windsurf/hooks.json`, `/etc/devin/hooks.json`) also run
   and are not protected. Windows blocks every tool call (above).
+- `doctor` proves the installed command is wired and that the adapter denies
+  the probe. It does not prove that `hook.mjs` ran, that the state HMAC or
+  the replay checks held, or that a plugin host loaded the plugin. Pi,
+  OpenCode and OpenClaw skip a plugin that fails to load, and doctor only
+  runs the adapter command stored in the plugin file. Kiro and Windsurf
+  doctor runs the shell command `install` wrote; it was not run inside those
+  IDEs. Shell-wrapper harnesses need `sh` on `PATH` (the same requirement as
+  the hooks themselves). Exit 0 is treated as a block only for Cline
+  (`cancel: true`), Pi, OpenCode and OpenClaw (`decision: "block"`) and
+  Cursor (`permission: "deny"`), and only together with the adapter's
+  unmapped-tool text. Claude Code, Codex, Gemini, Copilot, Goose, Hermes,
+  Kiro and Windsurf are fail-open on every exit 0.
+- The install record is unauthenticated when `install` had no `--key`. That
+  install prints `WARN: the install record is unsigned` and omits `mac`.
+  Passing `--key` when the file is missing, or when it is not 64 hex
+  characters (a trailing newline is allowed), makes `install` refuse before
+  it writes anything. A usable key stores `mac`, an HMAC-SHA256 over the
+  compact `{v, harness, files}` JSON, not over the pretty-printed file.
+  With an unauthenticated record, `uninstall` refuses every `modify` restore
+  and does not read the backup. It deletes a `create` only when the file's
+  current bytes equal what `install` would write now. That text is
+  recomputed from the generated config: pass `--state`, and `--hermes-home`
+  for Hermes. The record's saved copy is not the proof. A missing file, a
+  file whose bytes differ, a `modify`, a run with no `--state`, or a plan
+  `install` itself refuses, is answered with `re-run with --key` and left
+  in place. An unsigned install of a file that already existed (action
+  `modify`, such as a pre-existing `.claude/settings.json`) cannot be put
+  back without a key.
+  A matching mac plus the same `--key` restores a `modify` from its backup
+  and deletes a `create` whose current bytes match the saved copy. The path
+  still has to be one `install` writes, inside the project, not a symlink,
+  and with no symlinked parent. A mac mismatch changes nothing.
+  `.speckl/harness-install/` is protected from tool calls, so a tool call
+  cannot write the record, the backups, or the saved copies. Other local
+  processes can write that directory. `uninstall` will not delete a Hermes
+  profile or a `--plugins-dir` outside the project, even though `install`
+  wrote them; those entries stay in the record. An install made before this
+  record existed has nothing for `uninstall` to restore; it refuses rather
+  than deleting files it cannot prove it created. `uninstall` does not
+  restore file modes, and it does not remove directories.
 
 ## Sources
 

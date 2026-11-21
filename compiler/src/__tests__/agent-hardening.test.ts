@@ -43,16 +43,18 @@ let agentDir = '';
 let loopDir = '';
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
 const pubRaw = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
+const pubHex = pubRaw.toString('hex');
 
 // Most flows here exercise hook/signal logic with the DEV cli verifier, so
 // states default to --dev; production (non-dev) behavior has its own suite.
-function newState(dir = agentDir, dev = true): string {
+function newState(dir = agentDir, dev = true, pin = false): string {
   const state = join(mkdtempSync(join(tmpdir(), 'speckl-hard-')), 'state.json');
-  expect(signal(dir, ['init', '--state', state, ...(dev ? ['--dev'] : [])]).status).toBe(0);
+  const extra = [...(dev ? ['--dev'] : []), ...(pin ? ['--signer', 'reviewer=' + pubHex] : [])];
+  expect(signal(dir, ['init', '--state', state, ...extra]).status).toBe(0);
   return state;
 }
-function awaiting(dir = agentDir, dev = true): string {
-  const s = newState(dir, dev);
+function awaiting(dir = agentDir, dev = true, pin = false): string {
+  const s = newState(dir, dev, pin);
   step(dir, s, 'run_tests', '1');
   step(dir, s, 'request_review', '2');
   return s;
@@ -88,7 +90,7 @@ beforeAll(() => {
 
 describe('file-drop verifier hardening', () => {
   it('replayed evidence is refused when the await is re-entered', () => {
-    const s = awaiting(loopDir);
+    const s = awaiting(loopDir, true, true);
     const d = path.dirname(s);
     const { file, pub } = drop(d, 'r.json', { ...review, outcome: 'reject' });
     expect(signal(loopDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file, '--pubkey', pub]).status).toBe(0);
@@ -99,7 +101,7 @@ describe('file-drop verifier hardening', () => {
   });
 
   it('missing claim in a signed drop is refused', () => {
-    const s = awaiting(); const d = path.dirname(s);
+    const s = awaiting(agentDir, true, true); const d = path.dirname(s);
     const { file, pub } = drop(d, 'm.json', { ...review, claims: {} });
     const r = signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file, '--pubkey', pub]);
     expect(r.status).toBe(2);
@@ -107,7 +109,7 @@ describe('file-drop verifier hardening', () => {
   });
 
   it('a signed drop that does not name its signal is refused', () => {
-    const s = awaiting(); const d = path.dirname(s);
+    const s = awaiting(agentDir, true, true); const d = path.dirname(s);
     const { signal: _s, ...noSignal } = review;
     const { file, pub } = drop(d, 'n.json', noSignal);
     const r = signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file, '--pubkey', pub]);
@@ -118,12 +120,19 @@ describe('file-drop verifier hardening', () => {
   it('unsigned drops are refused unless --allow-unsigned is set (DEV)', () => {
     const s = awaiting(); const d = path.dirname(s);
     const { file, pub } = drop(d, 'u.json', review, false);
+    // No pins recorded: a per-call key is not a trust anchor.
     const noSig = signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file, '--pubkey', pub]);
     expect(noSig.status).toBe(2);
-    expect(noSig.stderr).toContain('signature file not found');
+    expect(noSig.stderr).toContain('no sign-off signers pinned');
     const noKey = signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file]);
     expect(noKey.status).toBe(2);
-    expect(noKey.stderr).toContain('requires --pubkey');
+    expect(noKey.stderr).toContain('no sign-off signers pinned');
+    // Pins present, signature file absent: still a signature failure.
+    const pinned = awaiting(agentDir, true, true);
+    const bare = drop(path.dirname(pinned), 'bare.json', review, false);
+    const missingSig = signal(agentDir, ['apply', '--state', pinned, '--verifier', 'file-drop', '--file', bare.file, '--pubkey', bare.pub]);
+    expect(missingSig.status).toBe(2);
+    expect(missingSig.stderr).toContain('signature file not found');
     const dev = signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file, '--allow-unsigned', 'true']);
     expect(dev.status).toBe(0);
     expect(dev.stderr).toContain('UNSIGNED');
@@ -131,7 +140,7 @@ describe('file-drop verifier hardening', () => {
   });
 
   it('a body edited after signing fails verification', () => {
-    const s = awaiting(); const d = path.dirname(s);
+    const s = awaiting(agentDir, true, true); const d = path.dirname(s);
     const { file, pub } = drop(d, 't.json', { ...review, outcome: 'reject' });
     writeFileSync(file, JSON.stringify(review)); // tamper: reject → approve
     const r = signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', file, '--pubkey', pub]);
@@ -140,7 +149,7 @@ describe('file-drop verifier hardening', () => {
   });
 
   it('malformed inputs are refused', () => {
-    const s = awaiting(); const d = path.dirname(s);
+    const s = awaiting(agentDir, true, true); const d = path.dirname(s);
     const bad = join(d, 'bad.json'); writeFileSync(bad, 'not json');
     expect(signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', bad, '--allow-unsigned', 'true']).stderr).toContain('not JSON');
     expect(signal(agentDir, ['apply', '--state', s, '--verifier', 'file-drop', '--file', join(d, 'nope.json')]).stderr).toContain('file not found');

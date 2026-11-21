@@ -299,6 +299,17 @@ describe('worked example: HMAC webhook plug-in (docs/verifier-plugins.md)', () =
     expect(r.out.stderr).toContain('sender is required');
   });
 
+  it('returns call so a stage-level sign-off that carries one is refused', () => {
+    const s = awaitingWith(spec());
+    const r = apply(s, body(s, { call: 'ab'.repeat(32) }));
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('stage-level sign-off must not carry a call hash');
+    expect(read(s).machine.state.stage).toBe(2);
+    const bad = apply(s, body(s, { call: 'nope' }));
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toContain('payload call must be a 64-char sha256 hex digest');
+  });
+
   it('a correctly signed body is applied; the subject is the configured sender', () => {
     const s = awaitingWith(spec());
     const r = apply(s, body(s, { subject: 'someone-else' }));

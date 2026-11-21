@@ -68,6 +68,7 @@ describe('generateAgent (in process)', () => {
       timeout: { durationMs: 24 * 3600_000, outcome: 'reject' },
     });
     expect(cfg.awaits[0].on.map((o: any) => o.action)).toEqual(['__signal_review_approve', '__signal_review_reject']);
+    expect(cfg.awaits[0].bindCall).toEqual([]);
   });
 
   it('the emitted .mjs machine runs and exposes synthetic signal actions', async () => {
@@ -81,7 +82,7 @@ describe('generateAgent (in process)', () => {
   });
 
   it('generated scripts are syntactically valid', () => {
-    for (const f of ['hook.mjs', 'signal.mjs', 'verifiers/cli.mjs', 'verifiers/file-drop.mjs']) {
+    for (const f of ['hook.mjs', 'signal.mjs', 'state-integrity.mjs', 'verifiers/cli.mjs', 'verifiers/file-drop.mjs']) {
       const r = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf-8' });
       expect(r.status, f + r.stderr).toBe(0);
     }

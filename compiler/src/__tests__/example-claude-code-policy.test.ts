@@ -71,7 +71,7 @@ describe('Claude Code wiring (real payloads through .claude/settings.json)', () 
   it('installs the four hook events with fail-closed pre', () => {
     expect(Object.keys(settings.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch']);
     expect(settings.hooks.PreToolUse[0].hooks[0].onFailure).toBe('block');
-    expect(cmd('PreToolUse')).toBe(`node \${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs claude-code pre --state \${CLAUDE_PROJECT_DIR}/.speckl/state.json --key ${ctx.key}`);
+    expect(cmd('PreToolUse')).toBe(`node "\${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs" claude-code pre --state "\${CLAUDE_PROJECT_DIR}/.speckl/state.json" --key ${ctx.key}`);
   });
 
   it('walks edit → failing test → green test → review → approval → push', () => {
@@ -85,7 +85,7 @@ describe('Claude Code wiring (real payloads through .claude/settings.json)', () 
     allow(send('PostToolUseFailure', 'post-failure-npm-test'));
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
 
-    deny(send('PreToolUse', 'pre-git-commit'), /Speckl denied Bash \(spec tool request_review\): can\(\) refused/);
+    deny(send('PreToolUse', 'pre-git-commit'), /Speckl denied Bash \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
 
     allow(send('PreToolUse', 'pre-npm-test-2'));
     allow(send('PostToolUse', 'post-npm-test-2'));

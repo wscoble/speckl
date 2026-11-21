@@ -241,6 +241,15 @@ async function verifyInner(opts, expect, ctx) {
   if (typeof outcome !== 'string' || !outcome) return { ok: false, reason: 'payload missing outcome' };
   if (!(expect.outcomes || []).includes(outcome)) return { ok: false, reason: 'disallowed outcome: ' + outcome };
   const claims = isObj(payload.claims) ? payload.claims : {};
+  // signal.mjs requires call when the outcome is in expect.bindCall and
+  // refuses it otherwise. The signature already covers these bytes.
+  let call;
+  if (payload.call !== undefined) {
+    if (typeof payload.call !== 'string' || !/^[0-9a-fA-F]{64}$/.test(payload.call)) {
+      return { ok: false, reason: 'payload call must be a 64-char sha256 hex digest' };
+    }
+    call = payload.call.toLowerCase();
+  }
 
   const entry = tlogEntries[0];
   const rekor = {
@@ -249,23 +258,22 @@ async function verifyInner(opts, expect, ctx) {
     entryUuid: entryUuid(entry),
     integratedTime: new Date(Number(entry.integratedTime) * 1000).toISOString(),
   };
-  return {
-    ok: true,
-    signal: {
-      signal,
-      outcome,
-      claims,
-      verifier: 'sigstore',
-      // Who signed comes from the verified certificate, never from the drop.
-      subject: san,
-      issuer,
-      at: rekor.integratedTime,
-      evidence: 'sigstore:' + sha256(bundleBytes) + ':rekor:' + rekor.logIndex + ':' + rekor.entryUuid,
-      rekor,
-      run: payload.run,
-      expires: payload.expires,
-      nonce,
-      callId: typeof payload.call_id === 'string' ? payload.call_id : undefined,
-    },
+  const verified = {
+    signal,
+    outcome,
+    claims,
+    verifier: 'sigstore',
+    // Who signed comes from the verified certificate, never from the drop.
+    subject: san,
+    issuer,
+    at: rekor.integratedTime,
+    evidence: 'sigstore:' + sha256(bundleBytes) + ':rekor:' + rekor.logIndex + ':' + rekor.entryUuid,
+    rekor,
+    run: payload.run,
+    expires: payload.expires,
+    nonce,
+    callId: typeof payload.call_id === 'string' ? payload.call_id : undefined,
   };
+  if (call !== undefined) verified.call = call;
+  return { ok: true, signal: verified };
 }

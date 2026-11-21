@@ -1,0 +1,87 @@
+speck DeployGate {
+    // Call-bound sign-off. A human approves one exact deploy (the tool name
+    // plus its arguments), once, instead of every call the Approved stage
+    // allows. The deny while waiting prints `sign call <digest> canonical
+    // <preimage>`; the signed file-drop carries that digest as `call`.
+    // A deploy with other arguments is refused and does not use up the
+    // approval. The binding clears when the signed call's post reports ok.
+    // Deploy moves the stage on, so the spent approval cannot run it again.
+
+    state {
+        stage: Nat
+        checksPassed: Bool
+        deployFromApproved: Bool
+    }
+
+    init {
+        stage := 0
+        checksPassed := false
+        deployFromApproved := false
+    }
+
+    invariant DeployNeedsChecks {
+        stage != 4 or checksPassed
+    }
+
+    invariant DeployNeedsApproval {
+        stage != 4 or deployFromApproved
+    }
+
+    action RunChecks {
+        require stage == 0
+        checksPassed := true
+        stage := 1
+    }
+
+    action RequestDeploy {
+        require stage == 1
+        stage := 2
+    }
+
+    action Deploy(env: String) {
+        require stage == 3
+        deployFromApproved := stage == 3
+        stage := 4
+    }
+
+    action ReadFile(path: String) {
+        return true
+    }
+
+    agent {
+        stages stage {
+            Idle = 0
+            ChecksGreen = 1
+            AwaitingApproval = 2
+            Approved = 3
+            Deployed = 4
+            Rejected = 5
+        }
+
+        tool run_checks     -> RunChecks      effect act
+        tool request_deploy -> RequestDeploy  effect act
+        tool deploy         -> Deploy         effect act
+        tool read_file      -> ReadFile       effect observe
+
+        await AwaitingApproval {
+            signal approval
+            mode near
+            require outcome in { approve, reject! }
+            require claims { approver: String }
+            bind call on approve
+            on approve -> Approved
+            on reject  -> Rejected
+            timeout 24h -> reject
+        }
+    }
+
+    next: RunChecks | RequestDeploy | Deploy | ReadFile
+
+    verify Always(DeployNeedsChecks) {
+        depth 8
+    }
+
+    verify Always(DeployNeedsApproval) {
+        depth 8
+    }
+}

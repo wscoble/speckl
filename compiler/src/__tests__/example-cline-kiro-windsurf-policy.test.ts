@@ -119,7 +119,7 @@ describe('Cline wiring (real payloads through the generated .clinerules/hooks/ s
     allow('cli-pre-npm-test');
     posted('cli-post-npm-test-exit1');
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
-    deny('cli-pre-commit', /Speckl denied run_commands \(spec tool request_review\): can\(\) refused/);
+    deny('cli-pre-commit', /Speckl denied run_commands \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
 
     allow('cli-pre-npm-test-2');
     posted('cli-post-npm-test-2');
@@ -149,7 +149,7 @@ describe('Cline wiring (real payloads through the generated .clinerules/hooks/ s
   it('a post-hook problem goes back to the model as contextModification, never as a cancel', () => {
     const v = verdict(run('PostToolUse', fixtureText('cline', 'cli-post-npm-test-2', ctx.project)));
     expect(v.cancel).toBe(false);
-    expect(v.contextModification).toMatch(/Speckl could not record run_commands \(spec tool run_tests\): post: no matching pending call_id/);
+    expect(v.contextModification).toMatch(/Speckl could not record run_commands \(spec tool run_tests\): Speckl denied \(internal error \(fail closed\)\): post: no matching pending call_id/);
   });
 
   it('VS Code payloads (string parameters, no call id): a shell result never counts as a success', () => {
@@ -264,7 +264,7 @@ describe('Kiro wiring (real-format payloads through .kiro/hooks/speckl.json; not
     allow('pre-bash-npm-test');
     posted('post-bash-npm-test-exit1');
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 0, testsPassed: false });
-    deny('pre-bash-git-commit', /Speckl denied execute_bash \(spec tool request_review\): can\(\) refused/);
+    deny('pre-bash-git-commit', /Speckl denied execute_bash \(spec tool request_review\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
     allow('pre-bash-npm-test-2');
     posted('post-bash-npm-test-2');
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 1, testsPassed: true });
@@ -291,13 +291,13 @@ describe('Kiro wiring (real-format payloads through .kiro/hooks/speckl.json; not
     posted('post-bash-git-push-2');
     expect(stateOf(ctx.project).machine.state).toMatchObject({ stage: 5, prFromApproved: true });
     // CLI 2.x camelCase event names are accepted (and judged: tests are refused after the PR).
-    deny('pre-legacy-camel', /Speckl denied execute_bash \(spec tool run_tests\): can\(\) refused/);
+    deny('pre-legacy-camel', /Speckl denied execute_bash \(spec tool run_tests\): Speckl denied \(not allowed in this stage\): can\(\) refused/);
   }, 120_000);
 
   it('a post that cannot be recorded is a warning (exit 1), not a block', () => {
     const r = run('PostToolUse', 'post-bash-git-commit-2');
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/Speckl could not record execute_bash \(spec tool request_review\): post: no matching pending call_id/);
+    expect(r.stderr).toMatch(/Speckl could not record execute_bash \(spec tool request_review\): Speckl denied \(internal error \(fail closed\)\): post: no matching pending call_id/);
   });
 
   it('crash, exit 1, malformed output, SIGKILL, timeout, corrupt config, bad payloads and missing node all exit 2', () => {

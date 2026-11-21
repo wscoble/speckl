@@ -62,20 +62,28 @@ export async function verify(opts, expect, ctx) {
   if (typeof p.nonce !== 'string' || p.nonce.length < 8 || p.nonce.length > 200) return { ok: false, reason: 'nonce must be 8-200 chars' };
   if (ctx.usedNonces.includes(p.nonce)) return { ok: false, reason: 'nonce already used' };
   if (!expect.outcomes.includes(p.outcome)) return { ok: false, reason: 'disallowed outcome: ' + p.outcome };
+  // signal.mjs requires call when the outcome is in expect.bindCall and
+  // refuses it otherwise. The HMAC already covers these bytes.
+  let call;
+  if (p.call !== undefined) {
+    if (typeof p.call !== 'string' || !/^[0-9a-fA-F]{64}$/.test(p.call)) {
+      return { ok: false, reason: 'payload call must be a 64-char sha256 hex digest' };
+    }
+    call = p.call.toLowerCase();
+  }
 
-  return {
-    ok: true,
-    signal: {
-      signal: p.signal,
-      outcome: p.outcome,
-      claims: isObj(p.claims) ? p.claims : {},
-      subject: ctx.config.sender,
-      at: new Date(ctx.now).toISOString(),
-      evidence: 'hmac-webhook:' + crypto.createHash('sha256').update(body).digest('hex'),
-      run: p.run,
-      expires: p.expires,
-      nonce: p.nonce,
-      callId: typeof p.call_id === 'string' ? p.call_id : undefined,
-    },
+  const signal = {
+    signal: p.signal,
+    outcome: p.outcome,
+    claims: isObj(p.claims) ? p.claims : {},
+    subject: ctx.config.sender,
+    at: new Date(ctx.now).toISOString(),
+    evidence: 'hmac-webhook:' + crypto.createHash('sha256').update(body).digest('hex'),
+    run: p.run,
+    expires: p.expires,
+    nonce: p.nonce,
+    callId: typeof p.call_id === 'string' ? p.call_id : undefined,
   };
+  if (call !== undefined) signal.call = call;
+  return { ok: true, signal };
 }

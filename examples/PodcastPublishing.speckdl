@@ -1,0 +1,101 @@
+speck PodcastPublishing {
+    // Models workflow stages, not actual uploads or platform API operations.
+    // Approval binds one exact tool and argument object, not the earlier draft.
+    // A host must review the canonical call before signing it.
+    state {
+        stage: Nat
+        assetsReady: Bool
+        uploadsStarted: Bool
+        metadataDrafted: Bool
+        metadataLive: Bool
+        appliedFromApproved: Bool
+        fixCount: Nat
+    }
+    init {
+        stage := 0
+        assetsReady := false
+        uploadsStarted := false
+        metadataDrafted := false
+        metadataLive := false
+        appliedFromApproved := false
+        fixCount := 0
+    }
+    invariant ApplyFromApproved {
+        stage != 5 or appliedFromApproved
+    }
+    invariant LiveNeedsFlow {
+        metadataLive implies (metadataDrafted and uploadsStarted)
+    }
+    action FetchAssets {
+        require stage == 0
+        assetsReady := true
+        stage := 1
+    }
+    action StartUploads {
+        require stage == 1
+        uploadsStarted := true
+        stage := 2
+    }
+    action DraftMetadata(title: String, description: String) {
+        require stage == 2
+        metadataDrafted := true
+        stage := 3
+    }
+    action ApplyMetadata(title: String, description: String) {
+        require stage == 4
+        appliedFromApproved := stage == 4
+        metadataLive := true
+        stage := 5
+    }
+    // A correction must return to the same approval gate. It does not alter
+    // metadata itself; the host signs the exact subsequent fix_metadata call.
+    action RequestFix {
+        require stage == 5
+        stage := 3
+    }
+    action FixMetadata(title: String, description: String) {
+        require stage == 4
+        require metadataLive
+        fixCount := fixCount + 1
+        stage := 5
+    }
+    action ReadTranscript {
+        return true
+    }
+    agent {
+        instruction "Do not invent facts, URLs, guests, or products. The integrator implements external operations; these instructions do not verify platform updates."
+        prompt tool draft_metadata stage Uploading file "PodcastPublishing-work.txt"
+        prompt tool read_transcript "Read the transcript before drafting metadata and extract only facts actually stated."
+        prompt tool apply_metadata await AwaitingApproval "Present the exact canonical apply_metadata call, including its title and description, to the host for review. Nothing goes live until signed approval of that call's digest; apply only those exact arguments. The integrator must use the same approved title and description for video and audio. The draft arguments are not stored or bound. On rejection or timeout, start a fresh run and redraft."
+        prompt tool request_fix stage MetadataLive "For corrections, use request_fix, which changes no platform metadata; then present the exact canonical fix_metadata call for fresh host review and signed approval."
+        prompt tool fix_metadata await AwaitingApproval "Wait for fresh signed approval bound to the exact canonical fix_metadata tool and arguments before executing. On rejection or timeout, start a fresh run and redraft; the integrator must reconcile correction recovery without bypassing approval."
+        stages stage {
+            Idle = 0
+            AssetsReady = 1
+            Uploading = 2
+            AwaitingApproval = 3
+            Approved = 4
+            MetadataLive = 5
+        }
+        tool FetchAssets    effect act
+        tool StartUploads   effect act
+        tool DraftMetadata  effect act
+        tool ApplyMetadata  effect act description "Apply the exact title and description in the host-approved call through the integrator."
+        tool RequestFix     effect act
+        tool FixMetadata    effect act description "Apply a correction only with fresh approval bound to this exact call."
+        tool ReadTranscript effect observe
+        await AwaitingApproval {
+            signal host_approval
+            mode in
+            require outcome in { approve, reject! }
+            require claims { host: String }
+            bind call on approve
+            on approve -> Approved
+            on reject  -> Idle
+            timeout 7d -> reject
+        }
+    }
+    next: FetchAssets | StartUploads | DraftMetadata | ApplyMetadata | RequestFix | FixMetadata | ReadTranscript
+    verify Always(ApplyFromApproved) { depth 8 }
+    verify Always(LiveNeedsFlow) { depth 8 }
+}
