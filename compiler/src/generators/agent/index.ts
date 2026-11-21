@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import {
   AST, SpeckNode, ActionNode, AgentMemberNode, AgentPrompt, StateNode, DomainNode,
 } from '../../parser.js';
@@ -95,13 +96,14 @@ function emitAgentForSpeck(
   fs.writeFileSync(path.join(agentDir, 'hook.mjs'), emitHookMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'signal.mjs'), emitSignalMjs(speck.name));
   fs.writeFileSync(path.join(agentDir, 'state-integrity.mjs'), emitStateIntegrityMjs());
+  fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-tools.mjs'), path.join(agentDir, 'mcp-tools.mjs'));
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'cli.mjs'), emitCliVerifier());
   fs.writeFileSync(path.join(agentDir, 'verifiers', 'file-drop.mjs'), emitFileDropVerifier());
   fs.writeFileSync(path.join(agentDir, 'README.md'), buildAgentReadme(speck.name, agent));
   if (config.harness) emitHarnessFiles(speck.name, agentDir, config.harness);
 
   // Make hook/signal executable-ish
-  for (const bin of ['hook.mjs', 'signal.mjs']) {
+  for (const bin of ['hook.mjs', 'signal.mjs', 'mcp-tools.mjs']) {
     try { fs.chmodSync(path.join(agentDir, bin), 0o755); } catch { /* ignore */ }
   }
 
@@ -716,6 +718,15 @@ node signal.mjs apply --state ./state.json --verifier plugin:sigstore --file ./i
 \`\`\`
 
 See \`docs/verifier-plugins.md\` in the Speckl repo.
+
+## MCP tool definitions
+
+\`mcp-tools.mjs\` snapshots a server's \`tools/list\` into one canonical JSON
+file. Sign that file with \`cosign sign-blob --bundle\`. Pin the snapshot,
+the bundle and the verifier at \`signal.mjs init --mcp-tools\`. \`hook.mjs
+session\` checks the live list once per session and denies every mapped call
+to that server if the digest, the bundle, or the signer does not match.
+See \`docs/mcp-tool-definitions.md\` in the Speckl repo.
 
 ## Adapters
 

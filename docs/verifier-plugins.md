@@ -25,6 +25,13 @@ export function verify(
   expect: AwaitSpec,                             // what the machine is waiting for
   ctx: VerifierContext,                          // from the state file
 ): Promise<VerifyResult>;
+// Optional. Used by the MCP tool-definition check, not by signal.mjs apply.
+// opts.file is the artifact, opts.bundle the cosign bundle, opts.policy the
+// name of an identity policy the plug-in reads from its own pinned config.
+export function verifyArtifact?(
+  opts: Record<string, string | true>,
+  ctx: { config: unknown; plugin: string; now: number },
+): Promise<{ ok: true; subject?: string; issuer?: string; evidence: string; digest?: string } | { ok: false; reason: string }>;
 
 type AwaitSpec = {
   signal: string;                                // e.g. "review", or "clear-pending"
@@ -259,9 +266,12 @@ Test through the generated `signal.mjs` where you can, not only by calling
 
 ## Limits
 
-- **A verifier covers sign-offs only.** It decides whether a human (or other
+- **`verify` covers sign-offs only.** It decides whether a human (or other
   outside party) approved a transition. It says nothing about what the agent
-  did before or after.
+  did before or after. `verifyArtifact`, when a plug-in exports it, checks a
+  signed file such as an MCP tool snapshot. That check is described in
+  [mcp-tool-definitions.md](mcp-tool-definitions.md). It is not a sign-off,
+  and a sign-off plug-in that does not export it cannot be used for one.
 - **The state and its log are sealed with HMAC.** The tool-call log is
   hash-chained and MAC'd with a shared key. That catches edits by anyone
   without the key, but it doesn't prove the agent's actions to a

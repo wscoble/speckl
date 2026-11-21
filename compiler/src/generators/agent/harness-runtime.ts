@@ -51,8 +51,8 @@ export interface AdapterConfig {
 export interface HookResult { status: number | null; stdout: string; stderr: string }
 
 export interface AdapterDeps {
-  /** Run hook.mjs `pre` | `post` with the generic JSON message. */
-  runHook(cmd: 'pre' | 'post', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult;
+  /** Run hook.mjs `pre` | `post` | `session` with the generic JSON message. */
+  runHook(cmd: 'pre' | 'post' | 'session', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult;
   /** Absolute path of a path relative to a base directory. */
   resolvePath(base: string, p: string): string;
   /** path.relative(from, to). */
@@ -131,6 +131,14 @@ export function parseToolInput(raw: unknown): { ok: true; input: Record<string, 
  * Map a harness tool call onto a spec tool. First matching rule wins; a
  * pattern must match the whole field value; no match is a deny.
  */
+/** Server name from a harness tool `mcp__<server>__<tool>`, or null. */
+export function mcpServerFromTool(toolName: unknown): string | null {
+  if (typeof toolName !== 'string') return null;
+  const parts = toolName.split('__');
+  if (parts.length < 3 || parts[0] !== 'mcp' || !parts[1]) return null;
+  return parts[1];
+}
+
 export function mapHarnessCall(rules: HarnessRule[], toolName: unknown, input: Record<string, unknown>): MapResult {
   if (typeof toolName !== 'string' || toolName === '') {
     return { ok: false, reason: 'payload has no tool_name' };
@@ -532,8 +540,8 @@ export function postSucceeded(harness: string, event: string, payload: Record<st
 /** Hook event name each harness sends for each adapter event. */
 export function harnessEventName(harness: string, event: string): string | null {
   const names: Record<string, Record<string, string>> = {
-    'claude-code': { pre: 'PreToolUse', post: 'PostToolUse', 'post-failure': 'PostToolUseFailure', batch: 'PostToolBatch' },
-    cursor: { pre: 'preToolUse', post: 'postToolUse', 'post-failure': 'postToolUseFailure' },
+    'claude-code': { pre: 'PreToolUse', post: 'PostToolUse', 'post-failure': 'PostToolUseFailure', batch: 'PostToolBatch', session: 'SessionStart' },
+    cursor: { pre: 'preToolUse', post: 'postToolUse', 'post-failure': 'postToolUseFailure', session: 'sessionStart' },
     codex: { pre: 'PreToolUse', post: 'PostToolUse', 'turn-end': 'Stop' },
     gemini: { pre: 'BeforeTool', post: 'AfterTool', 'turn-end': 'AfterAgent' },
     copilot: { pre: 'preToolUse', post: 'postToolUse', 'post-failure': 'postToolUseFailure', 'turn-end': 'agentStop' },
@@ -996,7 +1004,7 @@ export function buildHarnessHooks(
     const h = (event: string) => [{ command: cmd(event), timeout: 30, failClosed: true }];
     return {
       version: 1,
-      hooks: { preToolUse: h('pre'), postToolUse: h('post'), postToolUseFailure: h('post-failure') },
+      hooks: { preToolUse: h('pre'), postToolUse: h('post'), postToolUseFailure: h('post-failure'), sessionStart: h('session') },
     };
   }
   if (harness === 'codex' || harness === 'gemini') {
@@ -1032,6 +1040,7 @@ export function buildHarnessHooks(
       PostToolUse: group('post', {}, true),
       PostToolUseFailure: group('post-failure', {}, true),
       PostToolBatch: group('batch', {}, false),
+      SessionStart: group('session', { onFailure: 'block' }, false),
     },
   };
 }
@@ -2443,6 +2452,15 @@ export function runAdapter(
     }
   }
 
+  if (event === 'session') {
+    // Session start: fetch each pinned tools/list once and record the verdict.
+    // A later pre call reads that verdict. It does not fetch again.
+    const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+    const r = interpretHook(deps.runHook('session', { session_id: sessionId }, stateAbs, keyAbs));
+    if (r.allow) return formatPre(harness, true, '');
+    return formatPre(harness, false, scrubDenyText('Speckl denied the MCP tool-definition check: ' + r.reason, secretsFor()));
+  }
+
   if (event === 'turn-end') {
     // End of turn (Codex Stop, Gemini AfterAgent): a call that passed pre but
     // never reported (declined, cancelled) is recorded as failed so the next
@@ -2555,7 +2573,11 @@ export function runAdapter(
   if (callId === null) return fail('payload has no tool_use_id (the harness sent no tool call id)');
 
   if (isPre) {
-    const r = interpretHook(deps.runHook('pre', { tool: m.tool, input: m.input, call_id: callId }, stateAbs, keyAbs));
+    const hookMsg: Record<string, unknown> = { tool: m.tool, input: m.input, call_id: callId };
+    const mcpServer = mcpServerFromTool(toolName);
+    if (mcpServer) hookMsg.mcp_server = mcpServer;
+    if (typeof payload.session_id === 'string' && payload.session_id) hookMsg.session_id = payload.session_id;
+    const r = interpretHook(deps.runHook('pre', hookMsg, stateAbs, keyAbs));
     if (r.allow) return formatPre(harness, true, '');
     return formatPre(harness, false, scrubDenyText('Speckl denied ' + label + ' (spec tool ' + m.tool + '): ' + r.reason, secretsFor()));
   }
@@ -2574,7 +2596,7 @@ export function runAdapter(
 /** Functions emitted into adapter.mjs, in order. */
 export const ADAPTER_FUNCTIONS = [
   redactSecrets, scrubDenyTextImpl, explainAdapterDenyImpl,
-  hasShellControl, parseToolInput, mapHarnessCall, findProtectedMention, interpretHook,
+  hasShellControl, parseToolInput, mcpServerFromTool, mapHarnessCall, findProtectedMention, interpretHook,
   formatPre, formatPost, postSucceeded, harnessEventName, normalizeToolInput, harnessCallId,
   harnessConfigFile, harnessProtectedDirs, normalizePayload, parseAdapterFlags, hookCommandResult, shellQuote,
   buildHarnessHooks, mergeHarnessSettings, clineScripts, pluginSource, pluginFiles, hermesYaml, installHermes, installHarness,

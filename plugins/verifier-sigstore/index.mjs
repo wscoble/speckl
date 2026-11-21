@@ -24,6 +24,10 @@
  * Then the same bindings as file-drop: signal, run id, expiry, single-use
  * nonce, and an outcome in the awaited signal's outcomes.
  *
+ * verifyArtifact() checks the same bundle over any file (an MCP tool
+ * snapshot). The identity comes from config.artifacts[policy], not from
+ * config.signals, and the payload is not parsed as a signal drop.
+ *
  * Config (pinned in the state by `signal.mjs init --plugins <file>`):
  *   {
  *     "trustedRoot": "/etc/speckl/sigstore/trusted_root.json",  // offline root
@@ -35,6 +39,9 @@
  *     "signals": {
  *       "review": { "issuer": "https://github.com/login/oauth", "identity": "carol@example.com" },
  *       "clear-pending": { "issuer": "...", "identityRegExp": "^https://github\\.com/acme/ops/\\.github/workflows/approve\\.yml@refs/heads/main$" }
+ *     },
+ *     "artifacts": {
+ *       "weather": { "issuer": "https://github.com/login/oauth", "identity": "carol@example.com" }
  *     }
  *   }
  * `identity` is compared exactly. `identityRegExp` is used only when given and
@@ -80,12 +87,28 @@ export function checkConfig(config) {
   if (config.ctlogThreshold !== undefined && !(Number.isInteger(config.ctlogThreshold) && config.ctlogThreshold >= 0)) {
     return { ok: false, reason: 'ctlogThreshold must be an integer >= 0' };
   }
-  if (!isObj(config.signals) || Object.keys(config.signals).length === 0) {
+  const hasSignals = config.signals !== undefined;
+  const hasArtifacts = config.artifacts !== undefined;
+  if (!hasSignals && !hasArtifacts) {
     return { ok: false, reason: 'sigstore config needs signals: { <signal>: { issuer, identity | identityRegExp } }' };
   }
-  for (const [sig, p] of Object.entries(config.signals)) {
-    const r = checkPolicy(p);
-    if (r) return { ok: false, reason: 'signals.' + sig + ': ' + r };
+  if (hasSignals) {
+    if (!isObj(config.signals) || Object.keys(config.signals).length === 0) {
+      return { ok: false, reason: 'sigstore config needs signals: { <signal>: { issuer, identity | identityRegExp } }' };
+    }
+    for (const [sig, p] of Object.entries(config.signals)) {
+      const r = checkPolicy(p);
+      if (r) return { ok: false, reason: 'signals.' + sig + ': ' + r };
+    }
+  }
+  if (hasArtifacts) {
+    if (!isObj(config.artifacts) || Object.keys(config.artifacts).length === 0) {
+      return { ok: false, reason: 'artifacts must name at least one policy' };
+    }
+    for (const [name, p] of Object.entries(config.artifacts)) {
+      const r = checkPolicy(p);
+      if (r) return { ok: false, reason: 'artifacts.' + name + ': ' + r };
+    }
   }
   return { ok: true };
 }
@@ -155,33 +178,12 @@ function entryUuid(tlogEntry) {
   return sha256(Buffer.concat([Buffer.from([0]), Buffer.from(tlogEntry.canonicalizedBody)]));
 }
 
-export async function verify(opts, expect, ctx = {}) {
-  try {
-    return await verifyInner(opts || {}, expect || {}, ctx);
-  } catch (e) {
-    // Library errors, bad JSON, unreadable files: never an approval.
-    return { ok: false, reason: 'sigstore verification failed: ' + (e && e.message ? e.message : String(e)) };
-  }
-}
-
-async function verifyInner(opts, expect, ctx) {
-  const config = ctx.config;
-  const cfg = checkConfig(config);
-  if (!cfg.ok) return { ok: false, reason: 'sigstore config: ' + cfg.reason };
-  for (const k of IDENTITY_KEYS) {
-    if (opts[k] !== undefined) return { ok: false, reason: '--' + k + ' is not accepted: identity policy and trust root are pinned in the state at init' };
-  }
-  const policy = config.signals[expect.signal];
-  if (!policy) return { ok: false, reason: 'no identity policy pinned for signal ' + expect.signal };
-
-  const file = opts.file;
-  if (typeof file !== 'string' || !file) return { ok: false, reason: 'sigstore verifier requires --file' };
-  if (!fs.existsSync(file)) return { ok: false, reason: 'file not found: ' + file };
-  const bundlePath = typeof opts.bundle === 'string' ? opts.bundle : file + '.sigstore.json';
-  if (!fs.existsSync(bundlePath)) return { ok: false, reason: 'bundle not found: ' + bundlePath };
-  const body = fs.readFileSync(file);
-  const bundleBytes = fs.readFileSync(bundlePath);
-
+/**
+ * Verify a cosign sign-blob bundle over the exact bytes of `body`.
+ * Identity comes only from `policy` (issuer + identity or identityRegExp).
+ * Returns { ok: true, san, issuer, rekor, evidence } or { ok: false, reason }.
+ */
+async function verifyMessage(body, bundleBytes, policy, config) {
   let bundle;
   try {
     bundle = bundleFromJSON(JSON.parse(bundleBytes.toString('utf-8')));
@@ -213,6 +215,98 @@ async function verifyInner(opts, expect, ctx) {
     return { ok: false, reason: 'certificate identity mismatch: ' + san };
   }
   if (issuer !== policy.issuer) return { ok: false, reason: 'certificate issuer mismatch: ' + issuer };
+  const entry = tlogEntries[0];
+  const rekor = {
+    logIndex: String(entry.logIndex),
+    logId: Buffer.from(entry.logId.keyId).toString('hex'),
+    entryUuid: entryUuid(entry),
+    integratedTime: new Date(Number(entry.integratedTime) * 1000).toISOString(),
+  };
+  return {
+    ok: true,
+    san,
+    issuer,
+    rekor,
+    evidence: 'sigstore:' + sha256(bundleBytes) + ':rekor:' + rekor.logIndex + ':' + rekor.entryUuid,
+  };
+}
+
+function readSignedFile(opts) {
+  const file = opts.file;
+  if (typeof file !== 'string' || !file) return { ok: false, reason: 'sigstore verifier requires --file' };
+  if (!fs.existsSync(file)) return { ok: false, reason: 'file not found: ' + file };
+  const bundlePath = typeof opts.bundle === 'string' ? opts.bundle : file + '.sigstore.json';
+  if (!fs.existsSync(bundlePath)) return { ok: false, reason: 'bundle not found: ' + bundlePath };
+  return { ok: true, file, body: fs.readFileSync(file), bundleBytes: fs.readFileSync(bundlePath) };
+}
+
+function refuseIdentityFlags(opts) {
+  for (const k of IDENTITY_KEYS) {
+    if (opts[k] !== undefined) return '--' + k + ' is not accepted: identity policy and trust root are pinned in the state at init';
+  }
+  return null;
+}
+
+export async function verify(opts, expect, ctx = {}) {
+  try {
+    return await verifyInner(opts || {}, expect || {}, ctx);
+  } catch (e) {
+    // Library errors, bad JSON, unreadable files: never an approval.
+    return { ok: false, reason: 'sigstore verification failed: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
+ * Verify a cosign sign-blob bundle over an artifact (not a signal drop).
+ * opts.policy names ctx.config.artifacts[policy]. The command line cannot
+ * supply an identity. Returns { ok: true, subject, issuer, evidence, digest }
+ * or { ok: false, reason }.
+ */
+export async function verifyArtifact(opts, ctx = {}) {
+  try {
+    return await verifyArtifactInner(opts || {}, ctx);
+  } catch (e) {
+    return { ok: false, reason: 'sigstore verification failed: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+async function verifyArtifactInner(opts, ctx) {
+  const config = ctx.config;
+  const cfg = checkConfig(config);
+  if (!cfg.ok) return { ok: false, reason: 'sigstore config: ' + cfg.reason };
+  const flagged = refuseIdentityFlags(opts);
+  if (flagged) return { ok: false, reason: flagged };
+  const policyName = opts.policy;
+  if (typeof policyName !== 'string' || !policyName) return { ok: false, reason: 'artifact verification requires a pinned policy name' };
+  const policy = config.artifacts && config.artifacts[policyName];
+  if (!policy) return { ok: false, reason: 'no identity policy pinned for artifact ' + policyName };
+  const read = readSignedFile(opts);
+  if (!read.ok) return read;
+  const proved = await verifyMessage(read.body, read.bundleBytes, policy, config);
+  if (!proved.ok) return proved;
+  return {
+    ok: true,
+    subject: proved.san,
+    issuer: proved.issuer,
+    evidence: proved.evidence,
+    digest: sha256(read.body),
+  };
+}
+
+async function verifyInner(opts, expect, ctx) {
+  const config = ctx.config;
+  const cfg = checkConfig(config);
+  if (!cfg.ok) return { ok: false, reason: 'sigstore config: ' + cfg.reason };
+  const flagged = refuseIdentityFlags(opts);
+  if (flagged) return { ok: false, reason: flagged };
+  const policy = config.signals && config.signals[expect.signal];
+  if (!policy) return { ok: false, reason: 'no identity policy pinned for signal ' + expect.signal };
+
+  const read = readSignedFile(opts);
+  if (!read.ok) return read;
+  const body = read.body;
+  const proved = await verifyMessage(body, read.bundleBytes, policy, config);
+  if (!proved.ok) return proved;
 
   let payload;
   try {
@@ -251,23 +345,17 @@ async function verifyInner(opts, expect, ctx) {
     call = payload.call.toLowerCase();
   }
 
-  const entry = tlogEntries[0];
-  const rekor = {
-    logIndex: String(entry.logIndex),
-    logId: Buffer.from(entry.logId.keyId).toString('hex'),
-    entryUuid: entryUuid(entry),
-    integratedTime: new Date(Number(entry.integratedTime) * 1000).toISOString(),
-  };
+  const rekor = proved.rekor;
   const verified = {
     signal,
     outcome,
     claims,
     verifier: 'sigstore',
     // Who signed comes from the verified certificate, never from the drop.
-    subject: san,
-    issuer,
+    subject: proved.san,
+    issuer: proved.issuer,
     at: rekor.integratedTime,
-    evidence: 'sigstore:' + sha256(bundleBytes) + ':rekor:' + rekor.logIndex + ':' + rekor.entryUuid,
+    evidence: proved.evidence,
     rekor,
     run: payload.run,
     expires: payload.expires,

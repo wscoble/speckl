@@ -68,8 +68,8 @@ describe('Claude Code wiring (real payloads through .claude/settings.json)', () 
     settings = JSON.parse(readFileSync(join(ctx.project, '.claude', 'settings.json'), 'utf-8'));
   }, 90_000);
 
-  it('installs the four hook events with fail-closed pre', () => {
-    expect(Object.keys(settings.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch']);
+  it('installs the hook events with fail-closed pre and a session check', () => {
+    expect(Object.keys(settings.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'SessionStart']);
     expect(settings.hooks.PreToolUse[0].hooks[0].onFailure).toBe('block');
     expect(cmd('PreToolUse')).toBe(`node "\${CLAUDE_PROJECT_DIR}/.speckl/agent/adapter.mjs" claude-code pre --state "\${CLAUDE_PROJECT_DIR}/.speckl/state.json" --key ${ctx.key}`);
   });

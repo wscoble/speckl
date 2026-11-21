@@ -1,0 +1,30 @@
+speck WeatherGate {
+    state {
+        stage: Nat
+    }
+
+    init {
+        stage := 0
+    }
+
+    action GetWeather {
+        return true
+    }
+
+    action Look {
+        return true
+    }
+
+    agent {
+        stages stage { Idle = 0 }
+        tool get_weather -> GetWeather effect observe
+        tool look -> Look effect observe
+
+        harness claude-code {
+            map mcp__weather__get_weather -> get_weather
+            map Read -> look
+        }
+    }
+
+    next: GetWeather | Look
+}

@@ -410,7 +410,7 @@ describe('deny text keeps each harness format', () => {
     const calls: unknown[] = [];
     const deps = {
       calls,
-      runHook(cmd: 'pre' | 'post', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
+      runHook(cmd: 'pre' | 'post' | 'session', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
         calls.push({ cmd, msg, statePath, keyPath });
         return { status: 2, stdout: JSON.stringify({ decision: 'deny', reason: reasonLine }) + '\n', stderr: '' };
       },

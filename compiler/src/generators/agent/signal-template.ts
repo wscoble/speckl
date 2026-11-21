@@ -6,8 +6,9 @@ export function emitSignalMjs(speckName: string): string {
  * Speckl signal tooling for ${speckName}.
  *
  *   node signal.mjs init  --state <file> --key <keyfile> [--dev] [--plugins <plugins.json>]
- *       [--signer <name>=<pubkey>]...     (pubkey: file path, or raw/hex/base64)
- *       (key created if missing; plug-in verifiers are pinned by sha256 here)
+ *       [--mcp-tools <mcp-tools.json>] [--signer <name>=<pubkey>]...
+ *       (pubkey: file path, or raw/hex/base64)
+ *       (key created if missing; plug-in verifiers and MCP tool snapshots are pinned by sha256 here)
  *   All commands accept --key <keyfile> (or env SPECKL_STATE_KEY_FILE).
  *   node signal.mjs apply --state <file> --verifier file-drop|cli|plugin:<name> [verifier args...]
  *   node signal.mjs timeout --state <file>   # fire timeout → !-marked reject only
@@ -262,9 +263,93 @@ function normalizeSignerEntries(list) {
   return out;
 }
 
-async function cmdInit(stateFile, dev, keyArg, pluginsFile, signerArgs) {
+const MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_MCP = 32;
+
+/** Pin each MCP server's signed tools/list. The bytes are hashed here; the session check re-fetches. */
+async function pinMcpTools(file, plugins) {
+  if (typeof file !== 'string' || !file) fail('--mcp-tools needs a JSON file');
+  let spec;
+  try { spec = JSON.parse(fs.readFileSync(file, 'utf-8')); }
+  catch (e) { fail('--mcp-tools: cannot read ' + file + ': ' + (e && e.message ? e.message : String(e))); }
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec) || Object.keys(spec).length === 0) {
+    fail('--mcp-tools: expected { "<server>": { "transport": "stdio", "command", "args", "snapshot", "bundle", "verifier", "policy" } }');
+  }
+  const names = Object.keys(spec);
+  if (names.length > MAX_MCP) fail('--mcp-tools: too many servers (max ' + MAX_MCP + ')');
+  if (!plugins) fail('--mcp-tools: pin the verifier plug-in first with --plugins <file>');
+  const pins = {};
+  for (const name of names) {
+    if (!MCP_NAME.test(name)) fail('--mcp-tools: invalid server name: ' + name);
+    const p = spec[name];
+    if (!p || typeof p !== 'object' || Array.isArray(p)) fail('--mcp-tools: ' + name + ': expected an object');
+    if (p.transport !== 'stdio') fail('--mcp-tools: ' + name + ': transport must be "stdio"');
+    if (typeof p.command !== 'string' || !p.command) fail('--mcp-tools: ' + name + ': command is required');
+    if (!Array.isArray(p.args) || p.args.some(a => typeof a !== 'string')) fail('--mcp-tools: ' + name + ': args must be an array of strings');
+    if (typeof p.snapshot !== 'string' || !p.snapshot) fail('--mcp-tools: ' + name + ': snapshot file is required');
+    if (typeof p.bundle !== 'string' || !p.bundle) fail('--mcp-tools: ' + name + ': bundle file is required');
+    if (typeof p.verifier !== 'string' || !plugins[p.verifier]) fail('--mcp-tools: ' + name + ': verifier must be a plug-in pinned with --plugins');
+    const verifierMod = await import(pathToFileURL(plugins[p.verifier].module).href);
+    if (typeof verifierMod.verifyArtifact !== 'function') fail('--mcp-tools: ' + name + ': plug-in does not export verifyArtifact');
+    if (typeof p.policy !== 'string' || !MCP_NAME.test(p.policy)) fail('--mcp-tools: ' + name + ': policy must be a name matching the plug-in artifacts policy');
+    const timeoutMs = p.timeoutMs === undefined ? 10000 : p.timeoutMs;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300000) fail('--mcp-tools: ' + name + ': timeoutMs must be an integer 100..300000');
+    let env;
+    if (p.env !== undefined) {
+      if (!p.env || typeof p.env !== 'object' || Array.isArray(p.env)) fail('--mcp-tools: ' + name + ': env must be an object of strings');
+      env = {};
+      for (const k of Object.keys(p.env)) {
+        if (typeof p.env[k] !== 'string') fail('--mcp-tools: ' + name + ': env.' + k + ' must be a string');
+        env[k] = p.env[k];
+      }
+    }
+    let cwd;
+    if (p.cwd !== undefined) {
+      if (typeof p.cwd !== 'string' || !p.cwd) fail('--mcp-tools: ' + name + ': cwd must be a directory');
+      try { cwd = fs.realpathSync(p.cwd); }
+      catch { fail('--mcp-tools: ' + name + ': cwd not found: ' + p.cwd); }
+      if (!fs.statSync(cwd).isDirectory()) fail('--mcp-tools: ' + name + ': cwd is not a directory');
+    }
+    let command = p.command;
+    if (path.isAbsolute(command) || command.includes('/') || command.includes('\\\\')) {
+      try { command = fs.realpathSync(command); }
+      catch { fail('--mcp-tools: ' + name + ': command not found: ' + p.command); }
+    }
+    const fileHash = (label, rel) => {
+      let real;
+      try { real = fs.realpathSync(path.resolve(rel)); }
+      catch { fail('--mcp-tools: ' + name + ': ' + label + ' not found: ' + rel); }
+      let buf;
+      try { buf = fs.readFileSync(real); }
+      catch { fail('--mcp-tools: ' + name + ': ' + label + ' could not be read'); }
+      if (buf.length > 2000000) fail('--mcp-tools: ' + name + ': ' + label + ' is larger than 2MB');
+      return { path: real, sha256: sha256Hex(buf) };
+    };
+    const snapshot = fileHash('snapshot', p.snapshot);
+    const bundle = fileHash('bundle', p.bundle);
+    const pin = {
+      transport: 'stdio',
+      command,
+      args: p.args.slice(),
+      snapshot: snapshot.path,
+      snapshotSha256: snapshot.sha256,
+      bundle: bundle.path,
+      bundleSha256: bundle.sha256,
+      verifier: p.verifier,
+      policy: p.policy,
+      timeoutMs,
+    };
+    if (cwd) pin.cwd = cwd;
+    if (env) pin.env = env;
+    pins[name] = pin;
+  }
+  return pins;
+}
+
+async function cmdInit(stateFile, dev, keyArg, pluginsFile, signerArgs, mcpToolsFile) {
   if (fs.existsSync(stateFile)) fail('state already exists: ' + stateFile);
   const plugins = pluginsFile === undefined ? null : await pinPlugins(pluginsFile, dev);
+  const mcpTools = mcpToolsFile === undefined ? null : await pinMcpTools(mcpToolsFile, plugins);
   const initialSigners = normalizeSignerSpecs(signerArgs || []);
   const keyPath = keyPathFrom(keyArg);
   if (!keyPath && !dev) {
@@ -296,6 +381,7 @@ async function cmdInit(stateFile, dev, keyArg, pluginsFile, signerArgs) {
     boundCall: null,
   };
   if (plugins) state.plugins = plugins;
+  if (mcpTools) state.mcpTools = mcpTools;
   state.head = genesis(state);
   if (currentAwait(machine)) state.awaitingSince = new Date().toISOString();
   save(stateFile, state);
@@ -308,6 +394,7 @@ async function cmdInit(stateFile, dev, keyArg, pluginsFile, signerArgs) {
     signers: initialSigners.map(s => ({ name: s.name, fingerprint: fingerprintOf(s.key) })),
   };
   if (plugins) out.plugins = Object.fromEntries(Object.entries(plugins).map(([n, p]) => [n, p.sha256]));
+  if (mcpTools) out.mcpTools = Object.fromEntries(Object.entries(mcpTools).map(([n, p]) => [n, p.snapshotSha256]));
   process.stdout.write(JSON.stringify(out) + '\\n');
 }
 
@@ -653,6 +740,7 @@ async function main() {
         args.rest.key,
         args.rest.plugins,
         Array.isArray(args.rest.signer) ? args.rest.signer : [],
+        args.rest['mcp-tools'],
       );
     } else if (args.cmd === 'apply') await cmdApply(args);
     else if (args.cmd === 'timeout') await cmdTimeout(args);

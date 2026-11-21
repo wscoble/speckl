@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { verify, checkConfig } from '../index.mjs';
+import { verify, verifyArtifact, checkConfig } from '../index.mjs';
 import { createEnv, writeRoot } from './support/sigstore-env.mjs';
 
 const ISS = 'https://issuer.speckl.test';
@@ -270,5 +270,90 @@ describe('checkConfig', () => {
   }
   it('verify re-checks the config it is handed', async () => {
     expect((await verify({ file: 'x' }, expectReview, ctx({ config: undefined }))).reason).toContain('sigstore config: ');
+  });
+  it('accepts an artifacts policy beside signals, and artifacts alone', () => {
+    const artifacts = { weather: { issuer: ISS, identity: WHO } };
+    expect(checkConfig({ ...ok, artifacts })).toEqual({ ok: true });
+    const { signals: _s, ...rest } = ok;
+    expect(checkConfig({ ...rest, artifacts })).toEqual({ ok: true });
+    expect(checkConfig({ ...ok, artifacts: {} }).reason).toContain('artifacts must name');
+    expect(checkConfig({ ...ok, artifacts: { weather: { issuer: ISS, identity: 'carol@example.com.evil.test' } } }).ok).toBe(true);
+    expect(checkConfig({ ...ok, artifacts: { weather: { identity: WHO } } }).reason).toContain('issuer');
+    const { signals: _drop, artifacts: _also, ...bare } = { ...ok, artifacts };
+    expect(checkConfig(bare).reason).toContain('needs signals');
+  });
+});
+
+describe('verifyArtifact (signed file, not a signal drop)', () => {
+  const artConfig = (over = {}) => config({
+    artifacts: { weather: { issuer: ISS, identity: WHO } },
+    ...over,
+  });
+  const artCtx = (over = {}) => ctx({ config: artConfig(), ...over });
+  async function artifact(text, signOpts = {}, signer = env) {
+    const body = Buffer.from(text);
+    const file = path.join(dir, `art-${n++}.json`);
+    fs.writeFileSync(file, body);
+    fs.writeFileSync(file + '.sigstore.json', JSON.stringify(await signer.sign(body, { iss: ISS, sub: WHO, ...signOpts })));
+    return file;
+  }
+
+  it('passes a keyless signature over the exact file bytes', async () => {
+    const file = await artifact('{"speckl":"mcp-tools/v1","server":"weather","tools":[]}');
+    const r = await verifyArtifact({ file, policy: 'weather' }, artCtx());
+    expect(r.ok, r.reason).toBe(true);
+    expect(r.subject).toBe(WHO);
+    expect(r.issuer).toBe(ISS);
+    expect(r.digest).toBe(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+    expect(r.evidence).toMatch(/^sigstore:[0-9a-f]{64}:rekor:/);
+    // A signal drop still verifies when the config also names an artifact.
+    const dropFile = await drop();
+    const signal = await verify({ file: dropFile }, expectReview, artCtx());
+    expect(signal.ok, signal.reason).toBe(true);
+  });
+
+  it('denies a file changed after signing', async () => {
+    const file = await artifact('{"tools":[{"name":"get_weather","description":"clean"}]}');
+    const buf = fs.readFileSync(file);
+    buf[buf.length - 2] ^= 1;
+    fs.writeFileSync(file, buf);
+    const r = await verifyArtifact({ file, policy: 'weather' }, artCtx());
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('signature verification failed');
+  });
+
+  it('denies a wrong identity, including one that only contains the expected identity', async () => {
+    const otherId = await verifyArtifact({ file: await artifact('a', { sub: 'mallory@example.com' }), policy: 'weather' }, artCtx());
+    expect(otherId.ok).toBe(false);
+    expect(otherId.reason).toContain('certificate identity error');
+    const superstring = await verifyArtifact({ file: await artifact('b', { sub: 'x' + WHO }), policy: 'weather' }, artCtx());
+    expect(superstring.ok).toBe(false);
+    expect(superstring.reason).toContain('certificate identity error');
+  });
+
+  it('denies a wrong issuer, a missing bundle, a missing policy and an identity flag', async () => {
+    const wrongIss = await verifyArtifact(
+      { file: await artifact('c', { iss: 'https://issuer.other.test' }), policy: 'weather' },
+      artCtx(),
+    );
+    expect(wrongIss.ok).toBe(false);
+    const gone = await artifact('d');
+    fs.rmSync(gone + '.sigstore.json');
+    expect((await verifyArtifact({ file: gone, policy: 'weather' }, artCtx())).reason).toContain('bundle not found');
+    expect((await verifyArtifact({ file: gone, policy: 'nope' }, artCtx())).reason).toContain('no identity policy');
+    expect((await verifyArtifact({ policy: 'weather' }, artCtx())).reason).toContain('requires --file');
+    expect((await verifyArtifact({ file: gone, policy: 'weather', identity: WHO }, artCtx())).reason).toContain('not accepted');
+  });
+
+  it('denies a tampered bundle and a bundle with no Rekor entry', async () => {
+    const file = await artifact('e');
+    editBundle(file, b => { b.verificationMaterial.tlogEntries[0].integratedTime = String(Number(b.verificationMaterial.tlogEntries[0].integratedTime) + 1); });
+    const flipped = await verifyArtifact({ file, policy: 'weather' }, artCtx());
+    expect(flipped.ok).toBe(false);
+    expect(flipped.reason).toContain('sigstore verification failed');
+    const unlogged = await artifact('f', { tlog: false });
+    expect(await verifyArtifact({ file: unlogged, policy: 'weather' }, artCtx())).toEqual({
+      ok: false, reason: 'bundle has no Rekor transparency-log entry',
+    });
   });
 });

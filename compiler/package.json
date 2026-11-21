@@ -48,7 +48,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('fs').copyFileSync('src/generators/agent/mcp-tools.mjs','dist/generators/agent/mcp-tools.mjs')\"",
     "test": "vitest run",
     "test:compile": "node scripts/test-compile.mjs",
     "verify": "node scripts/verify-z3.mjs",

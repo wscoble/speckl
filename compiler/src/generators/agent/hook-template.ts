@@ -8,9 +8,15 @@ export function emitHookMjs(speckName: string): string {
 /**
  * Speckl agent hook (generic). Generated for ${speckName}.
  *
- *   node hook.mjs pre  --state <file>   # stdin JSON {tool,input,call_id}
- *   node hook.mjs post --state <file>   # stdin JSON {tool,input,call_id,ok}
+ *   node hook.mjs pre     --state <file>   # stdin JSON {tool,input,call_id,session_id?,mcp_server?}
+ *   node hook.mjs post    --state <file>   # stdin JSON {tool,input,call_id,ok}
+ *   node hook.mjs session --state <file>   # stdin JSON {session_id}
  *   [--key <file>]  state key (or env SPECKL_STATE_KEY_FILE); keep it unreadable by the agent
+ *
+ * session fetches each pinned MCP server's tools/list, checks it against the
+ * signed snapshot, and records a verdict for that session id. pre denies a
+ * mapped call to a pinned server unless that verdict passed. The list is not
+ * fetched again on the call. With no pin, session allows and changes nothing.
  *
  * exit 0 allow · exit 2 deny · exit 1 error (=deny)
  *
@@ -57,6 +63,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyState, append, sign, keyPathFrom, verifyDecisions, appendDecision, digestInput, callDigest, canonical, listDecisionBranchIds } from './state-integrity.mjs';
+import { checkPinned } from './mcp-tools.mjs';
 
 ${denyFns}
 
@@ -271,6 +278,91 @@ function traceFromBinding(binding, traced, kpis, prime, ok) {
   return row;
 }
 
+function cleanSessionId(v) {
+  if (typeof v !== 'string' || v.length < 1 || v.length > 200) return '';
+  if (/[\\u0000-\\u001f\\u007f]/.test(v)) return '';
+  return v;
+}
+function mcpServerFromHarnessTool(name) {
+  if (typeof name !== 'string') return null;
+  const parts = name.split('__');
+  if (parts.length < 3 || parts[0] !== 'mcp' || !parts[1]) return null;
+  return parts[1];
+}
+function harnessToolsFor(tool) {
+  const out = [];
+  const blocks = config.harness || {};
+  for (const blockName of Object.keys(blocks)) {
+    const rules = blocks[blockName] && blocks[blockName].rules;
+    if (!Array.isArray(rules)) continue;
+    for (let i = 0; i < rules.length; i++) {
+      const rule = rules[i];
+      if (!rule || rule.target !== tool || !Array.isArray(rule.tools)) continue;
+      for (let j = 0; j < rule.tools.length; j++) out.push(rule.tools[j]);
+    }
+  }
+  return out;
+}
+// A string when this call must be denied, or null when the MCP pin does not apply.
+function mcpToolsDenial(state, tool, msg) {
+  const pins = state.mcpTools;
+  if (!pins || typeof pins !== 'object' || Array.isArray(pins)) return null;
+  const named = typeof msg.mcp_server === 'string' ? msg.mcp_server : '';
+  let server = named && Object.prototype.hasOwnProperty.call(pins, named) ? named : '';
+  if (!server) {
+    const mapped = harnessToolsFor(tool);
+    const hits = [];
+    let other = false;
+    for (let i = 0; i < mapped.length; i++) {
+      const s = mcpServerFromHarnessTool(mapped[i]);
+      if (s && Object.prototype.hasOwnProperty.call(pins, s)) hits.push(s);
+      else other = true;
+    }
+    if (hits.length === 0) return null;
+    if (other && !named) return null;
+    const list = [];
+    for (let i = 0; i < hits.length; i++) if (list.indexOf(hits[i]) < 0) list.push(hits[i]);
+    return {
+      detail: 'mcp tool definitions: ' + tool + ' is mapped from pinned server ' + list.join(', ') + ' but this call did not name that server',
+      next: 'the call stays denied. The harness must pass the server name. Do not edit state.json.',
+    };
+  }
+  const session = cleanSessionId(msg.session_id);
+  if (!session) {
+    return {
+      detail: 'mcp tool definitions for server ' + server + ' were not verified: this call has no session id',
+      next: 'run hook.mjs session with a session id, then retry the call in that session. The call stays denied.',
+    };
+  }
+  const bag = state.mcpVerdicts && state.mcpVerdicts[session] && state.mcpVerdicts[session].servers;
+  const row = bag && bag[server];
+  if (!row || row.ok !== true || row.digest !== pins[server].snapshotSha256) {
+    const why = row && row.ok === false && typeof row.reason === 'string' ? row.reason : 'no passing session check';
+    return {
+      detail: 'mcp tool definitions for server ' + server + ': ' + why,
+      next: 'every mapped call to this server stays denied until a new session check passes. Do not edit state.json.',
+    };
+  }
+  return null;
+}
+function rememberMcpVerdicts(state, sessionId, report) {
+  const all = state.mcpVerdicts && typeof state.mcpVerdicts === 'object' && !Array.isArray(state.mcpVerdicts) ? state.mcpVerdicts : {};
+  const servers = {};
+  for (const name of Object.keys(report.servers)) {
+    const row = report.servers[name];
+    servers[name] = row.ok === true
+      ? { ok: true, digest: row.digest, evidence: row.evidence, subject: row.subject || '', at: new Date().toISOString() }
+      : { ok: false, reason: typeof row.reason === 'string' ? row.reason : 'mcp tool check failed', at: new Date().toISOString() };
+  }
+  all[sessionId] = { at: new Date().toISOString(), servers };
+  const ids = Object.keys(all).sort((a, b) => String(all[a] && all[a].at || '').localeCompare(String(all[b] && all[b].at || '')));
+  while (ids.length > 8) {
+    const drop = ids.shift();
+    if (drop && drop !== sessionId) delete all[drop];
+  }
+  state.mcpVerdicts = all;
+}
+
 function parseArgs(argv) {
   const out = { cmd: '', state: '', key: '' };
   out.cmd = argv[2] || '';
@@ -403,8 +495,8 @@ async function main() {
   if (keyPathTooShort(hookKeyArg) || keyPathTooShort(process.env.SPECKL_STATE_KEY_FILE)) {
     respond('deny', 'Speckl denied (internal error, fail closed): the state key path is shorter than 8 characters, so it cannot be redacted. Next: the call stays denied. Use a longer key path. Do not retry this call.', 2);
   }
-  if (args.cmd !== 'pre' && args.cmd !== 'post') {
-    finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post --state <file>', internalNext('usage'), secretPaths()));
+  if (args.cmd !== 'pre' && args.cmd !== 'post' && args.cmd !== 'session') {
+    finishDeny(1, () => renderDenyReason('internal', 'usage: hook.mjs pre|post|session --state <file>', internalNext('usage'), secretPaths()));
   }
   if (!args.state) {
     finishDeny(1, () => renderDenyReason('internal', 'missing --state', internalNext('usage'), secretPaths()));
@@ -465,6 +557,41 @@ async function main() {
     if (state.specHash !== config.specHash) {
       finishDeny(2, () => renderDenyReason('internal', 'specHash mismatch: state is stale relative to compiled spec', internalNext('spec-hash'), secretPaths(state)));
     }
+    if (args.cmd === 'session') {
+      const pins = state.mcpTools;
+      if (!pins || typeof pins !== 'object' || Array.isArray(pins) || Object.keys(pins).length === 0) {
+        respond('allow', undefined, 0);
+      }
+      const sessionId = cleanSessionId(msg.session_id);
+      if (!sessionId) {
+        finishDeny(2, () => renderDenyReason('precondition', 'mcp tool definitions: session_id is required', 'pass the harness session id. The check stays failed. Do not edit state.json.', secretPaths(state)));
+      }
+      audit.tool = 'mcp-session';
+      audit.callId = sessionId;
+      let report;
+      try { report = await checkPinned(state); }
+      catch (e) {
+        const why = e && e.message ? e.message : String(e);
+        report = { ok: false, servers: {} };
+        const names = Object.keys(pins);
+        for (let i = 0; i < names.length; i++) report.servers[names[i]] = { ok: false, reason: 'mcp tool check failed: ' + why };
+      }
+      rememberMcpVerdicts(state, sessionId, report);
+      if (!report.ok) {
+        const parts = [];
+        for (const name of Object.keys(report.servers)) {
+          const row = report.servers[name];
+          if (!row || row.ok !== true) parts.push(name + ': ' + (row && row.reason ? row.reason : 'failed'));
+        }
+        const detail = 'mcp tool definitions: ' + (parts.join('; ') || 'check failed');
+        const text = safeDenyText(() => renderDenyReason('precondition', detail, 'every mapped call to a failed server stays denied until a new session check passes. Do not edit state.json.', secretPaths(state)));
+        try { seal('deny', text); }
+        catch (e) { decisionUnavailable(e, 2); }
+        save(args.state, state);
+        respond('deny', text, 2);
+      }
+      commitAllow(args.state, state);
+    }
     const toolByName = new Map(config.tools.map(t => [t.name, t]));
 
     if (args.cmd === 'pre') {
@@ -478,6 +605,8 @@ async function main() {
       const binding = toolByName.get(tool);
       if (!binding) finishDeny(2, () => renderDenyReason('internal', 'unknown tool: ' + tool, internalNext('unknown-tool'), secretPaths(state)));
       audit.action = binding.action;
+      const mcpDeny = mcpToolsDenial(state, tool, msg);
+      if (mcpDeny) finishDeny(2, () => renderDenyReason('precondition', mcpDeny.detail, mcpDeny.next, secretPaths(state)));
       if (binding.effect === 'act') {
         audit.trace = traceFromBinding(binding, resolveIngress(msg, args.state), binding.kpis, false, false);
       }
