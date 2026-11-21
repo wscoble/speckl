@@ -94,10 +94,13 @@ export function genesis(state) {
   // drops undefined): states created before signer pinning keep this genesis.
   // The current set is not hashed here. A rotation is a log entry, replayed
   // below, the same way the machine is.
+  // mcpTools (the signed tools/list pin) is hashed in the same way. A state
+  // with no pin omits it, so its genesis matches a state from before this field.
   return sha('speckl-state-v1:' + canonical({
     run: state.runId, spec: state.specHash, dev: state.dev === true, keyId: state.keyId || null,
     plugins: state.plugins === undefined ? undefined : sha(canonical(state.plugins)),
     initialSigners: state.initialSigners === undefined ? undefined : sha(canonical(state.initialSigners)),
+    mcpTools: state.mcpTools === undefined ? undefined : sha(canonical(state.mcpTools)),
   }));
 }
 

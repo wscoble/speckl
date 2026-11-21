@@ -192,13 +192,13 @@ describe('hook wiring', () => {
       onFailure: 'block',
     });
     expect(h.hooks.PostToolBatch[0].matcher).toBeUndefined();
-    expect(Object.keys(h.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch']);
+    expect(Object.keys(h.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'SessionStart']);
   });
   it('Cursor hooks.json is version 1 and fail closed', () => {
     const h = buildHarnessHooks('cursor', { adapter: '.speckl/agent/adapter.mjs', state: '.speckl/state.json', key: null, relative: true }) as any;
     expect(h.version).toBe(1);
     expect(h.hooks.preToolUse[0]).toEqual({ command: 'node .speckl/agent/adapter.mjs cursor pre --state .speckl/state.json', timeout: 30, failClosed: true });
-    expect(Object.keys(h.hooks)).toEqual(['preToolUse', 'postToolUse', 'postToolUseFailure']);
+    expect(Object.keys(h.hooks)).toEqual(['preToolUse', 'postToolUse', 'postToolUseFailure', 'sessionStart']);
   });
   it('merge keeps foreign hooks and replaces older Speckl ones', () => {
     const ours = buildHarnessHooks('claude-code', { adapter: 'a/adapter.mjs', state: 's', key: null, relative: true });
@@ -231,7 +231,7 @@ function fakeDeps(over: Partial<AdapterDeps> = {}, files: Record<string, string>
   const d = {
     calls,
     files,
-    runHook(cmd: 'pre' | 'post', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
+    runHook(cmd: 'pre' | 'post' | 'session', msg: Record<string, unknown>, statePath: string, keyPath: string | null): HookResult {
       calls.push({ cmd, msg, statePath, keyPath });
       return { status: 0, stdout: '{"decision":"allow"}\n', stderr: '' };
     },
@@ -262,6 +262,29 @@ describe('runAdapter', () => {
     const out = runAdapter(['claude-code', 'pre', '--state', '.speckl/state.json', '--key', '/k/s.key'], { CLAUDE_PROJECT_DIR: '/p' }, ccPre('Bash', { command: 'npm test' }), config, d);
     expect(out).toEqual({ code: 0, stdout: '', stderr: '' });
     expect(d.calls).toEqual([{ cmd: 'pre', msg: { tool: 'run_tests', input: {}, call_id: 't1' }, statePath: '/p/.speckl/state.json', keyPath: '/k/s.key' }]);
+  });
+  it('session: checks pinned tool definitions once and reports a denial', () => {
+    const d = fakeDeps();
+    const out = runAdapter(['claude-code', 'session', '--state', '.speckl/state.json', '--key', '/k/s.key'], { CLAUDE_PROJECT_DIR: '/p' },
+      JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'live', cwd: '/p' }), config, d);
+    expect(out).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(d.calls).toEqual([{ cmd: 'session', msg: { session_id: 'live' }, statePath: '/p/.speckl/state.json', keyPath: '/k/s.key' }]);
+    const denied = fakeDeps({ runHook: () => ({ status: 2, stdout: '{"decision":"deny","reason":"description changed"}\n', stderr: '' }) });
+    const bad = runAdapter(['cursor', 'session', '--state', 's.json'], {},
+      JSON.stringify({ hook_event_name: 'sessionStart', session_id: 'live', cwd: '/p' }), config, denied);
+    expect(bad.code).toBe(2);
+    expect(bad.stderr).toContain('MCP tool-definition check');
+    expect(bad.stderr).toContain('description changed');
+  });
+  it('pre: an MCP tool name is passed through as the server', () => {
+    const d = fakeDeps();
+    const cfg = { harness: { 'claude-code': { rules: [{ tools: ['mcp__weather__get_weather'], target: 'get_weather', inputs: [] }] } } };
+    const out = runAdapter(['claude-code', 'pre', '--state', 's.json'], { CLAUDE_PROJECT_DIR: '/p' },
+      ccPre('mcp__weather__get_weather', { city: 'Lisbon' }, { session_id: 'live' }), cfg, d);
+    expect(out.code).toBe(0);
+    expect(d.calls[0].msg).toEqual({
+      tool: 'get_weather', input: {}, call_id: 't1', mcp_server: 'weather', session_id: 'live',
+    });
   });
   it('pre: a hook deny becomes exit 2 with the reason', () => {
     const d = fakeDeps({ runHook: () => ({ status: 2, stdout: '{"decision":"deny","reason":"HNTL: act tool refused"}\n', stderr: '' }) });

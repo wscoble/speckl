@@ -20,7 +20,10 @@ Any other verifier is a plug-in module, pinned by sha256 in the signed state
 at `signal.mjs init --plugins <file>` and used with `--verifier plugin:<name>`.
 A changed, missing or misbehaving module denies. The interface, the security
 contract, a worked example and a testing checklist are in
-[verifier-plugins.md](verifier-plugins.md).
+[verifier-plugins.md](verifier-plugins.md). A plug-in may also export
+`verifyArtifact` for a signed file. The MCP tool-definition check uses that
+export; it does not go through `apply`. See
+[mcp-tool-definitions.md](mcp-tool-definitions.md).
 
 ```ts
 interface SignalVerifier {

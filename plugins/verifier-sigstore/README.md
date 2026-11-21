@@ -88,6 +88,17 @@ node signal.mjs apply --state ./state.json --verifier plugin:sigstore --file dro
 
 `--bundle <path>` overrides the default `<file>.sigstore.json`.
 
+The same command signs an artifact that is not a signal drop. An MCP tool
+snapshot is the case Speckl ships: see
+[docs/mcp-tool-definitions.md](../../docs/mcp-tool-definitions.md). The
+identity for that file is `config.artifacts.<policy>`, pinned at init, not
+`config.signals`. `verifyArtifact` checks the bundle over the exact file
+bytes and does not parse the file as a drop. `verify` is unchanged.
+
+```
+cosign sign-blob weather.tools.json --bundle weather.tools.json.sigstore.json
+```
+
 ## What is checked
 
 All cryptography is done by `@sigstore/verify`:

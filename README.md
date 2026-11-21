@@ -246,6 +246,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
 - [Agent targets](docs/agent-targets.md) — `agent { }` → AGENTS.md, tools.json, generic hook
 - [Agent signals](docs/agent-signals.md) — HITL/HNTL verified signals (signed file-drop with pinned signers, optional call-bound sign-off, plug-ins; CLI is dev-only)
 - [Verifier plug-ins](docs/verifier-plugins.md) — writing and pinning a signal verifier; Sigstore reference plug-in in [plugins/verifier-sigstore](plugins/verifier-sigstore/)
+- [MCP tool definitions](docs/mcp-tool-definitions.md) — pin and cosign a server's `tools/list`, and fail closed when it drifts
 - [SpeckDL Language Spec](speckdl/SPEC.md) — syntax and semantics
 
 ## Status

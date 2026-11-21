@@ -633,6 +633,14 @@ declines through `postToolUseFailure`. Parallel tool calls are refused with
 "another tool call is already pending"; the agent retries them one at a time
 (AGENTS.md tells it to).
 
+## MCP tool definitions
+
+A harness map allows a tool by name. It does not see the description or the
+input schema the server returns from `tools/list`. Pin that list, sign the
+snapshot with `cosign sign-blob --bundle`, and check it at session start.
+A mismatch denies every mapped call to that server. See
+[mcp-tool-definitions.md](mcp-tool-definitions.md).
+
 ## Limits (read before relying on it)
 
 - Speckl gates the **protocol** of tool calls; it is not a sandbox. A mapped

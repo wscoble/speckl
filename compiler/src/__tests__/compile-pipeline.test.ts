@@ -104,7 +104,10 @@ describe('in-process pipeline matches the CLI', () => {
 // signer set. signal.mjs bytes changed, and state-integrity.mjs hashes those
 // pins in genesis. The allow list still covers the hook, state-integrity,
 // and the agent docs.
-const OUTPUT_SHA256 = '122ec90796ce396deeec4b5510eacc369844fae68f6af15f38ae6b7357794d01';
+// Moved again when the agent target started emitting mcp-tools.mjs and the
+// session check. signal.mjs, hook.mjs and state-integrity.mjs all changed,
+// and every -t all tree gained mcp-tools.mjs. The allow list is unchanged.
+const OUTPUT_SHA256 = 'e927f1ff0539f5f2525343d8690acfaae251ba329fc65d02de93ca718fd24a31';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

@@ -48,6 +48,7 @@ describe('local package tarball', () => {
 
   it('ships dist, the verifier, README and LICENSE; not sources or tests', () => {
     for (const f of ['package.json', 'README.md', 'LICENSE', 'dist/index.js', 'dist/generators/agent/harness-runtime.js',
+      'dist/generators/agent/mcp-tools.mjs',
       'scripts/verify-z3.mjs', 'scripts/lib/obligations.mjs']) {
       expect(files, f).toContain(f);
     }
@@ -91,7 +92,7 @@ describe('local package tarball', () => {
     cpSync(join(compilerDir, '..', 'examples', 'ClaudeCodePolicy.speckdl'), join(project, 'policy.speckdl'));
     const c = run(npx, ['--no-install', 'speckl', 'policy.speckdl', '-t', 'agent', '-o', '.speckl'], project);
     expect(c.status, c.stderr).toBe(0);
-    for (const f of ['AGENTS.md', 'hook.mjs', 'adapter.mjs', 'harness/claude-code/settings.json']) {
+    for (const f of ['AGENTS.md', 'hook.mjs', 'adapter.mjs', 'mcp-tools.mjs', 'harness/claude-code/settings.json']) {
       expect(existsSync(join(project, '.speckl', 'agent', f)), f).toBe(true);
     }
   });
