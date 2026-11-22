@@ -106,8 +106,8 @@
       "camel/agent-policy/src/main/resources/application.properties": "2c4b098e8a5edfc6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/AgentPolicy.verify.mjs": "a2ece4a0bc4aa371",
-      "n8n/AgentPolicy.workflow.json": "e18cf70cc887e6bf",
-      "n8n/README.md": "b4931c958fcc6ffd",
+      "n8n/AgentPolicy.workflow.json": "84496e2fccc16dff",
+      "n8n/README.md": "d4144e3d1449cb46",
       "openapi/agentpolicy.openapi.json": "047f0f83161aaa0e"
     },
     "AgentPolicy.speckdl -t all-ir": {
@@ -127,8 +127,8 @@
       "camel/agent-policy/src/main/resources/application.properties": "2c4b098e8a5edfc6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/AgentPolicy.verify.mjs": "a2ece4a0bc4aa371",
-      "n8n/AgentPolicy.workflow.json": "e18cf70cc887e6bf",
-      "n8n/README.md": "b4931c958fcc6ffd",
+      "n8n/AgentPolicy.workflow.json": "84496e2fccc16dff",
+      "n8n/README.md": "d4144e3d1449cb46",
       "openapi/agentpolicy.openapi.json": "047f0f83161aaa0e"
     },
     "ClaudeCodePolicy.speckdl -t all": {
@@ -200,8 +200,8 @@
       "claude_code_policy/store.go": "196f73c82cf59e6c",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/ClaudeCodePolicy.verify.mjs": "445a3496fb1f751d",
-      "n8n/ClaudeCodePolicy.workflow.json": "7282f2e872701bde",
-      "n8n/README.md": "5fa48040f8df66db",
+      "n8n/ClaudeCodePolicy.workflow.json": "a1dc83409787b94c",
+      "n8n/README.md": "48dd082df9222fdf",
       "openapi/claudecodepolicy.openapi.json": "557b7b216911098c"
     },
     "ClaudeCodePolicy.speckdl -t all-ir": {
@@ -223,8 +223,8 @@
       "camel/claude-code-policy/src/main/resources/application.properties": "f54031752b185210",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/ClaudeCodePolicy.verify.mjs": "445a3496fb1f751d",
-      "n8n/ClaudeCodePolicy.workflow.json": "7282f2e872701bde",
-      "n8n/README.md": "5fa48040f8df66db",
+      "n8n/ClaudeCodePolicy.workflow.json": "a1dc83409787b94c",
+      "n8n/README.md": "48dd082df9222fdf",
       "openapi/claudecodepolicy.openapi.json": "557b7b216911098c"
     },
     "DeployGate.speckdl -t all": {
@@ -274,8 +274,8 @@
       "deploy_gate/store.go": "ab8d8c17e18cbbbe",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/DeployGate.verify.mjs": "fee24646a1f6f026",
-      "n8n/DeployGate.workflow.json": "e756ca1f3e828119",
-      "n8n/README.md": "d7404e8b368b833d",
+      "n8n/DeployGate.workflow.json": "a8316c579a92d7bc",
+      "n8n/README.md": "86ea684af8f93288",
       "openapi/deploygate.openapi.json": "ec44e300664d2fbe"
     },
     "DeployGate.speckdl -t all-ir": {
@@ -295,8 +295,8 @@
       "camel/deploy-gate/src/main/resources/application.properties": "79ecc8226e076052",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/DeployGate.verify.mjs": "fee24646a1f6f026",
-      "n8n/DeployGate.workflow.json": "e756ca1f3e828119",
-      "n8n/README.md": "d7404e8b368b833d",
+      "n8n/DeployGate.workflow.json": "a8316c579a92d7bc",
+      "n8n/README.md": "86ea684af8f93288",
       "openapi/deploygate.openapi.json": "ec44e300664d2fbe"
     },
     "KafkaKRaft.speckdl -t all": {
@@ -512,8 +512,8 @@
       "camel/podcast-publishing/src/main/resources/application.properties": "39fa52bf09b763d6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/PodcastPublishing.verify.mjs": "63c4d4d771098496",
-      "n8n/PodcastPublishing.workflow.json": "12a50c28a28c3679",
-      "n8n/README.md": "2764f9bad7621f17",
+      "n8n/PodcastPublishing.workflow.json": "f6af9acf32c75ef3",
+      "n8n/README.md": "4bbb14d0ec05f505",
       "openapi/podcastpublishing.openapi.json": "beefe3d593180b86",
       "podcast_publishing-elm/elm.json": "ad72359d7379fd62",
       "podcast_publishing-elm/index.html": "6d45a2032fbd6d17",
@@ -550,8 +550,8 @@
       "camel/podcast-publishing/src/main/resources/application.properties": "39fa52bf09b763d6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/PodcastPublishing.verify.mjs": "63c4d4d771098496",
-      "n8n/PodcastPublishing.workflow.json": "12a50c28a28c3679",
-      "n8n/README.md": "2764f9bad7621f17",
+      "n8n/PodcastPublishing.workflow.json": "f6af9acf32c75ef3",
+      "n8n/README.md": "4bbb14d0ec05f505",
       "openapi/podcastpublishing.openapi.json": "beefe3d593180b86"
     },
     "PreconditionTest.speckdl -t all": {
@@ -744,9 +744,9 @@
       "camel/review-gate/src/main/java/reviewgate/camel/processor/RunTestsProcessor.java": "d9e23f4cac5cef20",
       "camel/review-gate/src/main/resources/application.properties": "461838da00a3e1ae",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "99fff484b197dcda",
+      "n8n/README.md": "361f488903d7df49",
       "n8n/ReviewGate.verify.mjs": "98c15233e6b36819",
-      "n8n/ReviewGate.workflow.json": "03d2d3e8faa05ae7",
+      "n8n/ReviewGate.workflow.json": "f225206973a11b08",
       "openapi/reviewgate.openapi.json": "e0f247a131636192",
       "review_gate-elm/elm.json": "ad72359d7379fd62",
       "review_gate-elm/index.html": "39a7172eb80f1c25",
@@ -779,9 +779,9 @@
       "camel/review-gate/src/main/java/reviewgate/camel/processor/RunTestsProcessor.java": "d9e23f4cac5cef20",
       "camel/review-gate/src/main/resources/application.properties": "461838da00a3e1ae",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "99fff484b197dcda",
+      "n8n/README.md": "361f488903d7df49",
       "n8n/ReviewGate.verify.mjs": "98c15233e6b36819",
-      "n8n/ReviewGate.workflow.json": "03d2d3e8faa05ae7",
+      "n8n/ReviewGate.workflow.json": "f225206973a11b08",
       "openapi/reviewgate.openapi.json": "e0f247a131636192"
     },
     "SQLitePager.speckdl -t all": {

@@ -33,6 +33,22 @@ function writeSpec(name: string, body: string): string {
   return file;
 }
 
+const BUYER_TEXT_FORBIDDEN = [
+  'posts approve, keeps the pre-wait ticket',
+  'posts reject and the run ends at Stop and Error',
+  'a short timeout ends at Stop and Error',
+  'imports every generated example workflow',
+  'n8n-live.test',
+  'the approve test',
+  'ticket',
+  'T-1',
+  'GateLive',
+];
+
+function assertBuyerText(text: string): void {
+  for (const phrase of BUYER_TEXT_FORBIDDEN) expect(text, phrase).not.toContain(phrase);
+}
+
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap(name => {
     const p = join(dir, name);
@@ -206,8 +222,11 @@ describe('n8n workflow import shape', () => {
     expect(sticky.parameters.content).toContain('$json.body.outcome');
     expect(sticky.parameters.content).toContain('incomingAuthentication is none');
     expect(sticky.parameters.content).toContain('Limit Wait Time');
+    expect(sticky.parameters.content).toContain("Speckl's CI tests its bundled examples, not this specific workflow.");
     expect(sticky.parameters.content).not.toContain('{{');
     expect(sticky.parameters.content).not.toContain('}}');
+    assertBuyerText(String(sticky.parameters.content));
+    assertBuyerText(readme);
   });
 
   it('carries the regulated-data disclaimer and no secret material', () => {
@@ -911,6 +930,14 @@ describe('n8n examples and docs', () => {
       expect(readme.startsWith(DISCLAIMER)).toBe(true);
       expect(readme).toContain('does not run n8n');
       expect(readme).toContain('is not a model check');
+      expect(readme).toContain("Speckl's CI tests its bundled examples, not this specific workflow.");
+      assertBuyerText(readme);
+      for (const file of walk(join(out, 'n8n')).filter(f => f.endsWith('.workflow.json'))) {
+        const wf = JSON.parse(readFileSync(file, 'utf8')) as { nodes: { type: string; parameters?: { content?: string } }[] };
+        for (const node of wf.nodes) {
+          if (node.type === 'n8n-nodes-base.stickyNote') assertBuyerText(String(node.parameters?.content ?? ''));
+        }
+      }
       expect(readme).not.toMatch(/sandbox/i);
       expect(readme).not.toMatch(/telemetry/i);
       expect(readme).not.toMatch(/network/i);
@@ -946,6 +973,7 @@ describe('n8n examples and docs', () => {
     expect(doc).toContain('posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit');
     expect(doc).toContain('posts reject and the run ends at Stop and Error');
     expect(doc).toContain('a short timeout ends at Stop and Error');
+    expect(doc).toContain('a resume POST without the header auth credential is refused');
     expect(doc).not.toContain('No test runs n8n');
     expect(doc).not.toContain('{{ $env.NAME }}');
     expect(doc).toContain('writes no file');
