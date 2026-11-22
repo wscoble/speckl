@@ -738,7 +738,18 @@ describe('n8n compile failures and -t all continuation', () => {
     ].join('\n'), /reject outcome/);
   });
 
-  it('continues -t all when n8n rejects oneof, transition, or a timeout that is not a reject', () => {
+  it('rejects a state field named headers', () => {
+    expectNoN8n([
+      'speck H {',
+      '    state { headers: String; n: Nat }',
+      '    init { n := 0 }',
+      '    action Go { n := n }',
+      '}',
+      '',
+    ].join('\n'), /state field "headers"/);
+  });
+
+  it('oneof and transition stop -t all and -t all-ir', () => {
     const oneof = writeSpec('One.speckdl', [
       'speck Wire {',
       '    oneof Payload {',
@@ -747,15 +758,13 @@ describe('n8n compile failures and -t all continuation', () => {
       '}',
       '',
     ].join('\n'));
-    const oneOut = freshOut();
-    compileSpec(oneof, { outputDir: oneOut, target: 'all', bomFormat: 'both', verifyDepth: 4 });
-    expect(existsSync(join(oneOut, 'n8n'))).toBe(false);
-    expect(walk(oneOut).some(f => f.endsWith('.proto'))).toBe(true);
-    expect(walk(oneOut).some(f => f.endsWith('.workflow.json'))).toBe(false);
-    const oneIr = freshOut();
-    compileSpec(oneof, { outputDir: oneIr, target: 'all-ir', bomFormat: 'both', verifyDepth: 4 });
-    expect(existsSync(join(oneIr, 'n8n'))).toBe(false);
-    expect(walk(oneIr)).toEqual([]);
+    for (const target of ['all', 'all-ir'] as const) {
+      const out = freshOut();
+      expect(() => compileSpec(oneof, { outputDir: out, target, bomFormat: 'both', verifyDepth: 4 }), target)
+        .toThrow(/rejects AST node type "oneof"/);
+      expect(existsSync(join(out, 'n8n')), target).toBe(false);
+      expect(walk(out), target).toEqual([]);
+    }
 
     const transition = writeSpec('Trans.speckdl', [
       'speck Wire {',
@@ -763,10 +772,13 @@ describe('n8n compile failures and -t all continuation', () => {
       '}',
       '',
     ].join('\n'));
-    const transOut = freshOut();
-    compileSpec(transition, { outputDir: transOut, target: 'all', bomFormat: 'both', verifyDepth: 4 });
-    expect(existsSync(join(transOut, 'n8n'))).toBe(false);
-    expect(walk(transOut).some(f => f.endsWith('.proto'))).toBe(true);
+    for (const target of ['all', 'all-ir'] as const) {
+      const out = freshOut();
+      expect(() => compileSpec(transition, { outputDir: out, target, bomFormat: 'both', verifyDepth: 4 }), target)
+        .toThrow(/rejects AST node type "transition"/);
+      expect(existsSync(join(out, 'n8n')), target).toBe(false);
+      expect(walk(out), target).toEqual([]);
+    }
 
     const timeout = writeSpec('TimeoutAccept.speckdl', [
       'speck TimeoutAccept {',
@@ -795,15 +807,84 @@ describe('n8n compile failures and -t all continuation', () => {
       '',
     ].join('\n'));
     const timeoutOut = freshOut();
-    compileSpec(timeout, { outputDir: timeoutOut, target: 'all', bomFormat: 'both', verifyDepth: 4 });
+    expect(() => compileSpec(timeout, { outputDir: timeoutOut, target: 'all', bomFormat: 'both', verifyDepth: 4 }))
+      .toThrow(/agent block is invalid/);
     expect(existsSync(join(timeoutOut, 'n8n'))).toBe(false);
-    expect(walk(timeoutOut).some(f => f.endsWith('.ts'))).toBe(true);
-    expect(walk(timeoutOut).some(f => f.endsWith('.workflow.json'))).toBe(false);
     const timeoutIr = freshOut();
     compileSpec(timeout, { outputDir: timeoutIr, target: 'all-ir', bomFormat: 'both', verifyDepth: 4 });
     expect(existsSync(join(timeoutIr, 'n8n'))).toBe(false);
     expect(walk(timeoutIr).length).toBeGreaterThan(0);
+
+    const odd = writeSpec('Odd.speckdl', [
+      'speck Odd {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    invariant Odd { mystery(n) }',
+      '    action Go { n := n + 1 }',
+      '}',
+      '',
+    ].join('\n'));
+    const all = freshOut();
+    compileSpec(odd, { outputDir: all, target: 'all', bomFormat: 'both', verifyDepth: 4 });
+    expect(existsSync(join(all, 'n8n'))).toBe(false);
+    expect(walk(all).some(f => f.endsWith('.ts'))).toBe(true);
   });
+
+  it('the speckl CLI exits 1 for oneof and transition, and exits 0 when only n8n is skipped', () => {
+    const runCli = (body: string, name: string, target: string) => {
+      const file = writeSpec(name, body);
+      const out = freshOut();
+      const ran = spawnSync(process.execPath, [viteNode, join(compilerDir, 'src', 'index.ts'), file, '-t', target, '-o', out], {
+        cwd: compilerDir,
+        encoding: 'utf-8',
+      });
+      return { out, ran };
+    };
+    const oneof = [
+      'speck Wire {',
+      '    oneof Payload {',
+      '        tick: Ticked',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const transition = [
+      'speck Wire {',
+      '    transition Transition { prior_state: String }',
+      '}',
+      '',
+    ].join('\n');
+    for (const [body, name, target] of [
+      [oneof, 'One.speckdl', 'all'],
+      [oneof, 'One.speckdl', 'all-ir'],
+      [transition, 'Trans.speckdl', 'all'],
+      [transition, 'Trans.speckdl', 'all-ir'],
+    ] as const) {
+      const { out, ran } = runCli(body, name, target);
+      expect(ran.status, `${name} ${target}\n${ran.stderr}`).toBe(1);
+      expect(`${ran.stdout}\n${ran.stderr}`, target).not.toContain('Compilation complete');
+      expect(walk(out), `${name} ${target}`).toEqual([]);
+    }
+    const odd = [
+      'speck Odd {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    invariant Odd { mystery(n) }',
+      '    action Go { n := n + 1 }',
+      '}',
+      '',
+    ].join('\n');
+    const skipped = runCli(odd, 'Odd.speckdl', 'all');
+    expect(skipped.ran.status, skipped.ran.stderr).toBe(0);
+    expect(skipped.ran.stdout).toContain('Skipped backend: n8n');
+    expect(skipped.ran.stdout).toContain('Compilation complete');
+    expect(existsSync(join(skipped.out, 'n8n'))).toBe(false);
+    expect(walk(skipped.out).some(f => f.endsWith('.ts'))).toBe(true);
+    const focused = runCli(odd, 'Odd.speckdl', 'n8n');
+    expect(focused.ran.status, focused.ran.stderr).toBe(1);
+    expect(existsSync(join(focused.out, 'n8n'))).toBe(false);
+    expect(walk(focused.out)).toEqual([]);
+  }, 120_000);
 });
 
 describe('n8n examples and docs', () => {

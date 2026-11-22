@@ -117,7 +117,9 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when each approval Wait became one webhook with Limit Wait Time,
 // a Resume node, and an If that reads body.outcome. The n8n README and the
 // sticky note changed with that wiring. Other targets were not retargeted.
-const OUTPUT_SHA256 = '8a586888ff78bda5171c31dd46d8efc696499f07ff0ae67f81427aaf6a5c23fc';
+// Moved again when the n8n README and sticky note said the live n8n behavior
+// is untested, and `-t all` was described as skipping only the n8n target.
+const OUTPUT_SHA256 = '2b78ee2569d3dea6737b8f89f9e3d9c66e258a9db2d90e5c578df0b880584406';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

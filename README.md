@@ -11,7 +11,7 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
               ├── Protobuf            ← message definitions  ✓ tested
               ├── K8s CRDs            ← Kubernetes custom resources  ✓ tested
               ├── OpenAPI 3.1         ← REST API surface  ✓ tested
-              ├── n8n workflow JSON    ← importable workflow and a verify script  ✓ tested
+              ├── n8n workflow JSON    ← workflow JSON and a verify script; no test runs n8n
               ├── PROV-O (RDF)         ← W3C provenance standard  ✓ tested
               ├── CycloneDX SBOM       ← OWASP software bill of materials  ✓ tested
               └── SPDX SBOM            ← Linux Foundation SBOM standard  ✓ tested

@@ -18,7 +18,7 @@ A string in the spec is literal data. It is not an n8n env binding. The compiler
 
 An `agent { await ... }` block becomes one `n8n-nodes-base.wait` node, a Resume code node, and an `n8n-nodes-base.if` gate.
 
-The Wait resumes on a webhook (`resume` is `webhook`, `httpMethod` is `POST`) and carries Limit Wait Time on that same node (`limitWaitTime` is true, `limitType` is `afterTimeInterval`, `resumeAmount` and `resumeUnit` are the spec timeout). There is no second Wait and no `timeInterval` node, so the timeout cannot fire after the webhook resumes.
+The Wait node this compile emits has `resume` `webhook`, `httpMethod` `POST`, and Limit Wait Time on that same node (`limitWaitTime` true, `limitType` `afterTimeInterval`, `resumeAmount` and `resumeUnit` from the spec timeout). There is no second Wait and no `timeInterval` node. No test runs n8n, so the live claim that the timeout cannot fire after the webhook resumes is untested. The emitted parameters and edges are tested.
 
 Post this JSON to the Wait resume URL:
 
@@ -26,9 +26,9 @@ Post this JSON to the Wait resume URL:
 {"outcome":"<name>"}
 ```
 
-n8n puts that object on the resumed item at `body`. The posted value is `$json.body.outcome` on the webhook item. The webhook item replaces the pre-wait item. The Resume node reads the pre-wait item with `$('NodeName').item.json`, where `NodeName` is the node that links into the Wait, and copies those fields forward. It treats the incoming item as a webhook only when `headers` is an object, and then sets `body` from `incoming.body`. A timeout resumes with the pre-wait item, which has no webhook `headers`, so Resume sets `body` to an empty object. The If left value is `={{ $json.body.outcome }}` and the true branch is only an outcome that is not marked `!`. That branch sets the stage and then runs later actions. The false output connects only to `n8n-nodes-base.stopAndError`. A missing `body.outcome` takes that false output, so both a reject and a timeout stop. A reject outcome that names an earlier stage still stops. The Stop node has no path to a later action. The workflow does not loop back into an action.
+The emitted If left value is `={{ $json.body.outcome }}`. The Resume node reads the pre-wait item with `$('NodeName').item.json`, where `NodeName` is the node that links into the Wait, copies those fields, and sets `body` from `incoming.body` when `incoming.headers` is an object. A state field named `headers` fails the compile, so a timeout item cannot be mistaken for that webhook shape by a field of that name. The true branch is only an outcome that is not marked `!`. That branch sets the stage and then runs later actions. The false output connects only to `n8n-nodes-base.stopAndError`. A reject outcome that names an earlier stage still stops. The Stop node has no path to a later action. The workflow does not loop back into an action. How a live n8n places `{"outcome":"<name>"}` on `body`, and how a live timeout resumes, are untested. The wiring test checks the emitted code and the If path.
 
-`incomingAuthentication` is `none`. The node has no credentials. A POST of `{"outcome":"approve"}` is accepted. After import, open the Wait node and set Authentication to Basic Auth (`basicAuth`), Header Auth (`headerAuth`), or JWT Auth (`jwtAuth`), then attach the matching credential you create in n8n (`httpBasicAuth`, `httpHeaderAuth`, or `jwtAuth`). This file does not contain that credential. The live rejection of a forged POST is untested, because no test runs n8n. The emitted parameter is tested.
+`incomingAuthentication` is `none`. The node has no credentials. Whether a live n8n accepts a POST of `{"outcome":"approve"}` while that setting is `none` is untested. After import, open the Wait node and set Authentication to Basic Auth (`basicAuth`), Header Auth (`headerAuth`), or JWT Auth (`jwtAuth`), then attach the matching credential you create in n8n (`httpBasicAuth`, `httpHeaderAuth`, or `jwtAuth`). This file does not contain that credential. The live rejection of a forged POST is untested, because no test runs n8n. The emitted parameter is tested.
 
 The Wait node does not check a signal signature. `bind call` digests are not enforced. An await with no timeout fails the compile and writes no file.
 
@@ -46,20 +46,18 @@ Each node id is a speck slug, a name slug, and 16 hex characters. Those 16 chara
 
 ## `-t all` and `-t all-ir`
 
-`-t n8n` throws and writes no n8n file when this target rejects the spec.
+`-t n8n` throws and writes no n8n file when this target rejects the spec. The process exits 1.
 
-`-t all` and `-t all-ir` skip a backend that rejects the spec and still write a backend that accepts it. The skip is a conservation reject (`backend rejects AST node type`), an `N8nTranslateError`, or `agent block is invalid`. Any other error still stops the run. A skipped backend throws before it writes, so the run does not leave that backend's file behind. `-t agent` still throws `agent block is invalid` and writes no agent rails.
+Compared with main, `-t all` and `-t all-ir` still stop when any backend other than n8n rejects the spec. `oneof` and `transition` are rejected by k8s before n8n runs, the same way main stops, so both modes throw, the process exits 1, and no file is written. That is the same exit as main. The n8n directory is not written.
 
-`oneof` and `transition` are rejected by every backend except protobuf. `-t all` writes the protobuf schema and does not write the n8n directory. `-t all-ir` does not include protobuf, and every backend it runs rejects those two members, so that compile writes no file for that spec and does not throw.
-
-A failure that only n8n raises (an expression n8n cannot translate, a Wait with no timeout, a timeout outcome that is not a reject, a secret-like literal, or a parameter n8n would treat as an expression) is skipped on both `-t all` and `-t all-ir`. The other targets those modes include are still written. No partial n8n file is written.
+An n8n-only failure is the one exception, and it is new relative to main because main has no n8n target. The failures are an expression n8n cannot translate, a Wait with no timeout, a timeout outcome that is not a reject when the agent target does not also reject it, a secret-like literal, a parameter n8n would treat as an expression, and a state field named `headers`. The log line is `Skipped backend: n8n` followed by the reason. The other targets are still written. The process exits 0. If that skip would write no file, the process exits 1. No partial n8n file is written. A timeout outcome that is not a reject is also an agent-block error, so `-t all` still throws at the agent target after n8n is named as skipped. `-t all-ir` does not run the agent target, so that same spec skips n8n, writes the other all-ir targets, and exits 0.
 
 ## Limits
 
 Each row is something this target does not do. The test column names the test in `compiler/src/__tests__/n8n-target.test.ts`, or says the row is untested.
 
-- `oneof` fails `-t n8n` and writes no file. Test: `rejects oneof instead of dropping it`. On `-t all` the protobuf schema is still written and the n8n directory is not. Test: `continues -t all when n8n rejects oneof, transition, or a timeout that is not a reject`.
-- `transition` fails `-t n8n` and writes no file. Test: `transition fails the compile and writes no n8n file`. On `-t all` the protobuf schema is still written and the n8n directory is not. Same continuation test.
+- `oneof` fails `-t n8n` and writes no file. Test: `rejects oneof instead of dropping it`. `-t all` and `-t all-ir` throw, exit 1, and write no file. Test: `oneof and transition stop -t all and -t all-ir`. The CLI exit code is tested by `the speckl CLI exits 1 for oneof and transition, and exits 0 when only n8n is skipped`.
+- `transition` fails `-t n8n` and writes no file. Test: `transition fails the compile and writes no n8n file`. `-t all` and `-t all-ir` throw and exit 1. Same two tests.
 - An `if` body fails the compile and writes no file. Test: `an if body fails the compile and writes no n8n file`.
 - A `for` loop fails the compile and writes no file. Test: `for fails the compile and writes no n8n file`.
 - `forall` fails the compile and writes no file. Test: `forall fails the compile and writes no n8n file`.
@@ -67,11 +65,12 @@ Each row is something this target does not do. The test column names the test in
 - `Eventually` fails the compile and writes no file. Test: `Eventually fails the compile and writes no n8n file`.
 - An unknown call fails the compile and writes no file. Test: `fails the compile when an expression cannot be translated and writes no file`.
 - An await with no timeout fails the compile and writes no file. The Wait node is not written. Test: `a Wait node with no timeout fails the compile`.
-- A timeout whose outcome is not a reject fails the compile and writes no file. Test: `a timeout outcome that is not a reject fails the compile and writes no n8n file`. On `-t all` the other targets are still written and the n8n directory is not. Test: `continues -t all when n8n rejects oneof, transition, or a timeout that is not a reject`.
+- A timeout whose outcome is not a reject fails `-t n8n` and writes no file. Test: `a timeout outcome that is not a reject fails the compile and writes no n8n file`. `-t all` still throws, because the agent target rejects that await. `-t all-ir` skips n8n, names it, and writes the other all-ir targets. Test: `oneof and transition stop -t all and -t all-ir`.
 - A string that looks like a live key fails the compile and writes no file. The key text is not in the error. Test: `writes no workflow when a literal looks like a secret, and a real workflow has no credentials`.
 - A parameter that contains `{{` or `}}`, or starts with `=`, fails the compile, except the If left value. Test: `rejects {{, }}, and a leading = in every parameter slot`. A spec string is escaped instead, and the value that the code evaluates to is the original text. Test: `spec text is escaped and is not an n8n expression`.
 - A spec string is literal data. It is not an n8n env binding. The workflow has no credentials object. Test: `spec strings are literal data and are not n8n env bindings`.
-- Any other expression this target cannot translate fails the compile and writes no file. Test: `fails the compile when an expression cannot be translated and writes no file`. On `-t all` the TypeScript machine is still written. Same test.
+- Any other expression this target cannot translate fails `-t n8n` and writes no file. On `-t all` and `-t all-ir` the log says `Skipped backend: n8n`, the other targets are still written, and the process exits 0. Test: `fails the compile when an expression cannot be translated and writes no file` and `the speckl CLI exits 1 for oneof and transition, and exits 0 when only n8n is skipped`.
+- A state field named `headers` fails the compile and writes no n8n file. Test: `rejects a state field named headers`. The Resume node would otherwise treat an item with an object `headers` as a webhook.
 - The webhook resume wiring copies the pre-wait item and the If reads `$json.body.outcome`. Test: `webhook resume keeps the pre-wait item and the If reads body.outcome`. No test runs n8n, so a live n8n execution of that POST is untested.
 - Limit Wait Time is on the one Wait. A reject and a timeout have no path to a later action. Test: `rejected and timed-out branches have no path to a downstream action`. The live fact that n8n will not fire the limit after the webhook resumes is untested, because no test runs n8n.
 - `incomingAuthentication` is `none`. Test: `webhook resume keeps the pre-wait item and the If reads body.outcome`. Adding Basic Auth, Header Auth, or JWT Auth is a step you take in n8n after import. The live check that a forged POST is then refused is untested.
