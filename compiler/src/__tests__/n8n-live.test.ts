@@ -351,7 +351,11 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
       body: JSON.stringify({ outcome: 'approve' }),
     });
     expect(allowed.status).toBe(200);
-  }, 40_000);
+    const done = await until(id!, ex => ex.status === 'success', 20_000);
+    const data = decoded(done);
+    expect(ran(data, 'Stage review')).toBe(true);
+    expect(ran(data, 'Ship')).toBe(true);
+  }, 60_000);
 
   it('a short timeout ends at Stop and Error', async () => {
     const id = await startGate();

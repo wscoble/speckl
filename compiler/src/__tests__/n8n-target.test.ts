@@ -974,6 +974,10 @@ describe('n8n examples and docs', () => {
     expect(doc).toContain('posts reject and the run ends at Stop and Error');
     expect(doc).toContain('a short timeout ends at Stop and Error');
     expect(doc).toContain('a resume POST without the header auth credential is refused');
+    expect(doc).toContain('runs a copy of the generated workflow with Header Auth and a test credential set on the Wait node, and with the resume limit raised to 1 hour');
+    expect(doc).toContain('It is not the unmodified generated output');
+    expect(changelog).toContain('runs a copy of the generated workflow with Header Auth and a test credential set on the Wait node, and with the resume limit raised to 1 hour');
+    expect(changelog).toContain('It is not the unmodified generated output');
     expect(doc).not.toContain('No test runs n8n');
     expect(doc).not.toContain('{{ $env.NAME }}');
     expect(doc).toContain('writes no file');
