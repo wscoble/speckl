@@ -39,18 +39,29 @@ function checked(backend: BackendId, ast: AST): void {
   guardAst(backend, ast);
 }
 
-/** True when the output directory contains at least one file. */
-function outputHasFile(dir: string): boolean {
-  if (!fs.existsSync(dir)) return false;
+/** Path -> mtime and size, for files already in the output directory. */
+function fileStamps(dir: string): Map<string, string> {
+  const stamps = new Map<string, string>();
+  if (!fs.existsSync(dir)) return stamps;
   const stack = [dir];
   while (stack.length) {
     const current = stack.pop();
-    if (!current) break;
+    if (!current) continue;
     for (const name of fs.readdirSync(current)) {
       const child = path.join(current, name);
-      if (fs.statSync(child).isDirectory()) stack.push(child);
-      else return true;
+      const st = fs.statSync(child);
+      if (st.isDirectory()) stack.push(child);
+      else stamps.set(path.relative(dir, child), `${st.mtimeMs}:${st.size}`);
     }
+  }
+  return stamps;
+}
+
+/** True when this run created a file or replaced one that was already there. */
+function wroteSince(dir: string, before: Map<string, string>): boolean {
+  const after = fileStamps(dir);
+  for (const [file, stamp] of after) {
+    if (before.get(file) !== stamp) return true;
   }
   return false;
 }
@@ -72,6 +83,9 @@ export function compileSpec(file: string, options: CompileOptions): void {
   if (!fs.existsSync(options.outputDir)) {
     fs.mkdirSync(options.outputDir, { recursive: true });
   }
+  // Taken before any backend writes. A file that was already in the directory
+  // does not count as output from this run.
+  const filesAtStart = fileStamps(options.outputDir);
 
   const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: options.rootDir });
   const domainErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('domain:'));
@@ -105,7 +119,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
     generateCamel(irAst, { outputDir: options.outputDir });
   }
 
-  // n8n importable workflow + verify script. Focused like z3 and rust:
+  // n8n workflow + verify script. Focused like z3 and rust:
   // `-t n8n` does not also emit the timestamped provenance graph.
   // Every n8n failure becomes N8nTranslateError. `-t n8n` throws it and
   // writes no n8n file. `-t all` and `-t all-ir` skip only that error,
@@ -227,9 +241,9 @@ export function compileSpec(file: string, options: CompileOptions): void {
     generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
   }
 
-  // An n8n skip that wrote nothing must not look like success. Main exits 1
-  // in that situation. Other backends are not skipped, so this is the n8n case.
-  if (n8nSkip !== null && !outputHasFile(options.outputDir)) {
+  // An n8n skip that wrote nothing in this run must not look like success.
+  // A file that was already in the output directory does not count.
+  if (n8nSkip !== null && !wroteSince(options.outputDir, filesAtStart)) {
     throw new N8nTranslateError(`Skipped backend: n8n, and no file was written. ${n8nSkip}`);
   }
 

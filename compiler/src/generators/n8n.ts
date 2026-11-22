@@ -1,4 +1,7 @@
-// n8n.ts — importable n8n workflow target.
+// n8n.ts — n8n workflow target.
+// `n8n import:workflow` accepts this JSON. The test is
+// `imports every generated example workflow with n8n import:workflow`
+// in compiler/src/__tests__/n8n-live.test.ts.
 //
 // `speckl <file> -t n8n` writes <outputDir>/n8n/<Speck>.workflow.json,
 // <Speck>.verify.mjs, and n8n/README.md.
@@ -9,11 +12,17 @@
 //
 // An `agent { await }` block becomes one webhook Wait node, a Resume code
 // node, and an If gate. The Wait's Limit Wait Time is the timeout. There is
-// no second timer. The webhook replaces the item, so Resume copies the
-// pre-wait item back and keeps the posted JSON at body. The If reads
-// $json.body.outcome. Outcomes marked `!`, and a timeout with no body,
-// connect only to Stop and Error. A reject target that the spec sends back
-// to an earlier stage still stops here. The workflow does not loop.
+// no second timer. The live runs are
+// `posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit`,
+// `posts reject and the run ends at Stop and Error`, and
+// `a short timeout ends at Stop and Error`.
+// A posted approve arrives at body, Resume keeps the pre-wait fields, and
+// the run stays successful after the Wait limit. A reject and a timeout
+// both end at Stop and Error. A timeout resumes with the pre-wait item,
+// which has no webhook headers, so body is empty. The If reads
+// $json.body.outcome. Outcomes marked `!` connect only to Stop and Error.
+// A reject target that the spec sends back to an earlier stage still stops
+// here. The workflow does not loop.
 //
 // An expression this file cannot translate fails the compile. No n8n file
 // is written. `oneof` and `transition` are rejected by the conservation
@@ -562,13 +571,15 @@ function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
       lines.push('This workflow does not enforce call-digest binding. Sign-off stays a manual step in n8n.');
     }
   }
-  lines.push('The emitted If reads $json.body.outcome. Post the JSON {"outcome":"<name>"} to the Wait resume URL. How a live n8n places that object is untested.');
-  lines.push('The Resume code copies the item from the node before the Wait and sets body when headers is an object. How a live timeout resumes is untested.');
-  lines.push('Limit Wait Time is on that same Wait. There is no second timer node. Whether the limit fires after the webhook resumes is untested.');
-  lines.push('incomingAuthentication is none. Whether a live n8n accepts a POST of {"outcome":"approve"} with that setting is untested. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach a credential you create in n8n. This file does not contain that credential.');
+  lines.push('Post the JSON {"outcome":"<name>"} to the Wait resume URL. The If reads $json.body.outcome.');
+  lines.push('Live n8n test posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit: the posted JSON arrives at body, the downstream action still has the pre-wait fields, and the run stays successful after the Wait limit.');
+  lines.push('Live n8n test a short timeout ends at Stop and Error: a timeout resumes with the pre-wait item, which has no webhook headers, so body is empty and the If takes the false output.');
+  lines.push('Live n8n test posts reject and the run ends at Stop and Error: a reject ends at Stop and Error and does not run a later action.');
+  lines.push('Limit Wait Time is on that same Wait. There is no second timer node.');
+  lines.push('incomingAuthentication is none. The approve test posts {"outcome":"approve"} with no credential and n8n accepts it. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach a credential you create in n8n. This file does not contain that credential. Whether n8n then refuses a POST without that credential is untested.');
   lines.push('A string in the spec is literal data. It is not an n8n env binding.');
   lines.push('A check that fails stops that n8n run. Signal signatures are not checked.');
-  lines.push('No test runs n8n.');
+  lines.push('Live n8n test imports every generated example workflow with n8n import:workflow.');
   return lines.join('\n');
 }
 
@@ -1017,11 +1028,13 @@ function renderReadme(specks: string[]): string {
     '',
     '## Approval',
     '',
-    'An `agent { await ... }` block becomes one `n8n-nodes-base.wait` node (webhook resume, Limit Wait Time), a Resume code node, and an `n8n-nodes-base.if` gate. The emitted If reads $json.body.outcome. The Resume code copies the item from the node before the Wait. Outcomes marked `!` use the If false output, which connects only to `n8n-nodes-base.stopAndError`. The timeout is Limit Wait Time on that same Wait. There is no second timer node. That false output has no path to a later action. How a live n8n places {"outcome":"<name>"}, how a live timeout resumes, and whether Limit Wait Time fires after the webhook are untested. No test runs n8n.',
+    'An `agent { await ... }` block becomes one `n8n-nodes-base.wait` node (webhook resume, Limit Wait Time), a Resume code node, and an `n8n-nodes-base.if` gate. The If reads $json.body.outcome. Outcomes marked `!` use the If false output, which connects only to `n8n-nodes-base.stopAndError`. The timeout is Limit Wait Time on that same Wait. There is no second timer node. That false output has no path to a later action.',
+    '',
+    'Live n8n, test `posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit`: a POST of {"outcome":"<name>"} arrives on the item at body, the downstream action still has the fields from before the Wait, and the run stays successful after the Wait limit. Test `posts reject and the run ends at Stop and Error` and test `a short timeout ends at Stop and Error`: both end at Stop and Error, and the timeout resumes with the pre-wait item (no webhook headers), so body is empty.',
     '',
     '## Limits',
     '',
-    'This file is an n8n workflow you import and run on your own n8n. Speckl does not run it after import and does not watch it after import. No test runs n8n.',
+    'This file is an n8n workflow you import and run on your own n8n. Speckl does not run it after import and does not watch it after import. Test `imports every generated example workflow with n8n import:workflow` runs `n8n import:workflow` on every generated example workflow.',
     '',
     'The trace check supports state, init, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint` and `invariant` boolean expressions, and `verify Always(Name)` when that expression translates. Those checks run only in the nodes and the verify script this compile wrote. They do not run anywhere else.',
     '',
@@ -1029,11 +1042,11 @@ function renderReadme(specks: string[]): string {
     '',
     'Compared with main, `-t all` and `-t all-ir` still stop when any backend other than n8n rejects the spec. `oneof` and `transition` do that, the process exits 1, and no n8n file is written. An n8n-only failure is the exception: the log line is `Skipped backend: n8n`, the other targets are still written, and the process exits 0. If that skip would write no file, the process exits 1. `-t n8n` exits 1 and writes no n8n file. No partial n8n file is written.',
     '',
-    'No test runs n8n. The sentences above about where n8n puts the posted JSON, how a timeout resumes, and Limit Wait Time after the webhook are the wiring this file emits. They are untested against a live n8n.',
+    'The approve, reject, and timeout tests named above are in `compiler/src/__tests__/n8n-live.test.ts`. They run against n8n 2.48.7.',
     '',
     'A string from the spec is literal data. The characters `{{` and `}}` in that string are unicode escapes in the code node, and a parameter value is not allowed to start with `=`, except the If left value that reads $json.body.outcome. The workflow has no credential id and no credential value.',
     '',
-    'The generated Wait sets incomingAuthentication to none. Whether a live n8n accepts a POST of {"outcome":"approve"} with that setting is untested. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach the matching credential in n8n. This file does not contain that credential.',
+    'The generated Wait sets incomingAuthentication to none. The approve test posts {"outcome":"approve"} with no credential and n8n accepts it. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach the matching credential in n8n. This file does not contain that credential. Whether n8n then refuses a POST without that credential is untested.',
     '',
     'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops.',
     '',

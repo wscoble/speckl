@@ -942,7 +942,11 @@ describe('n8n examples and docs', () => {
     expect(doc).toContain('sha256');
     expect(doc).toContain('incomingAuthentication');
     expect(doc).toContain('Basic Auth');
-    expect(doc).toContain('No test runs n8n');
+    expect(doc).toContain('imports every generated example workflow with n8n import:workflow');
+    expect(doc).toContain('posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit');
+    expect(doc).toContain('posts reject and the run ends at Stop and Error');
+    expect(doc).toContain('a short timeout ends at Stop and Error');
+    expect(doc).not.toContain('No test runs n8n');
     expect(doc).not.toContain('{{ $env.NAME }}');
     expect(doc).toContain('writes no file');
     expect(doc).not.toMatch(/sandbox/i);

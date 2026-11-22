@@ -4,7 +4,7 @@ Builder Kit buyers keep one `.speckdl` spec and recompile it when a new target i
 
 `speckl <file> -t n8n -o <out>` writes `<out>/n8n/<Speck>.workflow.json`, `<out>/n8n/<Speck>.verify.mjs`, and `<out>/n8n/README.md`. `-t n8n` does not also write the timestamped provenance graph or the TypeScript machine.
 
-The output is an n8n workflow you import and run on your own n8n. Speckl does not run it after import and does not watch it after import. No test runs n8n.
+The output is an n8n workflow you import and run on your own n8n. Speckl does not run it after import and does not watch it after import. Test `imports every generated example workflow with n8n import:workflow` in `compiler/src/__tests__/n8n-live.test.ts` runs `n8n import:workflow` on every generated example workflow, against n8n 2.48.7 pinned by image digest.
 
 Not for regulated data without your own review. The workflow is general-purpose compiler output. It is not HIPAA-certified. You are responsible for your own compliance review. This output does not guarantee zero data retention (ZDR).
 
@@ -18,7 +18,7 @@ A string in the spec is literal data. It is not an n8n env binding. The compiler
 
 An `agent { await ... }` block becomes one `n8n-nodes-base.wait` node, a Resume code node, and an `n8n-nodes-base.if` gate.
 
-The Wait node this compile emits has `resume` `webhook`, `httpMethod` `POST`, and Limit Wait Time on that same node (`limitWaitTime` true, `limitType` `afterTimeInterval`, `resumeAmount` and `resumeUnit` from the spec timeout). There is no second Wait and no `timeInterval` node. No test runs n8n, so the live claim that the timeout cannot fire after the webhook resumes is untested. The emitted parameters and edges are tested.
+The Wait node this compile emits has `resume` `webhook`, `httpMethod` `POST`, and Limit Wait Time on that same node (`limitWaitTime` true, `limitType` `afterTimeInterval`, `resumeAmount` and `resumeUnit` from the spec timeout). There is no second Wait and no `timeInterval` node. Test `posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit` posts an approve, then waits past the limit, and the run stays successful. The emitted parameters and edges are also checked by `webhook resume keeps the pre-wait item and the If reads body.outcome`.
 
 Post this JSON to the Wait resume URL:
 
@@ -26,9 +26,9 @@ Post this JSON to the Wait resume URL:
 {"outcome":"<name>"}
 ```
 
-The emitted If left value is `={{ $json.body.outcome }}`. The Resume node reads the pre-wait item with `$('NodeName').item.json`, where `NodeName` is the node that links into the Wait, copies those fields, and sets `body` from `incoming.body` when `incoming.headers` is an object. A state field named `headers` fails the compile, so a timeout item cannot be mistaken for that webhook shape by a field of that name. The true branch is only an outcome that is not marked `!`. That branch sets the stage and then runs later actions. The false output connects only to `n8n-nodes-base.stopAndError`. A reject outcome that names an earlier stage still stops. The Stop node has no path to a later action. The workflow does not loop back into an action. How a live n8n places `{"outcome":"<name>"}` on `body`, and how a live timeout resumes, are untested. The wiring test checks the emitted code and the If path.
+The emitted If left value is `={{ $json.body.outcome }}`. The Resume node reads the pre-wait item with `$('NodeName').item.json`, where `NodeName` is the node that links into the Wait, copies those fields, and sets `body` from `incoming.body` when `incoming.headers` is an object. A state field named `headers` fails the compile, so a timeout item cannot be mistaken for that webhook shape by a field of that name. The true branch is only an outcome that is not marked `!`. That branch sets the stage and then runs later actions. The false output connects only to `n8n-nodes-base.stopAndError`. A reject outcome that names an earlier stage still stops. The Stop node has no path to a later action. The workflow does not loop back into an action. Test `posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit` shows the posted JSON at `body` and the downstream action still holding the pre-wait fields. Test `a short timeout ends at Stop and Error` shows a timeout resume with the pre-wait item, no webhook headers, and an empty `body`.
 
-`incomingAuthentication` is `none`. The node has no credentials. Whether a live n8n accepts a POST of `{"outcome":"approve"}` while that setting is `none` is untested. After import, open the Wait node and set Authentication to Basic Auth (`basicAuth`), Header Auth (`headerAuth`), or JWT Auth (`jwtAuth`), then attach the matching credential you create in n8n (`httpBasicAuth`, `httpHeaderAuth`, or `jwtAuth`). This file does not contain that credential. The live rejection of a forged POST is untested, because no test runs n8n. The emitted parameter is tested.
+`incomingAuthentication` is `none`. The node has no credentials. Test `posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit` posts `{"outcome":"approve"}` with no credential, and n8n accepts it. After import, open the Wait node and set Authentication to Basic Auth (`basicAuth`), Header Auth (`headerAuth`), or JWT Auth (`jwtAuth`), then attach the matching credential you create in n8n (`httpBasicAuth`, `httpHeaderAuth`, or `jwtAuth`). This file does not contain that credential. Whether n8n then refuses a POST without that credential is untested. The emitted parameter is tested.
 
 The Wait node does not check a signal signature. `bind call` digests are not enforced. An await with no timeout fails the compile and writes no file.
 
@@ -54,7 +54,7 @@ An n8n-only failure is the one exception, and it is new relative to main because
 
 ## Limits
 
-Each row is something this target does not do. The test column names the test in `compiler/src/__tests__/n8n-target.test.ts`, or says the row is untested.
+Each row is something this target does not do. The test name is in `compiler/src/__tests__/n8n-target.test.ts` or `compiler/src/__tests__/n8n-live.test.ts`, or the row says it is untested.
 
 - `oneof` fails `-t n8n` and writes no file. Test: `rejects oneof instead of dropping it`. `-t all` and `-t all-ir` throw, exit 1, and write no file. Test: `oneof and transition stop -t all and -t all-ir`. The CLI exit code is tested by `the speckl CLI exits 1 for oneof and transition, and exits 0 when only n8n is skipped`.
 - `transition` fails `-t n8n` and writes no file. Test: `transition fails the compile and writes no n8n file`. `-t all` and `-t all-ir` throw and exit 1. Same two tests.
@@ -71,9 +71,9 @@ Each row is something this target does not do. The test column names the test in
 - A spec string is literal data. It is not an n8n env binding. The workflow has no credentials object. Test: `spec strings are literal data and are not n8n env bindings`.
 - Any other expression this target cannot translate fails `-t n8n` and writes no file. On `-t all` and `-t all-ir` the log says `Skipped backend: n8n`, the other targets are still written, and the process exits 0. Test: `fails the compile when an expression cannot be translated and writes no file` and `the speckl CLI exits 1 for oneof and transition, and exits 0 when only n8n is skipped`.
 - A state field named `headers` fails the compile and writes no n8n file. Test: `rejects a state field named headers`. The Resume node would otherwise treat an item with an object `headers` as a webhook.
-- The webhook resume wiring copies the pre-wait item and the If reads `$json.body.outcome`. Test: `webhook resume keeps the pre-wait item and the If reads body.outcome`. No test runs n8n, so a live n8n execution of that POST is untested.
-- Limit Wait Time is on the one Wait. A reject and a timeout have no path to a later action. Test: `rejected and timed-out branches have no path to a downstream action`. The live fact that n8n will not fire the limit after the webhook resumes is untested, because no test runs n8n.
-- `incomingAuthentication` is `none`. Test: `webhook resume keeps the pre-wait item and the If reads body.outcome`. Adding Basic Auth, Header Auth, or JWT Auth is a step you take in n8n after import. The live check that a forged POST is then refused is untested.
+- The webhook resume copies the pre-wait item and the If reads `$json.body.outcome`. Wiring test: `webhook resume keeps the pre-wait item and the If reads body.outcome`. Live test: `posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit`.
+- Limit Wait Time is on the one Wait. A reject and a timeout have no path to a later action in the emitted graph. Test: `rejected and timed-out branches have no path to a downstream action`. Live n8n ends a reject at Stop and Error (`posts reject and the run ends at Stop and Error`) and ends a short timeout the same way (`a short timeout ends at Stop and Error`). After an approve, the same run stays successful past the Wait limit (`posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit`).
+- `incomingAuthentication` is `none`. The approve test posts with no credential and n8n accepts it. Adding Basic Auth, Header Auth, or JWT Auth is a step you take in n8n after import. Whether n8n then refuses a POST without that credential is untested.
 - Node ids are a 16-hex sha256 prefix, and a third collision does not reuse `-2`. Test: `node ids stay unique past a third copy of the same id`. Ids are stable across two compiles. Test: `node ids and names are stable and collision-free across specs with the same step name`.
 - Two compiles of the same spec are byte-identical. Test: `recompiles to the same bytes in two directories`.
 

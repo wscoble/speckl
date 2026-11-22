@@ -119,7 +119,8 @@ describe('in-process pipeline matches the CLI', () => {
 // sticky note changed with that wiring. Other targets were not retargeted.
 // Moved again when the n8n README and sticky note said the live n8n behavior
 // is untested, and `-t all` was described as skipping only the n8n target.
-const OUTPUT_SHA256 = '2b78ee2569d3dea6737b8f89f9e3d9c66e258a9db2d90e5c578df0b880584406';
+// Moved again when those notes started citing the live n8n tests.
+const OUTPUT_SHA256 = 'aa2fb4da244a0fa8f6f8bdd1a5b7745e82dbff246bae5ba93908e811bbd7d5ba';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

@@ -11,7 +11,7 @@ A compiler for SpeckDL — a specification language for state machines. Write wh
               ├── Protobuf            ← message definitions  ✓ tested
               ├── K8s CRDs            ← Kubernetes custom resources  ✓ tested
               ├── OpenAPI 3.1         ← REST API surface  ✓ tested
-              ├── n8n workflow JSON    ← workflow JSON and a verify script; no test runs n8n
+              ├── n8n workflow JSON    ← workflow JSON; n8n import:workflow is tested
               ├── PROV-O (RDF)         ← W3C provenance standard  ✓ tested
               ├── CycloneDX SBOM       ← OWASP software bill of materials  ✓ tested
               └── SPDX SBOM            ← Linux Foundation SBOM standard  ✓ tested
@@ -62,7 +62,7 @@ For agent rails in Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot
 CLI, Goose, Hermes Agent, Pi, OpenCode, OpenClaw, Cline, Kiro or Windsurf, see
 [docs/harness-adapters.md](docs/harness-adapters.md).
 
-`speckl <file> -t n8n` writes an importable n8n workflow and a verify script.
+`speckl <file> -t n8n` writes an n8n workflow and a verify script. `n8n import:workflow` accepts the workflow JSON. Test: `imports every generated example workflow with n8n import:workflow`.
 See [docs/n8n-target.md](docs/n8n-target.md). The workflow is general-purpose
 output. It is not HIPAA-certified, and it does not guarantee zero data retention.
 
