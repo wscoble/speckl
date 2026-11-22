@@ -18,6 +18,7 @@ import { generateK8sCRD } from './generators/k8s-crd.js';
 import { generateProvenanceFromIR } from './generators/provenance-from-ir.js';
 import { lower } from './ir/lower.js';
 import { generateCamel } from './generators/camel.js';
+import { generateN8n } from './generators/n8n.js';
 import { OpenAPITarget } from './generators/openapi.js';
 import { generateAgent } from './generators/agent/index.js';
 import { injectSignalActions } from './generators/agent/inject-signals.js';
@@ -27,7 +28,7 @@ import path from 'path';
 export interface CompileOptions {
   outputDir: string;
   bomFormat: 'cdx' | 'spdx' | 'both';
-  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'agent' | 'all' | 'all-ir';
+  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'n8n' | 'elm' | 'agent' | 'all' | 'all-ir';
   verifyDepth: number;
   /** Directory imports may resolve inside. Default: the entry file's directory. */
   rootDir?: string;
@@ -61,7 +62,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   if (domainErrors.length > 0) {
     throw new Error(domainErrors.map(d => d.message).join('\n'));
   }
-  const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
+  const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'n8n', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
 
   // K8s CRDs
@@ -83,6 +84,14 @@ export function compileSpec(file: string, options: CompileOptions): void {
     console.log('\nGenerating Apache Camel (camel-quarkus) routes...');
     checked('camel', ast);
     generateCamel(irAst, { outputDir: options.outputDir });
+  }
+
+  // n8n importable workflow + verify script. Focused like z3 and rust:
+  // `-t n8n` does not also emit the timestamped provenance graph.
+  if (options.target === 'n8n' || options.target === 'all' || options.target === 'all-ir') {
+    console.log('\nGenerating n8n workflow...');
+    checked('n8n', ast);
+    generateN8n(irAst, { outputDir: options.outputDir, ast });
   }
 
   // Rust
@@ -111,7 +120,9 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
 
   // Provenance (core output)
-  if (options.target !== 'z3' && options.target !== 'rust') {
+  const sharedArtifacts = options.target !== 'z3' && options.target !== 'rust' && options.target !== 'n8n';
+
+  if (sharedArtifacts) {
     console.log('\nGenerating provenance graph (PROV-O JSON-LD) from IR...');
     checked('provenance', ast);
     generateProvenanceFromIR(irAst, options.outputDir);
@@ -152,7 +163,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
 
   // TypeScript state machine + BOMs
-  if (options.target !== 'z3' && options.target !== 'rust') {
+  if (sharedArtifacts) {
     console.log('\nGenerating TypeScript state machine...');
     checked('typescript', ast);
     generateTypeScriptStateMachine(ast, options.outputDir);

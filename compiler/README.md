@@ -5,7 +5,7 @@ One spec compiles to:
 
 - TypeScript, Rust, Go and Elm machines
 - Z3 SMT-LIB2 bounded model checking
-- Protobuf, Kubernetes CRDs, OpenAPI 3.1 and Apache Camel routes
+- Protobuf, Kubernetes CRDs, OpenAPI 3.1, Apache Camel routes, and n8n workflow JSON
 - agent rails: `AGENTS.md`, `tools.json`, a pre/post tool hook, and adapters for Claude Code, Cursor, Codex CLI and Gemini CLI
 - CycloneDX / SPDX SBOMs with PROV-O provenance
 

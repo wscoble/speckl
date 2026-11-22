@@ -107,7 +107,10 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when the agent target started emitting mcp-tools.mjs and the
 // session check. signal.mjs, hook.mjs and state-integrity.mjs all changed,
 // and every -t all tree gained mcp-tools.mjs. The allow list is unchanged.
-const OUTPUT_SHA256 = 'e927f1ff0539f5f2525343d8690acfaae251ba329fc65d02de93ca718fd24a31';
+// Moved again when -t all and -t all-ir started writing n8n/<Speck>.workflow.json,
+// n8n/<Speck>.verify.mjs, and n8n/README.md. Those files are new. The other
+// targets were not retargeted.
+const OUTPUT_SHA256 = '56d1eeb80fa6eae9ff2ef39c4c6e89a8d282b79fd983bea6d2797a04952d3385';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

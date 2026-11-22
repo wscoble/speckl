@@ -1,7 +1,7 @@
 {
   "name": "speckl",
   "version": "0.4.0",
-  "description": "Speckl compiler for SpeckDL specs: TypeScript, Rust, Go, Z3, Protobuf, K8s CRDs, OpenAPI, agent rails (Claude Code, Cursor, Codex, Gemini) and SBOM artifacts with embedded provenance",
+  "description": "Speckl compiler for SpeckDL specs: TypeScript, Rust, Go, Z3, Protobuf, K8s CRDs, OpenAPI, Camel, n8n, agent rails (Claude Code, Cursor, Codex, Gemini) and SBOM artifacts with embedded provenance",
   "keywords": [
     "speckl",
     "speckdl",
