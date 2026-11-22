@@ -161,7 +161,10 @@ export function generateN8n(ir: IR, options: N8nOptions): void {
   }
   files.push({ rel: 'README.md', text: renderReadme(readmeSpecs) });
 
-  for (const file of files) assertNoSecrets(file.text);
+  for (const file of files) {
+    assertNoSecrets(file.text);
+    if (file.rel.endsWith('.workflow.json')) assertNoInjectedExpressions(file.text);
+  }
 
   const dir = path.join(options.outputDir, 'n8n');
   fs.mkdirSync(dir, { recursive: true });
@@ -181,6 +184,21 @@ function assertNoSecrets(text: string): void {
   }
 }
 
+/** n8n treats `{{ ... }}` in a parameter as an expression. Spec text must not become one. */
+const ALLOWED_N8N_EXPR = '={{ $json.outcome }}';
+
+function assertNoInjectedExpressions(workflowText: string): void {
+  const rest = workflowText.split(ALLOWED_N8N_EXPR).join('');
+  if (rest.includes('{{') || rest.includes('}}')) {
+    throw new Error('n8n backend: refused to emit an n8n expression from spec text; refusing to write a partial workflow');
+  }
+}
+
+/** A JS string literal. `{{` and `}}` are unicode escapes so n8n does not evaluate them. */
+function jsString(value: string): string {
+  return JSON.stringify(value).replace(/\{\{/g, '\\u007b\\u007b').replace(/\}\}/g, '\\u007d\\u007d');
+}
+
 function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; script: string } {
   const behavior = speck.facets.behavior;
   const agent = behavior.agent;
@@ -191,7 +209,7 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
   if (awaits.length > 0 && !stageVar) {
     throw new Error(`n8n backend: ${speck.name} has an await and no stages variable`);
   }
-  for (const aw of awaits) assertAwaitSafe(aw);
+  for (const aw of awaits) assertAwaitSafe(speck.name, aw);
 
   const ctx = (): Ctx => ({ labels, locals: new Set() });
   const invariantChecks: Check[] = invariantsOf(ast, speck.name).map(inv => ({
@@ -709,7 +727,7 @@ function translate(expr: IRExpr, ctx: Ctx): string | null {
     case 'float_lit':
       return Number.isFinite(expr.value) ? String(expr.value) : null;
     case 'string_lit':
-      return looksLikeSecret(expr.value) ? null : JSON.stringify(expr.value);
+      return looksLikeSecret(expr.value) ? null : jsString(expr.value);
     case 'ident':
       return identJs(expr.name, ctx);
     case 'unop': {
@@ -850,9 +868,14 @@ function uniqueNums(values: number[]): number[] {
   return out;
 }
 
-function assertAwaitSafe(aw: IRAgentAwait): void {
+function assertAwaitSafe(speck: string, aw: IRAgentAwait): void {
   const rejects = new Set(aw.rejects);
-  if (aw.timeout && !rejects.has(aw.timeout.outcome)) {
+  if (!aw.timeout) {
+    throw new N8nTranslateError(
+      `n8n backend: await ${aw.state} on ${speck}: Wait has no timeout; refusing to write a partial workflow`,
+    );
+  }
+  if (!rejects.has(aw.timeout.outcome)) {
     throw new Error(`n8n backend: await ${aw.state}: timeout outcome "${aw.timeout.outcome}" is not a reject outcome`);
   }
   const acceptTargets = new Set(aw.on.filter(o => !rejects.has(o.outcome)).map(o => o.target));
@@ -916,11 +939,15 @@ function renderReadme(specks: string[]): string {
     '',
     '## Limits',
     '',
-    'The trace check supports state, init, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint` and `invariant` boolean expressions, and `verify Always(Name)` when that expression translates.',
+    'This file is an n8n workflow you import and run on your own n8n. Speckl does not run it after import and does not watch it after import.',
     '',
-    '`oneof` and `transition` fail the compile. An `if` body, `Eventually`, `in`, `forall`, and any other expression this target cannot translate also fail the compile. No n8n file is written for that spec.',
+    'The trace check supports state, init, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint` and `invariant` boolean expressions, and `verify Always(Name)` when that expression translates. Those checks run only in the nodes and the verify script this compile wrote. They do not run anywhere else.',
     '',
-    'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops. The workflow does not loop back into an action.',
+    'Each of these fails the compile and writes no n8n file: `oneof`, `transition`, an `if` body, `for`, `forall`, `in`, `Eventually`, an unknown call, an await with no timeout, a string that looks like a live key, and any other expression this target cannot translate.',
+    '',
+    'A string from the spec is data. `{{` in that string is not an n8n expression. A credential reference is the placeholder name only, `{{ $env.NAME }}`, which you bind in n8n after import. The workflow has no credential id and no credential value.',
+    '',
+    'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops. The reject branch and the timeout branch have no path to a later action.',
     '',
     'The verify script is a straight-line trace check. It does not run n8n. It is not a model check. A recorded `depth` does not change the check.',
     '',

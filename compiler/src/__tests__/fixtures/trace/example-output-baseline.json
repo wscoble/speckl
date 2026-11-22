@@ -107,7 +107,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/AgentPolicy.verify.mjs": "ac8a6b23b9fde21e",
       "n8n/AgentPolicy.workflow.json": "8168bff43c8b123e",
-      "n8n/README.md": "bb2b18e4c79c9ea0",
+      "n8n/README.md": "07134e8a54d9bfde",
       "openapi/agentpolicy.openapi.json": "047f0f83161aaa0e"
     },
     "AgentPolicy.speckdl -t all-ir": {
@@ -128,7 +128,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/AgentPolicy.verify.mjs": "ac8a6b23b9fde21e",
       "n8n/AgentPolicy.workflow.json": "8168bff43c8b123e",
-      "n8n/README.md": "bb2b18e4c79c9ea0",
+      "n8n/README.md": "07134e8a54d9bfde",
       "openapi/agentpolicy.openapi.json": "047f0f83161aaa0e"
     },
     "ClaudeCodePolicy.speckdl -t all": {
@@ -201,7 +201,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/ClaudeCodePolicy.verify.mjs": "9715ae7e224d0058",
       "n8n/ClaudeCodePolicy.workflow.json": "c66620697ae84657",
-      "n8n/README.md": "e374654b402f479c",
+      "n8n/README.md": "6f2ca095fa88f968",
       "openapi/claudecodepolicy.openapi.json": "557b7b216911098c"
     },
     "ClaudeCodePolicy.speckdl -t all-ir": {
@@ -224,7 +224,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/ClaudeCodePolicy.verify.mjs": "9715ae7e224d0058",
       "n8n/ClaudeCodePolicy.workflow.json": "c66620697ae84657",
-      "n8n/README.md": "e374654b402f479c",
+      "n8n/README.md": "6f2ca095fa88f968",
       "openapi/claudecodepolicy.openapi.json": "557b7b216911098c"
     },
     "DeployGate.speckdl -t all": {
@@ -275,7 +275,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/DeployGate.verify.mjs": "e45e2c8ce76a4041",
       "n8n/DeployGate.workflow.json": "f563e4e98b5557f7",
-      "n8n/README.md": "1920d29ea1741cb8",
+      "n8n/README.md": "90ef9f52875d4c11",
       "openapi/deploygate.openapi.json": "ec44e300664d2fbe"
     },
     "DeployGate.speckdl -t all-ir": {
@@ -296,7 +296,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/DeployGate.verify.mjs": "e45e2c8ce76a4041",
       "n8n/DeployGate.workflow.json": "f563e4e98b5557f7",
-      "n8n/README.md": "1920d29ea1741cb8",
+      "n8n/README.md": "90ef9f52875d4c11",
       "openapi/deploygate.openapi.json": "ec44e300664d2fbe"
     },
     "KafkaKRaft.speckdl -t all": {
@@ -513,7 +513,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/PodcastPublishing.verify.mjs": "29594cb16a4e919b",
       "n8n/PodcastPublishing.workflow.json": "a8d4a1f6fd300bf0",
-      "n8n/README.md": "614b4b74101be5a6",
+      "n8n/README.md": "ece2c5511741850f",
       "openapi/podcastpublishing.openapi.json": "beefe3d593180b86",
       "podcast_publishing-elm/elm.json": "ad72359d7379fd62",
       "podcast_publishing-elm/index.html": "6d45a2032fbd6d17",
@@ -551,7 +551,7 @@
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
       "n8n/PodcastPublishing.verify.mjs": "29594cb16a4e919b",
       "n8n/PodcastPublishing.workflow.json": "a8d4a1f6fd300bf0",
-      "n8n/README.md": "614b4b74101be5a6",
+      "n8n/README.md": "ece2c5511741850f",
       "openapi/podcastpublishing.openapi.json": "beefe3d593180b86"
     },
     "PreconditionTest.speckdl -t all": {
@@ -744,7 +744,7 @@
       "camel/review-gate/src/main/java/reviewgate/camel/processor/RunTestsProcessor.java": "d9e23f4cac5cef20",
       "camel/review-gate/src/main/resources/application.properties": "461838da00a3e1ae",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "f9247d89294d2f24",
+      "n8n/README.md": "2efa3858b86cb7e2",
       "n8n/ReviewGate.verify.mjs": "cdbf3afe76221161",
       "n8n/ReviewGate.workflow.json": "61b81c1e75002983",
       "openapi/reviewgate.openapi.json": "e0f247a131636192",
@@ -779,7 +779,7 @@
       "camel/review-gate/src/main/java/reviewgate/camel/processor/RunTestsProcessor.java": "d9e23f4cac5cef20",
       "camel/review-gate/src/main/resources/application.properties": "461838da00a3e1ae",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "f9247d89294d2f24",
+      "n8n/README.md": "2efa3858b86cb7e2",
       "n8n/ReviewGate.verify.mjs": "cdbf3afe76221161",
       "n8n/ReviewGate.workflow.json": "61b81c1e75002983",
       "openapi/reviewgate.openapi.json": "e0f247a131636192"

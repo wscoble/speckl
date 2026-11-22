@@ -50,6 +50,18 @@ function outgoing(workflow: { connections: Record<string, { main?: { node: strin
   return out;
 }
 
+function reachableSet(workflow: { connections: Record<string, { main?: { node: string }[][] }> }, start: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [start];
+  while (queue.length) {
+    const name = queue.shift()!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    for (const next of outgoing(workflow, name)) queue.push(next);
+  }
+  return seen;
+}
+
 function reaches(workflow: { connections: Record<string, { main?: { node: string }[][] }> }, start: string, goal: string, block = new Set<string>()): boolean {
   const seen = new Set<string>();
   const queue = [start];
@@ -356,6 +368,142 @@ describe('n8n determinism and fail-closed checks', () => {
       expect(reaches(podcast, 'Stop host_approval', action), action).toBe(false);
       expect(reaches(podcast, 'Timeout host_approval', action), action).toBe(false);
     }
+  });
+
+  it('a Wait node with no timeout fails the compile', () => {
+    const file = writeSpec('NoTimeout.speckdl', [
+      'speck NoTimeout {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action After {',
+      '        require stage == 2',
+      '        stage := 3',
+      '    }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '            Approved = 2',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Approved',
+      '            on reject -> Idle',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const out = freshOut();
+    expect(() => compileSpec(file, { outputDir: out, target: 'n8n', bomFormat: 'both', verifyDepth: 4 }))
+      .toThrow(/Wait has no timeout; refusing to write a partial workflow/);
+    expect(existsSync(join(out, 'n8n'))).toBe(false);
+  });
+
+  it('spec text is escaped and is not an n8n expression', () => {
+    const payload = 'hello {{ $json.password }} ={{ 7*7 }}';
+    const file = writeSpec('Inject.speckdl', [
+      'speck Inject {',
+      '    state { note: String }',
+      '    init { note := "hello {{ $json.password }} ={{ 7*7 }}" }',
+      '    action Go { note := note }',
+      '}',
+      '',
+    ].join('\n'));
+    const out = compile(file);
+    const raw = readFileSync(join(out, 'n8n', 'Inject.workflow.json'), 'utf8');
+    expect(raw).not.toContain('{{ $json.password }}');
+    expect(raw).not.toContain('={{ 7*7 }}');
+    expect(raw.split('={{ $json.outcome }}').join('')).not.toContain('{{');
+    const wf = JSON.parse(raw);
+    const code = wf.nodes.find((n: { name: string }) => n.name === 'Init').parameters.jsCode as string;
+    expect(code).not.toContain('{{');
+    const lit = code.match(/__root__\["note"\] = \((.*)\);/);
+    expect(lit).not.toBeNull();
+    expect(eval(lit![1])).toBe(payload);
+  });
+
+  it('credential references are placeholders by name only', () => {
+    const file = writeSpec('Cred.speckdl', [
+      'speck Cred {',
+      '    state { token: String }',
+      '    init { token := "{{ $env.API_TOKEN }}" }',
+      '    action Go { token := token }',
+      '}',
+      '',
+    ].join('\n'));
+    const out = compile(file);
+    const raw = readFileSync(join(out, 'n8n', 'Cred.workflow.json'), 'utf8');
+    const wf = JSON.parse(raw);
+    expect(raw).not.toContain('{{ $env.API_TOKEN }}');
+    expect(wf.meta.templateCredsSetupCompleted).toBe(false);
+    for (const node of wf.nodes) {
+      expect(node.credentials).toBeUndefined();
+      expect(JSON.stringify(node.parameters)).not.toMatch(/"id"\s*:/);
+    }
+    const code = wf.nodes.find((n: { name: string }) => n.name === 'Init').parameters.jsCode as string;
+    const lit = code.match(/__root__\["token"\] = \((.*)\);/);
+    expect(lit).not.toBeNull();
+    const value = eval(lit![1]) as string;
+    expect(value).toBe('{{ $env.API_TOKEN }}');
+    expect(value).toMatch(/^\{\{ \$env\.[A-Za-z_][A-Za-z0-9_]* \}\}$/);
+  });
+
+  it('rejected and timed-out branches have no path to a downstream action', () => {
+    const cases: { file: string; speck: string; stop: string; timeout: string; downstream: string[] }[] = [
+      { file: 'AgentPolicy.speckdl', speck: 'AgentPolicy', stop: 'Stop review', timeout: 'Timeout review', downstream: ['OpenPR'] },
+      { file: 'DeployGate.speckdl', speck: 'DeployGate', stop: 'Stop approval', timeout: 'Timeout approval', downstream: ['Deploy'] },
+      { file: 'PodcastPublishing.speckdl', speck: 'PodcastPublishing', stop: 'Stop host_approval', timeout: 'Timeout host_approval', downstream: ['ApplyMetadata', 'FixMetadata', 'RequestFix'] },
+    ];
+    for (const item of cases) {
+      const wf = loadWorkflow(compile(join(examplesDir, item.file)), item.speck);
+      const downstream = new Set(item.downstream);
+      for (const start of [item.stop, item.timeout]) {
+        const seen = reachableSet(wf, start);
+        expect(seen.size, `${item.speck} ${start}`).toBeGreaterThan(0);
+        for (const node of seen) {
+          expect(downstream.has(node), `${item.speck} ${start} reaches ${node}`).toBe(false);
+          for (const next of outgoing(wf, node)) {
+            expect(downstream.has(next), `${item.speck} ${node} -> ${next}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it('node ids and names are stable and collision-free across specs with the same step name', () => {
+    const file = writeSpec('Twins.speckdl', [
+      'speck Alpha {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go { n := 1 }',
+      '}',
+      'speck Beta {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go { n := 2 }',
+      '}',
+      '',
+    ].join('\n'));
+    const first = compile(file);
+    const second = compile(file);
+    const goId = (dir: string, speck: string) => {
+      const wf = loadWorkflow(dir, speck);
+      const names = wf.nodes.map((n: { name: string }) => n.name);
+      const ids = wf.nodes.map((n: { id: string }) => n.id);
+      expect(new Set(names).size, speck).toBe(names.length);
+      expect(new Set(ids).size, speck).toBe(ids.length);
+      return wf.nodes.find((n: { name: string }) => n.name === 'Go').id as string;
+    };
+    const alpha = goId(first, 'Alpha');
+    const beta = goId(first, 'Beta');
+    expect(alpha).not.toBe(beta);
+    expect(goId(second, 'Alpha')).toBe(alpha);
+    expect(goId(second, 'Beta')).toBe(beta);
+    expect(readFileSync(join(first, 'n8n', 'Alpha.workflow.json'), 'utf8'))
+      .toBe(readFileSync(join(second, 'n8n', 'Alpha.workflow.json'), 'utf8'));
   });
 
   it('rejects oneof instead of dropping it', () => {

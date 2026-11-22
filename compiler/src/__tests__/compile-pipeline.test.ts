@@ -112,7 +112,9 @@ describe('in-process pipeline matches the CLI', () => {
 // targets were not retargeted.
 // Moved again when an expression n8n cannot translate stopped writing the n8n
 // directory on -t all and -t all-ir, and the n8n README text changed.
-const OUTPUT_SHA256 = 'ca7f44f46503006f74adb9e6f67f4b8911501e750e0bf35ae60db44290e09d50';
+// Moved again when the n8n README limits text grew. The workflow JSON for the
+// examples that still compile did not change.
+const OUTPUT_SHA256 = '6817318b8bd5a570d9a385ab0e8bec2a7e1f100329fc2c6e8d5ea78470c79ed1';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {
