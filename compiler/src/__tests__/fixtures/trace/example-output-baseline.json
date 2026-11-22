@@ -39,9 +39,6 @@
       "camel/account-ledger/src/main/java/accountledger/camel/processor/VoidTransferProcessor.java": "a439800e80f47212",
       "camel/account-ledger/src/main/resources/application.properties": "b700d0450947b61c",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/AccountLedger.verify.mjs": "05fcdec73811a562",
-      "n8n/AccountLedger.workflow.json": "be13e13440d8db7c",
-      "n8n/README.md": "ab34fcc4461cbb7b",
       "openapi/accountledger.openapi.json": "72e0a611e5cc9b7e"
     },
     "AccountLedger.speckdl -t all-ir": {
@@ -60,9 +57,6 @@
       "camel/account-ledger/src/main/java/accountledger/camel/processor/VoidTransferProcessor.java": "a439800e80f47212",
       "camel/account-ledger/src/main/resources/application.properties": "b700d0450947b61c",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/AccountLedger.verify.mjs": "05fcdec73811a562",
-      "n8n/AccountLedger.workflow.json": "be13e13440d8db7c",
-      "n8n/README.md": "ab34fcc4461cbb7b",
       "openapi/accountledger.openapi.json": "72e0a611e5cc9b7e"
     },
     "AgentPolicy.speckdl -t all": {
@@ -111,9 +105,9 @@
       "camel/agent-policy/src/main/java/agentpolicy/camel/processor/RunTestsProcessor.java": "0dfe855ccafcd7f0",
       "camel/agent-policy/src/main/resources/application.properties": "2c4b098e8a5edfc6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/AgentPolicy.verify.mjs": "030949814afaa214",
-      "n8n/AgentPolicy.workflow.json": "7713a2a77e889ed5",
-      "n8n/README.md": "fdfab082c1057f66",
+      "n8n/AgentPolicy.verify.mjs": "ac8a6b23b9fde21e",
+      "n8n/AgentPolicy.workflow.json": "8168bff43c8b123e",
+      "n8n/README.md": "bb2b18e4c79c9ea0",
       "openapi/agentpolicy.openapi.json": "047f0f83161aaa0e"
     },
     "AgentPolicy.speckdl -t all-ir": {
@@ -132,9 +126,9 @@
       "camel/agent-policy/src/main/java/agentpolicy/camel/processor/RunTestsProcessor.java": "0dfe855ccafcd7f0",
       "camel/agent-policy/src/main/resources/application.properties": "2c4b098e8a5edfc6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/AgentPolicy.verify.mjs": "030949814afaa214",
-      "n8n/AgentPolicy.workflow.json": "7713a2a77e889ed5",
-      "n8n/README.md": "fdfab082c1057f66",
+      "n8n/AgentPolicy.verify.mjs": "ac8a6b23b9fde21e",
+      "n8n/AgentPolicy.workflow.json": "8168bff43c8b123e",
+      "n8n/README.md": "bb2b18e4c79c9ea0",
       "openapi/agentpolicy.openapi.json": "047f0f83161aaa0e"
     },
     "ClaudeCodePolicy.speckdl -t all": {
@@ -205,9 +199,9 @@
       "claude_code_policy/prelude.go": "0c3ac59e16dec36f",
       "claude_code_policy/store.go": "196f73c82cf59e6c",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/ClaudeCodePolicy.verify.mjs": "d9389a06a1b01d7b",
-      "n8n/ClaudeCodePolicy.workflow.json": "142515002d67747c",
-      "n8n/README.md": "0acddee73c8b6f71",
+      "n8n/ClaudeCodePolicy.verify.mjs": "9715ae7e224d0058",
+      "n8n/ClaudeCodePolicy.workflow.json": "c66620697ae84657",
+      "n8n/README.md": "e374654b402f479c",
       "openapi/claudecodepolicy.openapi.json": "557b7b216911098c"
     },
     "ClaudeCodePolicy.speckdl -t all-ir": {
@@ -228,9 +222,9 @@
       "camel/claude-code-policy/src/main/java/claudecodepolicy/camel/processor/RunTestsProcessor.java": "e992e3a4cc25e039",
       "camel/claude-code-policy/src/main/resources/application.properties": "f54031752b185210",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/ClaudeCodePolicy.verify.mjs": "d9389a06a1b01d7b",
-      "n8n/ClaudeCodePolicy.workflow.json": "142515002d67747c",
-      "n8n/README.md": "0acddee73c8b6f71",
+      "n8n/ClaudeCodePolicy.verify.mjs": "9715ae7e224d0058",
+      "n8n/ClaudeCodePolicy.workflow.json": "c66620697ae84657",
+      "n8n/README.md": "e374654b402f479c",
       "openapi/claudecodepolicy.openapi.json": "557b7b216911098c"
     },
     "DeployGate.speckdl -t all": {
@@ -279,9 +273,9 @@
       "deploy_gate/prelude.go": "672c7ff61d5625b9",
       "deploy_gate/store.go": "ab8d8c17e18cbbbe",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/DeployGate.verify.mjs": "d890c9cb2842b6dd",
-      "n8n/DeployGate.workflow.json": "37cff7257e1abbb6",
-      "n8n/README.md": "ff178a98a266c769",
+      "n8n/DeployGate.verify.mjs": "e45e2c8ce76a4041",
+      "n8n/DeployGate.workflow.json": "f563e4e98b5557f7",
+      "n8n/README.md": "1920d29ea1741cb8",
       "openapi/deploygate.openapi.json": "ec44e300664d2fbe"
     },
     "DeployGate.speckdl -t all-ir": {
@@ -300,9 +294,9 @@
       "camel/deploy-gate/src/main/java/deploygate/camel/processor/RunChecksProcessor.java": "cbf17f86db21ef97",
       "camel/deploy-gate/src/main/resources/application.properties": "79ecc8226e076052",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/DeployGate.verify.mjs": "d890c9cb2842b6dd",
-      "n8n/DeployGate.workflow.json": "37cff7257e1abbb6",
-      "n8n/README.md": "ff178a98a266c769",
+      "n8n/DeployGate.verify.mjs": "e45e2c8ce76a4041",
+      "n8n/DeployGate.workflow.json": "f563e4e98b5557f7",
+      "n8n/README.md": "1920d29ea1741cb8",
       "openapi/deploygate.openapi.json": "ec44e300664d2fbe"
     },
     "KafkaKRaft.speckdl -t all": {
@@ -340,9 +334,6 @@
       "kafka_kraft-elm/src/Main.elm": "2028319dc81ff081",
       "kafka_kraft-elm/src/Prelude.elm": "06453db0a5497e0d",
       "kafka_kraft-elm/src/Types.elm": "5621a828c31ab521",
-      "n8n/KafkaKRaft.verify.mjs": "5ae9a05262e2ff0b",
-      "n8n/KafkaKRaft.workflow.json": "dbc85ff273f5cb0e",
-      "n8n/README.md": "65733559c109fe37",
       "openapi/kafkakraft.openapi.json": "c9b50d32a02a030a"
     },
     "KafkaKRaft.speckdl -t all-ir": {
@@ -363,9 +354,6 @@
       "camel/kafka-kraft/src/main/java/kafkakraft/camel/processor/RequestVoteProcessor.java": "c3b6a739845fff2b",
       "camel/kafka-kraft/src/main/resources/application.properties": "b07df211f07aec03",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/KafkaKRaft.verify.mjs": "5ae9a05262e2ff0b",
-      "n8n/KafkaKRaft.workflow.json": "dbc85ff273f5cb0e",
-      "n8n/README.md": "65733559c109fe37",
       "openapi/kafkakraft.openapi.json": "c9b50d32a02a030a"
     },
     "OAuth2AuthorizationCode.speckdl -t all": {
@@ -393,9 +381,6 @@
       "camel/oauth2authorization-code/src/main/java/oauth2authorizationcode/camel/processor/VerifyPKCEProcessor.java": "655c6f530bdb675f",
       "camel/oauth2authorization-code/src/main/resources/application.properties": "15380d5960b3e978",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/OAuth2AuthorizationCode.verify.mjs": "469abdce3d4c089a",
-      "n8n/OAuth2AuthorizationCode.workflow.json": "6257b4e7ae4f89d4",
-      "n8n/README.md": "2a9514337b9c6be0",
       "o_auth2_authorization_code.proto": "cddf29bf15835f7a",
       "o_auth_2_authorization_code/Dockerfile": "e22ef9c8c12c9b0b",
       "o_auth_2_authorization_code/cmd/server/main.go": "638d4f8748ca2b22",
@@ -434,9 +419,6 @@
       "camel/oauth2authorization-code/src/main/java/oauth2authorizationcode/camel/processor/VerifyPKCEProcessor.java": "655c6f530bdb675f",
       "camel/oauth2authorization-code/src/main/resources/application.properties": "15380d5960b3e978",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/OAuth2AuthorizationCode.verify.mjs": "469abdce3d4c089a",
-      "n8n/OAuth2AuthorizationCode.workflow.json": "6257b4e7ae4f89d4",
-      "n8n/README.md": "2a9514337b9c6be0",
       "openapi/oauth2authorizationcode.openapi.json": "e06c9b2be4f4dbe8"
     },
     "Paxos.speckdl -t all": {
@@ -459,9 +441,6 @@
       "camel/paxos/src/main/java/paxos/camel/processor/ProposerProposeProcessor.java": "2777ee3a82be5e34",
       "camel/paxos/src/main/resources/application.properties": "09e31370cacf96a1",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/Paxos.verify.mjs": "6d5e02e3af1dcd96",
-      "n8n/Paxos.workflow.json": "1cae1499fffc6b5a",
-      "n8n/README.md": "1c17d161faec1ad6",
       "openapi/paxos.openapi.json": "dd319580fe1490a9",
       "paxos-elm/elm.json": "ad72359d7379fd62",
       "paxos-elm/index.html": "8a6240fe885cfa61",
@@ -495,9 +474,6 @@
       "camel/paxos/src/main/java/paxos/camel/processor/ProposerProposeProcessor.java": "2777ee3a82be5e34",
       "camel/paxos/src/main/resources/application.properties": "09e31370cacf96a1",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/Paxos.verify.mjs": "6d5e02e3af1dcd96",
-      "n8n/Paxos.workflow.json": "1cae1499fffc6b5a",
-      "n8n/README.md": "1c17d161faec1ad6",
       "openapi/paxos.openapi.json": "dd319580fe1490a9"
     },
     "PodcastPublishing.speckdl -t all": {
@@ -535,9 +511,9 @@
       "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/StartUploadsProcessor.java": "e64d559597a7e45a",
       "camel/podcast-publishing/src/main/resources/application.properties": "39fa52bf09b763d6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/PodcastPublishing.verify.mjs": "e47fd2adabafd92d",
-      "n8n/PodcastPublishing.workflow.json": "0fca3541b100dc03",
-      "n8n/README.md": "870770b3c6f10721",
+      "n8n/PodcastPublishing.verify.mjs": "29594cb16a4e919b",
+      "n8n/PodcastPublishing.workflow.json": "a8d4a1f6fd300bf0",
+      "n8n/README.md": "614b4b74101be5a6",
       "openapi/podcastpublishing.openapi.json": "beefe3d593180b86",
       "podcast_publishing-elm/elm.json": "ad72359d7379fd62",
       "podcast_publishing-elm/index.html": "6d45a2032fbd6d17",
@@ -573,9 +549,9 @@
       "camel/podcast-publishing/src/main/java/podcastpublishing/camel/processor/StartUploadsProcessor.java": "e64d559597a7e45a",
       "camel/podcast-publishing/src/main/resources/application.properties": "39fa52bf09b763d6",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/PodcastPublishing.verify.mjs": "e47fd2adabafd92d",
-      "n8n/PodcastPublishing.workflow.json": "0fca3541b100dc03",
-      "n8n/README.md": "870770b3c6f10721",
+      "n8n/PodcastPublishing.verify.mjs": "29594cb16a4e919b",
+      "n8n/PodcastPublishing.workflow.json": "a8d4a1f6fd300bf0",
+      "n8n/README.md": "614b4b74101be5a6",
       "openapi/podcastpublishing.openapi.json": "beefe3d593180b86"
     },
     "PreconditionTest.speckdl -t all": {
@@ -595,9 +571,6 @@
       "camel/precondition-test/src/main/java/preconditiontest/camel/processor/SetBalanceProcessor.java": "7db571e119557daf",
       "camel/precondition-test/src/main/resources/application.properties": "f1d578a644d7423b",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/PreconditionTest.verify.mjs": "844c31f3ea27f06b",
-      "n8n/PreconditionTest.workflow.json": "152415676992ec47",
-      "n8n/README.md": "9b2074678c7f8ef1",
       "openapi/preconditiontest.openapi.json": "cc00512c8ce54739",
       "precondition_test-elm/elm.json": "ad72359d7379fd62",
       "precondition_test-elm/index.html": "4f398e9a061be4f6",
@@ -628,9 +601,6 @@
       "camel/precondition-test/src/main/java/preconditiontest/camel/processor/SetBalanceProcessor.java": "7db571e119557daf",
       "camel/precondition-test/src/main/resources/application.properties": "f1d578a644d7423b",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/PreconditionTest.verify.mjs": "844c31f3ea27f06b",
-      "n8n/PreconditionTest.workflow.json": "152415676992ec47",
-      "n8n/README.md": "9b2074678c7f8ef1",
       "openapi/preconditiontest.openapi.json": "cc00512c8ce54739"
     },
     "Raft.speckdl -t all": {
@@ -658,9 +628,6 @@
       "camel/raft/src/main/java/raft/camel/processor/StartElectionProcessor.java": "a33d12d27d876e50",
       "camel/raft/src/main/resources/application.properties": "7f74f72d3ad567ad",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "9e20ff3ccacd314b",
-      "n8n/Raft.verify.mjs": "5b8b8e8440a7f2e2",
-      "n8n/Raft.workflow.json": "525c0b6a73cc5c03",
       "openapi/raft.openapi.json": "0193d1b4272a68e5",
       "raft-elm/elm.json": "ad72359d7379fd62",
       "raft-elm/index.html": "a7a02d553490dc47",
@@ -699,9 +666,6 @@
       "camel/raft/src/main/java/raft/camel/processor/StartElectionProcessor.java": "a33d12d27d876e50",
       "camel/raft/src/main/resources/application.properties": "7f74f72d3ad567ad",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "9e20ff3ccacd314b",
-      "n8n/Raft.verify.mjs": "5b8b8e8440a7f2e2",
-      "n8n/Raft.workflow.json": "525c0b6a73cc5c03",
       "openapi/raft.openapi.json": "0193d1b4272a68e5"
     },
     "RetryHandler.speckdl -t all": {
@@ -725,9 +689,6 @@
       "camel/retry-handler/src/main/java/retryhandler/camel/model/RetryAttempted.java": "8c713a2b886205ba",
       "camel/retry-handler/src/main/resources/application.properties": "765c9f76eb93e833",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "65de5bdda65f258f",
-      "n8n/RetryHandler.verify.mjs": "facd39e20f1319ba",
-      "n8n/RetryHandler.workflow.json": "7021f6b034fab7bd",
       "openapi/retryhandler.openapi.json": "6f94b5388dbb6416",
       "retry_handler-elm/elm.json": "ad72359d7379fd62",
       "retry_handler-elm/index.html": "4a4fcd8bff2950b7",
@@ -762,9 +723,6 @@
       "camel/retry-handler/src/main/java/retryhandler/camel/model/RetryAttempted.java": "8c713a2b886205ba",
       "camel/retry-handler/src/main/resources/application.properties": "765c9f76eb93e833",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "65de5bdda65f258f",
-      "n8n/RetryHandler.verify.mjs": "facd39e20f1319ba",
-      "n8n/RetryHandler.workflow.json": "7021f6b034fab7bd",
       "openapi/retryhandler.openapi.json": "6f94b5388dbb6416"
     },
     "ReviewGate.speckdl -t all": {
@@ -786,9 +744,9 @@
       "camel/review-gate/src/main/java/reviewgate/camel/processor/RunTestsProcessor.java": "d9e23f4cac5cef20",
       "camel/review-gate/src/main/resources/application.properties": "461838da00a3e1ae",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "f26b8c445c99d6d8",
-      "n8n/ReviewGate.verify.mjs": "20704df765e22a05",
-      "n8n/ReviewGate.workflow.json": "bfcc127fd2d0c686",
+      "n8n/README.md": "f9247d89294d2f24",
+      "n8n/ReviewGate.verify.mjs": "cdbf3afe76221161",
+      "n8n/ReviewGate.workflow.json": "61b81c1e75002983",
       "openapi/reviewgate.openapi.json": "e0f247a131636192",
       "review_gate-elm/elm.json": "ad72359d7379fd62",
       "review_gate-elm/index.html": "39a7172eb80f1c25",
@@ -821,9 +779,9 @@
       "camel/review-gate/src/main/java/reviewgate/camel/processor/RunTestsProcessor.java": "d9e23f4cac5cef20",
       "camel/review-gate/src/main/resources/application.properties": "461838da00a3e1ae",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "f26b8c445c99d6d8",
-      "n8n/ReviewGate.verify.mjs": "20704df765e22a05",
-      "n8n/ReviewGate.workflow.json": "bfcc127fd2d0c686",
+      "n8n/README.md": "f9247d89294d2f24",
+      "n8n/ReviewGate.verify.mjs": "cdbf3afe76221161",
+      "n8n/ReviewGate.workflow.json": "61b81c1e75002983",
       "openapi/reviewgate.openapi.json": "e0f247a131636192"
     },
     "SQLitePager.speckdl -t all": {
@@ -849,9 +807,6 @@
       "camel/sqlite-pager/src/main/java/sqlitepager/camel/processor/WritePageProcessor.java": "44b33abd26feca9e",
       "camel/sqlite-pager/src/main/resources/application.properties": "9623afc34f02e13b",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "e92179bcec923d9f",
-      "n8n/SQLitePager.verify.mjs": "208cfe6a3ced1795",
-      "n8n/SQLitePager.workflow.json": "df6a041f1197abc5",
       "openapi/sqlitepager.openapi.json": "e4c8c47bc19e1a01",
       "sq_lite_pager.proto": "56e0ffa988c093f6",
       "sq_lite_pager/Dockerfile": "e22ef9c8c12c9b0b",
@@ -888,9 +843,6 @@
       "camel/sqlite-pager/src/main/java/sqlitepager/camel/processor/WritePageProcessor.java": "44b33abd26feca9e",
       "camel/sqlite-pager/src/main/resources/application.properties": "9623afc34f02e13b",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "e92179bcec923d9f",
-      "n8n/SQLitePager.verify.mjs": "208cfe6a3ced1795",
-      "n8n/SQLitePager.workflow.json": "df6a041f1197abc5",
       "openapi/sqlitepager.openapi.json": "e4c8c47bc19e1a01"
     },
     "SQLiteWAL.speckdl -t all": {
@@ -920,9 +872,6 @@
       "camel/sqlite-wal/src/main/java/sqlitewal/camel/processor/ResetWALProcessor.java": "e6f27e8bb1e52a09",
       "camel/sqlite-wal/src/main/resources/application.properties": "3f8be918d9a01473",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "5ef8b6d7d252dcb9",
-      "n8n/SQLiteWAL.verify.mjs": "fc751a1c86080442",
-      "n8n/SQLiteWAL.workflow.json": "22dce0d994152f6b",
       "openapi/sqlitewal.openapi.json": "abac3c6626dfc299",
       "sq_lite_wal.proto": "426544795fe5ed26",
       "sq_lite_wal/Dockerfile": "e22ef9c8c12c9b0b",
@@ -963,9 +912,6 @@
       "camel/sqlite-wal/src/main/java/sqlitewal/camel/processor/ResetWALProcessor.java": "e6f27e8bb1e52a09",
       "camel/sqlite-wal/src/main/resources/application.properties": "3f8be918d9a01473",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "5ef8b6d7d252dcb9",
-      "n8n/SQLiteWAL.verify.mjs": "fc751a1c86080442",
-      "n8n/SQLiteWAL.workflow.json": "22dce0d994152f6b",
       "openapi/sqlitewal.openapi.json": "abac3c6626dfc299"
     },
     "TigerBeetleLedger.speckdl -t all": {
@@ -989,9 +935,6 @@
       "camel/tiger-beetle-ledger/src/main/java/tigerbeetleledger/camel/processor/VoidTransferProcessor.java": "75d863c2b058ea43",
       "camel/tiger-beetle-ledger/src/main/resources/application.properties": "bbe8584728611cf1",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "2eaafbff1716b9df",
-      "n8n/TigerBeetleLedger.verify.mjs": "a467cb377bfe809f",
-      "n8n/TigerBeetleLedger.workflow.json": "348029aa9f409832",
       "openapi/tigerbeetleledger.openapi.json": "c713c7b934127bda",
       "tiger_beetle_ledger-elm/elm.json": "ad72359d7379fd62",
       "tiger_beetle_ledger-elm/index.html": "6a22a02f2b83b7c7",
@@ -1026,9 +969,6 @@
       "camel/tiger-beetle-ledger/src/main/java/tigerbeetleledger/camel/processor/VoidTransferProcessor.java": "75d863c2b058ea43",
       "camel/tiger-beetle-ledger/src/main/resources/application.properties": "bbe8584728611cf1",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "2eaafbff1716b9df",
-      "n8n/TigerBeetleLedger.verify.mjs": "a467cb377bfe809f",
-      "n8n/TigerBeetleLedger.workflow.json": "348029aa9f409832",
       "openapi/tigerbeetleledger.openapi.json": "c713c7b934127bda"
     },
     "ToggleSwitch.speckdl -t all": {
@@ -1048,9 +988,6 @@
       "camel/toggle-switch/src/main/java/toggleswitch/camel/processor/TurnOnProcessor.java": "6e8b047fdac6081c",
       "camel/toggle-switch/src/main/resources/application.properties": "ae7d9669b7eb854c",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "5e6ffeb8c42e8889",
-      "n8n/ToggleSwitch.verify.mjs": "2a20ae9d9bc4378f",
-      "n8n/ToggleSwitch.workflow.json": "83e0d6528011dc1b",
       "openapi/toggleswitch.openapi.json": "2acc11b1f44cef5f",
       "toggle_switch-elm/elm.json": "ad72359d7379fd62",
       "toggle_switch-elm/index.html": "037102d0b18c3a79",
@@ -1081,9 +1018,6 @@
       "camel/toggle-switch/src/main/java/toggleswitch/camel/processor/TurnOnProcessor.java": "6e8b047fdac6081c",
       "camel/toggle-switch/src/main/resources/application.properties": "ae7d9669b7eb854c",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "5e6ffeb8c42e8889",
-      "n8n/ToggleSwitch.verify.mjs": "2a20ae9d9bc4378f",
-      "n8n/ToggleSwitch.workflow.json": "83e0d6528011dc1b",
       "openapi/toggleswitch.openapi.json": "2acc11b1f44cef5f"
     },
     "TwoPhaseCommit.speckdl -t all": {
@@ -1106,9 +1040,6 @@
       "camel/two-phase-commit/src/main/java/twophasecommit/camel/processor/TMRcvPreparedProcessor.java": "5127b5932e979a74",
       "camel/two-phase-commit/src/main/resources/application.properties": "3f5eb7c0854791e7",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "03ec5b13729a561b",
-      "n8n/TwoPhaseCommit.verify.mjs": "89601672d0608731",
-      "n8n/TwoPhaseCommit.workflow.json": "e2593d3d0a925aed",
       "openapi/twophasecommit.openapi.json": "b61103453b67a39e",
       "two_phase_commit-elm/elm.json": "ad72359d7379fd62",
       "two_phase_commit-elm/index.html": "a7aaf17d48ce499e",
@@ -1142,9 +1073,6 @@
       "camel/two-phase-commit/src/main/java/twophasecommit/camel/processor/TMRcvPreparedProcessor.java": "5127b5932e979a74",
       "camel/two-phase-commit/src/main/resources/application.properties": "3f5eb7c0854791e7",
       "k8s/all-crds.yaml": "01ba4719c80b6fe9",
-      "n8n/README.md": "03ec5b13729a561b",
-      "n8n/TwoPhaseCommit.verify.mjs": "89601672d0608731",
-      "n8n/TwoPhaseCommit.workflow.json": "e2593d3d0a925aed",
       "openapi/twophasecommit.openapi.json": "b61103453b67a39e"
     },
     "tef.speckdl -t all": {
@@ -1224,9 +1152,6 @@
       "k8s/integrations.tef.scoble.me.yaml": "82aa29b8be28c846",
       "k8s/products.tef.scoble.me.yaml": "f301f1b53d18596b",
       "k8s/specs.tef.scoble.me.yaml": "98da65d43d1451b7",
-      "n8n/README.md": "112e7cae14409aa5",
-      "n8n/TEF.verify.mjs": "82e710f1f900203d",
-      "n8n/TEF.workflow.json": "9bd1a57d2b1947a7",
       "openapi/tef.openapi.json": "67d96266e79874fd",
       "tef-elm/elm.json": "ad72359d7379fd62",
       "tef-elm/index.html": "f65a247b69a4ebf4",
@@ -1317,9 +1242,6 @@
       "k8s/integrations.tef.scoble.me.yaml": "82aa29b8be28c846",
       "k8s/products.tef.scoble.me.yaml": "f301f1b53d18596b",
       "k8s/specs.tef.scoble.me.yaml": "98da65d43d1451b7",
-      "n8n/README.md": "112e7cae14409aa5",
-      "n8n/TEF.verify.mjs": "82e710f1f900203d",
-      "n8n/TEF.workflow.json": "9bd1a57d2b1947a7",
       "openapi/tef.openapi.json": "67d96266e79874fd"
     }
   }

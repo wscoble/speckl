@@ -12,13 +12,13 @@
 // A reject target that the spec sends back to an earlier stage still stops
 // here. The workflow does not loop back into an action.
 //
-// Expressions this file cannot translate are not dropped. The action node
-// throws, and the verify script exits 1. `oneof` and `transition` are
-// rejected by the conservation table before any file is written.
+// An expression this file cannot translate fails the compile. No n8n file
+// is written. `oneof` and `transition` are rejected by the conservation
+// table before any file is written.
 //
-// The verify script is a straight-line trace check. It is not a bounded
-// model check, it does not run n8n, and it does not check signal signatures
-// or `bind call` digests.
+// The verify script is a straight-line trace check. It does not run n8n.
+// It is not a model check. It does not check signal signatures or
+// `bind call` digests.
 
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -37,6 +37,14 @@ import type {
 } from '../ir/types.js';
 
 export const N8N_DISCLAIMER = 'Not for regulated data without your own review';
+
+/** Raised when an expression cannot be translated. No n8n file has been written. */
+export class N8nTranslateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'N8nTranslateError';
+  }
+}
 
 const DISCLAIMER_NOTE = [
   'Not for regulated data without your own review.',
@@ -246,6 +254,22 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
   sortPre(pre);
   post.sort((a, b) => minOr(a.stages) - minOr(b.stages) || a.index - b.index);
 
+  const verifies = speck.facets.formal_spec.verifies.map(v => verifyModel(v, new Set(invariantsOf(ast, speck.name).map(i => i.name)), ctx()));
+  const problems: string[] = [];
+  if (!initSteps) problems.push('init');
+  for (const action of actions) if (!action.steps) problems.push(`action ${action.name}`);
+  for (const check of invariantChecks) if (!check.js) problems.push(`invariant ${check.name}`);
+  for (const check of constraintChecks) if (!check.js) problems.push(`constraint ${check.name}`);
+  for (const v of verifies) {
+    if (v.kind !== 'always' && v.kind !== 'expr') problems.push(`verify ${v.name}`);
+    else if (v.kind === 'expr' && !v.js) problems.push(`verify ${v.name}`);
+  }
+  if (problems.length > 0) {
+    throw new N8nTranslateError(
+      `n8n backend: cannot translate ${problems.join(', ')} on ${speck.name}; refusing to write a partial workflow`,
+    );
+  }
+
   const names = new Set<string>();
   const claim = (name: string): string => {
     if (names.has(name)) throw new Error(`n8n backend: node name "${name}" is not unique on ${speck.name}`);
@@ -292,7 +316,7 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
     init: initSteps,
     invariants: invariantChecks.map(c => ({ name: c.name, js: c.js })),
     constraints: constraintChecks.map(c => ({ name: c.name, js: c.js })),
-    verifies: speck.facets.formal_spec.verifies.map(v => verifyModel(v, new Set(invariantsOf(ast, speck.name).map(i => i.name)), ctx())),
+    verifies,
     actions: actions.map(a => ({ name: a.name, steps: a.steps })),
     pre: pre.map(a => a.name),
     post: post.map(a => a.name),
@@ -472,7 +496,7 @@ function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
     }
   }
   lines.push('Post {"outcome":"<name>"} to the Wait webhook. Bind any credential in n8n after import. This file has no live keys.');
-  lines.push('An action or check this target cannot translate throws. That failure is not a pass. Signal signatures are not checked.');
+  lines.push('A check that fails stops that n8n run. Signal signatures are not checked.');
   return lines.join('\n');
 }
 
@@ -873,7 +897,7 @@ function verifyModel(v: IRVerify, names: Set<string>, ctx: Ctx): { name: string;
 function renderReadme(specks: string[]): string {
   const files = specks.flatMap(name => [
     `- \`${name}.workflow.json\``,
-    `- \`${name}.verify.mjs\` — \`node ${name}.verify.mjs\` (exit 0 when translated checks hold, exit 1 when a check fails or an expression was not translated)`,
+    `- \`${name}.verify.mjs\` — \`node ${name}.verify.mjs\` (exit 0 when the checks hold, exit 1 when a check fails)`,
   ]);
   return [
     N8N_DISCLAIMER,
@@ -894,11 +918,11 @@ function renderReadme(specks: string[]): string {
     '',
     'The trace check supports state, init, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint` and `invariant` boolean expressions, and `verify Always(Name)` when that expression translates.',
     '',
-    '`oneof` and `transition` fail the compile. An `if` body, `Eventually`, a call this target does not translate, and any other untranslated expression become a throw. The verify script then exits 1. That is a failure, not a pass.',
+    '`oneof` and `transition` fail the compile. An `if` body, `Eventually`, `in`, `forall`, and any other expression this target cannot translate also fail the compile. No n8n file is written for that spec.',
     '',
-    'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops; the workflow does not loop back into an action.',
+    'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops. The workflow does not loop back into an action.',
     '',
-    'The verify script is a straight-line trace check. It is not a bounded model check and it does not run n8n. A recorded `depth` is not a proof. Speckl does not sandbox the imported workflow, does not control the network n8n uses, and does not add telemetry.',
+    'The verify script is a straight-line trace check. It does not run n8n. It is not a model check. A recorded `depth` does not change the check.',
     '',
   ].join('\n');
 }
@@ -910,8 +934,8 @@ function renderScript(workflowFile: string, model: unknown): string {
     `// ${N8N_DISCLAIMER}`,
     '// Speckl is a general-purpose compiler. This check is not HIPAA-certified. You are responsible for your own compliance review.',
     '// This output does not guarantee zero data retention (ZDR).',
-    '// Straight-line trace check. Not a bounded model check. A recorded depth is not a proof.',
-    '// An expression that does not translate throws, and this process exits 1.',
+    '// Straight-line trace check. This script does not run n8n. It is not a model check.',
+    '// A recorded depth does not change the check. A failed check exits 1.',
     '',
   ].join('\n');
   return header + SCRIPT_RUNTIME

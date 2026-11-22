@@ -1,6 +1,8 @@
 # n8n compile target
 
-`speckl <file> -t n8n -o <out>` writes `<out>/n8n/<Speck>.workflow.json`, `<out>/n8n/<Speck>.verify.mjs`, and `<out>/n8n/README.md`. The same files are also written for `-t all` and `-t all-ir`. `-t n8n` does not also write the timestamped provenance graph or the TypeScript machine.
+Builder Kit buyers keep one `.speckdl` spec and recompile it when a new target is added. `-t n8n` is that recompile for n8n. The approval wait, the reject stop, and the verify clause come from the spec, so a hand-drawn workflow does not drift away from them.
+
+`speckl <file> -t n8n -o <out>` writes `<out>/n8n/<Speck>.workflow.json`, `<out>/n8n/<Speck>.verify.mjs`, and `<out>/n8n/README.md`. `-t all` and `-t all-ir` write those files when every expression translates. `-t n8n` does not also write the timestamped provenance graph or the TypeScript machine.
 
 Not for regulated data without your own review. The workflow is general-purpose compiler output. It is not HIPAA-certified. You are responsible for your own compliance review. This output does not guarantee zero data retention (ZDR).
 
@@ -16,20 +18,18 @@ The Wait node does not check a signal signature. `bind call` digests are not enf
 
 ## Verify script
 
-`node <Speck>.verify.mjs` reads the workflow next to it. Exit 0 means every translated invariant, constraint, and `verify Always(...)` held on the straight-line trace, and every later action is reachable from Start only through the approval Wait. Exit 1 means a check failed or an expression was not translated. That exit is a failure, not a pass. The script is not a bounded model check. A recorded `depth` is not a proof. The script does not run n8n.
+`node <Speck>.verify.mjs` reads the workflow next to it. Exit 0 means every invariant, constraint, and `verify Always(...)` held on the straight-line trace, and every later action is reachable from Start only through the approval Wait. Exit 1 means a check failed. The script does not run n8n. It is not a model check. A recorded `depth` does not change the check.
 
 ## What compiles
 
-Emitted: `state`, `init`, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint`, `invariant`, `verify`, and `agent` awaits.
+Emitted, when the expression translates: `state`, `init`, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint`, `invariant`, `verify`, and `agent` awaits.
 
 Rejected at compile time: `oneof` and `transition`. An await whose timeout is not a reject outcome is also rejected.
 
-Not written as nodes, and not a failed compile: formal-spec `input` and `output`, `interface`, `event` (a translated `emit` appends to the item; an `emit` that does not translate fails the action), provenance and review members, `service`, lifecycle fields, and `next:`.
+An `if` body, `Eventually`, `in`, `forall`, an unknown call, and any other expression this target cannot translate fail the compile. `-t n8n` writes no file. `-t all` and `-t all-ir` still write the other targets and do not write the n8n files for that spec.
 
-An `if` body, `Eventually`, `in`, and any other expression this target cannot translate become a throw in the action or in the verify script. The script then exits 1. The guard is not skipped.
+Not written as nodes, and not a failed compile: formal-spec `input` and `output`, `interface`, `event` (a translated `emit` appends to the item), provenance and review members, `service`, lifecycle fields, and `next:`.
 
 Node ids are a slug plus a sha256 prefix of the speck name and the node name. Positions are a fixed grid. Nothing in the n8n directory reads the clock, a random source, or a host path.
 
-Speckl does not sandbox the imported workflow, does not control the network n8n uses, and does not add telemetry.
-
-`compiler/src/__tests__/n8n-target.test.ts` compiles `examples/AgentPolicy.speckdl` and other specs, checks the import shape, the Wait and If routing, reject and timeout isolation, a secret scan, byte-identical recompiles, the verify script's exit status, and this disclaimer.
+`compiler/src/__tests__/n8n-target.test.ts` compiles `examples/AgentPolicy.speckdl` and other specs, checks the import shape, the Wait and If routing, reject and timeout isolation, a secret scan, byte-identical recompiles, the verify script's exit status, a compile that stops with no file written, and this disclaimer.

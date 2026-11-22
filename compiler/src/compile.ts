@@ -18,7 +18,7 @@ import { generateK8sCRD } from './generators/k8s-crd.js';
 import { generateProvenanceFromIR } from './generators/provenance-from-ir.js';
 import { lower } from './ir/lower.js';
 import { generateCamel } from './generators/camel.js';
-import { generateN8n } from './generators/n8n.js';
+import { generateN8n, N8nTranslateError } from './generators/n8n.js';
 import { OpenAPITarget } from './generators/openapi.js';
 import { generateAgent } from './generators/agent/index.js';
 import { injectSignalActions } from './generators/agent/inject-signals.js';
@@ -91,7 +91,14 @@ export function compileSpec(file: string, options: CompileOptions): void {
   if (options.target === 'n8n' || options.target === 'all' || options.target === 'all-ir') {
     console.log('\nGenerating n8n workflow...');
     checked('n8n', ast);
-    generateN8n(irAst, { outputDir: options.outputDir, ast });
+    try {
+      generateN8n(irAst, { outputDir: options.outputDir, ast });
+    } catch (err) {
+      // `-t n8n` stops. `-t all` and `-t all-ir` still write the other
+      // targets and do not write a partial n8n workflow.
+      if (options.target === 'n8n' || !(err instanceof N8nTranslateError)) throw err;
+      console.log(err.message);
+    }
   }
 
   // Rust

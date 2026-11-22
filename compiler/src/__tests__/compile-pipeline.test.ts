@@ -110,7 +110,9 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when -t all and -t all-ir started writing n8n/<Speck>.workflow.json,
 // n8n/<Speck>.verify.mjs, and n8n/README.md. Those files are new. The other
 // targets were not retargeted.
-const OUTPUT_SHA256 = '56d1eeb80fa6eae9ff2ef39c4c6e89a8d282b79fd983bea6d2797a04952d3385';
+// Moved again when an expression n8n cannot translate stopped writing the n8n
+// directory on -t all and -t all-ir, and the n8n README text changed.
+const OUTPUT_SHA256 = 'ca7f44f46503006f74adb9e6f67f4b8911501e750e0bf35ae60db44290e09d50';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

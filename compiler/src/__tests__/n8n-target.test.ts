@@ -1,7 +1,6 @@
 // -t n8n: importable workflow JSON, approval gates, verify script, no secrets.
-import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +19,10 @@ function compile(file: string, target: CompileOptions['target'] = 'n8n'): string
   const out = mkdtempSync(join(tmpdir(), 'speckl-n8n-'));
   compileSpec(file, { outputDir: out, target, bomFormat: 'both', verifyDepth: 4 });
   return out;
+}
+
+function freshOut(): string {
+  return mkdtempSync(join(tmpdir(), 'speckl-n8n-'));
 }
 
 function writeSpec(name: string, body: string): string {
@@ -159,6 +162,14 @@ describe('n8n workflow import shape', () => {
     expect(falseSlot.map(e => e.node)).toEqual(['Stop review']);
     for (const edge of falseSlot) expect(reaches(wf, edge.node, 'OpenPR')).toBe(false);
     expect(reaches(wf, 'Stop review', 'RunTests')).toBe(false);
+    const later = wf.nodes
+      .filter((n: { type: string; name: string }) => n.type === 'n8n-nodes-base.code' && n.name !== 'Init' && n.name !== 'Check invariants' && !n.name.startsWith('Stage '))
+      .map((n: { name: string }) => n.name);
+    for (const action of later) {
+      expect(reaches(wf, 'Stop review', action), action).toBe(false);
+      expect(reaches(wf, 'Timeout review', action), action).toBe(false);
+    }
+    expect(later).toContain('OpenPR');
   });
 
   it('carries the regulated-data disclaimer and no secret material', () => {
@@ -183,14 +194,20 @@ describe('n8n workflow import shape', () => {
 describe('n8n determinism and fail-closed checks', () => {
   it('recompiles to the same bytes in two directories', () => {
     const spec = join(examplesDir, 'AgentPolicy.speckdl');
-    const a = compile(spec);
-    const b = compile(spec);
-    const filesA = walk(a).map(f => relative(a, f));
-    expect(walk(b).map(f => relative(b, f))).toEqual(filesA);
-    for (const rel of filesA) {
-      const left = createHash('sha256').update(readFileSync(join(a, rel))).digest('hex');
-      const right = createHash('sha256').update(readFileSync(join(b, rel))).digest('hex');
-      expect(left, rel).toBe(right);
+    const dirs = [compile(spec), compile(spec), compile(spec)];
+    const files = walk(dirs[0]).map(f => relative(dirs[0], f));
+    expect(files.length).toBeGreaterThan(0);
+    for (const dir of dirs.slice(1)) {
+      expect(walk(dir).map(f => relative(dir, f))).toEqual(files);
+    }
+    for (const rel of files) {
+      const bytes = dirs.map(dir => readFileSync(join(dir, rel)));
+      expect(Buffer.compare(bytes[0], bytes[1]), rel).toBe(0);
+      expect(Buffer.compare(bytes[0], bytes[2]), rel).toBe(0);
+      const text = bytes[0].toString('utf8');
+      expect(text, rel).not.toContain(dirs[0]);
+      expect(text, rel).not.toContain('Date.now');
+      expect(text, rel).not.toContain('Math.random');
     }
   });
 
@@ -235,8 +252,13 @@ describe('n8n determinism and fail-closed checks', () => {
     expect(ran.stderr).toMatch(/invariant failed: Zero/);
   });
 
-  it('exits 1 when an expression cannot be translated', () => {
-    const file = writeSpec('Odd.speckdl', [
+  it('fails the compile when an expression cannot be translated and writes no file', () => {
+    const file = writeSpec('Pair.speckdl', [
+      'speck First {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Stay { n := n }',
+      '}',
       'speck Odd {',
       '    state { n: Nat }',
       '    init { n := 0 }',
@@ -246,15 +268,19 @@ describe('n8n determinism and fail-closed checks', () => {
       '}',
       '',
     ].join('\n'));
-    const out = compile(file);
-    const ran = runScript(out, 'Odd');
-    expect(ran.status).toBe(1);
-    expect(ran.stderr).toMatch(/untranslated/);
-    const blob = walk(out).map(f => readFileSync(f, 'utf8')).join('\n');
-    expect(blob).not.toMatch(/mystery\(n\)/);
+    const out = freshOut();
+    expect(() => compileSpec(file, { outputDir: out, target: 'n8n', bomFormat: 'both', verifyDepth: 4 }))
+      .toThrow(/cannot translate invariant Odd on Odd; refusing to write a partial workflow/);
+    expect(existsSync(join(out, 'n8n'))).toBe(false);
+    expect(walk(out).some(f => f.endsWith('.workflow.json') || f.endsWith('.verify.mjs') || f.endsWith('README.md'))).toBe(false);
+
+    const all = freshOut();
+    compileSpec(file, { outputDir: all, target: 'all', bomFormat: 'both', verifyDepth: 4 });
+    expect(existsSync(join(all, 'n8n'))).toBe(false);
+    expect(walk(all).some(f => f.endsWith('.ts'))).toBe(true);
   });
 
-  it('does not emit a secret-like literal', () => {
+  it('writes no workflow when a literal looks like a secret, and a real workflow has no credentials', () => {
     const file = writeSpec('Secretish.speckdl', [
       'speck Secretish {',
       '    state { note: String }',
@@ -263,10 +289,73 @@ describe('n8n determinism and fail-closed checks', () => {
       '}',
       '',
     ].join('\n'));
+    const out = freshOut();
+    let message = '';
+    try {
+      compileSpec(file, { outputDir: out, target: 'n8n', bomFormat: 'both', verifyDepth: 4 });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/cannot translate init on Secretish/);
+    for (const re of SECRET) expect(message).not.toMatch(re);
+    expect(existsSync(join(out, 'n8n'))).toBe(false);
+
+    const policy = compile(join(examplesDir, 'AgentPolicy.speckdl'));
+    const json = readFileSync(join(policy, 'n8n', 'AgentPolicy.workflow.json'), 'utf8');
+    const wf = JSON.parse(json);
+    expect(JSON.stringify(wf)).not.toMatch(/"credentials"/);
+    for (const node of wf.nodes) expect(node.credentials).toBeUndefined();
+    for (const re of SECRET) expect(json).not.toMatch(re);
+    expect(wf.meta.templateCredsSetupCompleted).toBe(false);
+  });
+
+  it('keeps a reject and a timeout off every later action, including a reject back to an earlier stage', () => {
+    const file = writeSpec('EarlyReject.speckdl', [
+      'speck EarlyReject {',
+      '    state { stage: Nat; ran: Bool }',
+      '    init { stage := 0; ran := false }',
+      '    action Before {',
+      '        require stage == 0',
+      '        ran := false',
+      '    }',
+      '    action After {',
+      '        require stage == 2',
+      '        ran := true',
+      '    }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '            Approved = 2',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Approved',
+      '            on reject -> Idle',
+      '            timeout 1h -> reject',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
     const out = compile(file);
-    const blob = walk(out).map(f => readFileSync(f, 'utf8')).join('\n');
-    for (const re of SECRET) expect(blob).not.toMatch(re);
-    expect(runScript(out, 'Secretish').status).toBe(1);
+    const wf = loadWorkflow(out, 'EarlyReject');
+    for (const start of ['Stop review', 'Timeout review']) {
+      expect(reaches(wf, start, 'After'), start).toBe(false);
+      expect(reaches(wf, start, 'Before'), start).toBe(false);
+    }
+    const falseSlot = wf.connections['Gate review'].main[1] as { node: string }[];
+    expect(falseSlot.map(e => e.node)).toEqual(['Stop review']);
+    expect(outgoing(wf, 'Timeout review')).toEqual(['Stop review']);
+    expect(outgoing(wf, 'Stop review')).toEqual([]);
+
+    const podcast = loadWorkflow(compile(join(examplesDir, 'PodcastPublishing.speckdl')), 'PodcastPublishing');
+    for (const action of ['ApplyMetadata', 'FixMetadata', 'RequestFix']) {
+      expect(reaches(podcast, 'Stop host_approval', action), action).toBe(false);
+      expect(reaches(podcast, 'Timeout host_approval', action), action).toBe(false);
+    }
   });
 
   it('rejects oneof instead of dropping it', () => {
@@ -293,9 +382,17 @@ describe('n8n determinism and fail-closed checks', () => {
 describe('n8n examples and docs', () => {
   const names = readdirSync(examplesDir).filter(f => f.endsWith('.speckdl')).sort();
 
-  it('compiles every example and the verify script parses', () => {
+  it('compiles every example, or stops with no n8n file when an expression does not translate', () => {
+    const translates = new Set(['AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'DeployGate.speckdl', 'PodcastPublishing.speckdl', 'ReviewGate.speckdl']);
     for (const name of names) {
-      const out = compile(join(examplesDir, name));
+      const out = freshOut();
+      if (!translates.has(name)) {
+        expect(() => compileSpec(join(examplesDir, name), { outputDir: out, target: 'n8n', bomFormat: 'both', verifyDepth: 4 }), name)
+          .toThrow(/cannot translate/);
+        expect(existsSync(join(out, 'n8n')), name).toBe(false);
+        continue;
+      }
+      compileSpec(join(examplesDir, name), { outputDir: out, target: 'n8n', bomFormat: 'both', verifyDepth: 4 });
       const scripts = walk(join(out, 'n8n')).filter(f => f.endsWith('.verify.mjs'));
       expect(scripts.length, name).toBeGreaterThan(0);
       for (const script of scripts) {
@@ -304,6 +401,11 @@ describe('n8n examples and docs', () => {
       }
       const readme = readFileSync(join(out, 'n8n', 'README.md'), 'utf8');
       expect(readme.startsWith(DISCLAIMER)).toBe(true);
+      expect(readme).toContain('does not run n8n');
+      expect(readme).toContain('is not a model check');
+      expect(readme).not.toMatch(/sandbox/i);
+      expect(readme).not.toMatch(/telemetry/i);
+      expect(readme).not.toMatch(/network/i);
     }
   }, 120_000);
 
@@ -322,9 +424,14 @@ describe('n8n examples and docs', () => {
     expect(doc).toContain('`-t n8n`');
     expect(doc).toContain('`-t all`');
     expect(doc).toContain('bind call');
-    expect(doc).toContain('not a bounded model check');
+    expect(doc).toContain('does not run n8n');
+    expect(doc).toContain('is not a model check');
     expect(doc).toContain('oneof');
     expect(doc).toContain('{{ $env.NAME }}');
+    expect(doc).toContain('writes no file');
+    expect(doc).not.toMatch(/sandbox/i);
+    expect(doc).not.toMatch(/telemetry/i);
+    expect(doc).not.toMatch(/network/i);
     expect(doc).not.toMatch(/npm install -g speckl(?![-.\w])/);
     expect(changelog).toContain('n8n compile target');
     expect(changelog).not.toMatch(/ZDR is guaranteed/);
