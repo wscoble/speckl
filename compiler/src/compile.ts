@@ -39,6 +39,23 @@ function checked(backend: BackendId, ast: AST): void {
   guardAst(backend, ast);
 }
 
+/**
+ * `-t all` and `-t all-ir` skip a backend that refuses this spec and keep
+ * going. A focused target still throws. The skipped error is a conservation
+ * reject, an n8n failure wrapped as N8nTranslateError, or an invalid agent
+ * block. Anything else still stops the run. Generators throw before they
+ * write, so a skip does not leave that backend's file behind.
+ */
+function continuableBackendError(err: unknown): boolean {
+  if (err instanceof N8nTranslateError) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  if (/ backend rejects AST node type "/.test(message)) return true;
+  // The agent target records this before it writes. `-t agent` still throws
+  // because that target is not broad. `-t all` skips it and keeps the files
+  // the other backends already wrote.
+  return message.startsWith('agent block is invalid');
+}
+
 /** Compile one SpeckDL file to the requested target(s). Throws on invalid input. */
 export function compileSpec(file: string, options: CompileOptions): void {
   conservationLog.length = 0;
@@ -64,66 +81,99 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
   const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'n8n', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
+  const broad = options.target === 'all' || options.target === 'all-ir';
+  const runBackend = (fn: () => void): void => {
+    if (!broad) {
+      fn();
+      return;
+    }
+    try {
+      fn();
+    } catch (err) {
+      if (!continuableBackendError(err)) throw err;
+      console.log(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   // K8s CRDs
-  if (options.target === 'k8s' || options.target === 'all' || options.target === 'all-ir') {
+  if (options.target === 'k8s' || broad) {
     console.log('\nGenerating Kubernetes CustomResourceDefinitions...');
-    checked('k8s', ast);
-    generateK8sCRD(irAst, { outputDir: options.outputDir });
+    runBackend(() => {
+      checked('k8s', ast);
+      generateK8sCRD(irAst, { outputDir: options.outputDir });
+    });
   }
 
   // OpenAPI 3.1
-  if (options.target === 'openapi' || options.target === 'all' || options.target === 'all-ir') {
+  if (options.target === 'openapi' || broad) {
     console.log('\nGenerating OpenAPI 3.1 specification...');
-    checked('openapi', ast);
-    new OpenAPITarget().generate(irAst, { outputDir: options.outputDir });
+    runBackend(() => {
+      checked('openapi', ast);
+      new OpenAPITarget().generate(irAst, { outputDir: options.outputDir });
+    });
   }
 
   // Camel (camel-quarkus Java routes + processors)
-  if (options.target === 'camel' || options.target === 'all' || options.target === 'all-ir') {
+  if (options.target === 'camel' || broad) {
     console.log('\nGenerating Apache Camel (camel-quarkus) routes...');
-    checked('camel', ast);
-    generateCamel(irAst, { outputDir: options.outputDir });
+    runBackend(() => {
+      checked('camel', ast);
+      generateCamel(irAst, { outputDir: options.outputDir });
+    });
   }
 
   // n8n importable workflow + verify script. Focused like z3 and rust:
   // `-t n8n` does not also emit the timestamped provenance graph.
-  if (options.target === 'n8n' || options.target === 'all' || options.target === 'all-ir') {
+  // Every n8n failure becomes N8nTranslateError. `-t n8n` throws it.
+  // `-t all` and `-t all-ir` log it and still write the other targets.
+  // generateN8n throws before it creates the n8n directory.
+  if (options.target === 'n8n' || broad) {
     console.log('\nGenerating n8n workflow...');
-    checked('n8n', ast);
-    try {
-      generateN8n(irAst, { outputDir: options.outputDir, ast });
-    } catch (err) {
-      // `-t n8n` stops. `-t all` and `-t all-ir` still write the other
-      // targets and do not write a partial n8n workflow.
-      if (options.target === 'n8n' || !(err instanceof N8nTranslateError)) throw err;
-      console.log(err.message);
-    }
+    const generate = (): void => {
+      try {
+        checked('n8n', ast);
+        generateN8n(irAst, { outputDir: options.outputDir, ast });
+      } catch (err) {
+        if (err instanceof N8nTranslateError) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        throw new N8nTranslateError(message);
+      }
+    };
+    if (options.target === 'n8n') generate();
+    else runBackend(generate);
   }
 
   // Rust
   if (options.target === 'go' || options.target === 'all') {
     // go backend
-    checked('go', ast);
-    generateGo(ast, options.outputDir);
+    runBackend(() => {
+      checked('go', ast);
+      generateGo(ast, options.outputDir);
+    });
   }
   if (options.target === 'rust' || options.target === 'all') {
     console.log('\nGenerating Rust state machine...');
-    checked('rust', ast);
-    generateRust(irAst, options.outputDir, ast);
+    runBackend(() => {
+      checked('rust', ast);
+      generateRust(irAst, options.outputDir, ast);
+    });
   }
 
   // Elm
   if (options.target === 'elm' || options.target === 'all') {
-    checked('elm', ast);
-    generateElm(ast, options.outputDir);
+    runBackend(() => {
+      checked('elm', ast);
+      generateElm(ast, options.outputDir);
+    });
   }
 
   // Protobuf
   if (options.target === 'protobuf' || options.target === 'all') {
     console.log('\nGenerating protobuf schema (.proto)...');
-    checked('protobuf', ast);
-    generateProtobuf(ast, options.outputDir);
+    runBackend(() => {
+      checked('protobuf', ast);
+      generateProtobuf(ast, options.outputDir);
+    });
   }
 
   // Provenance (core output)
@@ -131,15 +181,19 @@ export function compileSpec(file: string, options: CompileOptions): void {
 
   if (sharedArtifacts) {
     console.log('\nGenerating provenance graph (PROV-O JSON-LD) from IR...');
-    checked('provenance', ast);
-    generateProvenanceFromIR(irAst, options.outputDir);
+    runBackend(() => {
+      checked('provenance', ast);
+      generateProvenanceFromIR(irAst, options.outputDir);
+    });
   }
 
   // Z3 SMT-LIB2
   if (options.target === 'z3' || options.target === 'all') {
     console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
-    checked('z3-ir', ast);
-    generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
+    runBackend(() => {
+      checked('z3-ir', ast);
+      generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
+    });
     console.log('\nGenerating Z3 SMT-LIB2 (AST-driven, state machine + transitions)...');
     for (const speck of astForProof.specks) {
       // Invariants are first-class AST members now; wrap their expression in
@@ -155,36 +209,46 @@ export function compileSpec(file: string, options: CompileOptions): void {
       (speck as any)._invariants = invariants;
     }
     const z3Options: Z3Options = { verifyDepth: options.verifyDepth };
-    checked('z3', astForProof);
-    generateZ3(astForProof, options.outputDir, z3Options);
-    // Domain budgets are a separate obligation. Specs with no budget get no
-    // extra file, so existing Z3 output stays byte-identical.
-    generateDomainBudgets(astForProof, irAst.domains ?? [], options.outputDir, options.verifyDepth);
+    runBackend(() => {
+      checked('z3', astForProof);
+      generateZ3(astForProof, options.outputDir, z3Options);
+      // Domain budgets are a separate obligation. Specs with no budget get no
+      // extra file, so existing Z3 output stays byte-identical.
+      generateDomainBudgets(astForProof, irAst.domains ?? [], options.outputDir, options.verifyDepth);
+    });
   }
 
   // IR-driven Z3 for the all-ir target (formal_spec facet only)
   if (options.target === 'all-ir') {
     console.log('\nGenerating Z3 SMT-LIB2 (IR-driven, focused on formal_spec)...');
-    checked('z3-ir', ast);
-    generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
+    runBackend(() => {
+      checked('z3-ir', ast);
+      generateZ3FromIR(irAst, { outputDir: options.outputDir, verifyDepth: options.verifyDepth });
+    });
   }
 
   // TypeScript state machine + BOMs
   if (sharedArtifacts) {
     console.log('\nGenerating TypeScript state machine...');
-    checked('typescript', ast);
-    generateTypeScriptStateMachine(ast, options.outputDir);
+    runBackend(() => {
+      checked('typescript', ast);
+      generateTypeScriptStateMachine(ast, options.outputDir);
+    });
 
     if (options.bomFormat === 'cdx' || options.bomFormat === 'both') {
       console.log('\nGenerating CycloneDX BOM...');
-      checked('cyclonedx', ast);
-      generateCycloneDX(ast, options.outputDir);
+      runBackend(() => {
+        checked('cyclonedx', ast);
+        generateCycloneDX(ast, options.outputDir);
+      });
     }
 
     if (options.bomFormat === 'spdx' || options.bomFormat === 'both') {
       console.log('\nGenerating SPDX BOM...');
-      checked('spdx', ast);
-      generateSPDX(ast, options.outputDir);
+      runBackend(() => {
+        checked('spdx', ast);
+        generateSPDX(ast, options.outputDir);
+      });
     }
   }
   
@@ -192,14 +256,16 @@ export function compileSpec(file: string, options: CompileOptions): void {
   // Agent target (AGENTS.md + tools + hook + signal verifiers)
   if (options.target === 'agent' || options.target === 'all') {
     console.log('\nGenerating agent target (AGENTS.md, tools.json, hook, signals)...');
-    // Never emit rails from an agent block that failed validation.
-    const agentErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('agent'));
-    if (agentErrors.length > 0) {
-      throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
-    }
-    checked('typescript', ast);
-    checked('agent', ast);
-    generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
+    runBackend(() => {
+      // Never emit rails from an agent block that failed validation.
+      const agentErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('agent'));
+      if (agentErrors.length > 0) {
+        throw new Error('agent block is invalid:\n' + agentErrors.map(d => `  ${d.speck}: ${d.message}`).join('\n'));
+      }
+      checked('typescript', ast);
+      checked('agent', ast);
+      generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
+    });
   }
 
   console.log(`\nCompilation complete. Output: ${options.outputDir}/`);

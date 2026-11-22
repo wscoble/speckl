@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { compileSpec, type CompileOptions } from '../compile.js';
 import { disposition } from '../conservation.js';
+import { allocateNodeId, assertSafeN8nText, ALLOWED_N8N_EXPR } from '../generators/n8n.js';
 
 const compilerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const repoDir = path.resolve(compilerDir, '..');
@@ -152,36 +153,61 @@ describe('n8n workflow import shape', () => {
     }
   });
 
-  it('puts the approval Wait and If before OpenPR, and stops reject and timeout', () => {
+  it('webhook resume keeps the pre-wait item and the If reads body.outcome', () => {
     const wait = wf.nodes.find((n: { name: string }) => n.name === 'Wait review');
-    const timeout = wf.nodes.find((n: { name: string }) => n.name === 'Timeout review');
+    const resume = wf.nodes.find((n: { name: string }) => n.name === 'Resume review');
     const gate = wf.nodes.find((n: { name: string }) => n.name === 'Gate review');
     const stop = wf.nodes.find((n: { name: string }) => n.name === 'Stop review');
     expect(wait.type).toBe('n8n-nodes-base.wait');
-    expect(wait.parameters.resume).toBe('webhook');
-    expect(timeout.type).toBe('n8n-nodes-base.wait');
-    expect(timeout.parameters.resume).toBe('timeInterval');
+    expect(wait.parameters).toMatchObject({
+      resume: 'webhook',
+      httpMethod: 'POST',
+      incomingAuthentication: 'none',
+      limitWaitTime: true,
+      limitType: 'afterTimeInterval',
+      resumeAmount: 1,
+      resumeUnit: 'days',
+    });
+    expect(wait.credentials).toBeUndefined();
+    expect(wf.nodes.some((n: { name: string }) => n.name.startsWith('Timeout'))).toBe(false);
+    expect(wf.nodes.some((n: { parameters?: { resume?: string } }) => n.parameters?.resume === 'timeInterval')).toBe(false);
+    expect(outgoing(wf, 'Wait review')).toEqual(['Resume review']);
+    const prior = Object.keys(wf.connections).find(name => outgoing(wf, name).includes('Wait review'));
+    expect(prior).toBeTruthy();
+    expect(resume.type).toBe('n8n-nodes-base.code');
+    expect(resume.parameters.jsCode).toContain(`$('${prior}')`);
+    expect(resume.parameters.jsCode).toContain('incoming.body');
+    expect(resume.parameters.jsCode).toContain('incoming.headers');
+    expect(outgoing(wf, 'Resume review')).toEqual(['Gate review']);
     expect(gate.type).toBe('n8n-nodes-base.if');
-    expect(stop.type).toBe('n8n-nodes-base.stopAndError');
+    expect(gate.parameters.conditions.conditions[0].leftValue).toBe(ALLOWED_N8N_EXPR);
     const rights = gate.parameters.conditions.conditions.map((c: { rightValue: string; operator: { operation: string } }) => c.rightValue);
     expect(rights).toEqual(['approve']);
     expect(gate.parameters.conditions.conditions[0].operator.operation).toBe('equals');
+    expect(stop.type).toBe('n8n-nodes-base.stopAndError');
     expect(outgoing(wf, 'Stop review')).toEqual([]);
     expect(reaches(wf, 'Start', 'OpenPR')).toBe(true);
     expect(reaches(wf, 'Start', 'OpenPR', new Set(['Wait review']))).toBe(false);
-    expect(reaches(wf, 'Timeout review', 'OpenPR')).toBe(false);
+    expect(reaches(wf, 'Resume review', 'OpenPR')).toBe(true);
+    expect(reaches(wf, 'Start', 'OpenPR', new Set(['Resume review']))).toBe(false);
     const falseSlot = wf.connections['Gate review'].main[1] as { node: string }[];
     expect(falseSlot.map(e => e.node)).toEqual(['Stop review']);
     for (const edge of falseSlot) expect(reaches(wf, edge.node, 'OpenPR')).toBe(false);
     expect(reaches(wf, 'Stop review', 'RunTests')).toBe(false);
     const later = wf.nodes
-      .filter((n: { type: string; name: string }) => n.type === 'n8n-nodes-base.code' && n.name !== 'Init' && n.name !== 'Check invariants' && !n.name.startsWith('Stage '))
+      .filter((n: { type: string; name: string }) => n.type === 'n8n-nodes-base.code' && n.name !== 'Init' && n.name !== 'Check invariants' && n.name !== 'Resume review' && !n.name.startsWith('Stage '))
       .map((n: { name: string }) => n.name);
     for (const action of later) {
       expect(reaches(wf, 'Stop review', action), action).toBe(false);
-      expect(reaches(wf, 'Timeout review', action), action).toBe(false);
     }
     expect(later).toContain('OpenPR');
+    const sticky = wf.nodes.find((n: { type: string }) => n.type === 'n8n-nodes-base.stickyNote');
+    expect(sticky.parameters.content).toContain('{"outcome":"<name>"}');
+    expect(sticky.parameters.content).toContain('$json.body.outcome');
+    expect(sticky.parameters.content).toContain('incomingAuthentication is none');
+    expect(sticky.parameters.content).toContain('Limit Wait Time');
+    expect(sticky.parameters.content).not.toContain('{{');
+    expect(sticky.parameters.content).not.toContain('}}');
   });
 
   it('carries the regulated-data disclaimer and no secret material', () => {
@@ -240,7 +266,8 @@ describe('n8n determinism and fail-closed checks', () => {
     const wf = loadWorkflow(cli, 'DeployGate');
     expect(reaches(wf, 'Start', 'Deploy')).toBe(true);
     expect(reaches(wf, 'Start', 'Deploy', new Set(['Wait approval']))).toBe(false);
-    expect(reaches(wf, 'Timeout approval', 'Deploy')).toBe(false);
+    expect(outgoing(wf, 'Wait approval')).toEqual(['Resume approval']);
+    expect(wf.nodes.some((n: { parameters?: { resume?: string } }) => n.parameters?.resume === 'timeInterval')).toBe(false);
     const rights = wf.nodes.find((n: { name: string }) => n.name === 'Gate approval').parameters.conditions.conditions
       .map((c: { rightValue: string }) => c.rightValue);
     expect(rights).toEqual(['approve']);
@@ -354,19 +381,22 @@ describe('n8n determinism and fail-closed checks', () => {
     ].join('\n'));
     const out = compile(file);
     const wf = loadWorkflow(out, 'EarlyReject');
-    for (const start of ['Stop review', 'Timeout review']) {
-      expect(reaches(wf, start, 'After'), start).toBe(false);
-      expect(reaches(wf, start, 'Before'), start).toBe(false);
-    }
+    const wait = wf.nodes.find((n: { name: string }) => n.name === 'Wait review');
+    expect(wait.parameters.limitWaitTime).toBe(true);
+    expect(wait.parameters.resumeAmount).toBe(1);
+    expect(wait.parameters.resumeUnit).toBe('hours');
+    expect(outgoing(wf, 'Wait review')).toEqual(['Resume review']);
+    expect(wf.nodes.some((n: { name: string }) => n.name.startsWith('Timeout'))).toBe(false);
+    expect(reaches(wf, 'Stop review', 'After')).toBe(false);
+    expect(reaches(wf, 'Stop review', 'Before')).toBe(false);
     const falseSlot = wf.connections['Gate review'].main[1] as { node: string }[];
     expect(falseSlot.map(e => e.node)).toEqual(['Stop review']);
-    expect(outgoing(wf, 'Timeout review')).toEqual(['Stop review']);
     expect(outgoing(wf, 'Stop review')).toEqual([]);
 
     const podcast = loadWorkflow(compile(join(examplesDir, 'PodcastPublishing.speckdl')), 'PodcastPublishing');
+    expect(outgoing(podcast, 'Wait host_approval')).toEqual(['Resume host_approval']);
     for (const action of ['ApplyMetadata', 'FixMetadata', 'RequestFix']) {
       expect(reaches(podcast, 'Stop host_approval', action), action).toBe(false);
-      expect(reaches(podcast, 'Timeout host_approval', action), action).toBe(false);
     }
   });
 
@@ -416,7 +446,8 @@ describe('n8n determinism and fail-closed checks', () => {
     const raw = readFileSync(join(out, 'n8n', 'Inject.workflow.json'), 'utf8');
     expect(raw).not.toContain('{{ $json.password }}');
     expect(raw).not.toContain('={{ 7*7 }}');
-    expect(raw.split('={{ $json.outcome }}').join('')).not.toContain('{{');
+    expect(raw.split(ALLOWED_N8N_EXPR).join('')).not.toContain('{{');
+    expect(raw.split(ALLOWED_N8N_EXPR).join('')).not.toContain('}}');
     const wf = JSON.parse(raw);
     const code = wf.nodes.find((n: { name: string }) => n.name === 'Init').parameters.jsCode as string;
     expect(code).not.toContain('{{');
@@ -425,7 +456,7 @@ describe('n8n determinism and fail-closed checks', () => {
     expect(eval(lit![1])).toBe(payload);
   });
 
-  it('credential references are placeholders by name only', () => {
+  it('spec strings are literal data and are not n8n env bindings', () => {
     const file = writeSpec('Cred.speckdl', [
       'speck Cred {',
       '    state { token: String }',
@@ -452,22 +483,26 @@ describe('n8n determinism and fail-closed checks', () => {
   });
 
   it('rejected and timed-out branches have no path to a downstream action', () => {
-    const cases: { file: string; speck: string; stop: string; timeout: string; downstream: string[] }[] = [
-      { file: 'AgentPolicy.speckdl', speck: 'AgentPolicy', stop: 'Stop review', timeout: 'Timeout review', downstream: ['OpenPR'] },
-      { file: 'DeployGate.speckdl', speck: 'DeployGate', stop: 'Stop approval', timeout: 'Timeout approval', downstream: ['Deploy'] },
-      { file: 'PodcastPublishing.speckdl', speck: 'PodcastPublishing', stop: 'Stop host_approval', timeout: 'Timeout host_approval', downstream: ['ApplyMetadata', 'FixMetadata', 'RequestFix'] },
+    const cases: { file: string; speck: string; stop: string; wait: string; downstream: string[] }[] = [
+      { file: 'AgentPolicy.speckdl', speck: 'AgentPolicy', stop: 'Stop review', wait: 'Wait review', downstream: ['OpenPR'] },
+      { file: 'DeployGate.speckdl', speck: 'DeployGate', stop: 'Stop approval', wait: 'Wait approval', downstream: ['Deploy'] },
+      { file: 'PodcastPublishing.speckdl', speck: 'PodcastPublishing', stop: 'Stop host_approval', wait: 'Wait host_approval', downstream: ['ApplyMetadata', 'FixMetadata', 'RequestFix'] },
     ];
     for (const item of cases) {
       const wf = loadWorkflow(compile(join(examplesDir, item.file)), item.speck);
       const downstream = new Set(item.downstream);
-      for (const start of [item.stop, item.timeout]) {
-        const seen = reachableSet(wf, start);
-        expect(seen.size, `${item.speck} ${start}`).toBeGreaterThan(0);
-        for (const node of seen) {
-          expect(downstream.has(node), `${item.speck} ${start} reaches ${node}`).toBe(false);
-          for (const next of outgoing(wf, node)) {
-            expect(downstream.has(next), `${item.speck} ${node} -> ${next}`).toBe(false);
-          }
+      const waits = wf.nodes.filter((n: { type: string }) => n.type === 'n8n-nodes-base.wait');
+      expect(waits, item.speck).toHaveLength(1);
+      expect(waits[0].parameters.limitWaitTime).toBe(true);
+      expect(waits[0].parameters.resume).toBe('webhook');
+      expect(outgoing(wf, item.wait)).toHaveLength(1);
+      expect(wf.nodes.some((n: { parameters?: { resume?: string } }) => n.parameters?.resume === 'timeInterval')).toBe(false);
+      const seen = reachableSet(wf, item.stop);
+      expect(seen.size, item.speck).toBeGreaterThan(0);
+      for (const node of seen) {
+        expect(downstream.has(node), `${item.speck} ${item.stop} reaches ${node}`).toBe(false);
+        for (const next of outgoing(wf, node)) {
+          expect(downstream.has(next), `${item.speck} ${node} -> ${next}`).toBe(false);
         }
       }
     }
@@ -506,6 +541,70 @@ describe('n8n determinism and fail-closed checks', () => {
       .toBe(readFileSync(join(second, 'n8n', 'Alpha.workflow.json'), 'utf8'));
   });
 
+  it('node ids stay unique past a third copy of the same id', () => {
+    const used = new Set<string>();
+    const ids = [0, 1, 2, 3].map(() => allocateNodeId('S', 'Go', used));
+    expect(new Set(ids).size).toBe(4);
+    expect(ids[0]).toMatch(/^[a-z0-9-]+-[0-9a-f]{16}$/);
+    expect(ids[0].slice(-16)).toMatch(/^[0-9a-f]{16}$/);
+    expect(ids[1]).toBe(`${ids[0]}-2`);
+    expect(ids[2]).toBe(`${ids[0]}-3`);
+    expect(ids[3]).toBe(`${ids[0]}-4`);
+    const blocked = new Set<string>([ids[0], `${ids[0]}-2`]);
+    const next = allocateNodeId('S', 'Go', blocked);
+    expect(next).toBe(`${ids[0]}-3`);
+    expect(blocked.has(next)).toBe(true);
+  });
+
+  it('rejects {{, }}, and a leading = in every parameter slot', () => {
+    const slots = [
+      'name',
+      'parameters.content',
+      'parameters.conditions.conditions[0].rightValue',
+      'parameters.jsCode',
+      'parameters.errorMessage',
+      'parameters.httpMethod',
+    ];
+    for (const slot of slots) {
+      expect(() => assertSafeN8nText('{{hack}}', slot), slot).toThrow(/would be an n8n expression/);
+      expect(() => assertSafeN8nText('tail}}', slot), slot).toThrow(/would be an n8n expression/);
+      expect(() => assertSafeN8nText('=cmd', slot), slot).toThrow(/would be an n8n expression/);
+    }
+    expect(() => assertSafeN8nText(ALLOWED_N8N_EXPR, 'parameters.conditions.conditions[0].leftValue')).not.toThrow();
+    expect(() => assertSafeN8nText('={{ $json.outcome }}', 'parameters.conditions.conditions[0].leftValue')).toThrow(/would be an n8n expression/);
+
+    const file = writeSpec('Slots.speckdl', [
+      'speck Slots {',
+      '    state { note: String }',
+      '    init { note := "=hello {{ $json.password }} tail}}" }',
+      '    action Go { note := note }',
+      '}',
+      '',
+    ].join('\n'));
+    const wf = loadWorkflow(compile(file), 'Slots');
+    const offenders: string[] = [];
+    const walkValue = (value: unknown, slot: string): void => {
+      if (typeof value === 'string') {
+        if (value !== ALLOWED_N8N_EXPR && (value.startsWith('=') || value.includes('{{') || value.includes('}}'))) {
+          offenders.push(slot);
+        }
+        return;
+      }
+      if (Array.isArray(value)) value.forEach((item, index) => walkValue(item, `${slot}[${index}]`));
+      else if (value && typeof value === 'object') {
+        for (const [key, child] of Object.entries(value)) walkValue(child, `${slot}.${key}`);
+      }
+    };
+    for (const node of wf.nodes) {
+      walkValue(node.name, 'name');
+      walkValue(node.parameters, 'parameters');
+    }
+    expect(offenders).toEqual([]);
+    const code = wf.nodes.find((n: { name: string }) => n.name === 'Init').parameters.jsCode as string;
+    const lit = code.match(/__root__\["note"\] = \((.*)\);/);
+    expect(eval(lit![1])).toBe('=hello {{ $json.password }} tail}}');
+  });
+
   it('rejects oneof instead of dropping it', () => {
     const file = writeSpec('Wire.speckdl', [
       'speck Wire {',
@@ -524,6 +623,186 @@ describe('n8n determinism and fail-closed checks', () => {
     expect(wf.nodes.some((n: { type: string }) => n.type === 'n8n-nodes-base.wait')).toBe(false);
     expect(wf.nodes.length).toBeGreaterThanOrEqual(3);
     expect(runScript(out, 'ReviewGate').status).toBe(0);
+  });
+});
+
+describe('n8n compile failures and -t all continuation', () => {
+  function expectNoN8n(body: string, pattern: RegExp): void {
+    const file = writeSpec('Fail.speckdl', body);
+    const out = freshOut();
+    expect(() => compileSpec(file, { outputDir: out, target: 'n8n', bomFormat: 'both', verifyDepth: 4 })).toThrow(pattern);
+    expect(existsSync(join(out, 'n8n'))).toBe(false);
+    expect(walk(out).some(f => f.endsWith('.workflow.json') || f.endsWith('.verify.mjs'))).toBe(false);
+  }
+
+  it('an if body fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck Branch {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        if n == 0:',
+      '            n := 1',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), /cannot translate action Go/);
+  });
+
+  it('for fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck Loop {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    action Go {',
+      '        for i from 0 to 1:',
+      '            n := i',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), /cannot translate action Go/);
+  });
+
+  it('forall fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck Quant {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    invariant All { forall x in items: x == 1 }',
+      '    action Go { n := n }',
+      '}',
+      '',
+    ].join('\n'), /cannot translate invariant All/);
+  });
+
+  it('in fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck Member {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    invariant Member { n in {1, 2} }',
+      '    action Go { n := n }',
+      '}',
+      '',
+    ].join('\n'), /cannot translate invariant Member/);
+  });
+
+  it('Eventually fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck Later {',
+      '    state { n: Nat }',
+      '    init { n := 0 }',
+      '    invariant Done { n == 0 }',
+      '    action Go { n := n }',
+      '    verify: Eventually(Done)',
+      '}',
+      '',
+    ].join('\n'), /cannot translate verify/);
+  });
+
+  it('transition fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck Wire {',
+      '    transition Transition { prior_state: String }',
+      '}',
+      '',
+    ].join('\n'), /n8n backend rejects AST node type "transition"/);
+  });
+
+  it('a timeout outcome that is not a reject fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck TimeoutAccept {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action After {',
+      '        require stage == 2',
+      '        stage := 3',
+      '    }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '            Approved = 2',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Approved',
+      '            on reject -> Idle',
+      '            timeout 1h -> approve',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), /reject outcome/);
+  });
+
+  it('continues -t all when n8n rejects oneof, transition, or a timeout that is not a reject', () => {
+    const oneof = writeSpec('One.speckdl', [
+      'speck Wire {',
+      '    oneof Payload {',
+      '        tick: Ticked',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const oneOut = freshOut();
+    compileSpec(oneof, { outputDir: oneOut, target: 'all', bomFormat: 'both', verifyDepth: 4 });
+    expect(existsSync(join(oneOut, 'n8n'))).toBe(false);
+    expect(walk(oneOut).some(f => f.endsWith('.proto'))).toBe(true);
+    expect(walk(oneOut).some(f => f.endsWith('.workflow.json'))).toBe(false);
+    const oneIr = freshOut();
+    compileSpec(oneof, { outputDir: oneIr, target: 'all-ir', bomFormat: 'both', verifyDepth: 4 });
+    expect(existsSync(join(oneIr, 'n8n'))).toBe(false);
+    expect(walk(oneIr)).toEqual([]);
+
+    const transition = writeSpec('Trans.speckdl', [
+      'speck Wire {',
+      '    transition Transition { prior_state: String }',
+      '}',
+      '',
+    ].join('\n'));
+    const transOut = freshOut();
+    compileSpec(transition, { outputDir: transOut, target: 'all', bomFormat: 'both', verifyDepth: 4 });
+    expect(existsSync(join(transOut, 'n8n'))).toBe(false);
+    expect(walk(transOut).some(f => f.endsWith('.proto'))).toBe(true);
+
+    const timeout = writeSpec('TimeoutAccept.speckdl', [
+      'speck TimeoutAccept {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action After {',
+      '        require stage == 2',
+      '        stage := 3',
+      '    }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '            Approved = 2',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Approved',
+      '            on reject -> Idle',
+      '            timeout 1h -> approve',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const timeoutOut = freshOut();
+    compileSpec(timeout, { outputDir: timeoutOut, target: 'all', bomFormat: 'both', verifyDepth: 4 });
+    expect(existsSync(join(timeoutOut, 'n8n'))).toBe(false);
+    expect(walk(timeoutOut).some(f => f.endsWith('.ts'))).toBe(true);
+    expect(walk(timeoutOut).some(f => f.endsWith('.workflow.json'))).toBe(false);
+    const timeoutIr = freshOut();
+    compileSpec(timeout, { outputDir: timeoutIr, target: 'all-ir', bomFormat: 'both', verifyDepth: 4 });
+    expect(existsSync(join(timeoutIr, 'n8n'))).toBe(false);
+    expect(walk(timeoutIr).length).toBeGreaterThan(0);
   });
 });
 
@@ -575,7 +854,15 @@ describe('n8n examples and docs', () => {
     expect(doc).toContain('does not run n8n');
     expect(doc).toContain('is not a model check');
     expect(doc).toContain('oneof');
-    expect(doc).toContain('{{ $env.NAME }}');
+    expect(doc).toContain('literal data');
+    expect(doc).toContain('$json.body.outcome');
+    expect(doc).toContain('{"outcome":"<name>"}');
+    expect(doc).toContain('16 hex');
+    expect(doc).toContain('sha256');
+    expect(doc).toContain('incomingAuthentication');
+    expect(doc).toContain('Basic Auth');
+    expect(doc).toContain('No test runs n8n');
+    expect(doc).not.toContain('{{ $env.NAME }}');
     expect(doc).toContain('writes no file');
     expect(doc).not.toMatch(/sandbox/i);
     expect(doc).not.toMatch(/telemetry/i);

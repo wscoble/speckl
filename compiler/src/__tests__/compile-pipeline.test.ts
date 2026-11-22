@@ -114,7 +114,10 @@ describe('in-process pipeline matches the CLI', () => {
 // directory on -t all and -t all-ir, and the n8n README text changed.
 // Moved again when the n8n README limits text grew. The workflow JSON for the
 // examples that still compile did not change.
-const OUTPUT_SHA256 = '6817318b8bd5a570d9a385ab0e8bec2a7e1f100329fc2c6e8d5ea78470c79ed1';
+// Moved again when each approval Wait became one webhook with Limit Wait Time,
+// a Resume node, and an If that reads body.outcome. The n8n README and the
+// sticky note changed with that wiring. Other targets were not retargeted.
+const OUTPUT_SHA256 = '8a586888ff78bda5171c31dd46d8efc696499f07ff0ae67f81427aaf6a5c23fc';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

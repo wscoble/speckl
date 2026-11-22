@@ -7,10 +7,13 @@
 // the speck, so a second compile into another directory is byte-identical.
 // No clock, no random id, and no host path is written.
 //
-// An `agent { await }` block becomes a webhook Wait node and an If gate.
-// Outcomes marked `!`, and the timeout, connect only to Stop and Error.
-// A reject target that the spec sends back to an earlier stage still stops
-// here. The workflow does not loop back into an action.
+// An `agent { await }` block becomes one webhook Wait node, a Resume code
+// node, and an If gate. The Wait's Limit Wait Time is the timeout. There is
+// no second timer. The webhook replaces the item, so Resume copies the
+// pre-wait item back and keeps the posted JSON at body. The If reads
+// $json.body.outcome. Outcomes marked `!`, and a timeout with no body,
+// connect only to Stop and Error. A reject target that the spec sends back
+// to an earlier stage still stops here. The workflow does not loop.
 //
 // An expression this file cannot translate fails the compile. No n8n file
 // is written. `oneof` and `transition` are rejected by the conservation
@@ -100,9 +103,12 @@ interface GateModel {
   signal: string;
   state: string;
   wait: string;
-  timeout: string | null;
+  resume: string;
+  /** Node whose item is the state before this Wait. Resume reads it back. */
+  prior: string;
   gate: string;
   stop: string;
+  limit: { amount: number; unit: 'days' | 'hours' | 'minutes' | 'seconds' };
   acceptStages: number[];
   rejectStages: number[];
   acceptOutcomes: AcceptOutcome[];
@@ -179,18 +185,48 @@ export function generateN8n(ir: IR, options: N8nOptions): void {
 function assertNoSecrets(text: string): void {
   for (const re of SECRET_RES) {
     if (re.test(text)) {
-      throw new Error('n8n backend: refused to emit output that matched a secret pattern');
+      throw new N8nTranslateError('n8n backend: refused to emit output that matched a secret pattern');
     }
   }
 }
 
-/** n8n treats `{{ ... }}` in a parameter as an expression. Spec text must not become one. */
-const ALLOWED_N8N_EXPR = '={{ $json.outcome }}';
+/**
+ * The one parameter that is an n8n expression on purpose. The If node reads
+ * the posted JSON. n8n's webhook resume puts that JSON at `$json.body`.
+ */
+export const ALLOWED_N8N_EXPR = '={{ $json.body.outcome }}';
 
 function assertNoInjectedExpressions(workflowText: string): void {
   const rest = workflowText.split(ALLOWED_N8N_EXPR).join('');
   if (rest.includes('{{') || rest.includes('}}')) {
-    throw new Error('n8n backend: refused to emit an n8n expression from spec text; refusing to write a partial workflow');
+    throw new N8nTranslateError('n8n backend: refused to emit an n8n expression from spec text; refusing to write a partial workflow');
+  }
+}
+
+/**
+ * n8n evaluates a parameter that starts with `=` and evaluates `{{` `}}`
+ * inside a parameter. Every string except ALLOWED_N8N_EXPR must be data.
+ */
+export function assertSafeN8nText(value: string, slot: string): void {
+  if (value === ALLOWED_N8N_EXPR) return;
+  if (value.startsWith('=') || value.includes('{{') || value.includes('}}')) {
+    throw new N8nTranslateError(
+      `n8n backend: parameter ${slot} would be an n8n expression; refusing to write a partial workflow`,
+    );
+  }
+}
+
+function assertSafeValue(value: unknown, slot: string): void {
+  if (typeof value === 'string') {
+    assertSafeN8nText(value, slot);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertSafeValue(item, `${slot}[${index}]`));
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) assertSafeValue(child, `${slot}.${key}`);
   }
 }
 
@@ -254,9 +290,11 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
       signal: aw.signal,
       state: aw.state,
       wait: '',
-      timeout: aw.timeout ? '' : null,
+      resume: '',
+      prior: '',
       gate: '',
       stop: '',
+      limit: timeoutAmount(aw.timeout?.durationMs ?? 0),
       acceptStages: uniqueNums(acceptStages),
       rejectStages: uniqueNums(rejectStages),
       acceptOutcomes,
@@ -303,9 +341,9 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
   const stage = gates.length ? claim(`Stage ${gates[gates.length - 1].signal}`) : null;
   for (const gate of gates) {
     gate.wait = claim(`Wait ${gate.signal}`);
+    gate.resume = claim(`Resume ${gate.signal}`);
     gate.gate = claim(`Gate ${gate.signal}`);
     gate.stop = claim(`Stop ${gate.signal}`);
-    if (gate.timeout !== null) gate.timeout = claim(`Timeout ${gate.signal}`);
   }
 
   const wf = assemble({
@@ -344,9 +382,12 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
     gates: gates.map(g => ({
       signal: g.signal,
       wait: g.wait,
-      timeout: g.timeout,
+      resume: g.resume,
+      prior: g.prior,
       gate: g.gate,
       stop: g.stop,
+      limitAmount: g.limit.amount,
+      limitUnit: g.limit.unit,
     })),
   };
   const script = renderScript(`${speck.name}.workflow.json`, model);
@@ -401,32 +442,34 @@ function assemble(input: {
 
   addAt(input.disclaimer, 'n8n-nodes-base.stickyNote', 1, {
     content: sticky(input.speck, input.awaits),
-    height: 320,
-    width: 480,
+    height: 560,
+    width: 520,
     color: 4,
   }, 240, 40);
   add(input.start, 'n8n-nodes-base.manualTrigger', 1, {});
   add(input.init, 'n8n-nodes-base.code', 2, codeParams(renderInit(input.initSteps, input.checks)));
+  let priorName = input.init;
   for (const action of input.pre) {
     add(action.name, 'n8n-nodes-base.code', 2, codeParams(renderAction(action.name, action.steps, input.checks)));
+    priorName = action.name;
   }
   for (const gate of input.gates) {
+    gate.prior = priorName;
     const x = 240 + col * 280;
     col += 1;
     addAt(gate.wait, 'n8n-nodes-base.wait', 1.1, {
       resume: 'webhook',
       httpMethod: 'POST',
+      incomingAuthentication: 'none',
+      limitWaitTime: true,
+      limitType: 'afterTimeInterval',
+      resumeAmount: gate.limit.amount,
+      resumeUnit: gate.limit.unit,
       options: {},
     }, x, 320);
-    if (gate.timeout) {
-      const aw = input.awaits.find(a => a.signal === gate.signal);
-      const amount = timeoutAmount(aw?.timeout?.durationMs ?? 0);
-      addAt(gate.timeout, 'n8n-nodes-base.wait', 1.1, {
-        resume: 'timeInterval',
-        amount: amount.amount,
-        unit: amount.unit,
-      }, x, 560);
-    }
+    const rx = 240 + col * 280;
+    col += 1;
+    addAt(gate.resume, 'n8n-nodes-base.code', 2, codeParams(renderResume(gate.prior)), rx, 320);
     const gx = 240 + col * 280;
     col += 1;
     addAt(gate.gate, 'n8n-nodes-base.if', 2.2, ifParams(gate, input.speck.name, ids), gx, 320);
@@ -434,6 +477,7 @@ function assemble(input: {
       errorMessage: 'Approval was rejected or timed out. This branch stops.',
       options: {},
     }, gx, 560);
+    priorName = gate.gate;
   }
   if (input.stage && input.stageVar) {
     const last = input.gates[input.gates.length - 1];
@@ -461,18 +505,16 @@ function assemble(input: {
     link(prev, input.check);
   } else {
     link(prev, input.gates[0].wait);
-    if (input.gates[0].timeout) link(prev, input.gates[0].timeout);
     for (let i = 0; i < input.gates.length; i++) {
       const gate = input.gates[i];
-      link(gate.wait, gate.gate);
+      link(gate.wait, gate.resume);
+      link(gate.resume, gate.gate);
       link(gate.gate, gate.stop, 1);
-      if (gate.timeout) link(gate.timeout, gate.stop);
       const next = i + 1 < input.gates.length ? input.gates[i + 1] : null;
       if (gate.acceptOutcomes.length === 0) {
         link(gate.gate, gate.stop, 0);
       } else if (next) {
         link(gate.gate, next.wait, 0);
-        if (next.timeout) link(gate.gate, next.timeout, 0);
       } else if (input.stage) {
         link(gate.gate, input.stage, 0);
         link(input.stage, input.check);
@@ -513,9 +555,29 @@ function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
       lines.push('This workflow does not enforce call-digest binding. Sign-off stays a manual step in n8n.');
     }
   }
-  lines.push('Post {"outcome":"<name>"} to the Wait webhook. Bind any credential in n8n after import. This file has no live keys.');
+  lines.push('Post the JSON {"outcome":"<name>"} to the Wait resume URL. n8n puts that object on the item at body. The If reads $json.body.outcome.');
+  lines.push('The Resume node copies the item from the node before the Wait and then sets body from the webhook. A timeout resumes with the pre-wait item, which has no webhook body, so the If takes the false output and stops.');
+  lines.push('Limit Wait Time is on that same Wait. There is no second timer, so the timeout cannot fire after the webhook resumes.');
+  lines.push('incomingAuthentication is none. A POST of {"outcome":"approve"} is accepted. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach a credential you create in n8n. This file does not contain that credential.');
+  lines.push('A string in the spec is literal data. It is not an n8n env binding.');
   lines.push('A check that fails stops that n8n run. Signal signatures are not checked.');
   return lines.join('\n');
+}
+
+function renderResume(prior: string): string {
+  const quoted = prior.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return [
+    `const prior = $('${quoted}').item.json;`,
+    'const incoming = $input.item.json;',
+    'const webhook = incoming && typeof incoming.headers === "object" && incoming.headers !== null;',
+    'const raw = webhook ? incoming.body : undefined;',
+    'const body = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};',
+    'const __root__ = {};',
+    'for (const key of Object.keys(prior)) __root__[key] = prior[key];',
+    '__root__.body = body;',
+    '__root__.outcome = Object.prototype.hasOwnProperty.call(body, "outcome") ? body.outcome : undefined;',
+    'return __root__;',
+  ].join('\n');
 }
 
 function codeParams(jsCode: string): Record<string, unknown> {
@@ -574,7 +636,7 @@ function renderStage(stageVar: string, gate: GateModel): string {
   } else if (gate.acceptOutcomes.length === 0) {
     lines.push(`throw new Error(${JSON.stringify('speckl-n8n: accept outcome was not recognized')});`);
   } else {
-    lines.push('const outcome = String(__root__.outcome ?? "");');
+    lines.push('const outcome = String(__root__.body && __root__.body.outcome != null ? __root__.body.outcome : "");');
     gate.acceptOutcomes.forEach((pair, i) => {
       const word = i === 0 ? 'if' : 'else if';
       lines.push(`${word} (outcome === ${JSON.stringify(pair.outcome)}) __root__[${JSON.stringify(stageVar)}] = ${pair.stage};`);
@@ -593,7 +655,7 @@ function ifParams(gate: GateModel, speck: string, ids: Set<string>): Record<stri
     : [{ outcome: '', stage: -1 }];
   const conditions = outcomes.map((pair, i) => ({
     id: nodeId(speck, `${gate.gate} ${pair.outcome || 'none'} ${i}`, ids),
-    leftValue: '={{ $json.outcome }}',
+    leftValue: ALLOWED_N8N_EXPR,
     rightValue: pair.outcome,
     operator: { type: 'string', operation: 'equals' },
   }));
@@ -645,6 +707,8 @@ function assertWorkflow(wf: Workflow): void {
     if (typeof node.typeVersion !== 'number') throw new Error(`n8n backend: ${node.name} has a bad typeVersion`);
     if (!Array.isArray(node.position) || node.position.length !== 2) throw new Error(`n8n backend: ${node.name} has a bad position`);
     if (!node.parameters || typeof node.parameters !== 'object') throw new Error(`n8n backend: ${node.name} has no parameters`);
+    assertSafeN8nText(node.name, 'name');
+    assertSafeValue(node.parameters, 'parameters');
     if (node.type === 'n8n-nodes-base.stickyNote' && String(node.parameters.content ?? '').includes(N8N_DISCLAIMER)) {
       sawDisclaimer = true;
     }
@@ -663,12 +727,22 @@ function assertWorkflow(wf: Workflow): void {
   }
 }
 
-function nodeId(speck: string, name: string, used: Set<string>): string {
+/** 16 hex chars, the leading prefix of sha256(speck name, node name). */
+export function allocateNodeId(speck: string, name: string, used: Set<string>): string {
   const hash = createHash('sha256').update(`speckl-n8n\0${speck}\0${name}`).digest('hex').slice(0, 16);
-  let id = `${slug(speck)}-${slug(name)}-${hash}`;
-  if (used.has(id)) id = `${id}-2`;
+  const base = `${slug(speck)}-${slug(name)}-${hash}`;
+  let id = base;
+  let n = 2;
+  while (used.has(id)) {
+    id = `${base}-${n}`;
+    n += 1;
+  }
   used.add(id);
   return id;
+}
+
+function nodeId(speck: string, name: string, used: Set<string>): string {
+  return allocateNodeId(speck, name, used);
 }
 
 function slug(value: string): string {
@@ -876,7 +950,7 @@ function assertAwaitSafe(speck: string, aw: IRAgentAwait): void {
     );
   }
   if (!rejects.has(aw.timeout.outcome)) {
-    throw new Error(`n8n backend: await ${aw.state}: timeout outcome "${aw.timeout.outcome}" is not a reject outcome`);
+    throw new N8nTranslateError(`n8n backend: await ${aw.state}: timeout outcome "${aw.timeout.outcome}" is not a reject outcome`);
   }
   const acceptTargets = new Set(aw.on.filter(o => !rejects.has(o.outcome)).map(o => o.target));
   for (const reject of rejects) {
@@ -927,7 +1001,7 @@ function renderReadme(specks: string[]): string {
     '',
     'This directory is generated by Speckl, a general-purpose compiler. It is not HIPAA-certified. You are responsible for your own compliance review. This output does not guarantee zero data retention (ZDR).',
     '',
-    'Import each `*.workflow.json` in n8n with Workflows → Import from File. `active` is false. `meta.templateCredsSetupCompleted` is false. These files contain no live keys. Bind any credential in n8n after import. A credential reference you add has to be an n8n expression of the form `{{ $env.NAME }}`.',
+    'Import each `*.workflow.json` in n8n with Workflows → Import from File. `active` is false. `meta.templateCredsSetupCompleted` is false. These files contain no live keys and no credentials object. A string in the spec is literal data. It is not an n8n env binding.',
     '',
     '## Files',
     '',
@@ -935,19 +1009,25 @@ function renderReadme(specks: string[]): string {
     '',
     '## Approval',
     '',
-    'An `agent { await ... }` block becomes an `n8n-nodes-base.wait` node (webhook resume) and an `n8n-nodes-base.if` gate. Post `{"outcome":"<name>"}` to the webhook. Outcomes marked `!` and the timeout branch connect only to `n8n-nodes-base.stopAndError`. They do not connect to later actions.',
+    'An `agent { await ... }` block becomes one `n8n-nodes-base.wait` node (webhook resume, Limit Wait Time), a Resume code node, and an `n8n-nodes-base.if` gate. Post the JSON {"outcome":"<name>"} to the Wait resume URL. n8n puts that object on the item at body. The If reads $json.body.outcome. The Resume node copies the item from the node before the Wait, so later code nodes still have the pre-wait state. Outcomes marked `!` use the If false output, which connects only to `n8n-nodes-base.stopAndError`. The timeout is Limit Wait Time on that same Wait. There is no second timer. A timeout resumes with the pre-wait item, which has no webhook body, so the If takes the same false output and stops. That output has no path to a later action.',
     '',
     '## Limits',
     '',
-    'This file is an n8n workflow you import and run on your own n8n. Speckl does not run it after import and does not watch it after import.',
+    'This file is an n8n workflow you import and run on your own n8n. Speckl does not run it after import and does not watch it after import. No test runs n8n.',
     '',
     'The trace check supports state, init, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint` and `invariant` boolean expressions, and `verify Always(Name)` when that expression translates. Those checks run only in the nodes and the verify script this compile wrote. They do not run anywhere else.',
     '',
-    'Each of these fails the compile and writes no n8n file: `oneof`, `transition`, an `if` body, `for`, `forall`, `in`, `Eventually`, an unknown call, an await with no timeout, a string that looks like a live key, and any other expression this target cannot translate.',
+    'Each of these fails `-t n8n` and writes no n8n file: `oneof`, `transition`, an `if` body, `for`, `forall`, `in`, `Eventually`, an unknown call, an await with no timeout, a timeout outcome that is not a reject, a string that looks like a live key, a parameter that would be an n8n expression, and any other expression this target cannot translate.',
     '',
-    'A string from the spec is data. `{{` in that string is not an n8n expression. A credential reference is the placeholder name only, `{{ $env.NAME }}`, which you bind in n8n after import. The workflow has no credential id and no credential value.',
+    '`-t all` and `-t all-ir` skip a backend that rejects the spec and still write a backend that accepts it. `oneof` and `transition` are rejected by every backend except protobuf, so `-t all` writes the protobuf schema and does not write the n8n directory. `-t all-ir` does not include protobuf, and every backend it runs rejects those two members, so that compile writes no file for that spec. A failure that only n8n raises is skipped on both `-t all` and `-t all-ir`, and the other targets those modes include are still written. No partial n8n file is written.',
     '',
-    'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops. The reject branch and the timeout branch have no path to a later action.',
+    'A string from the spec is literal data. The characters `{{` and `}}` in that string are unicode escapes in the code node, and a parameter value is not allowed to start with `=`, except the If left value that reads $json.body.outcome. The workflow has no credential id and no credential value.',
+    '',
+    'The generated Wait sets incomingAuthentication to none. A POST of {"outcome":"approve"} is accepted. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach the matching credential in n8n. This file does not contain that credential.',
+    '',
+    'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops.',
+    '',
+    'Each node id ends with 16 hex characters. Those 16 characters are the first 16 characters of sha256 of the speck name and the node name. If that id is already used, the compiler appends -2, then -3, and so on, until the id is new.',
     '',
     'The verify script is a straight-line trace check. It does not run n8n. It is not a model check. A recorded `depth` does not change the check.',
     '',
@@ -1053,13 +1133,38 @@ function structural() {
     }
   }
   const waits = new Set(model.gates.map(g => g.wait));
+  for (const node of workflow.nodes) {
+    if (node.parameters && node.parameters.resume === 'timeInterval') fail('a second timer is present');
+  }
   for (const gate of model.gates) {
     const wait = workflow.nodes.find(n => n.name === gate.wait);
+    const resume = workflow.nodes.find(n => n.name === gate.resume);
     const iff = workflow.nodes.find(n => n.name === gate.gate);
     const stop = workflow.nodes.find(n => n.name === gate.stop);
     if (!wait || wait.type !== 'n8n-nodes-base.wait') fail('missing wait ' + gate.wait);
+    if (!resume || resume.type !== 'n8n-nodes-base.code') fail('missing resume ' + gate.resume);
     if (!iff || iff.type !== 'n8n-nodes-base.if') fail('missing gate ' + gate.gate);
     if (!stop || stop.type !== 'n8n-nodes-base.stopAndError') fail('missing stop ' + gate.stop);
+    if (wait.parameters.resume !== 'webhook') fail('wait is not a webhook');
+    if (wait.parameters.httpMethod !== 'POST') fail('wait method');
+    if (wait.parameters.incomingAuthentication !== 'none') fail('wait auth');
+    if (wait.parameters.limitWaitTime !== true) fail('limit wait time');
+    if (wait.parameters.limitType !== 'afterTimeInterval') fail('limit type');
+    if (wait.parameters.resumeAmount !== gate.limitAmount) fail('limit amount');
+    if (wait.parameters.resumeUnit !== gate.limitUnit) fail('limit unit');
+    if (wait.credentials) fail('wait credentials');
+    const waitOut = outgoing(gate.wait);
+    if (waitOut.length !== 1 || waitOut[0] !== gate.resume) fail('wait output');
+    const resumeOut = outgoing(gate.resume);
+    if (resumeOut.length !== 1 || resumeOut[0] !== gate.gate) fail('resume output');
+    const code = String((resume.parameters && resume.parameters.jsCode) || '');
+    if (code.indexOf("$('" + gate.prior + "')") === -1) fail('resume does not read ' + gate.prior);
+    if (code.indexOf('incoming.body') === -1) fail('resume does not read body');
+    const conditions = (((iff.parameters || {}).conditions || {}).conditions) || [];
+    if (!conditions.length) fail('if conditions');
+    for (let c = 0; c < conditions.length; c++) {
+      if (conditions[c].leftValue !== '={{ $json.body.outcome }}') fail('outcome path');
+    }
     if (outgoing(gate.stop).length !== 0) fail(gate.stop + ' has an outgoing edge');
     const falseSlot = (((connections[gate.gate] || {}).main) || [])[1] || [];
     for (const edge of falseSlot) {
@@ -1067,16 +1172,10 @@ function structural() {
         if (edge.node === name || reaches(edge.node, name, new Set())) fail('reject reaches ' + name);
       }
     }
-    if (gate.timeout) {
-      const timeout = workflow.nodes.find(n => n.name === gate.timeout);
-      if (!timeout || timeout.type !== 'n8n-nodes-base.wait') fail('missing timeout ' + gate.timeout);
-      for (const name of model.post) {
-        if (reaches(gate.timeout, name, new Set())) fail('timeout reaches ' + name);
-      }
-    }
     for (const name of model.post) {
       if (!reaches('Start', name, new Set())) fail(name + ' is not reachable from Start');
       if (reaches('Start', name, waits)) fail(name + ' is reachable without the approval wait');
+      if (reaches(gate.stop, name, new Set())) fail('stop reaches ' + name);
     }
   }
 }
