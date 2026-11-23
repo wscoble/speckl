@@ -43,6 +43,7 @@
     "AgentPolicy": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "ClaudeCodePolicy": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "DeployGate": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
+    "HeaderAuthGate": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "KafkaKRaft": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "OAuth2AuthorizationCode": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "Paxos": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
@@ -53,10 +54,10 @@
     "ReviewGate": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "SQLitePager": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "SQLiteWAL": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
-    "tef": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "TigerBeetleLedger": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "ToggleSwitch": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
-    "TwoPhaseCommit": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)"
+    "TwoPhaseCommit": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
+    "tef": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)"
   },
   "protobuf": {
     "AccountLedger": "account_ledger.proto: \"PendingTransfer\" is not defined.",
