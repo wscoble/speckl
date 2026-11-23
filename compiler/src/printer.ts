@@ -370,6 +370,9 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>, actionNames:
     if (a.bindCall.length > 0) {
       lines.push(`        bind call on ${a.bindCall.join(', ')}`);
     }
+    if (a.auth) {
+      lines.push(`        auth ${a.auth}`);
+    }
     for (const o of a.on) {
       lines.push(`        on ${o.outcome} -> ${o.target}`);
     }

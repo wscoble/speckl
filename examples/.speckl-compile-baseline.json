@@ -14,13 +14,15 @@
     "SQLitePager": "SQLitePager.ts(288,11): error TS2304: Cannot find name 'CommitAtomicity'.",
     "SQLiteWAL": "SQLiteWAL.ts(264,32): error TS1005: ';' expected.",
     "tef": "TEF.ts(301,22): error TS1005: ',' expected.",
-    "TigerBeetleLedger": "TigerBeetleLedger.ts(247,11): error TS2304: Cannot find name 'AccountBalanceInvariant'."
+    "TigerBeetleLedger": "TigerBeetleLedger.ts(247,11): error TS2304: Cannot find name 'AccountBalanceInvariant'.",
+    "HeaderAuthGate": "HeaderAuthGate.ts(139,11): error TS2304: Cannot find name 'ShipNeedsApproval'."
   },
   "agent": {
     "AgentPolicy": "agent/AgentPolicy.ts(156,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
     "ClaudeCodePolicy": "agent/ClaudeCodePolicy.ts(169,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
     "DeployGate": "agent/DeployGate.ts(156,11): error TS2304: Cannot find name 'DeployNeedsChecks'.",
-    "PodcastPublishing": "agent/PodcastPublishing.ts(189,11): error TS2304: Cannot find name 'ApplyFromApproved'."
+    "PodcastPublishing": "agent/PodcastPublishing.ts(189,11): error TS2304: Cannot find name 'ApplyFromApproved'.",
+    "HeaderAuthGate": "agent/HeaderAuthGate.ts(151,11): error TS2304: Cannot find name 'ShipNeedsApproval'."
   },
   "go": {
     "AccountLedger": "./account_ledger.go:36:14: syntax error: unexpected name notIn, expected )",
@@ -41,6 +43,7 @@
     "AgentPolicy": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "ClaudeCodePolicy": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "DeployGate": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
+    "HeaderAuthGate": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "KafkaKRaft": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "OAuth2AuthorizationCode": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "Paxos": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
@@ -51,10 +54,10 @@
     "ReviewGate": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "SQLitePager": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "SQLiteWAL": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
-    "tef": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "TigerBeetleLedger": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
     "ToggleSwitch": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
-    "TwoPhaseCommit": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)"
+    "TwoPhaseCommit": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)",
+    "tef": "elm.json says \"elm-version\": \"0.19.2\"; no such Elm release (0.19.1 is current)"
   },
   "protobuf": {
     "AccountLedger": "account_ledger.proto: \"PendingTransfer\" is not defined.",
