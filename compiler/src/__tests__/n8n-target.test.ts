@@ -910,7 +910,7 @@ describe('n8n examples and docs', () => {
   const names = readdirSync(examplesDir).filter(f => f.endsWith('.speckdl')).sort();
 
   it('compiles every example, or stops with no n8n file when an expression does not translate', () => {
-    const translates = new Set(['AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'DeployGate.speckdl', 'PodcastPublishing.speckdl', 'ReviewGate.speckdl']);
+    const translates = new Set(['AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'DeployGate.speckdl', 'IncidentGate.speckdl', 'PodcastPublishing.speckdl', 'ReviewGate.speckdl']);
     for (const name of names) {
       const out = freshOut();
       if (!translates.has(name)) {
@@ -992,3 +992,119 @@ describe('n8n examples and docs', () => {
     expect(help.stdout).toContain('n8n');
   }, 30_000);
 });
+
+describe('n8n named transitions', () => {
+  const file = join(examplesDir, 'IncidentGate.speckdl');
+
+  it('routes each named accept outcome to its own landing If and branch', () => {
+    const wf = loadWorkflow(compile(file), 'IncidentGate');
+    // One gate, two accepting outcomes, two landing stages.
+    expect(wf.nodes.filter((n: { type: string }) => n.type === 'n8n-nodes-base.if')).toHaveLength(3);
+    // Gate condition names every accepting outcome.
+    const gate = wf.nodes.find((n: { name: string }) => n.name === 'Gate incident_review');
+    const rights = gate.parameters.conditions.conditions.map((c: { rightValue: string }) => c.rightValue).sort();
+    expect(rights).toEqual(['approve', 'escalate']);
+    // Stage node writes the landing stage from the posted outcome.
+    const stage = wf.nodes.find((n: { name: string }) => n.name === 'Stage incident_review');
+    expect(stage.parameters.jsCode).toContain('if (outcome === "approve") __root__["stage"] = 4;');
+    expect(stage.parameters.jsCode).toContain('else if (outcome === "escalate") __root__["stage"] = 3;');
+    // One landing If per named stage; each reads the stage the Stage node set.
+    for (const [name, value] of [['Land stage 4', 4], ['Land stage 3', 3]] as [string, number][]) {
+      const land = wf.nodes.find((n: { name: string }) => n.name === name);
+      expect(land, name).toBeTruthy();
+      expect(land.type).toBe('n8n-nodes-base.if');
+      const condition = land.parameters.conditions.conditions[0];
+      expect(condition.leftValue).toBe('={{ $json.stage }}');
+      expect(condition.rightValue).toBe(value);
+      expect(condition.operator.operation).toBe('equals');
+    }
+    // The approved branch contains the incident; the landing's false output
+    // chains to the next landing.
+    expect(wf.connections['Land stage 4'].main[0].map((e: { node: string }) => e.node)).toEqual(['ContainFromApproval']);
+    expect(wf.connections['Land stage 4'].main[1].map((e: { node: string }) => e.node)).toEqual(['Land stage 3']);
+    expect(outgoing(wf, 'ContainFromApproval')).toEqual(['Done']);
+    // The escalation branch records the authorization and then contains.
+    expect(wf.connections['Land stage 3'].main[0].map((e: { node: string }) => e.node)).toEqual(['RecordAuthorization']);
+    expect(outgoing(wf, 'RecordAuthorization')).toEqual(['ContainFromEscalation']);
+    expect(outgoing(wf, 'ContainFromEscalation')).toEqual(['Done']);
+    // The last landing's false output ends the run.
+    expect(wf.connections['Land stage 3'].main[1].map((e: { node: string }) => e.node)).toEqual(['Done']);
+    // Reaches: both branches start only through the Wait.
+    expect(reaches(wf, 'Start', 'ContainFromApproval', new Set(['Wait incident_review']))).toBe(false);
+    expect(reaches(wf, 'Start', 'RecordAuthorization', new Set(['Wait incident_review']))).toBe(false);
+    // A branch never reaches the other branch's actions through its true
+    // output: with the other landing blocked, nothing else runs. The
+    // landing Ifs read the stage the Stage node wrote, so approve (stage
+    // 4) takes the stage-3 landing's false output, never its true branch.
+    expect(reaches(wf, 'Land stage 4', 'RecordAuthorization', new Set(['Land stage 3']))).toBe(false);
+    expect(reaches(wf, 'Land stage 4', 'ContainFromEscalation', new Set(['Land stage 3']))).toBe(false);
+    // A reject still stops.
+    expect(reaches(wf, 'Stop incident_review', 'Done')).toBe(false);
+  });
+
+  it('rejects a post action no accepting outcome routes to, when the fan-out is real', () => {
+    const spec = writeSpec('NoBranch.speckdl', [
+      'speck NoBranch {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action Go { stage := 1 }',
+      '    action Elsewhere { require stage == 9; stage := 9 }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Reviewing = 1',
+      '            One = 2',
+      '            Other = 3',
+      '        }',
+      '        tool go -> Go effect act',
+      '        await Reviewing {',
+      '            signal review',
+      '            mode near',
+      '            require outcome in { first, second, reject! }',
+      '            on first -> One',
+      '            on second -> Other',
+      '            on reject -> Idle',
+      '            timeout 1h -> reject',
+      '        }',
+      '    }',
+      '    next: Go | Elsewhere',
+      '}',
+      '',
+    ].join('\n'));
+    const out = freshOut();
+    expect(() => compileSpec(spec, { outputDir: out, target: 'n8n', bomFormat: 'both', verifyDepth: 4 }))
+      .toThrow(/cannot translate action Elsewhere/);
+    expect(existsSync(join(out, 'n8n'))).toBe(false);
+  });
+
+  it('keeps the shared chain when every accept lands on one stage', () => {
+    const wf = loadWorkflow(compile(join(examplesDir, 'DeployGate.speckdl')), 'DeployGate');
+    expect(wf.nodes.some((n: { name: string }) => n.name.startsWith('Land '))).toBe(false);
+    // The shared chain still runs Check, then post actions in stage order.
+    // RunChecks and RequestDeploy stay pre-actions (their stages are below
+    // the await); Deploy is the one post action.
+    expect(outgoing(wf, 'Check invariants')).toEqual(['Deploy']);
+  });
+
+  it('compiles the example to byte-identical files in two directories', () => {
+    const a = compile(file);
+    const b = compile(file);
+    const aFiles = walk(a).map(f => relative(a, f));
+    const bFiles = walk(b).map(f => relative(b, f));
+    expect(bFiles).toEqual(aFiles);
+    for (let i = 0; i < aFiles.length; i++) {
+      expect(readFileSync(join(b, bFiles[i]), 'utf8'), bFiles[i]).toBe(readFileSync(join(a, aFiles[i]), 'utf8'));
+    }
+  });
+
+  it('runs the example verify script, which exercises both branches', () => {
+    const out = compile(file);
+    const ran = runScript(out, 'IncidentGate');
+    expect(ran.status, `${ran.stdout}\n${ran.stderr}`).toBe(0);
+    const script = readFileSync(join(out, 'n8n', 'IncidentGate.verify.mjs'), 'utf8');
+    expect(script).toContain('"landings"');
+    expect(script).toContain('RecordAuthorization');
+    expect(script).toContain('ContainFromApproval');
+  });
+});
+

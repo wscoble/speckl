@@ -17,6 +17,7 @@ const TRANSLATES = [
   'AgentPolicy.speckdl',
   'ClaudeCodePolicy.speckdl',
   'DeployGate.speckdl',
+  'IncidentGate.speckdl',
   'PodcastPublishing.speckdl',
   'ReviewGate.speckdl',
 ];

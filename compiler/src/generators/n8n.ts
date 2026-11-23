@@ -108,6 +108,19 @@ interface AcceptOutcome {
   stage: number;
 }
 
+/**
+ * Named transitions, compiled. An await whose accepting outcomes route to
+ * distinct stage values does not run one shared post chain: each landing
+ * stage gets its own Stage node and its own sub-chain of actions, ordered
+ * by stage value, ending at Done. Actions with no stage require are
+ * stage-agnostic and run on every branch. Single-landing-stage awaits
+ * keep the shared chain emit; that shape has always compiled.
+ */
+interface Landing {
+  stage: number;
+  branch: ActionModel[];
+}
+
 interface GateModel {
   signal: string;
   state: string;
@@ -166,24 +179,24 @@ export function generateN8n(ir: IR, options: N8nOptions): void {
     }
   }
 
-  const files: { rel: string; text: string }[] = [];
   const readmeSpecs: string[] = [];
+  const allFiles: { rel: string; text: string; stageVar: string | null }[] = [];
   for (const speck of ir.specks) {
     const built = buildSpeck(speck, options.ast);
-    files.push({ rel: `${speck.name}.workflow.json`, text: built.workflow });
-    files.push({ rel: `${speck.name}.verify.mjs`, text: built.script });
+    allFiles.push({ rel: `${speck.name}.workflow.json`, text: built.workflow, stageVar: built.stageVar });
+    allFiles.push({ rel: `${speck.name}.verify.mjs`, text: built.script, stageVar: null });
     readmeSpecs.push(speck.name);
   }
-  files.push({ rel: 'README.md', text: renderReadme(readmeSpecs) });
+  allFiles.push({ rel: 'README.md', text: renderReadme(readmeSpecs), stageVar: null });
 
-  for (const file of files) {
+  for (const file of allFiles) {
     assertNoSecrets(file.text);
-    if (file.rel.endsWith('.workflow.json')) assertNoInjectedExpressions(file.text);
+    if (file.rel.endsWith('.workflow.json') && file.stageVar) assertNoInjectedExpressions(file.text, file.stageVar);
   }
 
   const dir = path.join(options.outputDir, 'n8n');
   fs.mkdirSync(dir, { recursive: true });
-  for (const file of files) {
+  for (const file of allFiles) {
     const dest = path.join(dir, file.rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, file.text);
@@ -205,8 +218,24 @@ function assertNoSecrets(text: string): void {
  */
 export const ALLOWED_N8N_EXPR = '={{ $json.body.outcome }}';
 
-function assertNoInjectedExpressions(workflowText: string): void {
-  const rest = workflowText.split(ALLOWED_N8N_EXPR).join('');
+/**
+ * The one other expression this target emits, and only on a named fan-out.
+ * A landing If reads the stage value the Stage node wrote. The stage
+ * variable name is compiler-validated (it is a state field, checked at
+ * parse time), and the number is a literal from the spec's own stage
+ * labels. This expression never carries spec text.
+ */
+export function landingExpr(stageVar: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(stageVar)) {
+    throw new N8nTranslateError(`n8n backend: stage variable ${JSON.stringify(stageVar)} cannot be read by a landing If`);
+  }
+  return `={{ $json.${stageVar} }}`;
+}
+
+function assertNoInjectedExpressions(workflowText: string, stageVar: string | null): void {
+  const rest = workflowText
+    .split(ALLOWED_N8N_EXPR).join('')
+    .split(stageVar === null ? '' : landingExpr(stageVar)).join('');
   if (rest.includes('{{') || rest.includes('}}')) {
     throw new N8nTranslateError('n8n backend: refused to emit an n8n expression from spec text; refusing to write a partial workflow');
   }
@@ -216,8 +245,9 @@ function assertNoInjectedExpressions(workflowText: string): void {
  * n8n evaluates a parameter that starts with `=` and evaluates `{{` `}}`
  * inside a parameter. Every string except ALLOWED_N8N_EXPR must be data.
  */
-export function assertSafeN8nText(value: string, slot: string): void {
+export function assertSafeN8nText(value: string, slot: string, stageVar: string | null = null): void {
   if (value === ALLOWED_N8N_EXPR) return;
+  if (stageVar !== null && value === landingExpr(stageVar)) return;
   if (value.startsWith('=') || value.includes('{{') || value.includes('}}')) {
     throw new N8nTranslateError(
       `n8n backend: parameter ${slot} would be an n8n expression; refusing to write a partial workflow`,
@@ -225,17 +255,17 @@ export function assertSafeN8nText(value: string, slot: string): void {
   }
 }
 
-function assertSafeValue(value: unknown, slot: string): void {
+function assertSafeValue(value: unknown, slot: string, stageVar: string | null = null): void {
   if (typeof value === 'string') {
-    assertSafeN8nText(value, slot);
+    assertSafeN8nText(value, slot, stageVar);
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => assertSafeValue(item, `${slot}[${index}]`));
+    value.forEach((item, index) => assertSafeValue(item, `${slot}[${index}]`, stageVar));
     return;
   }
   if (value && typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) assertSafeValue(child, `${slot}.${key}`);
+    for (const [key, child] of Object.entries(value)) assertSafeValue(child, `${slot}.${key}`, stageVar);
   }
 }
 
@@ -244,7 +274,7 @@ function jsString(value: string): string {
   return JSON.stringify(value).replace(/\{\{/g, '\\u007b\\u007b').replace(/\}\}/g, '\\u007d\\u007d');
 }
 
-function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; script: string } {
+function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; script: string; stageVar: string | null } {
   const behavior = speck.facets.behavior;
   for (const field of behavior.stateVars) {
     if (field.name === 'headers') {
@@ -326,6 +356,48 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
   sortPre(pre);
   post.sort((a, b) => minOr(a.stages) - minOr(b.stages) || a.index - b.index);
 
+  // Every stage-agnostic action runs on each named branch. An action whose
+  // stage requires name a landing stage runs on that branch alone. A post
+  // action no landing stage names cannot run on any branch and fails the
+  // compile where the shared chain would have thrown at run time. The
+  // placement guard fires only when the fan-out is real (more than one
+  // landing stage): with one landing stage the shared chain keeps the
+  // flowing-item semantics the existing examples rely on.
+  const landings: Landing[] = [];
+  const seenLanded = new Set<number>();
+  for (const gate of gates) {
+    for (const pair of gate.acceptOutcomes) {
+      if (!seenLanded.has(pair.stage)) {
+        seenLanded.add(pair.stage);
+        landings.push({ stage: pair.stage, branch: [] });
+      }
+    }
+  }
+  const branchIssues: string[] = [];
+  for (const action of post) {
+    if (action.stages.length === 0) {
+      for (const landing of landings) landing.branch.push(action);
+      continue;
+    }
+    let placed = false;
+    for (const landing of landings) {
+      if (action.stages.includes(landing.stage)) {
+        landing.branch.push(action);
+        placed = true;
+      }
+    }
+    if (!placed) branchIssues.push(`action ${action.name}`);
+  }
+  if (landings.length > 1 && branchIssues.length > 0) {
+    throw new N8nTranslateError(
+      `n8n backend: cannot translate ${branchIssues.join(', ')} on ${speck.name}; no accepting outcome routes to a stage its require names, so the action has no named branch`,
+    );
+  }
+  for (const landing of landings) {
+    landing.branch.sort((a, b) => minOr(a.stages) - minOr(b.stages) || a.index - b.index);
+  }
+
+
   const verifies = speck.facets.formal_spec.verifies.map(v => verifyModel(v, new Set(invariantsOf(ast, speck.name).map(i => i.name)), ctx()));
   const problems: string[] = [];
   if (!initSteps) problems.push('init');
@@ -375,10 +447,12 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
     gates,
     pre,
     post,
+    landings,
+    claim,
     checks,
     initSteps,
   });
-  assertWorkflow(wf);
+  assertWorkflow(wf, landings.length > 1 ? stageVar : null);
 
   const accepting = post.filter(a => a.stages.some(s => approved.has(s))).map(a => a.name);
   const model = {
@@ -395,6 +469,7 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
     accepting,
     acceptStages: uniqueNums(gates.flatMap(g => g.acceptStages)),
     rejectStages: uniqueNums(gates.flatMap(g => g.rejectStages)),
+    landings: landings.map(l => ({ stage: l.stage, branch: l.branch.map(a => a.name) })),
     gates: gates.map(g => ({
       signal: g.signal,
       wait: g.wait,
@@ -406,10 +481,17 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
       limitUnit: g.limit.unit,
     })),
   };
-  const script = renderScript(`${speck.name}.workflow.json`, model);
+  const script = renderScript(`${speck.name}.workflow.json`, {
+    ...model,
+    // The landings key exists only when the fan-out is real, so a spec
+    // with one landing stage recompiles to the byte-identical script an
+    // older n8n generation wrote.
+    landings: landings.length > 1 ? model.landings : undefined,
+  });
   return {
     workflow: JSON.stringify(wf, null, 2) + '\n',
     script,
+    stageVar: landings.length > 1 ? stageVar : null,
   };
 }
 
@@ -426,13 +508,14 @@ function assemble(input: {
   gates: GateModel[];
   pre: ActionModel[];
   post: ActionModel[];
+  landings: Landing[];
+  claim: (name: string) => string;
   checks: Check[];
   initSteps: Step[] | null;
 }): Workflow {
   const nodes: N8nNode[] = [];
   const ids = new Set<string>();
-  const connections: Workflow['connections'] = {};
-  let col = 0;
+  const connections: Workflow['connections'] = {};  let col = 0;
   const add = (name: string, type: string, typeVersion: number, parameters: Record<string, unknown>, y = 320): void => {
     const position: [number, number] = [240 + col * 280, y];
     col += 1;
@@ -503,6 +586,18 @@ function assemble(input: {
   for (const action of input.post) {
     add(action.name, 'n8n-nodes-base.code', 2, codeParams(renderAction(action.name, action.steps, input.checks)));
   }
+  // Landing Ifs exist only for a named fan-out (more than one landing
+  // stage). Each reads the stage the Stage node set and routes that
+  // stage's post actions. n8n If nodes take conditions on one node, so
+  // one If per landing chained on the false output picks its stage.
+  const landingIfs: { stage: number; name: string }[] = [];
+  if (multipleLandings(input.landings) && input.stageVar) {
+    for (const landing of input.landings) {
+      const name = input.claim(`Land ${input.stageVar} ${landing.stage}`);
+      landingIfs.push({ stage: landing.stage, name });
+      addAt(name, 'n8n-nodes-base.if', 2.2, landParams(input.stageVar, landing, input.speck.name, ids), 240 + landingIfs.length * 280, 560);
+    }
+  }
   add(input.done, 'n8n-nodes-base.noOp', 1, {});
 
   const link = (from: string, to: string, output = 0): void => {
@@ -539,12 +634,45 @@ function assemble(input: {
       }
     }
   }
-  prev = input.check;
-  for (const action of input.post) {
-    link(prev, action.name);
-    prev = action.name;
+  if (landingIfs.length > 1 && input.stage) {
+    // Named fan-out. Stage-agnostic post actions stay on the shared
+    // prefix every branch runs: Check, then those actions in order.
+    // Then one If per landing stage chained on the false output; true
+    // runs that stage's post actions in stage order and ends at Done.
+    // The last If's false output ends at Done: no landing names a
+    // remaining stage, so nothing stage-keyed may run.
+    const shared = input.post.filter(a => a.stages.length === 0).map(a => a.name);
+    let sharedPrev: string = input.check;
+    for (const name of shared) {
+      link(sharedPrev, name);
+      sharedPrev = name;
+    }
+    let ifPrev = sharedPrev;
+    for (let i = 0; i < landingIfs.length; i++) {
+      const landingIf = landingIfs[i];
+      // The false output of the previous landing chains to this one; the
+      // first landing is fed by the node before it (Check or the last
+      // shared post action).
+      link(ifPrev, landingIf.name, i === 0 ? 0 : 1);
+      const branch = input.landings.find(l => l.stage === landingIf.stage)!.branch
+        .filter(a => a.stages.length > 0).map(a => a.name);
+      let bprev = landingIf.name;
+      for (const name of branch) {
+        link(bprev, name);
+        bprev = name;
+      }
+      link(bprev, input.done);
+      ifPrev = landingIf.name;
+    }
+    link(ifPrev, input.done, 1);
+  } else {
+    prev = input.check;
+    for (const action of input.post) {
+      link(prev, action.name);
+      prev = action.name;
+    }
+    link(prev, input.done);
   }
-  link(prev, input.done);
 
   return {
     name: input.speck.name,
@@ -554,6 +682,37 @@ function assemble(input: {
     pinData: {},
     meta: { templateCredsSetupCompleted: false },
     active: false,
+  };
+}
+
+/** True when one fan-out must pick between more than one landing stage. */
+function multipleLandings(landings: Landing[]): boolean {
+  return landings.length > 1;
+}
+
+function landParams(stageVar: string, landing: Landing, speck: string, ids: Set<string>): Record<string, unknown> {
+  // The Stage node has already written the landing stage into <stageVar>
+  // from the posted outcome, so the landing If reads that state field as
+  // literal data. This is data the compiler wrote, not a spec expression.
+  return {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'strict',
+        version: 2,
+      },
+      conditions: [
+        {
+          id: nodeId(speck, `Land ${stageVar} ${landing.stage}`, ids),
+          leftValue: landingExpr(stageVar),
+          rightValue: landing.stage,
+          operator: { type: 'number', operation: 'equals' },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
   };
 }
 
@@ -708,9 +867,9 @@ function timeoutAmount(ms: number): { amount: number; unit: 'days' | 'hours' | '
   return { amount: Math.max(1, Math.round(ms / 1000)), unit: 'seconds' };
 }
 
-function assertWorkflow(wf: Workflow): void {
+function assertWorkflow(wf: Workflow, stageVar: string | null): void {
   if (!wf.name || wf.nodes.length < 3) throw new Error('n8n backend: workflow needs a name and at least 3 nodes');
-  if (wf.settings.executionOrder !== 'v1') throw new Error('n8n backend: executionOrder must be v1');
+  if (!wf.settings || wf.settings.executionOrder !== 'v1') throw new Error('n8n backend: executionOrder must be v1');
   if (wf.active !== false) throw new Error('n8n backend: workflow must be inactive');
   if (wf.meta.templateCredsSetupCompleted !== false) throw new Error('n8n backend: credentials must be unset');
   const names = new Set<string>();
@@ -725,8 +884,8 @@ function assertWorkflow(wf: Workflow): void {
     if (typeof node.typeVersion !== 'number') throw new Error(`n8n backend: ${node.name} has a bad typeVersion`);
     if (!Array.isArray(node.position) || node.position.length !== 2) throw new Error(`n8n backend: ${node.name} has a bad position`);
     if (!node.parameters || typeof node.parameters !== 'object') throw new Error(`n8n backend: ${node.name} has no parameters`);
-    assertSafeN8nText(node.name, 'name');
-    assertSafeValue(node.parameters, 'parameters');
+    assertSafeN8nText(node.name, 'name', stageVar);
+    assertSafeValue(node.parameters, 'parameters', stageVar);
     if (node.type === 'n8n-nodes-base.stickyNote' && String(node.parameters.content ?? '').includes(N8N_DISCLAIMER)) {
       sawDisclaimer = true;
     }
@@ -1308,15 +1467,21 @@ function simulate() {
   }
   const base = clone(state);
   let ran = false;
-  const stages = model.acceptStages.length ? model.acceptStages : [base[model.stageVar]];
-  for (const stage of stages) {
-    const branch = clone(base);
-    branch[model.stageVar] = stage;
-    check(branch);
-    for (const name of model.post) {
-      if (tryApply(branch, byName(name))) {
-        if (model.accepting.indexOf(name) !== -1) ran = true;
-        check(branch);
+  const landings = model.landings && model.landings.length
+    ? model.landings
+    : [{ stage: null, branch: model.post }];
+  for (const landing of landings) {
+    const stages = landing.stage === null ? (model.acceptStages.length ? model.acceptStages : [base[model.stageVar]]) : [landing.stage];
+    for (const stage of stages) {
+      const branch = clone(base);
+      branch[model.stageVar] = stage;
+      // The branch runs the shared checks, then its own actions.
+      check(branch);
+      for (const name of landing.branch) {
+        if (tryApply(branch, byName(name))) {
+          if (model.accepting.indexOf(name) !== -1) ran = true;
+          check(branch);
+        }
       }
     }
   }

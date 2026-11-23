@@ -1,0 +1,89 @@
+speck IncidentGate {
+    // An incident-response approval gate with named transitions. One gate
+    // posts two accepting outcomes to different stages: approve contains the
+    // incident (4), escalate routes it to an extended-authorization stage
+    // (3) whose branch records the authorization before the same containment
+    // stage. A reject (or the 4h timeout) returns the machine to Detected.
+    // The named fan-out is what the n8n target compiles to: the Stage node
+    // writes the landing stage from the posted outcome, one landing If per
+    // named stage routes each branch to its own chain, and every branch ends
+    // at Done. Only the escalate branch authorizes; only the approved branch
+    // may skip that step.
+    //
+    // stage: 0 = Detected, 1 = Triaged, 2 = Reviewing, 3 = Escalated,
+    // 4 = Contained, 6 = Resolved.
+
+    state {
+        stage: Nat
+        contained: Bool
+        authorized: Bool
+    }
+
+    init {
+        stage := 0
+        contained := false
+        authorized := false
+    }
+
+    invariant ResolvedNeedsContain {
+        stage != 6 or contained
+    }
+
+    action Detect {
+        require stage == 0
+        stage := 1
+    }
+
+    action Triage {
+        require stage == 1
+        stage := 2
+    }
+
+    action RecordAuthorization {
+        require stage == 3
+        authorized := true
+    }
+
+    action ContainFromApproval {
+        require stage == 4
+        contained := true
+        stage := 6
+    }
+
+    action ContainFromEscalation {
+        require stage == 3 and authorized
+        contained := true
+        stage := 6
+    }
+
+    agent {
+        stages stage {
+            Detected = 0
+            Triaged = 1
+            Reviewing = 2
+            Escalated = 3
+            Contained = 4
+            Resolved = 6
+        }
+
+        tool detect -> Detect effect act
+        tool triage -> Triage effect act
+
+        await Reviewing {
+            signal incident_review
+            mode near
+            require outcome in { approve, escalate, reject! }
+            require claims { reviewer: String }
+            on approve -> Contained
+            on escalate -> Escalated
+            on reject -> Detected
+            timeout 4h -> reject
+        }
+    }
+
+    next: Detect | Triage | RecordAuthorization | ContainFromApproval | ContainFromEscalation
+
+    verify Always(ResolvedNeedsContain) {
+        depth 8
+    }
+}
