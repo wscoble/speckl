@@ -12,6 +12,7 @@ import { generateZ3 } from '../generators/z3.js';
 import { generateTypeScriptStateMachine } from '../generators/typescript-state-machine.js';
 import { generateRust } from '../generators/rust.js';
 import { generateCamel } from '../generators/camel.js';
+import { generateN8n } from '../generators/n8n.js';
 import { generateAgent } from '../generators/agent/index.js';
 import { generateZ3FromIR } from '../generators/z3-from-ir.js';
 import { generateProtobuf } from '../generators/protobuf.js';
@@ -53,6 +54,7 @@ describe('direct generator calls', () => {
     expect(() => generateZ3FromIR(irWithOneof(out), { outputDir: out })).toThrow(reject);
     expect(() => generateAgent(ast(), { outputDir: out, sourcePath: join(out, 'S.speckdl') })).toThrow(reject);
     expect(() => generateCamel(irWithOneof(out), { outputDir: out })).toThrow(reject);
+    expect(() => generateN8n(irWithOneof(out), { outputDir: out })).toThrow(reject);
     expect(() => generateRust(irWithOneof(out), out, ast())).toThrow(reject);
     expect(() => generateTypeScriptStateMachine(ast(), out)).toThrow(reject);
     expect(() => generateZ3(ast(), out)).toThrow(reject);

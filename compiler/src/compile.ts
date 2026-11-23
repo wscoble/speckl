@@ -18,6 +18,7 @@ import { generateK8sCRD } from './generators/k8s-crd.js';
 import { generateProvenanceFromIR } from './generators/provenance-from-ir.js';
 import { lower } from './ir/lower.js';
 import { generateCamel } from './generators/camel.js';
+import { generateN8n, N8nTranslateError } from './generators/n8n.js';
 import { OpenAPITarget } from './generators/openapi.js';
 import { generateAgent } from './generators/agent/index.js';
 import { injectSignalActions } from './generators/agent/inject-signals.js';
@@ -27,7 +28,7 @@ import path from 'path';
 export interface CompileOptions {
   outputDir: string;
   bomFormat: 'cdx' | 'spdx' | 'both';
-  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'elm' | 'agent' | 'all' | 'all-ir';
+  target: 'typescript' | 'z3' | 'rust' | 'go' | 'protobuf' | 'k8s' | 'openapi' | 'camel' | 'n8n' | 'elm' | 'agent' | 'all' | 'all-ir';
   verifyDepth: number;
   /** Directory imports may resolve inside. Default: the entry file's directory. */
   rootDir?: string;
@@ -36,6 +37,33 @@ export interface CompileOptions {
 /** Reject a member this backend does not handle, before that backend writes. */
 function checked(backend: BackendId, ast: AST): void {
   guardAst(backend, ast);
+}
+
+/** Path -> mtime and size, for files already in the output directory. */
+function fileStamps(dir: string): Map<string, string> {
+  const stamps = new Map<string, string>();
+  if (!fs.existsSync(dir)) return stamps;
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) continue;
+    for (const name of fs.readdirSync(current)) {
+      const child = path.join(current, name);
+      const st = fs.statSync(child);
+      if (st.isDirectory()) stack.push(child);
+      else stamps.set(path.relative(dir, child), `${st.mtimeMs}:${st.size}`);
+    }
+  }
+  return stamps;
+}
+
+/** True when this run created a file or replaced one that was already there. */
+function wroteSince(dir: string, before: Map<string, string>): boolean {
+  const after = fileStamps(dir);
+  for (const [file, stamp] of after) {
+    if (before.get(file) !== stamp) return true;
+  }
+  return false;
 }
 
 /** Compile one SpeckDL file to the requested target(s). Throws on invalid input. */
@@ -55,34 +83,62 @@ export function compileSpec(file: string, options: CompileOptions): void {
   if (!fs.existsSync(options.outputDir)) {
     fs.mkdirSync(options.outputDir, { recursive: true });
   }
+  // Taken before any backend writes. A file that was already in the directory
+  // does not count as output from this run.
+  const filesAtStart = fileStamps(options.outputDir);
 
   const irAst = lower(ast, { filePath: file, resolveImports: true, rootDir: options.rootDir });
   const domainErrors = irAst.diagnostics.filter(d => d.level === 'error' && d.message.startsWith('domain:'));
   if (domainErrors.length > 0) {
     throw new Error(domainErrors.map(d => d.message).join('\n'));
   }
-  const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'all-ir'].includes(t);
+  const isIRTarget = (t: string) => ['k8s', 'openapi', 'camel', 'n8n', 'all-ir'].includes(t);
   const useIR = options.target === 'all' || options.target === 'all-ir' || isIRTarget(options.target);
+  const broad = options.target === 'all' || options.target === 'all-ir';
+  // Set only when `-t all` or `-t all-ir` skips n8n. Every other backend still throws.
+  let n8nSkip: string | null = null;
 
   // K8s CRDs
-  if (options.target === 'k8s' || options.target === 'all' || options.target === 'all-ir') {
+  if (options.target === 'k8s' || broad) {
     console.log('\nGenerating Kubernetes CustomResourceDefinitions...');
     checked('k8s', ast);
     generateK8sCRD(irAst, { outputDir: options.outputDir });
   }
 
   // OpenAPI 3.1
-  if (options.target === 'openapi' || options.target === 'all' || options.target === 'all-ir') {
+  if (options.target === 'openapi' || broad) {
     console.log('\nGenerating OpenAPI 3.1 specification...');
     checked('openapi', ast);
     new OpenAPITarget().generate(irAst, { outputDir: options.outputDir });
   }
 
   // Camel (camel-quarkus Java routes + processors)
-  if (options.target === 'camel' || options.target === 'all' || options.target === 'all-ir') {
+  if (options.target === 'camel' || broad) {
     console.log('\nGenerating Apache Camel (camel-quarkus) routes...');
     checked('camel', ast);
     generateCamel(irAst, { outputDir: options.outputDir });
+  }
+
+  // n8n workflow + verify script. Focused like z3 and rust:
+  // `-t n8n` does not also emit the timestamped provenance graph.
+  // Every n8n failure becomes N8nTranslateError. `-t n8n` throws it and
+  // writes no n8n file. `-t all` and `-t all-ir` skip only that error,
+  // print "Skipped backend: n8n", and still run the other backends.
+  // A rejection from any other backend still stops the run. generateN8n
+  // throws before it creates the n8n directory.
+  if (options.target === 'n8n' || broad) {
+    console.log('\nGenerating n8n workflow...');
+    try {
+      checked('n8n', ast);
+      generateN8n(irAst, { outputDir: options.outputDir, ast });
+    } catch (err) {
+      const wrapped = err instanceof N8nTranslateError
+        ? err
+        : new N8nTranslateError(err instanceof Error ? err.message : String(err));
+      if (!broad) throw wrapped;
+      n8nSkip = wrapped.message;
+      console.log(`Skipped backend: n8n. ${wrapped.message}`);
+    }
   }
 
   // Rust
@@ -111,7 +167,9 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
 
   // Provenance (core output)
-  if (options.target !== 'z3' && options.target !== 'rust') {
+  const sharedArtifacts = options.target !== 'z3' && options.target !== 'rust' && options.target !== 'n8n';
+
+  if (sharedArtifacts) {
     console.log('\nGenerating provenance graph (PROV-O JSON-LD) from IR...');
     checked('provenance', ast);
     generateProvenanceFromIR(irAst, options.outputDir);
@@ -152,7 +210,7 @@ export function compileSpec(file: string, options: CompileOptions): void {
   }
 
   // TypeScript state machine + BOMs
-  if (options.target !== 'z3' && options.target !== 'rust') {
+  if (sharedArtifacts) {
     console.log('\nGenerating TypeScript state machine...');
     checked('typescript', ast);
     generateTypeScriptStateMachine(ast, options.outputDir);
@@ -169,7 +227,6 @@ export function compileSpec(file: string, options: CompileOptions): void {
       generateSPDX(ast, options.outputDir);
     }
   }
-  
 
   // Agent target (AGENTS.md + tools + hook + signal verifiers)
   if (options.target === 'agent' || options.target === 'all') {
@@ -182,6 +239,12 @@ export function compileSpec(file: string, options: CompileOptions): void {
     checked('typescript', ast);
     checked('agent', ast);
     generateAgent(ast, { outputDir: options.outputDir, sourcePath: file });
+  }
+
+  // An n8n skip that wrote nothing in this run must not look like success.
+  // A file that was already in the output directory does not count.
+  if (n8nSkip !== null && !wroteSince(options.outputDir, filesAtStart)) {
+    throw new N8nTranslateError(`Skipped backend: n8n, and no file was written. ${n8nSkip}`);
   }
 
   console.log(`\nCompilation complete. Output: ${options.outputDir}/`);

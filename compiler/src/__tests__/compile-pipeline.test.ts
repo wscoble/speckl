@@ -107,7 +107,22 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when the agent target started emitting mcp-tools.mjs and the
 // session check. signal.mjs, hook.mjs and state-integrity.mjs all changed,
 // and every -t all tree gained mcp-tools.mjs. The allow list is unchanged.
-const OUTPUT_SHA256 = 'e927f1ff0539f5f2525343d8690acfaae251ba329fc65d02de93ca718fd24a31';
+// Moved again when -t all and -t all-ir started writing n8n/<Speck>.workflow.json,
+// n8n/<Speck>.verify.mjs, and n8n/README.md. Those files are new. The other
+// targets were not retargeted.
+// Moved again when an expression n8n cannot translate stopped writing the n8n
+// directory on -t all and -t all-ir, and the n8n README text changed.
+// Moved again when the n8n README limits text grew. The workflow JSON for the
+// examples that still compile did not change.
+// Moved again when each approval Wait became one webhook with Limit Wait Time,
+// a Resume node, and an If that reads body.outcome. The n8n README and the
+// sticky note changed with that wiring. Other targets were not retargeted.
+// Moved again when the n8n README and sticky note said the live n8n behavior
+// is untested, and `-t all` was described as skipping only the n8n target.
+// Moved again when those notes started citing the live n8n tests.
+// Moved again when the buyer-facing sticky note and README stopped naming
+// Speckl's tests and described the workflow instead.
+const OUTPUT_SHA256 = '68049a4ed85e22f7094db37427df4b115ca558184f1b03d2af963715804f8e8a';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {
