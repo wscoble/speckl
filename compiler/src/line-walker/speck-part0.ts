@@ -399,6 +399,10 @@ export interface AgentAwaitSpec {
    * Reject outcomes are never listed.
    */
   bindCall: string[];
+  /** Authentication a resume POST must carry: n8n header, basic, or jwt.
+   *  Only `header` is emitted today; `basic`/`jwt` parse but fail the n8n
+   *  compile. Omit for none (the historical default). */
+  auth?: 'header' | 'basic' | 'jwt';
 }
 
 export interface TypeExpr {

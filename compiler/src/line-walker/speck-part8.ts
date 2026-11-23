@@ -193,6 +193,7 @@ export function parseAgentBlockMultiline(lines: string[], startIndex: number, st
       let timeout: AgentAwaitSpec['timeout'];
       // null = no clause. names === null = `bind call` (every accepting outcome).
       let bindClause: { names: string[] | null } | null = null;
+      let auth: 'header' | 'basic' | 'jwt' | undefined;
 
       let j = 0;
       while (j < awaitInner.length) {
@@ -275,6 +276,13 @@ export function parseAgentBlockMultiline(lines: string[], startIndex: number, st
           j++;
           continue;
         }
+        const authAll = al.match(/^auth\s+(header|basic|jwt)\s*$/);
+        if (authAll) {
+          if (auth) throw new Error(`Parse error in await ${state}: duplicate auth`);
+          auth = authAll[1] as 'header' | 'basic' | 'jwt';
+          j++;
+          continue;
+        }
         const bindOn = al.match(/^bind\s+call\s+on\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*$/);
         if (bindOn) {
           if (bindClause) throw new Error(`Parse error in await ${state}: duplicate bind call`);
@@ -327,7 +335,7 @@ export function parseAgentBlockMultiline(lines: string[], startIndex: number, st
         }
       }
 
-      awaits.push({ state, signal, mode, outcomes, rejects, claims, on, timeout, bindCall });
+      awaits.push({ state, signal, mode, outcomes, rejects, claims, on, timeout, bindCall, ...(auth ? { auth } : {}) });
       continue;
     }
 

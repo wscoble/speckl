@@ -586,6 +586,7 @@ function lowerAgent(
       on: a.on.map(o => ({ outcome: o.outcome, target: o.target })),
       timeout: a.timeout ? { ...a.timeout } : undefined,
       bindCall: [...a.bindCall],
+      ...(a.auth ? { auth: a.auth } : {}),
       syntheticActions,
     });
   }

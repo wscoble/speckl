@@ -122,7 +122,10 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when those notes started citing the live n8n tests.
 // Moved again when the buyer-facing sticky note and README stopped naming
 // Speckl's tests and described the workflow instead.
-const OUTPUT_SHA256 = '68049a4ed85e22f7094db37427df4b115ca558184f1b03d2af963715804f8e8a';
+// Moved again when `auth header` set headerAuth on the Wait's
+// incomingAuthentication, the n8n README and sticky note described it, and
+// examples/HeaderAuthGate.speckdl joined the digest set.
+const OUTPUT_SHA256 = '8b0ae6a24bea75a0ff7cee19f1dd7d16d451a38788cc69284a050379ef3cb4b0';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

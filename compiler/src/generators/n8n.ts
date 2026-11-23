@@ -118,6 +118,8 @@ interface GateModel {
   gate: string;
   stop: string;
   limit: { amount: number; unit: 'days' | 'hours' | 'minutes' | 'seconds' };
+  /** The Wait's incomingAuthentication. `none` is the historical default. */
+  auth: 'none' | 'headerAuth';
   acceptStages: number[];
   rejectStages: number[];
   acceptOutcomes: AcceptOutcome[];
@@ -302,6 +304,13 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
     }
     const timeout = aw.timeout ? targetStage(aw, aw.timeout.outcome) : null;
     if (timeout !== null && !rejectStages.includes(timeout)) rejectStages.push(timeout);
+    // `auth header` sets n8n's Header Auth on the Wait. The credential itself
+    // is never in the file: the operator attaches it in n8n after import.
+    if (aw.auth && aw.auth !== 'header') {
+      throw new N8nTranslateError(
+        `n8n backend: await ${aw.state} on ${speck.name}: auth ${aw.auth} is not supported; the n8n target only emits auth header`,
+      );
+    }
     gates.push({
       signal: aw.signal,
       state: aw.state,
@@ -311,6 +320,7 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
       gate: '',
       stop: '',
       limit: timeoutAmount(aw.timeout?.durationMs ?? 0),
+      auth: aw.auth === 'header' ? 'headerAuth' : 'none',
       acceptStages: uniqueNums(acceptStages),
       rejectStages: uniqueNums(rejectStages),
       acceptOutcomes,
@@ -404,6 +414,7 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
       stop: g.stop,
       limitAmount: g.limit.amount,
       limitUnit: g.limit.unit,
+      auth: g.auth,
     })),
   };
   const script = renderScript(`${speck.name}.workflow.json`, model);
@@ -457,7 +468,7 @@ function assemble(input: {
   };
 
   addAt(input.disclaimer, 'n8n-nodes-base.stickyNote', 1, {
-    content: sticky(input.speck, input.awaits),
+    content: sticky(input.speck, input.awaits, input.gates),
     height: 560,
     width: 520,
     color: 4,
@@ -476,7 +487,7 @@ function assemble(input: {
     addAt(gate.wait, 'n8n-nodes-base.wait', 1.1, {
       resume: 'webhook',
       httpMethod: 'POST',
-      incomingAuthentication: 'none',
+      incomingAuthentication: gate.auth,
       limitWaitTime: true,
       limitType: 'afterTimeInterval',
       resumeAmount: gate.limit.amount,
@@ -557,7 +568,7 @@ function assemble(input: {
   };
 }
 
-function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
+function sticky(speck: IRSpeck, awaits: IRAgentAwait[], gates: GateModel[]): string {
   const lines = [DISCLAIMER_NOTE, '', `Spec: ${speck.name}`];
   for (const aw of awaits) {
     const rejects = new Set(aw.rejects);
@@ -575,7 +586,13 @@ function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
   lines.push('An accepting outcome continues. Resume copies the item from before the Wait, so later nodes still have those fields.');
   lines.push('A reject ends at Stop and Error. A timeout ends at Stop and Error. A timeout resumes with the item from before the Wait. That item has no webhook headers, so body is empty and the If takes the false output.');
   lines.push('Limit Wait Time is on that same Wait. There is no second timer node.');
-  lines.push('incomingAuthentication is none. This file does not contain a credential. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach a credential you create in n8n.');
+  for (const gate of gates) {
+    if (gate.auth === 'headerAuth') {
+      lines.push(`This Wait sets incomingAuthentication to headerAuth. A resume POST must carry the header the attached credential names. Attach the Header Auth credential in n8n after import.`);
+    } else {
+      lines.push('incomingAuthentication is none. This file does not contain a credential. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach a credential you create in n8n.');
+    }
+  }
   lines.push('A string in the spec is literal data. It is not an n8n env binding.');
   lines.push('A check that fails stops that n8n run. Signal signatures are not checked.');
   lines.push("Speckl's CI tests its bundled examples, not this specific workflow.");
@@ -1037,13 +1054,13 @@ function renderReadme(specks: string[]): string {
     '',
     'The trace check supports state, init, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint` and `invariant` boolean expressions, and `verify Always(Name)` when that expression translates. Those checks run only in the nodes and the verify script this compile wrote. They do not run anywhere else.',
     '',
-    'Each of these fails `-t n8n` and writes no n8n file: `oneof`, `transition`, an `if` body, `for`, `forall`, `in`, `Eventually`, an unknown call, an await with no timeout, a timeout outcome that is not a reject, a string that looks like a live key, a parameter that would be an n8n expression, a state field named `headers`, and any other expression this target cannot translate.',
+    'Each of these fails `-t n8n` and writes no n8n file: `oneof`, `transition`, an `if` body, `for`, `forall`, `in`, `Eventually`, an unknown call, an await with no timeout, a timeout outcome that is not a reject, `auth basic`, `auth jwt`, a string that looks like a live key, a parameter that would be an n8n expression, a state field named `headers`, and any other expression this target cannot translate.',
     '',
     'Compared with main, `-t all` and `-t all-ir` still stop when any backend other than n8n rejects the spec. `oneof` and `transition` do that, the process exits 1, and no n8n file is written. An n8n-only failure is the exception: the log line is `Skipped backend: n8n`, the other targets are still written, and the process exits 0. If that skip would write no file, the process exits 1. `-t n8n` exits 1 and writes no n8n file. No partial n8n file is written.',
     '',
     'A string from the spec is literal data. The characters `{{` and `}}` in that string are unicode escapes in the code node, and a parameter value is not allowed to start with `=`, except the If left value that reads $json.body.outcome. The workflow has no credential id and no credential value.',
     '',
-    'The generated Wait sets incomingAuthentication to none. This file does not contain a credential. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach the matching credential in n8n.',
+    'The generated Wait sets incomingAuthentication to none unless the spec asks for authenticated resume. Write `auth header` in the await block to set Header Auth on the Wait: a resume POST must then carry the header the credential names, and n8n refuses the POST without it. The credential itself is never in this file and no credential id is written. After import, attach a Header Auth credential (`httpHeaderAuth`) you create in n8n. `auth basic` and `auth jwt` fail the compile; Basic Auth and JWT Auth stay manual steps after import.',
     '',
     'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops.',
     '',
@@ -1167,7 +1184,7 @@ function structural() {
     if (!stop || stop.type !== 'n8n-nodes-base.stopAndError') fail('missing stop ' + gate.stop);
     if (wait.parameters.resume !== 'webhook') fail('wait is not a webhook');
     if (wait.parameters.httpMethod !== 'POST') fail('wait method');
-    if (wait.parameters.incomingAuthentication !== 'none') fail('wait auth');
+    if (wait.parameters.incomingAuthentication !== gate.auth) fail('wait auth');
     if (wait.parameters.limitWaitTime !== true) fail('limit wait time');
     if (wait.parameters.limitType !== 'afterTimeInterval') fail('limit type');
     if (wait.parameters.resumeAmount !== gate.limitAmount) fail('limit amount');

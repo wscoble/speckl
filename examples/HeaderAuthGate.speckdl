@@ -1,0 +1,77 @@
+speck HeaderAuthGate {
+    // Authenticated approval wait: the resume POST must carry a credential
+    // header. The `auth header` clause in the await block sets n8n Header
+    // Auth on the Wait node, so n8n refuses a resume POST without the header
+    // and accepts one with it. The credential value is never in the spec or
+    // the workflow: the operator creates an httpHeaderAuth credential in n8n
+    // and attaches it to the Wait after import. Compare
+    // examples/verifier-plugins/hmac-webhook.mjs, which enforces the same
+    // idea (a signed POST) for the agent target's file-drop signal.
+    // stage: 0 = Idle, 1 = Green, 2 = AwaitingApproval, 3 = Approved,
+    //        4 = Shipped, 5 = Rejected
+
+    state {
+        stage: Nat
+        checksPassed: Bool
+        shippedFromApproved: Bool
+    }
+
+    init {
+        stage := 0
+        checksPassed := false
+        shippedFromApproved := false
+    }
+
+    invariant ShipNeedsApproval {
+        stage != 4 or shippedFromApproved
+    }
+
+    action RunChecks {
+        require stage == 0
+        checksPassed := true
+        stage := 1
+    }
+
+    action RequestApproval {
+        require stage == 1
+        stage := 2
+    }
+
+    action Ship {
+        require stage == 3
+        shippedFromApproved := stage == 3
+        stage := 4
+    }
+
+    agent {
+        stages stage {
+            Idle = 0
+            Green = 1
+            AwaitingApproval = 2
+            Approved = 3
+            Shipped = 4
+            Rejected = 5
+        }
+
+        tool run_checks      -> RunChecks       effect act
+        tool request_approval -> RequestApproval effect act
+        tool ship            -> Ship            effect act
+
+        await AwaitingApproval {
+            signal approval
+            mode near
+            require outcome in { approve, reject! }
+            require claims { approver: String }
+            on approve -> Approved
+            on reject  -> Rejected
+            timeout 24h -> reject
+            auth header
+        }
+    }
+
+    next: RunChecks | RequestApproval | Ship
+
+    verify Always(ShipNeedsApproval) {
+        depth 8
+    }
+}

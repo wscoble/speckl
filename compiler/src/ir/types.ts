@@ -285,6 +285,9 @@ export interface IRAgentAwait {
   timeout?: { durationMs: number; durationText: string; outcome: string };
   /** Outcomes whose sign-off must carry a call digest. Empty = stage-level. */
   bindCall: string[];
+  /** Authentication a resume POST must carry: `header` now; `basic`/`jwt` parse
+   *  but the n8n build rejects them. Omit for none. */
+  auth?: 'header' | 'basic' | 'jwt';
   /** Synthetic action names generated for each on-outcome (and timeout if distinct). */
   syntheticActions: { outcome: string; actionName: string; targetValue: number; awaitValue: number }[];
 }

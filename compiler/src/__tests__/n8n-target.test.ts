@@ -6,6 +6,8 @@ import path, { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { compileSpec, type CompileOptions } from '../compile.js';
+import { parseSpeckContent } from '../parser.js';
+import { printAST } from '../printer.js';
 import { disposition } from '../conservation.js';
 import { allocateNodeId, assertSafeN8nText, ALLOWED_N8N_EXPR } from '../generators/n8n.js';
 
@@ -768,6 +770,126 @@ describe('n8n compile failures and -t all continuation', () => {
     ].join('\n'), /state field "headers"/);
   });
 
+  it('auth basic and auth jwt fail the compile and write no n8n file', () => {
+    for (const [kind, verb] of [['basic', 'basicAuth'], ['jwt', 'jwtAuth']] as const) {
+      expectNoN8n([
+        'speck AuthWait {',
+        '    state { stage: Nat }',
+        '    init { stage := 0 }',
+        '    action After {',
+        '        require stage == 2',
+        '        stage := 3',
+        '    }',
+        '    agent {',
+        '        stages stage {',
+        '            Idle = 0',
+        '            Wait = 1',
+        '            Approved = 2',
+        '        }',
+        '        await Wait {',
+        '            signal review',
+        '            mode near',
+        '            require outcome in { approve, reject! }',
+        '            on approve -> Approved',
+        '            on reject -> Idle',
+        `            timeout 1h -> reject`,
+        `            auth ${kind}`,
+        '        }',
+        '    }',
+        '}',
+        '',
+      ].join('\n'), new RegExp(`auth ${kind} is not supported`));
+      expect(verb).toBeTruthy();
+    }
+  });
+
+  it('auth header sets Header Auth on the Wait and the example compiles', () => {
+    const file = writeSpec('AuthWait.speckdl', [
+      'speck AuthWait {',
+      '    state { stage: Nat; ran: Bool }',
+      '    init { stage := 0; ran := false }',
+      '    action After {',
+      '        require stage == 2',
+      '        ran := true',
+      '    }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '            Approved = 2',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Approved',
+      '            on reject -> Idle',
+      '            timeout 1h -> reject',
+      '            auth header',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const out = compile(file);
+    const wf = loadWorkflow(out, 'AuthWait');
+    const wait = wf.nodes.find((n: { name: string }) => n.name === 'Wait review');
+    expect(wait.type).toBe('n8n-nodes-base.wait');
+    expect(wait.parameters.incomingAuthentication).toBe('headerAuth');
+    expect(wait.credentials).toBeUndefined();
+    expect(JSON.stringify(wf)).not.toMatch(/"credentials"/);
+    const sticky = wf.nodes.find((n: { type: string }) => n.type === 'n8n-nodes-base.stickyNote');
+    expect(sticky.parameters.content).toContain('incomingAuthentication to headerAuth');
+    expect(sticky.parameters.content).not.toContain('incomingAuthentication is none');
+    expect(runScript(out, 'AuthWait').status).toBe(0);
+
+    const header = loadWorkflow(compile(join(examplesDir, 'HeaderAuthGate.speckdl')), 'HeaderAuthGate');
+    const headerWait = header.nodes.find((n: { type: string }) => n.type === 'n8n-nodes-base.wait');
+    expect(headerWait.parameters.incomingAuthentication).toBe('headerAuth');
+    expect(headerWait.credentials).toBeUndefined();
+
+    const plain = loadWorkflow(compile(join(examplesDir, 'AgentPolicy.speckdl')), 'AgentPolicy');
+    const plainWait = plain.nodes.find((n: { type: string }) => n.type === 'n8n-nodes-base.wait');
+    expect(plainWait.parameters.incomingAuthentication).toBe('none');
+    const plainSticky = plain.nodes.find((n: { type: string }) => n.type === 'n8n-nodes-base.stickyNote');
+    expect(plainSticky.parameters.content).toContain('incomingAuthentication is none');
+  });
+
+  it('the auth clause round-trips through the printer', () => {
+    const src = [
+      'speck AuthWait {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action After { require stage == 2; stage := 3 }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '            Approved = 2',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Approved',
+      '            on reject -> Idle',
+      '            timeout 1h -> reject',
+      '            auth header',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+    const ast = parseSpeckContent(src);
+    const agent = ast.specks[0].members.find(m => m.type === 'agent') as { awaits: { auth?: string }[] };
+    expect(agent.awaits[0].auth).toBe('header');
+    const printed = printAST(ast);
+    expect(printed).toContain('auth header');
+    const reparsed = parseSpeckContent(printed);
+    const agent2 = reparsed.specks[0].members.find(m => m.type === 'agent') as { awaits: { auth?: string }[] };
+    expect(agent2.awaits[0].auth).toBe('header');
+  });
+
   it('oneof and transition stop -t all and -t all-ir', () => {
     const oneof = writeSpec('One.speckdl', [
       'speck Wire {',
@@ -910,7 +1032,7 @@ describe('n8n examples and docs', () => {
   const names = readdirSync(examplesDir).filter(f => f.endsWith('.speckdl')).sort();
 
   it('compiles every example, or stops with no n8n file when an expression does not translate', () => {
-    const translates = new Set(['AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'DeployGate.speckdl', 'PodcastPublishing.speckdl', 'ReviewGate.speckdl']);
+    const translates = new Set(['AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'DeployGate.speckdl', 'HeaderAuthGate.speckdl', 'PodcastPublishing.speckdl', 'ReviewGate.speckdl']);
     for (const name of names) {
       const out = freshOut();
       if (!translates.has(name)) {
@@ -973,7 +1095,9 @@ describe('n8n examples and docs', () => {
     expect(doc).toContain('posts approve, keeps the pre-wait ticket, and stays successful past the Wait limit');
     expect(doc).toContain('posts reject and the run ends at Stop and Error');
     expect(doc).toContain('a short timeout ends at Stop and Error');
-    expect(doc).toContain('Whether n8n refuses a resume POST after you set that Authentication is untested');
+    expect(doc).toContain('a resume POST without the header is refused');
+    expect(doc).toContain('a POST with the header reaches success');
+    expect(doc).toContain('HeaderAuthGate');
     expect(doc).not.toContain('a resume POST without the header auth credential is refused');
     expect(changelog).not.toContain('a resume POST without the header auth credential is refused');
     expect(doc).not.toContain('No test runs n8n');

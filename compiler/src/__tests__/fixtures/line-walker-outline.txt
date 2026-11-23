@@ -49,6 +49,16 @@ DeployGate.speckdl DeployGate
   next:
   verify:DeployNeedsChecks
   verify:DeployNeedsApproval
+HeaderAuthGate.speckdl HeaderAuthGate
+  state:
+  init:
+  invariant:ShipNeedsApproval
+  action:RunChecks
+  action:RequestApproval
+  action:Ship
+  agent:
+  next:
+  verify:ShipNeedsApproval
 KafkaKRaft.speckdl KafkaKRaft
   source:
   review:
