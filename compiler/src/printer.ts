@@ -367,6 +367,16 @@ function printAgent(member: Extract<MemberNode, { type: 'agent' }>, actionNames:
       const body = a.claims.map(c => `${c.name}: ${c.typeName}`).join(', ');
       lines.push(`        require claims { ${body} }`);
     }
+    if (a.payloadOneof) {
+      lines.push(`        payload oneof ${a.payloadOneof.name} {`);
+      a.payloadOneof.variants.forEach((v, i) => {
+        const last = i === a.payloadOneof!.variants.length - 1;
+        // The closing brace rides on the last variant so the await parser
+        // sees it: a lone `}` line inside an await is filtered before it
+        // reaches the clause.
+        lines.push(last ? `            ${v.fieldName}: ${v.typeName} }` : `            ${v.fieldName}: ${v.typeName}`);
+      });
+    }
     if (a.bindCall.length > 0) {
       lines.push(`        bind call on ${a.bindCall.join(', ')}`);
     }

@@ -25,8 +25,10 @@
 // here. The workflow does not loop.
 //
 // An expression this file cannot translate fails the compile. No n8n file
-// is written. `oneof` and `transition` are rejected by the conservation
-// table before any file is written.
+// is written. A top-level `oneof` member and `transition` are rejected by the
+// conservation table before any file is written. A `payload oneof` inside an
+// agent await compiles: the posted payload names one variant, the Resume node
+// copies it, and the If compares the composite outcome|payload key.
 //
 // The verify script is a straight-line trace check. It does not run n8n.
 // It is not a model check. It does not check signal signatures or
@@ -121,6 +123,8 @@ interface GateModel {
   acceptStages: number[];
   rejectStages: number[];
   acceptOutcomes: AcceptOutcome[];
+  /** Payload-union variants. Empty when the await declares no `payload oneof`. */
+  payload: { name: string; variants: string[] };
 }
 
 interface N8nNode {
@@ -200,13 +204,26 @@ function assertNoSecrets(text: string): void {
 }
 
 /**
- * The one parameter that is an n8n expression on purpose. The If node reads
+ * The two parameters that are n8n expressions on purpose. The If node reads
  * the posted JSON. n8n's webhook resume puts that JSON at `$json.body`.
+ * With a `payload oneof` the If compares the composite
+ * `outcome|payload` key, so an accept needs one variant name and a reject
+ * or an unknown variant takes the false output.
  */
 export const ALLOWED_N8N_EXPR = '={{ $json.body.outcome }}';
+export const ALLOWED_PAYLOAD_EXPR = '={{ $json.body.outcome + "|" + (typeof $json.body.payload === "string" ? $json.body.payload : "") }}';
+
+const ALLOWED_N8N_EXPRS: readonly string[] = [ALLOWED_N8N_EXPR, ALLOWED_PAYLOAD_EXPR];
 
 function assertNoInjectedExpressions(workflowText: string): void {
-  const rest = workflowText.split(ALLOWED_N8N_EXPR).join('');
+  let rest = workflowText;
+  for (const allowed of ALLOWED_N8N_EXPRS) {
+    // The JSON file stores string values with escaped quotes. The payload
+    // expression contains `"`, so strip both the raw form and the form the
+    // JSON bytes carry, or the check would trip on its own allowed text.
+    rest = rest.split(allowed).join('');
+    rest = rest.split(JSON.stringify(allowed).slice(1, -1)).join('');
+  }
   if (rest.includes('{{') || rest.includes('}}')) {
     throw new N8nTranslateError('n8n backend: refused to emit an n8n expression from spec text; refusing to write a partial workflow');
   }
@@ -214,10 +231,11 @@ function assertNoInjectedExpressions(workflowText: string): void {
 
 /**
  * n8n evaluates a parameter that starts with `=` and evaluates `{{` `}}`
- * inside a parameter. Every string except ALLOWED_N8N_EXPR must be data.
+ * inside a parameter. Every string except the allowed If left values must be
+ * data.
  */
 export function assertSafeN8nText(value: string, slot: string): void {
-  if (value === ALLOWED_N8N_EXPR) return;
+  if ((ALLOWED_N8N_EXPRS as readonly string[]).includes(value)) return;
   if (value.startsWith('=') || value.includes('{{') || value.includes('}}')) {
     throw new N8nTranslateError(
       `n8n backend: parameter ${slot} would be an n8n expression; refusing to write a partial workflow`,
@@ -314,6 +332,18 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
       acceptStages: uniqueNums(acceptStages),
       rejectStages: uniqueNums(rejectStages),
       acceptOutcomes,
+      payload: {
+        name: aw.payloadOneof?.name ?? '',
+        variants: (aw.payloadOneof?.variants ?? []).map(v => {
+          const union = aw.payloadOneof ? aw.payloadOneof.name : '';
+          if (!isIdent(v.fieldName) || !isIdent(v.typeName)) {
+            throw new N8nTranslateError(
+              `n8n backend: payload oneof ${union} variant ${v.fieldName} is not a name pair on ${speck.name}; refusing to write a partial workflow`,
+            );
+          }
+          return v.fieldName;
+        }),
+      },
     });
   }
   const firstAwait = awaitValues.length ? Math.min(...awaitValues) : null;
@@ -404,6 +434,7 @@ function buildSpeck(speck: IRSpeck, ast: AST | undefined): { workflow: string; s
       stop: g.stop,
       limitAmount: g.limit.amount,
       limitUnit: g.limit.unit,
+      payloadVariants: g.payload.variants,
     })),
   };
   const script = renderScript(`${speck.name}.workflow.json`, model);
@@ -485,7 +516,7 @@ function assemble(input: {
     }, x, 320);
     const rx = 240 + col * 280;
     col += 1;
-    addAt(gate.resume, 'n8n-nodes-base.code', 2, codeParams(renderResume(gate.prior)), rx, 320);
+    addAt(gate.resume, 'n8n-nodes-base.code', 2, codeParams(renderResume(gate.prior, gate.payload)), rx, 320);
     const gx = 240 + col * 280;
     col += 1;
     addAt(gate.gate, 'n8n-nodes-base.if', 2.2, ifParams(gate, input.speck.name, ids), gx, 320);
@@ -567,6 +598,9 @@ function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
       `Await ${aw.state} signal ${aw.signal} mode ${aw.mode}. Accept: ${accept.join(', ') || 'none'}. Reject: ${reject.join(', ') || 'none'}. Timeout: ${aw.timeout ? aw.timeout.durationText + ' -> ' + aw.timeout.outcome : 'none'}.`,
     );
     if (aw.claims.length) lines.push(`Claims: ${aw.claims.map(c => `${c.name}: ${c.typeName}`).join(', ')}.`);
+    if (aw.payloadOneof) {
+      lines.push(`Payload oneof ${aw.payloadOneof.name}: ${aw.payloadOneof.variants.map(v => v.fieldName).join(', ')}. Post the variant name as payload alongside outcome, for example {"outcome":"<name>","payload":"${aw.payloadOneof.variants[0]?.fieldName ?? '<variant>'}"}. The If reads the composite outcome|payload key. A variant outside the union stops.`);
+    }
     if (aw.bindCall.length) {
       lines.push('This workflow does not enforce call-digest binding. Sign-off stays a manual step in n8n.');
     }
@@ -582,9 +616,9 @@ function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
   return lines.join('\n');
 }
 
-function renderResume(prior: string): string {
+function renderResume(prior: string, payload: { name: string; variants: string[] }): string {
   const quoted = prior.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-  return [
+  const lines = [
     `const prior = $('${quoted}').item.json;`,
     'const incoming = $input.item.json;',
     'const webhook = incoming && typeof incoming.headers === "object" && incoming.headers !== null;',
@@ -594,8 +628,12 @@ function renderResume(prior: string): string {
     'for (const key of Object.keys(prior)) __root__[key] = prior[key];',
     '__root__.body = body;',
     '__root__.outcome = Object.prototype.hasOwnProperty.call(body, "outcome") ? body.outcome : undefined;',
-    'return __root__;',
-  ].join('\n');
+  ];
+  if (payload.variants.length > 0) {
+    lines.push('__root__.payload = Object.prototype.hasOwnProperty.call(body, "payload") ? body.payload : undefined;');
+  }
+  lines.push('return __root__;');
+  return lines.join('\n');
 }
 
 function codeParams(jsCode: string): Record<string, unknown> {
@@ -668,13 +706,26 @@ function renderStage(stageVar: string, gate: GateModel): string {
 function ifParams(gate: GateModel, speck: string, ids: Set<string>): Record<string, unknown> {
   // True only for an accepting outcome. A reject name is not a true condition,
   // so n8n sends it down main[1] to Stop.
-  const outcomes = gate.acceptOutcomes.length
-    ? gate.acceptOutcomes
-    : [{ outcome: '', stage: -1 }];
-  const conditions = outcomes.map((pair, i) => ({
-    id: nodeId(speck, `${gate.gate} ${pair.outcome || 'none'} ${i}`, ids),
-    leftValue: ALLOWED_N8N_EXPR,
-    rightValue: pair.outcome,
+  // With a payload union each condition is the composite `outcome|payload`
+  // key of one (accepting outcome, variant) pair, OR'ed. A reject outcome or
+  // a variant outside the union does not match any right value and takes the
+  // false output. Without a payload the key is the bare outcome string.
+  const rights: { key: string; label: string }[] = [];
+  if (gate.acceptOutcomes.length === 0) {
+    rights.push({ key: null as unknown as string, label: 'none' });
+  } else if (gate.payload.variants.length > 0) {
+    for (const accept of gate.acceptOutcomes) {
+      for (const variant of gate.payload.variants) {
+        rights.push({ key: `${accept.outcome}|${variant}`, label: `${accept.outcome} ${variant}` });
+      }
+    }
+  } else {
+    for (const accept of gate.acceptOutcomes) rights.push({ key: accept.outcome, label: accept.outcome });
+  }
+  const conditions = rights.map((right, i) => ({
+    id: nodeId(speck, `${gate.gate} ${right.label} ${i}`, ids),
+    leftValue: gate.payload.variants.length > 0 ? ALLOWED_PAYLOAD_EXPR : ALLOWED_N8N_EXPR,
+    rightValue: right.key,
     operator: { type: 'string', operation: 'equals' },
   }));
   return {
@@ -1037,7 +1088,9 @@ function renderReadme(specks: string[]): string {
     '',
     'The trace check supports state, init, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint` and `invariant` boolean expressions, and `verify Always(Name)` when that expression translates. Those checks run only in the nodes and the verify script this compile wrote. They do not run anywhere else.',
     '',
-    'Each of these fails `-t n8n` and writes no n8n file: `oneof`, `transition`, an `if` body, `for`, `forall`, `in`, `Eventually`, an unknown call, an await with no timeout, a timeout outcome that is not a reject, a string that looks like a live key, a parameter that would be an n8n expression, a state field named `headers`, and any other expression this target cannot translate.',
+    'Each of these fails `-t n8n` and writes no n8n file: `transition`, a top-level `oneof` member, an `if` body, `for`, `forall`, `in`, `Eventually`, an unknown call, an await with no timeout, a timeout outcome that is not a reject, a string that looks like a live key, a parameter that would be an n8n expression, a state field named `headers`, and any other expression this target cannot translate. A `payload oneof` clause inside `agent { await ... }` compiles: read on.',
+    '',
+    'A `payload oneof Name { field: Type ... }` inside an await makes the resume payload a named union. The name of the variant the signer picked travels in the posted JSON at `payload`. Resume copies it to the item. The one If of that gate compares the composite key the posted outcome and payload build: `outcome` for a spec with no payload union, `outcome|payload` where a variant name stands. Each accepting (outcome, variant) pair is one true condition. A reject outcome, an outcome that is not listed, and a variant outside the union all take the false output to Stop and Error. The spec does not branch on the type of a variant; the union names are data this target reads, not types it compiles.',
     '',
     'Compared with main, `-t all` and `-t all-ir` still stop when any backend other than n8n rejects the spec. `oneof` and `transition` do that, the process exits 1, and no n8n file is written. An n8n-only failure is the exception: the log line is `Skipped backend: n8n`, the other targets are still written, and the process exits 0. If that skip would write no file, the process exits 1. `-t n8n` exits 1 and writes no n8n file. No partial n8n file is written.',
     '',
@@ -1182,8 +1235,44 @@ function structural() {
     if (code.indexOf('incoming.body') === -1) fail('resume does not read body');
     const conditions = (((iff.parameters || {}).conditions || {}).conditions) || [];
     if (!conditions.length) fail('if conditions');
+    const wantsPayload = (gate.payloadVariants || []).length > 0;
+    const expectedLeft = wantsPayload
+      ? '={{ $json.body.outcome + "|" + (typeof $json.body.payload === "string" ? $json.body.payload : "") }}'
+      : '={{ $json.body.outcome }}';
     for (let c = 0; c < conditions.length; c++) {
-      if (conditions[c].leftValue !== '={{ $json.body.outcome }}') fail('outcome path');
+      if (conditions[c].leftValue !== expectedLeft) fail('outcome path');
+    }
+    if (wantsPayload) {
+      for (let c = 0; c < conditions.length; c++) {
+        const right = String(conditions[c].rightValue || '');
+        const parts = right.split('|');
+        if (parts.length !== 2) fail('payload gate condition ' + c);
+        else if (String(gate.payloadVariants).indexOf(parts[1]) === -1) fail('payload variant ' + parts[1]);
+      }
+      const resumeCode = String((resume.parameters && resume.parameters.jsCode) || '');
+      if (resumeCode.indexOf('__root__.payload') === -1) fail('resume does not read payload');
+      // An accept needs the posted outcome of one listed condition and any
+      // variant of the union. Derive that outcome from the If conditions
+      // themselves so the check stays true to the emitted gate.
+      let acceptOutcome = null;
+      for (let c = 0; c < conditions.length; c++) {
+        const parts = String(conditions[c].rightValue || '').split('|');
+        if (parts.length === 2 && parts[0]) { acceptOutcome = parts[0]; break; }
+      }
+      if (!acceptOutcome) fail('no accepting outcome on the payload gate');
+      const posted = { outcome: acceptOutcome, payload: gate.payloadVariants[0] };
+      const key = posted.outcome + '|' + (typeof posted.payload === 'string' ? posted.payload : '');
+      let matched = false;
+      for (let c = 0; c < conditions.length; c++) {
+        if (conditions[c].rightValue === key) matched = true;
+      }
+      if (!matched) fail('no gate condition matches an accepting payload');
+      const offKey = posted.outcome + '|not-a-variant';
+      let offMatch = false;
+      for (let c = 0; c < conditions.length; c++) {
+        if (conditions[c].rightValue === offKey) offMatch = true;
+      }
+      if (offMatch) fail('unknown payload variant would pass the gate');
     }
     if (outgoing(gate.stop).length !== 0) fail(gate.stop + ' has an outgoing edge');
     const falseSlot = (((connections[gate.gate] || {}).main) || [])[1] || [];

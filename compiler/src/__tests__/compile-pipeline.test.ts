@@ -122,7 +122,11 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when those notes started citing the live n8n tests.
 // Moved again when the buyer-facing sticky note and README stopped naming
 // Speckl's tests and described the workflow instead.
-const OUTPUT_SHA256 = '68049a4ed85e22f7094db37427df4b115ca558184f1b03d2af963715804f8e8a';
+// Moved again when RouteChoice.speckdl joined the examples. Its -t all and
+// -t all-ir trees are new; the n8n tree carries the oneof payload gate. For
+// the other examples the n8n README limits text and each verify.mjs (the gate
+// model now records payloadVariants) changed; the workflow JSON did not.
+const OUTPUT_SHA256 = '1cdbd84bd35ef667b68233148fffc1b6452a2fb899f2adab6a718eeeacf20651';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {
