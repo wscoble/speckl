@@ -122,7 +122,7 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when those notes started citing the live n8n tests.
 // Moved again when the buyer-facing sticky note and README stopped naming
 // Speckl's tests and described the workflow instead.
-const OUTPUT_SHA256 = '68049a4ed85e22f7094db37427df4b115ca558184f1b03d2af963715804f8e8a';
+const OUTPUT_SHA256 = '92ed956fb3bd4188f92d5a1ba91ebf3aa5212a03444497405a9d1fb3a76c1628';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

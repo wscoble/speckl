@@ -72,7 +72,7 @@ function outlineExamples(): string {
   return JSON.stringify(out);
 }
 
-const CORPUS_SHA256 = 'fe6289d16c1b94af6ba946ce4e88a6fff6060c000a7407a32a365cba7bee4c91';
+const CORPUS_SHA256 = 'de88f3c08491e69805078b6e654ab6054e3c30a9888bf84c67ad6091f56b7943';
 
 describe('example corpus', () => {
   it('matches the line-walker outline of every example', () => {

@@ -24,7 +24,7 @@ function outline(): string {
   return rows.join('\n');
 }
 
-const OUTLINE_SHA256 = '52680b9231245195f1320de8d2fcc0066b32ab89f7ba24228d531ecf087f9909';
+const OUTLINE_SHA256 = '28f83ff4ea6d5bcb0add179973b50193e46f2d366d37571b30e8f360505a9f55';
 const goldenPath = fileURLToPath(new URL('./fixtures/line-walker-outline.txt', import.meta.url));
 
 describe('line walker move', () => {

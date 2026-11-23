@@ -49,6 +49,18 @@ DeployGate.speckdl DeployGate
   next:
   verify:DeployNeedsChecks
   verify:DeployNeedsApproval
+IncidentGate.speckdl IncidentGate
+  state:
+  init:
+  invariant:ResolvedNeedsContain
+  action:Detect
+  action:Triage
+  action:RecordAuthorization
+  action:ContainFromApproval
+  action:ContainFromEscalation
+  agent:
+  next:
+  verify:ResolvedNeedsContain
 KafkaKRaft.speckdl KafkaKRaft
   source:
   review:
