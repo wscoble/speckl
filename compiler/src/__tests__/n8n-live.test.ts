@@ -19,6 +19,7 @@ const TRANSLATES = [
   'DeployGate.speckdl',
   'PodcastPublishing.speckdl',
   'ReviewGate.speckdl',
+  'RouteChoice.speckdl',
 ];
 
 const GATE = [

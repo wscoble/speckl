@@ -285,6 +285,11 @@ export interface IRAgentAwait {
   timeout?: { durationMs: number; durationText: string; outcome: string };
   /** Outcomes whose sign-off must carry a call digest. Empty = stage-level. */
   bindCall: string[];
+  /**
+   * Optional `payload oneof` declared inside the await. The variant name is
+   * data on the posted signal at `payload`; n8n branches on it.
+   */
+  payloadOneof?: { name: string; variants: { fieldName: string; typeName: string }[] };
   /** Synthetic action names generated for each on-outcome (and timeout if distinct). */
   syntheticActions: { outcome: string; actionName: string; targetValue: number; awaitValue: number }[];
 }

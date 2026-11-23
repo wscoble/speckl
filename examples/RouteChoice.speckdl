@@ -1,0 +1,66 @@
+speck RouteChoice {
+    // One approval gate whose payload is a oneof. A human approves the
+    // publish, and the posted payload names the channel they signed for:
+    // `publish_email` or `publish_sms`. The outcome is approve or the
+    // reject path; the variant is a named union the signer picks in the
+    // posted JSON at `payload`. The n8n gate continues only when the
+    // outcome and variant together name a listed pair; a variant outside
+    // the union, a reject outcome, and a timeout all stop the run. The
+    // chosen variant stays on the workflow item as `payload`, so a node
+    // after the gate can read it and act for that channel.
+
+    state {
+        stage: Nat
+        channel: String
+    }
+
+    init {
+        stage := 0
+        channel := ""
+    }
+
+    invariant PublishNeedsApproval {
+        stage != 3 or channel != ""
+    }
+
+    action OpenGate {
+        require stage == 0
+        stage := 1
+    }
+
+    action Publish(channel: String) {
+        require stage == 2
+        channel := "published"
+        stage := 3
+    }
+
+    agent {
+        stages stage {
+            Idle = 0
+            Wait = 1
+            Routed = 2
+            Published = 3
+        }
+
+        tool open_gate -> OpenGate effect act
+        tool publish   -> Publish   effect act
+
+        await Wait {
+            signal publish
+            mode near
+            payload oneof PublishChannel {
+                publish_email: EmailChoice
+                publish_sms: SmsChoice }
+            require outcome in { approve, reject! }
+            on approve -> Routed
+            on reject  -> Idle
+            timeout 24h -> reject
+        }
+    }
+
+    next: OpenGate | Publish
+
+    verify Always(PublishNeedsApproval) {
+        depth 8
+    }
+}

@@ -441,6 +441,12 @@ export interface AgentAwaitSpec {
    * Reject outcomes are never listed.
    */
   bindCall: string[];
+  /**
+   * Optional `payload oneof Name { field: Type ... }` inside the await. The
+   * resume payload picks one variant by name; the name is data on the posted
+   * signal. Absent when the await declares no payload union.
+   */
+  payloadOneof?: { name: string; variants: { fieldName: string; typeName: string }[] };
 }
 
 export interface TypeExpr {

@@ -32,6 +32,20 @@ The emitted If left value is `={{ $json.body.outcome }}`. The Resume node reads 
 
 The Wait node does not check a signal signature. `bind call` digests are not enforced. An await with no timeout fails the compile and writes no file.
 
+## Payload unions
+
+A `payload oneof Name { field: Type ... }` clause inside an `agent { await ... }` block makes the resume payload a named union. The signer posts the variant name next to the outcome:
+
+```json
+{"outcome":"<name>","payload":"<variant>"}
+```
+
+The clause stays inside the `agent` member, so the conservation table still rejects a top-level `oneof` member for this backend and the other backends are unchanged. The union travels in the IR as data on the await.
+
+The emitted shape is the same as any approval gate — one Wait, one Resume, one If, one Stop and Error — with three differences. The Resume node copies the posted variant to the item at `payload`. The one If left value of that gate is `={{ $json.body.outcome + "|" + (typeof $json.body.payload === "string" ? $json.body.payload : "") }}`, and each true condition is one accepting (outcome, variant) pair, OR'ed: for `RouteChoice.speckdl` the right values are `approve|publish_email` and `approve|publish_sms`. The posted outcome and payload build that same composite key, so a reject outcome, an outcome that is not listed, a variant outside the union, and a timeout (whose resume body is empty) all take the false output to Stop and Error.
+
+Two compiles of the same spec stay byte-identical, payload gate included. Test names: `the gate compares the composite outcome|payload key`, `resume copies the posted payload next to the pre-wait fields`, `a reject and an unknown variant take the false output to Stop`, `each accepting branch still reaches its action through the gate only`, and the example runs in `compiles every example, or stops with no n8n file when an expression does not translate` and `runs the agent-team verify scripts`. A live n8n run of a payload gate is untested.
+
 ## Verify script
 
 `node <Speck>.verify.mjs` reads the workflow next to it. Exit 0 means every invariant, constraint, and `verify Always(...)` held on the straight-line trace, and every later action is reachable from Start only through the approval Wait. Exit 1 means a check failed. Those checks run only where this compile wrote them: in the code nodes that carry a translated check, and in this script. They do not run anywhere else. The script does not run n8n. It is not a model check. A recorded `depth` does not change the check.
@@ -40,7 +54,7 @@ The Wait node does not check a signal signature. `bind call` digests are not enf
 
 Emitted, when the expression translates and the await has a timeout whose outcome is a reject: `state`, `init`, straight-line actions (`require`, `precondition`, `postcondition`, `let`, assign, `emit`, `return`), `constraint`, `invariant`, `verify`, and `agent` awaits.
 
-A string from the spec is data. In a code node, `{{` and `}}` inside that string are unicode escapes, so the parameter text does not contain those two-character sequences. Every other parameter string is rejected if it contains `{{` or `}}` or starts with `=`. The one expression this target emits on purpose is the If left value `={{ $json.body.outcome }}`.
+A string from the spec is data. In a code node, `{{` and `}}` inside that string are unicode escapes, so the parameter text does not contain those two-character sequences. Every other parameter string is rejected if it contains `{{` or `}}` or starts with `=`. The expressions this target emits on purpose are the If left values: `={{ $json.body.outcome }}` for a spec with no payload union, and the composite `={{ $json.body.outcome + "|" + (typeof $json.body.payload === "string" ? $json.body.payload : "") }}` for a gate built from a `payload oneof`.
 
 Each node id is a speck slug, a name slug, and 16 hex characters. Those 16 characters are the first 16 characters of sha256 of the bytes `speckl-n8n`, a NUL, the speck name, a NUL, and the node name. If that id is already used, the compiler appends `-2`, then `-3`, and so on, until the id is new. Two specks that use the same action name get different ids. Names inside one workflow are unique. Positions are a fixed grid. Nothing in the n8n directory reads the clock, a random source, or a host path.
 
@@ -48,7 +62,7 @@ Each node id is a speck slug, a name slug, and 16 hex characters. Those 16 chara
 
 `-t n8n` throws and writes no n8n file when this target rejects the spec. The process exits 1.
 
-Compared with main, `-t all` and `-t all-ir` still stop when any backend other than n8n rejects the spec. `oneof` and `transition` are rejected by k8s before n8n runs, the same way main stops, so both modes throw, the process exits 1, and no file is written. That is the same exit as main. The n8n directory is not written.
+Compared with main, `-t all` and `-t all-ir` still stop when any backend other than n8n rejects the spec. A top-level `oneof` member and `transition` do that, the process exits 1, and no n8n file is written. An n8n-only failure is the exception: the log line is `Skipped backend: n8n`, the other targets are still written, and the process exits 0. If that skip would write no file, the process exits 1. `-t n8n` exits 1 and writes no n8n file. No partial n8n file is written. A `payload oneof` clause needs no exception: it compiles for n8n and the other backends do not see a member they reject.
 
 An n8n-only failure is the one exception, and it is new relative to main because main has no n8n target. The failures are an expression n8n cannot translate, a Wait with no timeout, a timeout outcome that is not a reject when the agent target does not also reject it, a secret-like literal, a parameter n8n would treat as an expression, and a state field named `headers`. The log line is `Skipped backend: n8n` followed by the reason. The other targets are still written. The process exits 0. If that skip would write no file, the process exits 1. No partial n8n file is written. A timeout outcome that is not a reject is also an agent-block error, so `-t all` still throws at the agent target after n8n is named as skipped. `-t all-ir` does not run the agent target, so that same spec skips n8n, writes the other all-ir targets, and exits 0.
 
@@ -56,8 +70,9 @@ An n8n-only failure is the one exception, and it is new relative to main because
 
 Each row is something this target does not do. The test name is in `compiler/src/__tests__/n8n-target.test.ts` or `compiler/src/__tests__/n8n-live.test.ts`, or the row says it is untested.
 
-- `oneof` fails `-t n8n` and writes no file. Test: `rejects oneof instead of dropping it`. `-t all` and `-t all-ir` throw, exit 1, and write no file. Test: `oneof and transition stop -t all and -t all-ir`. The CLI exit code is tested by `the speckl CLI exits 1 for oneof and transition, and exits 0 when only n8n is skipped`.
+- A top-level `oneof` member fails `-t n8n` and writes no file. Test: `rejects oneof instead of dropping it`. `-t all` and `-t all-ir` still throw, exit 1, and write no file for that member (the other backends reject it first). Test: `oneof and transition stop -t all and -t all-ir`. The CLI exit code is tested by `the speckl CLI exits 1 for oneof and transition, and exits 0 when only n8n is skipped`. A `payload oneof` clause inside `agent { await ... }` is different and does compile, as the next section says.
 - `transition` fails `-t n8n` and writes no file. Test: `transition fails the compile and writes no n8n file`. `-t all` and `-t all-ir` throw and exit 1. Same two tests.
+- A `payload oneof` inside an await with no variants, a repeated variant name, or a second payload union in one await fails the compile and writes no file. Tests: `a payload oneof with no variants fails the compile and writes no n8n file`, `a payload oneof variant that repeats a name fails the compile`, `a second payload oneof in one await fails the compile`.
 - An `if` body fails the compile and writes no file. Test: `an if body fails the compile and writes no n8n file`.
 - A `for` loop fails the compile and writes no file. Test: `for fails the compile and writes no n8n file`.
 - `forall` fails the compile and writes no file. Test: `forall fails the compile and writes no n8n file`.

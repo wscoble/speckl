@@ -11,16 +11,18 @@
     "Raft": "Raft.ts(11,9): error TS2304: Cannot find name 'Term'.",
     "RetryHandler": "RetryHandler.ts(124,12): error TS2304: Cannot find name 'maxRetries'.",
     "ReviewGate": "ReviewGate.ts(145,11): error TS2304: Cannot find name 'MergeNeedsApproval'.",
+    "RouteChoice": "RouteChoice.ts(137,11): error TS2304: Cannot find name 'PublishNeedsApproval'.",
     "SQLitePager": "SQLitePager.ts(288,11): error TS2304: Cannot find name 'CommitAtomicity'.",
     "SQLiteWAL": "SQLiteWAL.ts(264,32): error TS1005: ';' expected.",
-    "tef": "TEF.ts(301,22): error TS1005: ',' expected.",
-    "TigerBeetleLedger": "TigerBeetleLedger.ts(247,11): error TS2304: Cannot find name 'AccountBalanceInvariant'."
+    "TigerBeetleLedger": "TigerBeetleLedger.ts(247,11): error TS2304: Cannot find name 'AccountBalanceInvariant'.",
+    "tef": "TEF.ts(301,22): error TS1005: ',' expected."
   },
   "agent": {
     "AgentPolicy": "agent/AgentPolicy.ts(156,11): error TS2304: Cannot find name 'PrNeedsApproval'.",
     "ClaudeCodePolicy": "agent/ClaudeCodePolicy.ts(169,11): error TS2304: Cannot find name 'PrNeedsGreenTests'.",
     "DeployGate": "agent/DeployGate.ts(156,11): error TS2304: Cannot find name 'DeployNeedsChecks'.",
-    "PodcastPublishing": "agent/PodcastPublishing.ts(189,11): error TS2304: Cannot find name 'ApplyFromApproved'."
+    "PodcastPublishing": "agent/PodcastPublishing.ts(189,11): error TS2304: Cannot find name 'ApplyFromApproved'.",
+    "RouteChoice": "agent/RouteChoice.ts(149,11): error TS2304: Cannot find name 'PublishNeedsApproval'."
   },
   "go": {
     "AccountLedger": "./account_ledger.go:36:14: syntax error: unexpected name notIn, expected )",

@@ -115,6 +115,17 @@ describe('n8n conservation', () => {
     expect(disposition('n8n', 'oneof')).toBe('reject');
     expect(disposition('n8n', 'transition')).toBe('reject');
   });
+
+  it('emits a payload oneof inside an await, not a member', () => {
+    // The conservation table keys on AST member types. `payload oneof` is a
+    // clause of the agent member, so the member-level disposition for oneof
+    // stays reject; the await clause travels in the agent's IR.
+    const wf = loadWorkflow(compile(join(examplesDir, 'RouteChoice.speckdl')), 'RouteChoice');
+    const gate = wf.nodes.find((n: { name: string }) => n.name === 'Gate publish');
+    expect(gate).toBeTruthy();
+    const lefts = new Set(gate.parameters.conditions.conditions.map((c: { leftValue: string }) => c.leftValue));
+    expect(lefts).toEqual(new Set(['={{ $json.body.outcome + "|" + (typeof $json.body.payload === "string" ? $json.body.payload : "") }}']));
+  });
 });
 
 describe('n8n workflow import shape', () => {
@@ -645,6 +656,45 @@ describe('n8n determinism and fail-closed checks', () => {
   });
 });
 
+describe('n8n payload oneof gate', () => {
+  const out = compile(join(examplesDir, 'RouteChoice.speckdl'));
+  const wf = loadWorkflow(out, 'RouteChoice');
+
+  it('the gate compares the composite outcome|payload key', () => {
+    const gate = wf.nodes.find((n: { name: string }) => n.name === 'Gate publish');
+    const conditions = gate.parameters.conditions.conditions as { leftValue: string; rightValue: string; operator: { operation: string } }[];
+    expect(gate.parameters.conditions.combinator).toBe('or');
+    expect(conditions.map(c => c.rightValue)).toEqual(['approve|publish_email', 'approve|publish_sms']);
+    for (const c of conditions) expect(c.operator.operation).toBe('equals');
+  });
+
+  it('resume copies the posted payload next to the pre-wait fields', () => {
+    const resume = wf.nodes.find((n: { name: string }) => n.name === 'Resume publish');
+    const code = resume.parameters.jsCode as string;
+    expect(code).toContain('__root__ = {}');
+    expect(code).toContain('__root__.payload');
+    expect(code).toContain('body.payload');
+    expect(code).toContain('incoming.headers');
+  });
+
+  it('a reject and an unknown variant take the false output to Stop', () => {
+    const gate = wf.nodes.find((n: { name: string }) => n.name === 'Gate publish');
+    const conditions = gate.parameters.conditions.conditions as { rightValue: string }[];
+    expect(conditions.map(c => c.rightValue).includes('reject|publish_email')).toBe(false);
+    expect(conditions.map(c => c.rightValue).includes('approve|no_such_variant')).toBe(false);
+    const falseSlot = wf.connections['Gate publish'].main[1] as { node: string }[];
+    expect(falseSlot.map(e => e.node)).toEqual(['Stop publish']);
+    expect(reaches(wf, 'Stop publish', 'Publish')).toBe(false);
+    expect(reaches(wf, 'Stop publish', 'Check invariants')).toBe(false);
+  });
+
+  it('the accepting branch reaches its action through the gate only', () => {
+    expect(reaches(wf, 'Start', 'Publish', new Set(['Wait publish']))).toBe(false);
+    expect(reaches(wf, 'Resume publish', 'Publish')).toBe(true);
+  });
+
+});
+
 describe('n8n compile failures and -t all continuation', () => {
   function expectNoN8n(body: string, pattern: RegExp): void {
     const file = writeSpec('Fail.speckdl', body);
@@ -653,6 +703,89 @@ describe('n8n compile failures and -t all continuation', () => {
     expect(existsSync(join(out, 'n8n'))).toBe(false);
     expect(walk(out).some(f => f.endsWith('.workflow.json') || f.endsWith('.verify.mjs'))).toBe(false);
   }
+
+  it('a payload oneof with no variants fails the compile and writes no n8n file', () => {
+    expectNoN8n([
+      'speck EmptyUnion {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action Go { require stage == 0 }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            payload oneof Nothing { }',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Wait',
+      '            on reject -> Idle',
+      '            timeout 1h -> reject',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), /payload oneof/);
+  });
+
+  it('a payload oneof variant that repeats a name fails the compile', () => {
+    expectNoN8n([
+      'speck DupUnion {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action Go { require stage == 0 }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            payload oneof Doubles {',
+      '                again: Thing',
+      '                again: Other }',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Wait',
+      '            on reject -> Idle',
+      '            timeout 1h -> reject',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), /duplicate payload oneof variant/);
+  });
+
+  it('a second payload oneof in one await fails the compile', () => {
+    expectNoN8n([
+      'speck TwoUnions {',
+      '    state { stage: Nat }',
+      '    init { stage := 0 }',
+      '    action Go { require stage == 0 }',
+      '    agent {',
+      '        stages stage {',
+      '            Idle = 0',
+      '            Wait = 1',
+      '        }',
+      '        await Wait {',
+      '            signal review',
+      '            mode near',
+      '            payload oneof First {',
+      '                a: Thing }',
+      '            payload oneof Second {',
+      '                b: Other }',
+      '            require outcome in { approve, reject! }',
+      '            on approve -> Wait',
+      '            on reject -> Idle',
+      '            timeout 1h -> reject',
+      '        }',
+      '    }',
+      '}',
+      '',
+    ].join('\n'), /duplicate payload oneof/);
+  });
 
   it('an if body fails the compile and writes no n8n file', () => {
     expectNoN8n([
@@ -910,7 +1043,7 @@ describe('n8n examples and docs', () => {
   const names = readdirSync(examplesDir).filter(f => f.endsWith('.speckdl')).sort();
 
   it('compiles every example, or stops with no n8n file when an expression does not translate', () => {
-    const translates = new Set(['AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'DeployGate.speckdl', 'PodcastPublishing.speckdl', 'ReviewGate.speckdl']);
+    const translates = new Set(['AgentPolicy.speckdl', 'ClaudeCodePolicy.speckdl', 'DeployGate.speckdl', 'PodcastPublishing.speckdl', 'ReviewGate.speckdl', 'RouteChoice.speckdl']);
     for (const name of names) {
       const out = freshOut();
       if (!translates.has(name)) {
@@ -945,7 +1078,7 @@ describe('n8n examples and docs', () => {
   }, 120_000);
 
   it('runs the agent-team verify scripts', () => {
-    for (const speck of ['AgentPolicy', 'DeployGate', 'ClaudeCodePolicy', 'PodcastPublishing']) {
+    for (const speck of ['AgentPolicy', 'DeployGate', 'ClaudeCodePolicy', 'PodcastPublishing', 'RouteChoice']) {
       const out = compile(join(examplesDir, `${speck}.speckdl`));
       const ran = runScript(out, speck);
       expect(ran.status, `${speck}\n${ran.stderr}`).toBe(0);

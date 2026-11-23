@@ -181,6 +181,15 @@ ReviewGate.speckdl ReviewGate
   action:Merge
   next:
   verify:MergeNeedsApproval
+RouteChoice.speckdl RouteChoice
+  state:
+  init:
+  invariant:PublishNeedsApproval
+  action:OpenGate
+  action:Publish
+  agent:
+  next:
+  verify:PublishNeedsApproval
 SQLitePager.speckdl SQLitePager
   author:Engineering <eng@example.com>
   source:

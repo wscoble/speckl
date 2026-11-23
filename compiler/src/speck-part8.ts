@@ -199,6 +199,7 @@ export function parseAgentBlockMultiline(lines: string[], startIndex: number, st
       let timeout: AgentAwaitSpec['timeout'];
       // null = no clause. names === null = `bind call` (every accepting outcome).
       let bindClause: { names: string[] | null } | null = null;
+      let payloadOneof: AgentAwaitSpec['payloadOneof'];
 
       let j = 0;
       while (j < awaitInner.length) {
@@ -256,6 +257,57 @@ export function parseAgentBlockMultiline(lines: string[], startIndex: number, st
               claims.push({ name: pm[1], typeName: pm[2] });
             }
           }
+          j++;
+          continue;
+        }
+
+        // payload oneof Name { field: Type ... } — the resume payload is a
+        // discriminated union. Variants are name: TypeName pairs; the last
+        // variant carries the closing `}` after its type, which stays on that
+        // line through the await's own brace filtering.
+        if (/^payload\s+oneof\s+\w+\s*\{\s*$/.test(al)) {
+          if (payloadOneof) {
+            throw new Error(`Parse error in await ${state}: duplicate payload oneof`);
+          }
+          const unionName = al.match(/^payload\s+oneof\s+(\w+)/)![1];
+          const variants: { fieldName: string; typeName: string }[] = [];
+          let closed = false;
+          while (j + 1 < awaitInner.length && !closed) {
+            j++;
+            const line = awaitInner[j];
+            const close = line.match(/^(\w+)\s*:\s*(\w+)\s*\}\s*$/);
+            if (close) {
+              if (variants.some(v => v.fieldName === close[1])) {
+                throw new Error(`Parse error in await ${state}: duplicate payload oneof variant ${close[1]}`);
+              }
+              variants.push({ fieldName: close[1], typeName: close[2] });
+              closed = true;
+              break;
+            }
+            if (line === '}' || line.startsWith('}')) {
+              const rest = line.slice(1).trim();
+              if (!variants.length || rest) {
+                throw new Error(`Parse error in await ${state}: payload oneof ${unionName} must keep at least one variant before its closing brace`);
+              }
+              closed = true;
+              break;
+            }
+            const vm = line.replace(/[,;]\s*$/, '').match(/^(\w+)\s*:\s*(\w+)\s*$/);
+            if (!vm) {
+              throw new Error(`Parse error in await ${state}: payload oneof variant must be name: Type (the last one may carry the closing "},"), got ${JSON.stringify(line)}`);
+            }
+            if (variants.some(v => v.fieldName === vm[1])) {
+              throw new Error(`Parse error in await ${state}: duplicate payload oneof variant ${vm[1]}`);
+            }
+            variants.push({ fieldName: vm[1], typeName: vm[2] });
+          }
+          if (!closed) {
+            throw new Error(`Parse error in await ${state}: payload oneof ${unionName} is missing its closing brace`);
+          }
+          if (variants.length === 0) {
+            throw new Error(`Parse error in await ${state}: payload oneof ${unionName} has no variants`);
+          }
+          payloadOneof = { name: unionName, variants };
           j++;
           continue;
         }
@@ -333,7 +385,7 @@ export function parseAgentBlockMultiline(lines: string[], startIndex: number, st
         }
       }
 
-      awaits.push({ state, signal, mode, outcomes, rejects, claims, on, timeout, bindCall });
+      awaits.push({ state, signal, mode, outcomes, rejects, claims, on, timeout, bindCall, ...(payloadOneof ? { payloadOneof } : {}) });
       continue;
     }
 
