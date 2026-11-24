@@ -1,7 +1,8 @@
 // Live n8n. Skipped unless SPECKL_N8N_LIVE=1, which the CI job sets.
 // The image is pinned by digest so a moved tag cannot change the run.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,6 +83,7 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
   let base = '';
   let cookie = '';
   let gateId = '';
+  let gateFile = '';
   let gateWorkflow: Record<string, unknown> | null = null;
 
   beforeAll(async () => {
@@ -139,6 +141,7 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
     const compiled = path.join(dir, 'out');
     compileSpec(spec, { outputDir: compiled, target: 'n8n', bomFormat: 'both', verifyDepth: 4 });
     const workflowFile = path.join(compiled, 'n8n', 'GateLive.workflow.json');
+    gateFile = workflowFile;
     const dest = '/tmp/GateLive.workflow.json';
     const copied = docker(['cp', workflowFile, `${name}:${dest}`]);
     if (copied.status !== 0) throw new Error(copied.stderr);
@@ -164,6 +167,72 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
     const copied = docker(['cp', file, `${name}:${dest}`]);
     if (copied.status !== 0) return copied;
     return docker(['exec', '-u', 'node', name, 'n8n', 'import:workflow', `--input=${dest}`]);
+  }
+
+  async function createCredential(type: string, data: Record<string, unknown>, credName: string): Promise<string> {
+    const created = await fetch(`${base}/rest/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ name: credName, type, data }),
+    });
+    const credBody = await created.json() as { data?: { id?: string; name?: string } };
+    expect(created.ok, JSON.stringify(credBody)).toBe(true);
+    const id = credBody.data?.id;
+    expect(id).toBeTruthy();
+    return id!;
+  }
+
+  async function importAndRunAuthCopy(patch: {
+    name: string;
+    authParameter: string;
+    credKey: string;
+    credId: string;
+    credName: string;
+    resumeAmount?: number;
+    resumeUnit?: string;
+  }): Promise<string> {
+    const wf = JSON.parse(readFileSync(gateFile, 'utf8')) as {
+      name: string;
+      nodes: Array<{ type: string; parameters: Record<string, unknown>; credentials?: Record<string, unknown> }>;
+    };
+    wf.name = patch.name;
+    const wait = wf.nodes.find(node => node.type === 'n8n-nodes-base.wait');
+    expect(wait).toBeTruthy();
+    wait!.parameters.incomingAuthentication = patch.authParameter;
+    wait!.parameters.resumeAmount = patch.resumeAmount ?? 1;
+    wait!.parameters.resumeUnit = patch.resumeUnit ?? 'hours';
+    wait!.credentials = { [patch.credKey]: { id: patch.credId, name: patch.credName } };
+    const file = path.join(path.dirname(gateFile), `${patch.name}.workflow.json`);
+    writeFileSync(file, JSON.stringify(wf));
+    const imported = importWorkflow(file);
+    expect(imported.status, `${imported.stdout}\n${imported.stderr}`).toBe(0);
+    expect(imported.stdout).toContain('Successfully imported 1 workflow.');
+    const listed = await workflows();
+    const found = listed.find(item => item.name === patch.name);
+    expect(found).toBeTruthy();
+    const full = await getJson(`${base}/rest/workflows/${found!.id}`, cookie);
+    const saved = full.data as Record<string, unknown>;
+    const keep = ['id', 'name', 'nodes', 'connections', 'settings', 'pinData', 'active', 'versionId'];
+    const workflowData: Record<string, unknown> = {};
+    for (const key of keep) if (key in saved) workflowData[key] = saved[key];
+    const started = await fetch(`${base}/rest/workflows/${found!.id}/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ workflowData, triggerToStartFrom: { name: 'Start' } }),
+    });
+    const startBody = await started.json() as { data?: { executionId?: string } };
+    expect(started.ok, JSON.stringify(startBody)).toBe(true);
+    const id = startBody.data?.executionId;
+    expect(id).toBeTruthy();
+    return id!;
+  }
+
+  function hs256Jwt(secret: string, header: Record<string, unknown> = { alg: 'HS256', typ: 'JWT' }): string {
+    const enc = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const head = enc(header);
+    const body = enc({ sub: 'speckl' });
+    const signature = createHmac('sha256', secret).update(`${head}.${body}`).digest('base64url');
+    return `${head}.${body}.${signature}`;
   }
 
   async function workflows(): Promise<Array<{ id: string; name: string }>> {
@@ -285,10 +354,179 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
     expect(stop.error.message).toBe('Approval was rejected or timed out. This branch stops.');
   }, 40_000);
 
+  it('a resume POST without the header auth credential is refused', async () => {
+    const credId = await createCredential(
+      'httpHeaderAuth',
+      { name: 'X-Speckl-Resume', value: 'resume-secret' },
+      'Speckl resume header',
+    );
+    const id = await importAndRunAuthCopy({
+      name: 'GateLiveHeader',
+      authParameter: 'headerAuth',
+      credKey: 'httpHeaderAuth',
+      credId,
+      credName: 'Speckl resume header',
+    });
+    const waiting = await until(id, ex => ex.status === 'waiting' && decoded(ex).resumeToken, 15_000);
+    const token = decoded(waiting).resumeToken as string;
+    const refused = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(refused.status).toBe(403);
+    expect(await refused.text()).toContain('Authorization data is wrong');
+    const still = await execution(id);
+    expect(still.status).toBe('waiting');
+    const allowed = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Speckl-Resume': 'resume-secret' },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(allowed.status).toBe(200);
+    const done = await until(id, ex => ex.status === 'success', 20_000);
+    const data = decoded(done);
+    expect(ran(data, 'Stage review')).toBe(true);
+    expect(ran(data, 'Ship')).toBe(true);
+  }, 60_000);
+
+  it('a resume POST without the basic auth credential is refused', async () => {
+    const credId = await createCredential(
+      'httpBasicAuth',
+      { user: 'speckl-resume', password: 'Resume-basic-1' },
+      'Speckl resume basic',
+    );
+    const id = await importAndRunAuthCopy({
+      name: 'GateLiveBasic',
+      authParameter: 'basicAuth',
+      credKey: 'httpBasicAuth',
+      credId,
+      credName: 'Speckl resume basic',
+    });
+    const waiting = await until(id, ex => ex.status === 'waiting' && decoded(ex).resumeToken, 15_000);
+    const token = decoded(waiting).resumeToken as string;
+    const anonymous = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(anonymous.status).toBe(401);
+    expect(await anonymous.text()).toContain('Authorization is required');
+    const wrong = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Basic ${Buffer.from('speckl-resume:WrongPassword').toString('base64')}` },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(wrong.status).toBe(401);
+    expect(await wrong.text()).toContain('Authentication data is wrong');
+    const stalled = await execution(id);
+    expect(stalled.status).toBe('waiting');
+    const good = Buffer.from('speckl-resume:Resume-basic-1').toString('base64');
+    const allowed = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Basic ${good}` },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(allowed.status).toBe(200);
+    const done = await until(id, ex => ex.status === 'success', 20_000);
+    const data = decoded(done);
+    expect(ran(data, 'Stage review')).toBe(true);
+    expect(ran(data, 'Ship')).toBe(true);
+  }, 60_000);
+
+  it('a resume POST without the jwt auth credential is refused', async () => {
+    const secret = 'speckl-jwt-test-secret';
+    const credId = await createCredential(
+      'jwtAuth',
+      { keyType: 'passphrase', secret, algorithm: 'HS256' },
+      'Speckl resume jwt',
+    );
+    const id = await importAndRunAuthCopy({
+      name: 'GateLiveJwt',
+      authParameter: 'jwtAuth',
+      credKey: 'jwtAuth',
+      credId,
+      credName: 'Speckl resume jwt',
+    });
+    const waiting = await until(id, ex => ex.status === 'waiting' && decoded(ex).resumeToken, 15_000);
+    const token = decoded(waiting).resumeToken as string;
+    const anonymous = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(anonymous.status).toBe(401);
+    expect(await anonymous.text()).toContain('No token provided');
+    const forged = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${hs256Jwt('a-different-secret')}`,
+      },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(forged.status).toBe(403);
+    expect(await forged.text()).toContain('invalid signature');
+    const stalled = await execution(id);
+    expect(stalled.status).toBe('waiting');
+    const allowed = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${hs256Jwt(secret)}` },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(allowed.status).toBe(200);
+    const done = await until(id, ex => ex.status === 'success', 20_000);
+    const data = decoded(done);
+    expect(ran(data, 'Stage review')).toBe(true);
+    expect(ran(data, 'Ship')).toBe(true);
+  }, 60_000);
+
+  it('the unmodified generated output accepts a resume POST with no credential', async () => {
+    // Import the generated file as written: no patch, copy, or edit of any kind.
+    const imported = importWorkflow(gateFile);
+    expect(imported.status, `${imported.stdout}\n${imported.stderr}`).toBe(0);
+    expect(imported.stdout).toContain('Successfully imported 1 workflow.');
+    const listed = await workflows();
+    const found = listed.find(item => item.name === 'GateLive');
+    expect(found).toBeTruthy();
+    // Every imported GateLive is the same unmodified generated file; any match
+    // proves the unmodified artefact resumes with no credential.
+    const full = await getJson(`${base}/rest/workflows/${found!.id}`, cookie);
+    const saved = full.data as Record<string, unknown>;
+    const wait = (saved.nodes as Array<{ name: string; type: string; parameters?: Record<string, unknown> }>).find(n => n.type === 'n8n-nodes-base.wait');
+    expect(wait?.parameters?.incomingAuthentication).toBe('none');
+    const keep = ['id', 'name', 'nodes', 'connections', 'settings', 'pinData', 'active', 'versionId'];
+    const workflowData: Record<string, unknown> = {};
+    for (const key of keep) if (key in saved) workflowData[key] = saved[key];
+    const started = await fetch(`${base}/rest/workflows/${found!.id}/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ workflowData, triggerToStartFrom: { name: 'Start' } }),
+    });
+    const startBody = await started.json() as { data?: { executionId?: string } };
+    expect(started.ok, JSON.stringify(startBody)).toBe(true);
+    const id = startBody.data?.executionId;
+    expect(id).toBeTruthy();
+    const waiting = await until(id!, ex => ex.status === 'waiting' && decoded(ex).resumeToken, 15_000);
+    const token = decoded(waiting).resumeToken as string;
+    const posted = await fetch(`${base}/webhook-waiting/${id}?signature=${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'approve' }),
+    });
+    expect(posted.status).toBe(200);
+    const done = await until(id!, ex => ex.status === 'success', 20_000);
+    const data = decoded(done);
+    expect(nodeJson(data, 'Resume review')).toMatchObject({ ticket: 'T-1', body: { outcome: 'approve' } });
+    expect(ran(data, 'Ship')).toBe(true);
+  }, 60_000);
+
   it('a short timeout ends at Stop and Error', async () => {
     const id = await startGate();
     await until(id, ex => ex.status === 'waiting', 15_000);
-    const done = await until(id, ex => ex.status === 'error', 40_000);
+    // n8n checks waiting executions with a 60 second poll before setting the
+    // per-run timer, so the wait for the timeout must exceed a full poll.
+    const done = await until(id, ex => ex.status === 'error', 90_000);
     const data = decoded(done);
     expect(nodeJson(data, 'Wait review')).toMatchObject({ stage: 0, ticket: 'T-1' });
     expect(nodeJson(data, 'Wait review').headers).toBeUndefined();
@@ -296,5 +534,5 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
     expect(ran(data, 'Ship')).toBe(false);
     expect(data.resultData.error.message).toBe('Approval was rejected or timed out. This branch stops.');
     expect(data.resultData.runData['Stop review'].at(-1).error.message).toBe('Approval was rejected or timed out. This branch stops.');
-  }, 60_000);
+  }, 120_000);
 });
