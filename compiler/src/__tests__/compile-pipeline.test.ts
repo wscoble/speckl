@@ -122,7 +122,10 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when those notes started citing the live n8n tests.
 // Moved again when the buyer-facing sticky note and README stopped naming
 // Speckl's tests and described the workflow instead.
-const OUTPUT_SHA256 = '68049a4ed85e22f7094db37427df4b115ca558184f1b03d2af963715804f8e8a';
+// Moved again when those notes said that Speckl's live CI tests set Basic,
+// Header, and JWT Auth on a copy of a generated workflow and refuse a resume
+// POST without the matching credential.
+const OUTPUT_SHA256 = 'b0ad3090e21fd0b73f765dd11ed5e5db22227bf467c150be52274dd7fd9b4382';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

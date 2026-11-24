@@ -221,6 +221,8 @@ describe('n8n workflow import shape', () => {
     expect(sticky.parameters.content).toContain('{"outcome":"<name>"}');
     expect(sticky.parameters.content).toContain('$json.body.outcome');
     expect(sticky.parameters.content).toContain('incomingAuthentication is none');
+    expect(sticky.parameters.content).toContain('set each of those three on a copy of a generated workflow');
+    expect(sticky.parameters.content).toContain('refuse a resume POST without the matching credential');
     expect(sticky.parameters.content).toContain('Limit Wait Time');
     expect(sticky.parameters.content).toContain("Speckl's CI tests its bundled examples, not this specific workflow.");
     expect(sticky.parameters.content).not.toContain('{{');
@@ -928,6 +930,8 @@ describe('n8n examples and docs', () => {
       }
       const readme = readFileSync(join(out, 'n8n', 'README.md'), 'utf8');
       expect(readme.startsWith(DISCLAIMER)).toBe(true);
+      expect(readme).toContain('set each of those three on a copy of a generated workflow');
+      expect(readme).toContain('refuse a resume POST without the matching credential');
       expect(readme).toContain('does not run n8n');
       expect(readme).toContain('is not a model check');
       expect(readme).toContain("Speckl's CI tests its bundled examples, not this specific workflow.");
@@ -974,10 +978,16 @@ describe('n8n examples and docs', () => {
     expect(doc).toContain('posts reject and the run ends at Stop and Error');
     expect(doc).toContain('a short timeout ends at Stop and Error');
     expect(doc).toContain('a resume POST without the header auth credential is refused');
+    expect(doc).toContain('a resume POST without the basic auth credential is refused');
+    expect(doc).toContain('a resume POST without the jwt auth credential is refused');
+    expect(doc).toContain('the unmodified generated output accepts a resume POST with no credential');
     expect(doc).toContain('runs a copy of the generated workflow with Header Auth and a test credential set on the Wait node, and with the resume limit raised to 1 hour');
     expect(doc).toContain('It is not the unmodified generated output');
     expect(doc).not.toContain('Whether n8n refuses a resume POST after you set that Authentication is untested');
     expect(changelog).toContain('runs a copy of the generated workflow with Header Auth and a test credential set on the Wait node, and with the resume limit raised to 1 hour');
+    expect(changelog).toContain('a resume POST without the basic auth credential is refused');
+    expect(changelog).toContain('a resume POST without the jwt auth credential is refused');
+    expect(changelog).toContain('the unmodified generated output accepts a resume POST with no credential');
     expect(changelog).toContain('It is not the unmodified generated output');
     expect(doc).not.toContain('No test runs n8n');
     expect(doc).not.toContain('{{ $env.NAME }}');

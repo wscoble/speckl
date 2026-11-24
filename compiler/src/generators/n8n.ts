@@ -575,7 +575,7 @@ function sticky(speck: IRSpeck, awaits: IRAgentAwait[]): string {
   lines.push('An accepting outcome continues. Resume copies the item from before the Wait, so later nodes still have those fields.');
   lines.push('A reject ends at Stop and Error. A timeout ends at Stop and Error. A timeout resumes with the item from before the Wait. That item has no webhook headers, so body is empty and the If takes the false output.');
   lines.push('Limit Wait Time is on that same Wait. There is no second timer node.');
-  lines.push('incomingAuthentication is none. This file does not contain a credential. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach a credential you create in n8n.');
+  lines.push('incomingAuthentication is none. This file does not contain a credential. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach a credential you create in n8n. Speckl\'s live CI tests set each of those three on a copy of a generated workflow and refuse a resume POST without the matching credential.');
   lines.push('A string in the spec is literal data. It is not an n8n env binding.');
   lines.push('A check that fails stops that n8n run. Signal signatures are not checked.');
   lines.push("Speckl's CI tests its bundled examples, not this specific workflow.");
@@ -1043,7 +1043,7 @@ function renderReadme(specks: string[]): string {
     '',
     'A string from the spec is literal data. The characters `{{` and `}}` in that string are unicode escapes in the code node, and a parameter value is not allowed to start with `=`, except the If left value that reads $json.body.outcome. The workflow has no credential id and no credential value.',
     '',
-    'The generated Wait sets incomingAuthentication to none. This file does not contain a credential. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach the matching credential in n8n.',
+    'The generated Wait sets incomingAuthentication to none. This file does not contain a credential. After import, set Authentication on the Wait node to Basic Auth, Header Auth, or JWT Auth and attach the matching credential in n8n. Speckl\'s live CI tests set each of those three on a copy of a generated workflow and refuse a resume POST without the matching credential.',
     '',
     'This workflow does not check signal signatures and does not enforce `bind call` digests. It does not schedule every legal `next:` order. Actions before the first await are chained, then the gates, then later actions. A `require` that does not hold stops that n8n run. A reject outcome that names an earlier stage still stops.',
     '',
