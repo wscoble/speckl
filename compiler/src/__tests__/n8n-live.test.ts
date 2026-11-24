@@ -524,7 +524,9 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
   it('a short timeout ends at Stop and Error', async () => {
     const id = await startGate();
     await until(id, ex => ex.status === 'waiting', 15_000);
-    const done = await until(id, ex => ex.status === 'error', 40_000);
+    // n8n checks waiting executions with a 60 second poll before setting the
+    // per-run timer, so the wait for the timeout must exceed a full poll.
+    const done = await until(id, ex => ex.status === 'error', 90_000);
     const data = decoded(done);
     expect(nodeJson(data, 'Wait review')).toMatchObject({ stage: 0, ticket: 'T-1' });
     expect(nodeJson(data, 'Wait review').headers).toBeUndefined();
@@ -532,5 +534,5 @@ describe.skipIf(!LIVE)('n8n live import and resume', () => {
     expect(ran(data, 'Ship')).toBe(false);
     expect(data.resultData.error.message).toBe('Approval was rejected or timed out. This branch stops.');
     expect(data.resultData.runData['Stop review'].at(-1).error.message).toBe('Approval was rejected or timed out. This branch stops.');
-  }, 60_000);
+  }, 120_000);
 });
