@@ -1076,7 +1076,7 @@
       "openapi/twophasecommit.openapi.json": "b61103453b67a39e"
     },
     "tef.speckdl -t all": {
-      "TEF.ir.smt2": "504443a9e2a74d7c",
+      "TEF.ir.smt2": "d82be08bfbc2ce38",
       "TEF.prov.jsonld": "84746e805f2e8e55",
       "TEF.smt2": "c0ebc49babe0052f",
       "TEF.specbom.cdx.json": "d96c269b27196ba6",
@@ -1169,7 +1169,7 @@
       "tef/tef.go": "88bcf581eb2f903c"
     },
     "tef.speckdl -t all-ir": {
-      "TEF.ir.smt2": "504443a9e2a74d7c",
+      "TEF.ir.smt2": "d82be08bfbc2ce38",
       "TEF.prov.jsonld": "84746e805f2e8e55",
       "TEF.specbom.cdx.json": "d96c269b27196ba6",
       "TEF.specbom.spdx.json": "386e86cf2f123b33",

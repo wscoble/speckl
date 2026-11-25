@@ -255,7 +255,23 @@ function emitSMT(speck: IRSpeck, verifyDepth: number): string {
       lines.push(`; skipped init ${assign.target}: expression failed to parse${src ? `: ${src}` : ''}`);
       continue;
     }
-    lines.push(`(assert (= ${assign.target} ${translateExpr(assign.expr)}))`);
+    let translated = translateExpr(assign.expr);
+    if (translated === SPECKL_EMPTY_SEQ_MARKER) {
+      // Zero-element list literal: resolve (as seq.empty (Seq Elem)) from the
+      // target's declared element type, or skip with a reason when the
+      // element sort cannot be determined.
+      const listVar = stateVars.find((v) => v.name === assign.target);
+      const elemSort = listVar && listVar.type.kind === 'list'
+        ? z3Sort(listVar.type.elementType || { kind: 'primitive', primitive: 'Unknown' })
+        : undefined;
+      if (elemSort) {
+        translated = `(as seq.empty (Seq ${elemSort}))`;
+      } else {
+        lines.push(`; skipped init ${assign.target}: zero-element list literal has no inferable element sort`);
+        continue;
+      }
+    }
+    lines.push(`(assert (= ${assign.target} ${translated}))`);
   }
 
   lines.push('');
@@ -314,7 +330,23 @@ interface TranslateOpts {
   suffix?: string;
   /** Rename identifiers at emission (SMT reserved-word collision avoidance). */
   rename?: (name: string) => string;
+  /**
+   * List variables with a known element sort (name-to-element sort), used to
+   * lower member `length` when the consuming list model is not Seq.
+   */
+  lengthElemSorts?: Map<string, string>;
+  /**
+   * True when the consuming backend models lists as (Array Int T) - the AST
+   * Z3 backend - in which case member `length` emits the declared per-sort
+   * speckl_len function and Seq constructors are unavailable. Default
+   * (false) is the IR-driven backend's Seq list model.
+   */
+  lengthOnArray?: boolean;
 }
+
+/** Placeholder for a zero-element list literal; resolvable only where the
+ *  target's element sort is known (init assignment emitters). */
+export const SPECKL_EMPTY_SEQ_MARKER = '__speckl_empty_seq__';
 
 /**
  * Translate an IR expression tree to SMT-LIB2 s-expression form.
@@ -348,7 +380,20 @@ export function translateExpr(expr: IRExpr, opts: TranslateOpts = {}): string {
         const record = currentRecordOfVar.get(expr.target.name)!;
         return `(${record}_${expr.field} ${expr.target.name})`;
       }
-      // Field access — only valid on record sorts; emit as a select
+      // Member `length` on a Seq list state variable lowers to (seq.len v).
+      // The default IR-driven list model is Seq; backends with a different
+      // list model (the AST Z3 backend's (Array Int T)) pass opts.
+      // lengthElemSorts/lengthOnArray so this case emits their length form.
+      if (expr.field === 'length' && expr.target.kind === 'ident') {
+        const vname = opts.rename ? opts.rename(expr.target.name) : expr.target.name;
+        if (opts.lengthElemSorts?.has(vname)) {
+          const target = opts.suffix && opts.stateVars?.has(vname) ? `${vname}${opts.suffix}` : vname;
+          return opts.lengthOnArray
+            ? `(speckl_len_${opts.lengthElemSorts.get(vname)} ${target})`
+            : `(seq.len ${target})`;
+        }
+      }
+      // Field access - only valid on record sorts; emit as a select
       return `(select ${translateExpr(expr.target, opts)} "${expr.field}")`;
     }
     case 'index':
@@ -397,6 +442,24 @@ function translateUnOp(expr: { op: string; operand: IRExpr }, opts: TranslateOpt
 }
 
 function translateCall(expr: { fn: string; args: IRExpr[] }, opts: TranslateOpts = {}): string {
+  // List literals ["a", "b"] lower to Array(...) call nodes (expr/parser.ts).
+  // A bare (Array ...) application is invalid SMT-LIB2 (Array is a
+  // parameterized sort, not a function). Under the Seq list model the literal
+  // is built element by element; under the AST backend's (Array Int T) list
+  // model a literal needs element-sort context this node does not carry.
+  if (expr.fn === 'Array') {
+    if (opts.lengthOnArray) {
+      throw new Error('list literal unsupported in the array-list Z3 backend (no element-sort context)');
+    }
+    const elems = expr.args.map((a) => translateExpr(a, opts));
+    if (elems.length === 0) {
+      // Element sort is undecidable without assignment context; emit a marker
+      // the init emitter resolves (or explicitly skips) using the target type.
+      return SPECKL_EMPTY_SEQ_MARKER;
+    }
+    if (elems.length === 1) return `(seq.unit ${elems[0]})`;
+    return `(seq.++ ${elems.map((e) => `(seq.unit ${e})`).join(' ')})`;
+  }
   const args = expr.args.map((a) => translateExpr(a, opts)).join(' ');
   // implies is SpeckDL sugar for SMT-LIB2's right-leaning implication
   if (expr.fn === 'implies' && args) return `(=> ${args})`;
