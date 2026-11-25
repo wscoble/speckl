@@ -35,7 +35,7 @@ function emit(name: string, src: string): { dir: string; files: Record<string, s
   const spec = join(dir, `${name}.speckdl`);
   writeFileSync(spec, src);
   const out = join(dir, 'out');
-  compileSpec(spec, { outputDir: out, target: 'z3', bomFormat: 'none', verifyDepth: 6 });
+  compileSpec(spec, { outputDir: out, target: 'z3', bomFormat: 'cdx', verifyDepth: 6 });
   const files: Record<string, string> = {};
   for (const f of readdirSync(out).filter((f2) => f2.endsWith('.smt2'))) {
     files[f] = readFileSync(join(out, f), 'utf-8');
