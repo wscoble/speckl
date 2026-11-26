@@ -122,7 +122,16 @@ describe('in-process pipeline matches the CLI', () => {
 // Moved again when those notes started citing the live n8n tests.
 // Moved again when the buyer-facing sticky note and README stopped naming
 // Speckl's tests and described the workflow instead.
-const OUTPUT_SHA256 = '68049a4ed85e22f7094db37427df4b115ca558184f1b03d2af963715804f8e8a';
+// Moved again for GRE-988 (greybeard-specks corpus Z3-ERRORs): list literals
+// now lower to valid Seq construction instead of a bare (Array ...)
+// application, per-sort speckl_len declarations are deduplicated, member
+// .length on a list lowers to the declared length function, a forall over a
+// bare map domain binds the key sort, and the sanitizer's known-identifier
+// set gained the SMT-LIB2 Seq-theory tokens. The only example artifact whose
+// bytes changed is tef/TEF.ir.smt2, and the change is one skip comment that
+// now names one fewer undeclared identifier ("empty" is known); no verdict
+// changed (checked against z3 4.16.0 and 5.1.0).
+const OUTPUT_SHA256 = 'b277adf72e07305460ed086fb49b463964a14244c157c135594e682407fce992';
 
 describe('example output baseline', () => {
   it('ignores an allow-listed hook file and rejects a changed artifact', () => {

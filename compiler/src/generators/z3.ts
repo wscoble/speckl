@@ -191,11 +191,15 @@ function emitZ3(speck: SpeckNode, options: Z3Options): string {
     emitRecordSort(lines, name, fields);
   }
   // Step 1.5: per-sort length variants for lists with record element types
-  // (`length(log)` with log: List(LogEntry)) — must follow the datatypes.
+  // (`length(log)` with log: List(LogEntry)) - must follow the datatypes.
+  // Declared once per element sort: two List(String) variables must not
+  // declare speckl_len_String twice (duplicate-definition Z3-ERROR).
+  const declaredLenSorts = new Set<string>(['Int']);
   for (const v of (stateNode?.variables ?? [])) {
     if (v.typeExpr.type === 'list' && v.typeExpr.elementType) {
       const elem = z3Sort(v.typeExpr.elementType);
-      if (elem !== 'Int' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(elem)) {
+      if (elem !== 'Int' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(elem) && !declaredLenSorts.has(elem)) {
+        declaredLenSorts.add(elem);
         lines.push(`(declare-fun speckl_len_${elem} ( (Array Int ${elem}) ) Int)`);
       }
     }
@@ -552,7 +556,17 @@ function translateInvariantExpr(expr: string, stateVars: StateVar[], suffix: str
     }
     const varNames = new Set(stateVars.map((v) => v.name));
     const rename = renameMap ? (n: string) => renameMap.get(n) ?? n : undefined;
-    const smt = translateIRExpr(tree, { stateVars: varNames, suffix, rename });
+    // List element sorts for member-`.length` lowering to the declared
+    // per-sort speckl_len functions. Keyed by original variable name;
+    // z3-from-ir applies `rename` before lookup.
+    const lengthElemSorts = new Map<string, string>();
+    for (const v of stateVars) {
+      if (v.typeExpr.type === 'list' && v.typeExpr.elementType) {
+        const elem = z3Sort(v.typeExpr.elementType);
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(elem)) lengthElemSorts.set(v.name, elem);
+      }
+    }
+    const smt = translateIRExpr(tree, { stateVars: varNames, suffix, rename, lengthElemSorts, lengthOnArray: true });
     // Fidelity check: every state variable the source references must appear
     // in the translation. Silent mangling (e.g. set-literal sugar lowered to
     // a bare select) otherwise produces valid-looking but wrong SMT.
@@ -623,6 +637,10 @@ function inferDomainSort(domain: string, stateVars: StateVar[]): string {
     }
     if (domain.endsWith('.keys') && sv.typeExpr.type === 'map') {
       return z3Sort(sv.typeExpr.keyType!);
+    }
+    // A bare map domain iterates the map's keys (same sort as `.keys`).
+    if (sv.typeExpr.type === 'map') {
+      return z3Sort(sv.typeExpr.keyType ?? { type: 'ident', name: 'String' });
     }
     if (sv.typeExpr.type === 'set') {
       return z3Sort(sv.typeExpr.elementType!);
@@ -785,6 +803,14 @@ function translateExpr(expr: string, stateVars: StateVar[], suffix: string): str
   e = e.replace(/(\b\w+)\s+in\s+(\b\w+)/g, (match, x, set) => {
     if (reservedWords.has(set) || set.startsWith('__') || reservedWords.has(x)) return match;
     // Don't re-wrap if already inside a (select ...)
+    const mv = stateVars.find((v) => v.name === set);
+    if (mv && mv.typeExpr.type === 'map' && z3Sort(mv.typeExpr.valueType!) !== 'Bool') {
+      // Key membership on a general map is not expressible over the
+      // (Array K V) encoding. Reference the (undeclared) keys companion -
+      // the sanitizer then drops the enclosing form with an explicit
+      // skip comment - the same degradation path as the `.keys` sugar.
+      return `${set}_keys`;
+    }
     return `(select ${set} ${x})`;
   });
 

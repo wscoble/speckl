@@ -36,6 +36,10 @@ const SMT_BUILTINS = new Set([
   '=>', '+', '-', '*', '/', 'div', 'mod', 'rem', 'abs',
   '<', '<=', '>', '>=', 'min', 'max',
   'select', 'store', 'default',
+  // SMT-LIB2 theory of sequences (Seq): the IR-driven list model emits
+  // list literals as (seq.++ (seq.unit e) ...) and lengths as (seq.len v).
+  'as', 'seq', 'unit', 'empty', 'len', 'nth', 'at', 'prefix', 'extract',
+  'update', 'indexof', 'last_indexof', 'reverse', 'substr', 'replace', 'split',
   'forall', 'exists', 'let', 'ite',
   'true', 'false', 'Int', 'Bool', 'Real', 'String', 'Array', 'Seq', 'Set',
   'union', 'intersection', 'difference', 'member', 'insert', 'singleton',
