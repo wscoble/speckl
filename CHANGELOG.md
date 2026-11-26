@@ -406,6 +406,37 @@ alias.
 
 ### Fixed
 
+- **Z3 backends mis-lowered string-heavy spec forms** (greybeard-specks
+  GRE-988). Four compiler bugs surfaced as Z3-ERRORs on string-heavy specs:
+  - List literals (`["a","b"]`) parsed to an `Array(...)` call node the IR
+    translator emitted verbatim; `Array` is a parameterized sort, not a
+    function, so z3 answered `unknown constant Array (String String String)`.
+    Under the Seq list model a literal now lowers to
+    `(seq.++ (seq.unit e) ...)`; a zero-element literal resolves
+    `(as seq.empty (Seq Elem))` from the target's declared element type, or
+    the init assignment is skipped with a named reason in the artifact.
+  - Two `List(T)` variables each emitted the same `speckl_len_T`
+    declare-fun; it is now declared once per element sort.
+  - Member `.length` on a list lowered to `(select v "length")`, a String
+    key on an Int-domain array. List variables now carry their element sort
+    into the IR translator: the Seq model emits `(seq.len v)`, the AST
+    backend's `(Array Int T)` model emits its declared `speckl_len_T v`.
+  - `forall u in <map>` bound the iteration variable to Int while the keys
+    were String, and `u in <map>` in the body emitted `(select m u)` where a
+    Bool is required. A bare map domain now binds the key sort, and key
+    membership on a non-Bool-valued map degrades through the sanitizer's
+    explicit skip path (the same degradation as the `.keys` sugar); the
+    obligation is then reported UNCHECKED, never passed.
+  The sanitizer's known-identifier set gained the SMT-LIB2 Seq-theory tokens
+  so the new forms survive it. Limits: a list literal inside an AST-backend
+  invariant still fails with a Z3-ERROR (fail-closed, the same failure class
+  as before this change), and the IR backend still does not unroll
+  transitions. `compiler/src/__tests__/z3-string-heavy.test.ts` pins each
+  encoding against the real solver. Verdict-level diffs against 644fc31:
+  the examples corpus is unchanged (57/88 checks passed, 0 failed, 31
+  acknowledged UNCHECKED), and the greybeard-specks corpus flips exactly its
+  eight ledgered Z3-ERROR rows to OK (208/258 with 8 failed to 216/258 with
+  0 failed, identical UNCHECKED accounting).
 - **Rust output did not compile** (#22). Before this change, 1 of 16 example crates passed `cargo check`. The generator rewrote spec text with regular expressions, which left behind `and`/`or`, undefined type names, keyword field names (`continue`), invariant names used as values and `if x return` without braces.
 
   It now works from the IR, like the Camel target, and translates expressions with their types:

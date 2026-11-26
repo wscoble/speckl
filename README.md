@@ -265,7 +265,7 @@ These inputs used to parse. Each one is now an error. The same rule is in [speck
   - **verifier-sigstore:** offline tests and coverage for `plugins/verifier-sigstore` (the package stays private and is not published).
 - Tested backends: TypeScript, Z3, Protobuf, K8s CRDs, OpenAPI, CycloneDX, SPDX, PROV-O, Rust, Camel
 - Round-trip property tested: parse → print → parse is identity for all examples
-- Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) is not yet lowered to Z3 — such constraints are skipped with visible comments
+- Known limitation: BMC over invariants using post-state notation (`x'`) degrades to a consistency check; quantifier sugar (`forall x in coll:`) binds map key/value, set and list domains (a bare map domain binds the key sort), while set algebra and key membership on a non-Bool-valued map do not lower and degrade to explicit skips reported UNCHECKED, never passed
 - Verification fails closed: a verify block that is skipped, degraded or not lowered is reported UNCHECKED, never passed; acknowledged obligations are listed in `examples/.speckl-unchecked.json`.
 - TLA+ models: Two-Phase Commit, Paxos, and Raft are ported as `.speckdl` specs (inspired by the original TLA+ models, not TLA+ output)
 
