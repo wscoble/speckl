@@ -139,3 +139,56 @@ describe.skipIf(!hasZ3)('Z3 backends: string-heavy spec regressions (GRE-988)', 
     expect(z3CleanError(ir)).toBe('');
   }, 60_000);
 });
+
+describe.skipIf(!hasZ3)('Z3 backends: fail-closed paths for string-heavy shapes (GRE-988)', () => {
+  it('the deduped speckl_len_<Sort> declaration generalizes to a record element sort', () => {
+    // Two List(Row) variables with member `.length` invariants must declare
+    // speckl_len_Row exactly once (the dedup is per element sort, not per
+    // variable), and both length lowerings must reference it.
+    const rows = `speck Rows {
+    type Row = { id: Nat, label: String }
+
+    state {
+        left: List(Row)
+        right: List(Row)
+    }
+
+    invariant CountedLeft { left.length == 2 }
+    invariant CountedRight { right.length == 2 }
+}
+`;
+    const { files } = emit('Rows', rows);
+    const ast = files['Rows.smt2'];
+    const declarations = ast.match(/declare-fun speckl_len_Row/g) ?? [];
+    expect(declarations.length).toBe(1);
+    expect(ast).toContain('speckl_len_Row left');
+    expect(ast).toContain('speckl_len_Row right');
+    expect(z3CleanError(ast)).toBe('');
+  }, 60_000);
+
+  it('an AST-backend invariant holding a list literal fails loudly, never as a claimed check', () => {
+    // Known, documented limit (CHANGELOG): the AST backend cannot lower a
+    // list literal inside an invariant. The emitted form is invalid SMT, so
+    // z3 errors and the verifier fails the spec: fail closed. The invariant
+    // must never silently vanish and never silently pass. The IR backend,
+    // on the Seq list model, lowers the same literal and runs clean.
+    const exact = `speck ExactProbe {
+    state {
+        recommended: List(String)
+    }
+
+    init {
+        recommended := ["alpha-a", "beta-b"]
+    }
+
+    invariant ExactContents { recommended == ["alpha-a", "beta-b"] }
+}
+`;
+    const { files } = emit('ExactProbe', exact);
+    const ast = files['ExactProbe.smt2'];
+    expect(z3CleanError(ast)).not.toBe('');
+    const ir = files['ExactProbe.ir.smt2'];
+    expect(ir).toContain('(seq.++');
+    expect(z3CleanError(ir)).toBe('');
+  }, 60_000);
+});
